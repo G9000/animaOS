@@ -60,15 +60,6 @@ export interface AgentResponse {
   toolsUsed: string[];
 }
 
-export interface Memory {
-  id: number;
-  userId: number;
-  content: string;
-  category?: string;
-  source?: string;
-  createdAt?: string;
-}
-
 export interface ProviderInfo {
   name: string;
   defaultModel: string;
@@ -83,24 +74,19 @@ export interface AgentConfig {
   systemPrompt?: string | null;
 }
 
-export type EmailProvider = "gmail" | "outlook";
-
-export interface EmailMessage {
-  id: string;
-  provider: EmailProvider;
-  subject: string;
-  from: string;
-  fromEmail?: string;
-  receivedAt: string;
-  preview: string;
-  isRead: boolean;
-  webLink?: string;
+export interface Nudge {
+  type: "stale_focus" | "overdue_tasks" | "journal_gap" | "long_absence";
+  message: string;
+  priority: number;
 }
 
-export interface EmailFetchResponse {
-  provider: EmailProvider;
-  count: number;
-  emails: EmailMessage[];
+export interface DailyBrief {
+  message: string;
+  context: {
+    currentFocus: string | null;
+    openTaskCount: number;
+    daysSinceLastChat: number | null;
+  };
 }
 
 export const api = {
@@ -187,13 +173,17 @@ export const api = {
         body: { userId },
       }),
 
-    memories: (userId: number) =>
-      request<Memory[]>(`/chat/memories?userId=${userId}`),
+    brief: (userId: number) =>
+      request<DailyBrief>(`/chat/brief?userId=${userId}`),
 
-    deleteMemory: (id: number) =>
-      request<{ status: string }>(`/chat/memories/${id}`, {
-        method: "DELETE",
-      }),
+    nudges: (userId: number) =>
+      request<{ nudges: Nudge[] }>(`/chat/nudges?userId=${userId}`),
+
+    consolidate: (userId: number) =>
+      request<{ filesProcessed: number; filesChanged: number; errors: string[] }>(
+        "/chat/consolidate",
+        { method: "POST", body: { userId } },
+      ),
   },
   config: {
     providers: () => request<ProviderInfo[]>("/config/providers"),
@@ -215,28 +205,11 @@ export const api = {
         body: data,
       }),
   },
-  email: {
-    providers: () =>
-      request<Array<{ id: EmailProvider; name: string }>>("/email/providers"),
-
-    fetch: (
-      provider: EmailProvider,
-      accessToken: string,
-      options?: {
-        maxResults?: number;
-        unreadOnly?: boolean;
-        query?: string;
-      },
-    ) =>
-      request<EmailFetchResponse>("/email/fetch", {
-        method: "POST",
-        body: {
-          provider,
-          accessToken,
-          maxResults: options?.maxResults,
-          unreadOnly: options?.unreadOnly,
-          query: options?.query,
-        },
-      }),
+  translate: async (text: string, targetLang: string): Promise<string> => {
+    const res = await fetch(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`,
+    );
+    const data = await res.json();
+    return data[0].map((s: any[]) => s[0]).join("");
   },
 };

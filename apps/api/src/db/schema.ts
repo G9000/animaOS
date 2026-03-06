@@ -30,14 +30,6 @@ export const messages = sqliteTable("messages", {
   createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
 });
 
-export const memories = sqliteTable("memories", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: integer("user_id").notNull(),
-  content: text("content").notNull(),
-  category: text("category"), // "fact" | "preference" | "goal" | "relationship" | "note"
-  source: text("source"), // "user" | "agent" | "conversation"
-  createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
-});
 
 export const agentConfig = sqliteTable("agent_config", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -52,5 +44,5 @@ export const agentConfig = sqliteTable("agent_config", {
 });
 
 export type Message = typeof messages.$inferSelect;
-export type Memory = typeof memories.$inferSelect;
+
 export type AgentConfig = typeof agentConfig.$inferSelect;

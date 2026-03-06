@@ -7,7 +7,9 @@ import { eq, desc } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { runAgent, streamAgent } from "../agent";
-import { getProvider, listProviders, defaultModels } from "../llm";
+import { generateBrief } from "../agent/brief";
+import { checkNudges } from "../agent/nudge";
+import { consolidateMemories } from "../agent/consolidate";
 
 const chat = new Hono();
 
@@ -63,7 +65,6 @@ chat.post(
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
-          "Access-Control-Allow-Origin": "*",
         },
       }
     );
@@ -106,35 +107,67 @@ chat.delete(
   }
 );
 
-// GET /chat/memories — list memories
+// GET /chat/brief — daily briefing
 chat.get(
-  "/memories",
+  "/brief",
   zValidator(
     "query",
     z.object({
       userId: z.string().transform(Number),
-      category: z.string().optional(),
     })
   ),
   async (c) => {
-    const { userId, category } = c.req.valid("query");
-    let results = await db
-      .select()
-      .from(schema.memories)
-      .where(eq(schema.memories.userId, userId));
+    const { userId } = c.req.valid("query");
 
-    if (category) {
-      results = results.filter((m) => m.category === category);
+    try {
+      const brief = await generateBrief(userId);
+      return c.json(brief);
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500);
     }
-    return c.json(results);
   }
 );
 
-// DELETE /chat/memories/:id
-chat.delete("/memories/:id", async (c) => {
-  const id = Number(c.req.param("id"));
-  await db.delete(schema.memories).where(eq(schema.memories.id, id));
-  return c.json({ status: "deleted" });
-});
+// GET /chat/nudges — check for actionable nudges
+chat.get(
+  "/nudges",
+  zValidator(
+    "query",
+    z.object({
+      userId: z.string().transform(Number),
+    })
+  ),
+  async (c) => {
+    const { userId } = c.req.valid("query");
+
+    try {
+      const nudges = await checkNudges(userId);
+      return c.json({ nudges });
+    } catch (err: any) {
+      return c.json({ nudges: [] });
+    }
+  }
+);
+
+// POST /chat/consolidate — trigger memory consolidation
+chat.post(
+  "/consolidate",
+  zValidator(
+    "json",
+    z.object({
+      userId: z.number(),
+    }),
+  ),
+  async (c) => {
+    const { userId } = c.req.valid("json");
+
+    try {
+      const result = await consolidateMemories(userId);
+      return c.json(result);
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500);
+    }
+  },
+);
 
 export default chat;

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
-import { fetchEmails } from "../email";
+
 import {
   writeMemory,
   appendMemory,
@@ -584,70 +584,6 @@ export function createTools(userId: number) {
     },
   );
 
-  const getEmail = tool(
-    async ({ provider, accessToken, maxResults, unreadOnly, query }) => {
-      try {
-        const emails = await fetchEmails({
-          provider,
-          accessToken,
-          maxResults,
-          unreadOnly,
-          query,
-        });
-
-        return JSON.stringify({
-          status: "ok",
-          count: emails.length,
-          emails: emails.map((email) => ({
-            id: email.id,
-            provider: email.provider,
-            subject: email.subject,
-            from: email.from,
-            fromEmail: email.fromEmail,
-            receivedAt: email.receivedAt,
-            isRead: email.isRead,
-            preview: email.preview,
-            webLink: email.webLink,
-          })),
-        });
-      } catch (err) {
-        return JSON.stringify({
-          status: "error",
-          error: (err as Error).message,
-        });
-      }
-    },
-    {
-      name: "get_email",
-      description:
-        "Fetch recent emails from Gmail or Outlook inbox. Requires a valid OAuth access token. Gmail token needs gmail.readonly scope. Outlook token needs Mail.Read scope.",
-      schema: z.object({
-        provider: z
-          .enum(["gmail", "outlook"])
-          .describe("Email provider: gmail or outlook"),
-        accessToken: z
-          .string()
-          .min(1)
-          .describe("OAuth access token for the selected provider"),
-        maxResults: z
-          .number()
-          .int()
-          .min(1)
-          .max(20)
-          .optional()
-          .describe("Maximum number of emails to return (default 10, max 20)"),
-        unreadOnly: z
-          .boolean()
-          .optional()
-          .describe("If true, return only unread emails"),
-        query: z
-          .string()
-          .optional()
-          .describe("Optional text filter (subject/sender/preview)"),
-      }),
-    },
-  );
-
   const getWeather = tool(
     async ({ location }) => {
       try {
@@ -712,6 +648,50 @@ export function createTools(userId: number) {
     },
   );
 
+  const getCurrentTime = tool(
+    async ({ timeZone, locale }) => {
+      const now = new Date();
+      const zone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      try {
+        const formatted = new Intl.DateTimeFormat(locale || "en-US", {
+          timeZone: zone,
+          dateStyle: "full",
+          timeStyle: "long",
+          hour12: false,
+        }).format(now);
+
+        return JSON.stringify({
+          status: "ok",
+          iso: now.toISOString(),
+          unix: Math.floor(now.getTime() / 1000),
+          timeZone: zone,
+          localTime: formatted,
+        });
+      } catch {
+        return JSON.stringify({
+          status: "error",
+          error: `Invalid timezone: ${timeZone}`,
+        });
+      }
+    },
+    {
+      name: "get_current_time",
+      description:
+        "Get the current date and time for a user timezone. Provide an IANA timezone like 'America/New_York'.",
+      schema: z.object({
+        timeZone: z
+          .string()
+          .optional()
+          .describe("Optional IANA timezone, e.g. America/New_York"),
+        locale: z
+          .string()
+          .optional()
+          .describe("Optional locale, e.g. en-US"),
+      }),
+    },
+  );
+
   return [
     remember,
     recall,
@@ -726,8 +706,8 @@ export function createTools(userId: number) {
     getCurrentFocus,
     setCurrentFocus,
     clearCurrentFocus,
-    getEmail,
     getWeather,
+    getCurrentTime,
   ];
 }
 

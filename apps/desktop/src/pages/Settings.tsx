@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api, type ProviderInfo, type AgentConfig } from "../lib/api";
 
@@ -19,17 +18,16 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
     "claude-3-opus-20240229",
   ],
   openrouter: [
-    "anthropic/claude-sonnet-4-20250514",
-    "openai/gpt-4o",
-    "google/gemini-2.0-flash-001",
-    "deepseek/deepseek-chat",
-    "meta-llama/llama-3.1-70b-instruct",
+    "openrouter/free",
+    "google/gemini-2.5-flash-lite",
+    "google/gemini-2.5-flash",
+    "google/gemini-3-flash-preview",
+    "google/gemini-3.1-flash-lite-preview",
   ],
 };
 
 export default function Settings() {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const [, setProviders] = useState<ProviderInfo[]>([]);
   const [config, setConfig] = useState<AgentConfig | null>(null);
 
@@ -91,27 +89,16 @@ export default function Settings() {
   const suggestions = SUGGESTED_MODELS[provider] || [];
 
   return (
-    <div className="min-h-screen bg-(--color-bg) text-(--color-text) font-(family-name:--font-mono)">
-      {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-(--color-border)">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => navigate(-1)}
-            className="text-(--color-text-muted) hover:text-(--color-text) text-xs uppercase tracking-wider"
-          >
-            ← BACK
-          </button>
-          <span className="text-sm tracking-widest uppercase">
-            ▸ ANIMA<span className="text-(--color-text-muted)">::CONFIG</span>
-          </span>
-        </div>
-      </header>
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-xl mx-auto px-8 py-8 space-y-8">
+        <h1 className="text-sm tracking-widest uppercase">
+          Configuration
+        </h1>
 
-      <div className="max-w-xl mx-auto px-6 py-8 space-y-8">
         {/* Provider Selection */}
         <section>
-          <h2 className="text-xs text-(--color-text-muted) uppercase tracking-wider mb-3">
-            // INFERENCE PROVIDER
+          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider mb-3">
+            Inference Provider
           </h2>
           <div className="grid grid-cols-2 gap-2">
             {["ollama", "openrouter", "openai", "anthropic"].map((p) => (
@@ -132,8 +119,8 @@ export default function Settings() {
 
         {/* Model */}
         <section>
-          <h2 className="text-xs text-(--color-text-muted) uppercase tracking-wider mb-3">
-            // MODEL
+          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider mb-3">
+            Model
           </h2>
           <input
             type="text"
@@ -164,8 +151,8 @@ export default function Settings() {
         {/* API Key */}
         {requiresKey && (
           <section>
-            <h2 className="text-xs text-(--color-text-muted) uppercase tracking-wider mb-3">
-              // API KEY
+            <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider mb-3">
+              API Key
             </h2>
             <input
               type="password"
@@ -179,8 +166,8 @@ export default function Settings() {
               }
             />
             {config?.hasApiKey && !apiKey && (
-              <p className="text-xs text-(--color-text-muted) mt-1">
-                ✓ Key stored
+              <p className="text-[10px] text-(--color-text-muted) mt-1">
+                Key stored
               </p>
             )}
           </section>
@@ -189,8 +176,8 @@ export default function Settings() {
         {/* Ollama URL */}
         {provider === "ollama" && (
           <section>
-            <h2 className="text-xs text-(--color-text-muted) uppercase tracking-wider mb-3">
-              // OLLAMA ENDPOINT
+            <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider mb-3">
+              Ollama Endpoint
             </h2>
             <input
               type="text"
@@ -203,8 +190,8 @@ export default function Settings() {
 
         {/* System Prompt */}
         <section>
-          <h2 className="text-xs text-(--color-text-muted) uppercase tracking-wider mb-3">
-            // SYSTEM DIRECTIVE
+          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider mb-3">
+            System Directive Override
           </h2>
           <textarea
             value={systemPrompt}
@@ -220,20 +207,20 @@ export default function Settings() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 bg-(--color-bg-card) border border-(--color-primary) text-(--color-text) text-xs uppercase tracking-wider rounded-sm hover:bg-(--color-bg-input) disabled:opacity-50 transition-colors"
+            className="px-5 py-2 bg-(--color-bg-card) border border-(--color-primary) text-(--color-text) text-xs uppercase tracking-wider rounded-sm hover:bg-(--color-bg-input) disabled:opacity-50 transition-colors"
           >
-            {saving ? "Saving..." : "Commit Config →"}
+            {saving ? "Saving..." : "Save"}
           </button>
 
           {saved && (
             <span className="text-xs text-(--color-primary) tracking-wider">
-              CONFIG SAVED
+              Saved
             </span>
           )}
 
           {error && (
             <span className="text-xs text-(--color-danger) tracking-wider">
-              ERR: {error}
+              {error}
             </span>
           )}
         </div>

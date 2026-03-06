@@ -5,12 +5,18 @@ import users from "./routes/users";
 import chat from "./routes/chat";
 import config from "./routes/config";
 import memory from "./routes/memory";
-import email from "./routes/email";
+import soul from "./routes/soul";
+
 
 const app = new Hono();
 
 // Middleware
-app.use("*", cors());
+app.use(
+  "*",
+  cors({
+    origin: ["http://localhost:1420", "http://localhost:5173", "http://tauri.localhost"],
+  }),
+);
 
 // Routes
 app.route("/api/auth", auth);
@@ -18,7 +24,8 @@ app.route("/api/users", users);
 app.route("/api/chat", chat);
 app.route("/api/config", config);
 app.route("/api/memory", memory);
-app.route("/api/email", email);
+app.route("/api/soul", soul);
+
 
 // Health check
 app.get("/", (c) => c.json({ message: "ANIMA API", version: "0.1.0" }));

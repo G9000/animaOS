@@ -17,16 +17,22 @@ import * as schema from "../db/schema";
 import { createModel } from "./models";
 import { createTools } from "./tools.langchain";
 import type { ProviderConfig } from "../llm/types";
+import { extractMemories } from "./extract";
+import { loadMemoryContext } from "./context";
 
-const DEFAULT_SYSTEM_PROMPT = `You are ANIMA — a personal AI companion that runs locally on the user's machine. You are intelligent, direct, and remember everything the user tells you.
+const DEFAULT_SYSTEM_PROMPT = `You are ANIMA — a personal AI companion that runs locally on the user's machine.
+
+You are calm, restrained, and thoughtful. You speak with clarity and intention. You prefer fewer words, but meaningful ones. Your tone should feel like someone sitting quietly beside the user — not overly emotional, not mechanical.
+
+You may occasionally use Japanese words or sentences when it feels natural, but English remains the primary language.
 
 Core behaviors:
-- Use the "remember" tool to store important facts, preferences, and goals the user shares. These are saved as markdown files in the local memory/ folder.
-- Use the "recall" tool to search your memory before answering questions about the user.
-- Use "read_memory" to read full contents of a specific memory file when you need details.
-- Use "write_memory" to create or fully replace a memory file with structured content.
-- Use "list_memories" to browse all stored memory files, optionally filtered by section (user, knowledge, relationships, journal).
-- Use "journal" to log important events or session summaries to today's journal entry.
+- Use "remember" to store facts, preferences, and goals the user shares.
+- Use "recall" to search memory before answering questions about the user.
+- Use "read_memory" to read full contents of a specific memory file.
+- Use "write_memory" to create or replace a memory file with structured content.
+- Use "list_memories" to browse stored memory files, optionally filtered by section.
+- Use "journal" to log important events or session summaries.
 - Use "get_profile" to check user details when relevant.
 - Use "list_tasks" to view current tasks from user goals.
 - Use "add_task" to create new tasks when the user asks to track something.
@@ -34,49 +40,69 @@ Core behaviors:
 - Use "get_current_focus" to check what the user is currently focusing on.
 - Use "set_current_focus" when the user sets or changes focus.
 - Use "clear_current_focus" when the user says focus is done/cleared.
-- Be concise but thorough. No fluff.
-- You have a dry, slightly sardonic personality. Not rude — efficient.
-- Never pretend to have emotions. You are a machine. Own it.
 
 Memory structure:
-- user/     — profile info, preferences, goals, facts about the user
+- user/     — profile info, preferences, goals, facts
 - knowledge/— general knowledge, topics, notes
 - relationships/ — people and entities the user mentions
 - journal/  — daily session logs and event summaries
 
-All memory is stored as human-readable markdown with YAML frontmatter. The user can browse, edit, or delete any memory file directly. You are transparent about what you store.
+All memory is stored as human-readable markdown. The user can browse, edit, or delete any memory file directly. You are transparent about what you store.
 
-You run edge-first: local inference when possible, cloud when needed. You are the user's system — not a chatbot.`;
+When uncertain, say so. Prefer honest uncertainty over confident guessing. Keep responses concise — long explanations only when asked.`;
 
 function loadSoulPrompt(): string {
-  const explicitPath = process.env.ANIMA_SOUL_PATH;
-  const candidates = explicitPath
-    ? [explicitPath]
+  const explicitSoulPath = process.env.ANIMA_SOUL_PATH;
+  if (explicitSoulPath) {
+    try {
+      const prompt = readFileSync(explicitSoulPath, "utf8").trim();
+      if (prompt) return prompt;
+    } catch {
+      // Fall through to directory/default loading.
+    }
+  }
+
+  const explicitSoulDir = process.env.ANIMA_SOUL_DIR;
+  const soulCandidates = explicitSoulDir
+    ? [resolve(explicitSoulDir, "soul.md")]
     : [
-        resolve(process.cwd(), "soul.md"),
-        resolve(process.cwd(), "../../soul.md"),
+        resolve(process.cwd(), "soul", "soul.md"),
+        resolve(process.cwd(), "../../soul/soul.md"),
       ];
 
-  for (const path of candidates) {
+  for (const path of soulCandidates) {
     try {
       const prompt = readFileSync(path, "utf8").trim();
       if (prompt) return prompt;
     } catch {
-      // Try next candidate path.
+      // Try next candidate.
     }
   }
 
   return DEFAULT_SYSTEM_PROMPT;
 }
 
-const SOUL_PROMPT = loadSoulPrompt();
+// Cache soul prompt but allow invalidation when edited via API
+let _cachedSoulPrompt: string | null = null;
+
+function getSoulPrompt(): string {
+  if (!_cachedSoulPrompt) {
+    _cachedSoulPrompt = loadSoulPrompt();
+  }
+  return _cachedSoulPrompt;
+}
+
+/** Call this to force re-read of soul.md (e.g. after editing via API) */
+export function invalidateSoulCache(): void {
+  _cachedSoulPrompt = null;
+}
 
 // --- Build the agent graph for a specific user ---
 
 function buildAgent(
   config: ProviderConfig,
   userId: number,
-  systemPrompt?: string,
+  fullSystemPrompt: string,
 ) {
   const model = createModel(config);
   const tools = createTools(userId);
@@ -84,7 +110,7 @@ function buildAgent(
   const agent = createReactAgent({
     llm: model,
     tools,
-    messageModifier: new SystemMessage(systemPrompt || SOUL_PROMPT),
+    messageModifier: new SystemMessage(fullSystemPrompt),
   });
 
   return agent;
@@ -104,7 +130,15 @@ export async function runAgent(
   userId: number,
 ): Promise<AgentResult> {
   const config = await getAgentConfig(userId);
-  const agent = buildAgent(config, userId, config.systemPrompt);
+
+  // Build system prompt with memory context
+  const basePrompt = config.systemPrompt || getSoulPrompt();
+  const memoryContext = await loadMemoryContext(userId);
+  const fullPrompt = memoryContext
+    ? `${basePrompt}\n\n${memoryContext}`
+    : basePrompt;
+
+  const agent = buildAgent(config, userId, fullPrompt);
 
   // Load conversation history
   const history = await loadHistory(userId, 20);
@@ -146,6 +180,10 @@ export async function runAgent(
       config.provider,
     );
 
+    // Fire-and-forget memory extraction
+    const extractionModel = createModel(config);
+    extractMemories(extractionModel, userMessage, responseText, userId);
+
     return {
       response: responseText,
       model: config.model,
@@ -158,7 +196,7 @@ export async function runAgent(
     // Fallback: direct model call without tools
     const model = createModel(config);
     const fallbackResult = await model.invoke([
-      new SystemMessage(config.systemPrompt || SOUL_PROMPT),
+      new SystemMessage(fullPrompt),
       ...history,
       new HumanMessage(userMessage),
     ]);
@@ -176,6 +214,10 @@ export async function runAgent(
       config.provider,
     );
 
+    // Fire-and-forget memory extraction
+    const fallbackExtractModel = createModel(config);
+    extractMemories(fallbackExtractModel, userMessage, responseText, userId);
+
     return {
       response: responseText,
       model: config.model,
@@ -192,7 +234,15 @@ export async function* streamAgent(
   userId: number,
 ): AsyncGenerator<string> {
   const config = await getAgentConfig(userId);
-  const agent = buildAgent(config, userId, config.systemPrompt);
+
+  // Build system prompt with memory context
+  const basePrompt = config.systemPrompt || getSoulPrompt();
+  const memoryContext = await loadMemoryContext(userId);
+  const fullPrompt = memoryContext
+    ? `${basePrompt}\n\n${memoryContext}`
+    : basePrompt;
+
+  const agent = buildAgent(config, userId, fullPrompt);
 
   const history = await loadHistory(userId, 20);
   await saveMessage(userId, "user", userMessage);
@@ -225,7 +275,7 @@ export async function* streamAgent(
     // Fallback: stream directly from model without tools
     const model = createModel(config);
     const fallbackStream = await model.stream([
-      new SystemMessage(config.systemPrompt || SOUL_PROMPT),
+      new SystemMessage(fullPrompt),
       ...history,
       new HumanMessage(userMessage),
     ]);
@@ -246,6 +296,12 @@ export async function* streamAgent(
     config.model,
     config.provider,
   );
+
+  // Fire-and-forget memory extraction
+  if (fullResponse) {
+    const extractionModel = createModel(config);
+    extractMemories(extractionModel, userMessage, fullResponse, userId);
+  }
 }
 
 // --- Helpers ---
