@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function requireEnv(name: string): string {
@@ -16,10 +16,6 @@ export const MIGRATIONS_DIR = resolve(requireEnv("ANIMA_MIGRATIONS_DIR"));
 export const DB_PATH = join(DATA_DIR, "anima.db");
 export const MEMORY_ROOT = join(DATA_DIR, "memory");
 export const SOUL_DIR = join(DATA_DIR, "soul");
-export const SOUL_PATH = join(SOUL_DIR, "soul.md");
-export const DEFAULT_SOUL_PATH = process.env.ANIMA_DEFAULT_SOUL_PATH
-  ? resolve(process.env.ANIMA_DEFAULT_SOUL_PATH)
-  : null;
 
 export function ensureRuntimeLayoutSync(): void {
   mkdirSync(DATA_DIR, { recursive: true });

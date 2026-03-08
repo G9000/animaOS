@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "ANIMA_DATA_DIR=../../.anima/dev ANIMA_PROMPTS_DIR=./prompts ANIMA_MIGRATIONS_DIR=./drizzle ANIMA_DEFAULT_SOUL_PATH=../../soul/soul.md bun run --watch src/index.ts",
+    "dev": "ANIMA_DATA_DIR=../../.anima/dev ANIMA_PROMPTS_DIR=./prompts ANIMA_MIGRATIONS_DIR=./drizzle bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
     "test": "bun test src",
     "db:generate": "drizzle-kit generate:sqlite",
-    "db:push": "ANIMA_DATA_DIR=../../.anima/dev ANIMA_PROMPTS_DIR=./prompts ANIMA_MIGRATIONS_DIR=./drizzle ANIMA_DEFAULT_SOUL_PATH=../../soul/soul.md bun run src/db/migrate.ts",
+    "db:push": "ANIMA_DATA_DIR=../../.anima/dev ANIMA_PROMPTS_DIR=./prompts ANIMA_MIGRATIONS_DIR=./drizzle bun run src/db/migrate.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {

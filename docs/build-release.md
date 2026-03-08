@@ -57,7 +57,6 @@ Inside the app resources:
 - `bin/anima-api` (or `anima-api.exe`)
 - `prompts/` (API prompt templates)
 - `drizzle/` (DB migrations)
-- `defaults/soul.md` (first-run soul seed)
 
 No repo path fallback is used at runtime.
 
@@ -67,7 +66,7 @@ At first launch, the app creates a per-user data directory and stores:
 
 - `anima.db`
 - `memory/`
-- `soul/soul.md`
+- `soul/<userId>.soul.md`
 
 Typical locations:
 

@@ -70,6 +70,8 @@ export interface AuthResponse extends User {
   unlockToken: string;
 }
 
+export type PersonaTemplate = "default" | "alice";
+
 export interface ChatMessage {
   id: number;
   userId: number;
@@ -174,10 +176,15 @@ export const api = {
         method: "POST",
         body: { username, password },
       }),
-    register: (username: string, password: string, name: string) =>
+    register: (
+      username: string,
+      password: string,
+      name: string,
+      personaTemplate: PersonaTemplate = "default",
+    ) =>
       request<AuthResponse>("/auth/register", {
         method: "POST",
-        body: { username, password, name },
+        body: { username, password, name, personaTemplate },
       }),
     me: () => request<User>("/auth/me"),
     logout: () => request<{ success: boolean }>("/auth/logout", { method: "POST" }),

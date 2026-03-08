@@ -28,8 +28,7 @@
     "resources": {
       "bin/": "bin/",
       "../../api/prompts/": "prompts/",
-      "../../api/drizzle/": "drizzle/",
-      "../../../soul/soul.md": "defaults/soul.md"
+      "../../api/drizzle/": "drizzle/"
     },
     "icon": [
       "icons/32x32.png",

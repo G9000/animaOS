@@ -85,7 +85,7 @@ const revokeUnlockSessionMock = mock(() => {});
 const resolveUnlockSessionMock = mock(() => null);
 const readUnlockTokenMock = mock(() => undefined);
 const ensureDefaultSoulMock = mock(async () => {});
-const readMemoryMock = mock(async () => {
+const readMemoryMock = mock(async (): Promise<{ content: string }> => {
   throw new Error("missing");
 });
 const writeMemoryMock = mock(async () => ({}));
@@ -196,7 +196,12 @@ describe("auth handlers", () => {
     };
 
     const response = await register(
-      createContext({ username: "Alice", password: "pw123", name: "Alice" }),
+      createContext({
+        username: "Alice",
+        password: "pw123",
+        name: "Alice",
+        personaTemplate: "alice",
+      }),
     );
 
     expect(response.status).toBe(201);
@@ -215,7 +220,7 @@ describe("auth handlers", () => {
     expect(insertCalls[1].table).toBe("user_keys");
     expect((insertCalls[1].payload as { userId: number }).userId).toBe(42);
 
-    expect(ensureDefaultSoulMock).toHaveBeenCalledWith(42);
+    expect(ensureDefaultSoulMock).toHaveBeenCalledWith(42, "alice");
     expect(writeMemoryMock).toHaveBeenCalledTimes(4);
   });
 
@@ -244,7 +249,7 @@ describe("auth handlers", () => {
       } as UserKeyRow,
     ]);
 
-    readMemoryMock.mockResolvedValue({ content: "exists" });
+    readMemoryMock.mockResolvedValue({ content: "exists" } as any);
 
     const response = await login(
       createContext({ username: "alice", password: "pw123" }),
@@ -257,7 +262,7 @@ describe("auth handlers", () => {
     expect(payload.unlockToken).toBe("unlock-token");
     expect(unwrapDekMock).toHaveBeenCalledTimes(1);
     expect(createUnlockSessionMock).toHaveBeenCalledWith(9, expect.any(Buffer));
-    expect(ensureDefaultSoulMock).toHaveBeenCalledWith(9);
+    expect(ensureDefaultSoulMock).toHaveBeenCalledWith(9, "default");
   });
 
   test("login rejects wrong password", async () => {

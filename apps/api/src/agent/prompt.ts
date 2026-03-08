@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { DEFAULT_SOUL_PATH, PROMPTS_DIR, SOUL_PATH } from "../lib/runtime-paths";
+import { PROMPTS_DIR } from "../lib/runtime-paths";
 import { readUserSoul } from "../lib/user-soul";
 
 function readPromptFile(path: string): string | null {
@@ -20,16 +20,13 @@ function resolvePromptTemplatePath(name: string): string[] {
   return [resolve(PROMPTS_DIR, filename)];
 }
 
-function loadSoulPrompt(): string {
-  const soulCandidates = DEFAULT_SOUL_PATH ? [SOUL_PATH, DEFAULT_SOUL_PATH] : [SOUL_PATH];
-  for (const path of soulCandidates) {
-    const prompt = readPromptFile(path);
-    if (prompt) return prompt;
-  }
+const DEFAULT_SOUL_TEMPLATE_PATH = resolve(PROMPTS_DIR, "soul-templates/default.md");
+const DEFAULT_SOUL_FALLBACK = "# ANIMA Soul\n\nBe concise, clear, and practical.";
 
-  throw new Error(
-    `No soul prompt found. Checked: ${soulCandidates.join(", ")}`,
-  );
+function loadSoulPrompt(): string {
+  const prompt = readPromptFile(DEFAULT_SOUL_TEMPLATE_PATH);
+  if (prompt) return prompt;
+  return DEFAULT_SOUL_FALLBACK;
 }
 
 let cachedSoulPrompt: string | null = null;
@@ -55,7 +52,7 @@ export async function getSoulPromptForUser(userId: number): Promise<string> {
       return prompt;
     }
   } catch {
-    // Fall through to global prompt fallback.
+    // Fall through to default prompt fallback.
   }
 
   const fallback = getSoulPrompt();

@@ -1,5 +1,5 @@
 use std::{
-    fs::{copy, create_dir_all, write},
+    fs::create_dir_all,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::Path,
@@ -32,24 +32,13 @@ fn api_binary_name() -> &'static str {
     }
 }
 
-fn ensure_customer_data_layout(data_dir: &Path, default_soul_path: &Path) -> Result<(), String> {
+fn ensure_customer_data_layout(data_dir: &Path) -> Result<(), String> {
     let memory_dir = data_dir.join("memory");
     let soul_dir = data_dir.join("soul");
-    let soul_path = soul_dir.join("soul.md");
 
     create_dir_all(data_dir).map_err(|err| format!("failed creating data dir: {err}"))?;
     create_dir_all(&memory_dir).map_err(|err| format!("failed creating memory dir: {err}"))?;
     create_dir_all(&soul_dir).map_err(|err| format!("failed creating soul dir: {err}"))?;
-
-    if !soul_path.exists() {
-        if default_soul_path.exists() {
-            copy(default_soul_path, &soul_path)
-                .map_err(|err| format!("failed seeding soul.md: {err}"))?;
-        } else {
-            write(&soul_path, "# ANIMA Soul\n")
-                .map_err(|err| format!("failed creating default soul.md: {err}"))?;
-        }
-    }
 
     Ok(())
 }
@@ -101,7 +90,6 @@ fn start_api_sidecar(app: &tauri::AppHandle) -> Result<Child, String> {
     let sidecar_path = resource_dir.join("bin").join(api_binary_name());
     let prompts_dir = resource_dir.join("prompts");
     let migrations_dir = resource_dir.join("drizzle");
-    let default_soul_path = resource_dir.join("defaults").join("soul.md");
 
     if !sidecar_path.exists() {
         return Err(format!(
@@ -119,13 +107,12 @@ fn start_api_sidecar(app: &tauri::AppHandle) -> Result<Child, String> {
         ));
     }
 
-    ensure_customer_data_layout(&data_dir, &default_soul_path)?;
+    ensure_customer_data_layout(&data_dir)?;
 
     Command::new(&sidecar_path)
         .env("ANIMA_DATA_DIR", &data_dir)
         .env("ANIMA_PROMPTS_DIR", &prompts_dir)
         .env("ANIMA_MIGRATIONS_DIR", &migrations_dir)
-        .env("ANIMA_DEFAULT_SOUL_PATH", &default_soul_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

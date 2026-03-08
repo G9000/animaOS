@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DEFAULT_SOUL_PATH, SOUL_DIR } from "./runtime-paths";
+import { PROMPTS_DIR, SOUL_DIR } from "./runtime-paths";
 import {
   decryptTextWithDek,
   encryptTextWithDek,
@@ -9,16 +9,22 @@ import {
 } from "./data-crypto";
 
 const DEFAULT_SOUL_CONTENT = "# ANIMA Soul\n";
+const SOUL_TEMPLATE_DIR = join(PROMPTS_DIR, "soul-templates");
+
+export type SoulTemplateId = "default" | "alice";
 
 function getUserSoulPath(userId: number): string {
   return join(SOUL_DIR, `${userId}.soul.md`);
 }
 
-async function loadDefaultSoulContent(): Promise<string> {
-  if (DEFAULT_SOUL_PATH && existsSync(DEFAULT_SOUL_PATH)) {
-    return readFile(DEFAULT_SOUL_PATH, "utf-8");
-  }
-  return DEFAULT_SOUL_CONTENT;
+async function loadSoulTemplateContent(
+  templateId: SoulTemplateId = "default",
+): Promise<string> {
+  const path = join(SOUL_TEMPLATE_DIR, `${templateId}.md`);
+  if (!existsSync(path)) return DEFAULT_SOUL_CONTENT;
+
+  const content = (await readFile(path, "utf-8")).trim();
+  return content || DEFAULT_SOUL_CONTENT;
 }
 
 async function migratePlaintextSoulIfNeeded(
@@ -36,7 +42,7 @@ export async function readUserSoul(userId: number): Promise<{ path: string; cont
   const path = getUserSoulPath(userId);
 
   if (!existsSync(path)) {
-    const defaultContent = await loadDefaultSoulContent();
+    const defaultContent = await loadSoulTemplateContent("default");
     await writeUserSoul(userId, defaultContent);
     return { path, content: defaultContent };
   }
@@ -62,10 +68,13 @@ export async function writeUserSoul(userId: number, content: string): Promise<{ 
   return { path };
 }
 
-export async function ensureDefaultSoul(userId: number): Promise<void> {
+export async function ensureDefaultSoul(
+  userId: number,
+  templateId: SoulTemplateId = "default",
+): Promise<void> {
   const path = getUserSoulPath(userId);
   if (existsSync(path)) return;
 
-  const content = await loadDefaultSoulContent();
+  const content = await loadSoulTemplateContent(templateId);
   await writeUserSoul(userId, content);
 }

@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../db";
 import { userKeys, users } from "../../db/schema";
 import { createWrappedDek, unwrapDek } from "../../lib/auth-crypto";
-import { ensureDefaultSoul } from "../../lib/user-soul";
+import { ensureDefaultSoul, type SoulTemplateId } from "../../lib/user-soul";
 import {
   createUnlockSession,
   revokeUnlockSession,
@@ -63,12 +63,26 @@ async function ensureDefaultMemory(userId: number, name: string): Promise<void> 
   ]);
 }
 
-async function ensureUserSeedData(userId: number, name: string): Promise<void> {
-  await Promise.all([ensureDefaultSoul(userId), ensureDefaultMemory(userId, name)]);
+async function ensureUserSeedData(
+  userId: number,
+  name: string,
+  templateId: SoulTemplateId = "default",
+): Promise<void> {
+  await Promise.all([
+    ensureDefaultSoul(userId, templateId),
+    ensureDefaultMemory(userId, name),
+  ]);
 }
 
 export async function register(c: Context) {
-  const { username, password, name } = c.req.valid("json" as never);
+  const { username, password, name, personaTemplate } = c.req.valid(
+    "json" as never,
+  ) as {
+    username: string;
+    password: string;
+    name: string;
+    personaTemplate?: SoulTemplateId;
+  };
   const normalizedUsername = String(username).trim().toLowerCase();
 
   const [existing] = await db
@@ -106,7 +120,7 @@ export async function register(c: Context) {
   });
 
   const unlockToken = createUnlockSession(user.id, dek);
-  await ensureUserSeedData(user.id, user.name);
+  await ensureUserSeedData(user.id, user.name, personaTemplate || "default");
   return c.json({ ...user, unlockToken }, 201);
 }
 
