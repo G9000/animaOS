@@ -22,6 +22,8 @@ Run from repo root unless noted.
 - `bun --filter api dev`: run backend only on port `3031`.
 - `bun --filter desktop dev`: run desktop web UI only.
 - `bun --filter desktop tauri dev`: run full Tauri desktop app.
+- `cd apps/api && bun run test`: run API tests.
+- `cd apps/api && bun run test:brief`: run brief-agent focused tests.
 
 ## Coding Style & Naming Conventions
 
@@ -32,12 +34,18 @@ Run from repo root unless noted.
 
 ## Testing Guidelines
 
-There is no committed automated test suite yet. For every change:
+For every change:
 
 - build both apps (`bun run build`),
 - smoke-test critical flows (auth, chat, memory, settings),
 - verify API health endpoint: `GET /health`.
-  When adding tests, prefer `*.test.ts` / `*.test.tsx` naming near the code under test.
+- For API unit tests, place files under domain-local `__tests__` folders (for example `apps/api/src/agent/__tests__`, `apps/api/src/lib/__tests__`).
+- For LLM-related behavior, mock model/config/db/memory boundaries and test deterministic logic (fallbacks, caching, filtering) without real provider calls.
+
+## Prompt & Date Rules
+
+- Keep agent prompts in `apps/api/prompts/*.md` and load them via `renderPromptTemplate(...)`; avoid large inline prompt strings in TypeScript files.
+- Use `apps/api/src/lib/task-date.ts` as the single source of truth for due-date parsing and open/overdue checks across routes, agents, and cron jobs.
 
 ## Commit & Pull Request Guidelines
 
