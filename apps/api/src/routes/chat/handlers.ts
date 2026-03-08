@@ -4,11 +4,12 @@ import type { Context } from "hono";
 import { eq, desc } from "drizzle-orm";
 import { db } from "../../db";
 import * as schema from "../../db/schema";
-import { runAgent, streamAgent, resetAgentThread } from "../../agent";
+import { resetAgentThread } from "../../agent";
 import { generateBrief } from "../../agent/brief";
 import { checkNudges } from "../../agent/nudge";
 import { consolidateMemories } from "../../agent/consolidate";
 import { readMemory, listMemories, listAllMemories } from "../../memory";
+import { handleChannelMessage, handleChannelStreamMessage } from "../../channels";
 
 // POST /chat
 export async function sendMessage(c: Context) {
@@ -16,8 +17,17 @@ export async function sendMessage(c: Context) {
 
   if (!stream) {
     try {
-      const result = await runAgent(message, userId);
-      return c.json(result);
+      const result = await handleChannelMessage({
+        channel: "chat",
+        userId,
+        text: message,
+      });
+      return c.json({
+        response: result.text,
+        model: result.model || "unknown",
+        provider: result.provider || "unknown",
+        toolsUsed: result.toolsUsed || [],
+      });
     } catch (err: any) {
       return c.json({ error: err.message }, 500);
     }
@@ -37,7 +47,11 @@ export async function sendMessage(c: Context) {
         };
 
         try {
-          for await (const chunk of streamAgent(message, userId)) {
+          for await (const chunk of handleChannelStreamMessage({
+            channel: "chat",
+            userId,
+            text: message,
+          })) {
             send("chunk", { content: chunk });
           }
           send("done", { status: "complete" });

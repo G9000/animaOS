@@ -4,7 +4,7 @@ import type { Context } from "hono";
 import { eq, or } from "drizzle-orm";
 import { db } from "../../db";
 import * as schema from "../../db/schema";
-import { runAgent } from "../../agent";
+import { handleChannelMessage } from "../../channels";
 
 interface TelegramMessage {
   chat?: { id?: number };
@@ -134,8 +134,13 @@ async function handleChatMessage(token: string, chatId: number, text: string) {
     return;
   }
 
-  const result = await runAgent(text, link.userId);
-  await sendTelegramMessage(token, chatId, result.response);
+  const result = await handleChannelMessage({
+    channel: "telegram",
+    userId: link.userId,
+    text,
+    metadata: { chatId },
+  });
+  await sendTelegramMessage(token, chatId, result.text);
 }
 
 // POST /telegram/webhook

@@ -43,6 +43,13 @@
       "when": 1778457600000,
       "tag": "0005_langgraph_persistence",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1778562000000,
+      "tag": "0006_discord_links",
+      "breakpoints": true
     }
   ]
 }

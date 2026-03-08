@@ -51,6 +51,14 @@ export const telegramLinks = sqliteTable("telegram_links", {
   updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
 });
 
+export const discordLinks = sqliteTable("discord_links", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  channelId: text("channel_id").notNull().unique(),
+  userId: integer("user_id").notNull().unique(),
+  createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
+  updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
+});
+
 export const tasks = sqliteTable("tasks", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: integer("user_id").notNull(),
@@ -98,6 +106,7 @@ export type Message = typeof messages.$inferSelect;
 
 export type AgentConfig = typeof agentConfig.$inferSelect;
 export type TelegramLink = typeof telegramLinks.$inferSelect;
+export type DiscordLink = typeof discordLinks.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type AgentThread = typeof agentThreads.$inferSelect;

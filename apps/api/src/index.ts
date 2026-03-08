@@ -7,9 +7,12 @@ import config from "./routes/config";
 import memory from "./routes/memory";
 import soul from "./routes/soul";
 import telegram from "./routes/telegram";
+import discord from "./routes/discord";
 import tasks from "./routes/tasks";
+import channel from "./routes/channel";
 import { startTaskReminderCron } from "./cron/task-reminders";
 import { ensureRuntimeLayout } from "./lib/runtime-paths";
+import { startDiscordGatewayRelay } from "./discord/gateway-relay";
 
 await ensureRuntimeLayout();
 
@@ -37,7 +40,9 @@ app.route("/api/config", config);
 app.route("/api/memory", memory);
 app.route("/api/soul", soul);
 app.route("/api/telegram", telegram);
+app.route("/api/discord", discord);
 app.route("/api/tasks", tasks);
+app.route("/api/channel", channel);
 
 
 // Health check
@@ -46,6 +51,7 @@ app.get("/health", (c) => c.json({ status: "healthy" }));
 
 // Start background crons
 startTaskReminderCron();
+startDiscordGatewayRelay();
 
 export default {
   port: 3031,
