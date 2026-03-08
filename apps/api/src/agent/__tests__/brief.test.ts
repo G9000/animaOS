@@ -62,7 +62,7 @@ const invokeMock = mock(async () => {
 
 const createModelMock = mock(() => ({ invoke: invokeMock }));
 const getAgentConfigMock = mock(async () => ({ provider: "openai", model: "gpt-4o-mini" }));
-const getSoulPromptMock = mock(() => "SOUL");
+const getSoulPromptForUserMock = mock(async () => "SOUL");
 const renderPromptTemplateMock = mock(() => "SYSTEM_PROMPT");
 
 mock.module("../../db", () => ({
@@ -84,7 +84,7 @@ mock.module("../config", () => ({
 }));
 
 mock.module("../prompt", () => ({
-  getSoulPrompt: getSoulPromptMock,
+  getSoulPromptForUser: getSoulPromptForUserMock,
   renderPromptTemplate: renderPromptTemplateMock,
 }));
 
@@ -105,7 +105,7 @@ function resetState() {
   invokeMock.mockClear();
   createModelMock.mockClear();
   getAgentConfigMock.mockClear();
-  getSoulPromptMock.mockClear();
+  getSoulPromptForUserMock.mockClear();
   renderPromptTemplateMock.mockClear();
 }
 

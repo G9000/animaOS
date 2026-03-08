@@ -143,6 +143,30 @@ export interface DailyBrief {
   };
 }
 
+export interface MemoryEntry {
+  path: string;
+  meta: {
+    category: string;
+    tags: string[];
+    created: string;
+    updated: string;
+    source: string;
+  };
+  snippet: string;
+}
+
+export interface MemoryFile {
+  path: string;
+  meta: {
+    category: string;
+    tags: string[];
+    created: string;
+    updated: string;
+    source: string;
+  };
+  content: string;
+}
+
 export const api = {
   auth: {
     login: (username: string, password: string) =>
@@ -157,8 +181,6 @@ export const api = {
       }),
     me: () => request<User>("/auth/me"),
     logout: () => request<{ success: boolean }>("/auth/logout", { method: "POST" }),
-    localBootstrap: () =>
-      request<AuthResponse>("/auth/local/bootstrap", { method: "POST" }),
   },
   users: {
     me: (id: number) => request<User>(`/users/${id}`),
@@ -269,6 +291,35 @@ export const api = {
         method: "PUT",
         body: data,
       }),
+  },
+  memory: {
+    list: (userId: number, section?: string) =>
+      request<{ count: number; memories: MemoryEntry[] }>(
+        `/memory/${userId}${section && section !== "all" ? `?section=${encodeURIComponent(section)}` : ""}`,
+      ),
+    search: (userId: number, query: string) =>
+      request<{ count: number; results: MemoryEntry[] }>(
+        `/memory/${userId}/search?q=${encodeURIComponent(query)}`,
+      ),
+    read: (userId: number, section: string, filename: string) =>
+      request<MemoryFile>(
+        `/memory/${userId}/${encodeURIComponent(section)}/${encodeURIComponent(filename)}`,
+      ),
+    write: (
+      userId: number,
+      section: string,
+      filename: string,
+      payload: { content: string; tags?: string[] },
+    ) =>
+      request<MemoryFile>(
+        `/memory/${userId}/${encodeURIComponent(section)}/${encodeURIComponent(filename)}`,
+        { method: "PUT", body: payload },
+      ),
+    remove: (userId: number, section: string, filename: string) =>
+      request<{ deleted: boolean }>(
+        `/memory/${userId}/${encodeURIComponent(section)}/${encodeURIComponent(filename)}`,
+        { method: "DELETE" },
+      ),
   },
   tasks: {
     list: (userId: number) => request<TaskItem[]>(`/tasks?userId=${userId}`),

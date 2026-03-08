@@ -4,7 +4,7 @@
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { getAgentRunnableConfig, resetAgentPersistence } from "./checkpointer";
-import { getSoulPrompt } from "./prompt";
+import { getSoulPromptForUser } from "./prompt";
 import { loadMemoryContext } from "./context";
 import { getAgentConfig } from "./config";
 import { getOrBuildAgent } from "./cache";
@@ -32,7 +32,7 @@ async function resolveAgentRuntime(userId: number) {
   const config = await getAgentConfig(userId);
   const runnableConfig = await getAgentRunnableConfig(userId);
 
-  const basePrompt = config.systemPrompt || getSoulPrompt();
+  const basePrompt = config.systemPrompt || (await getSoulPromptForUser(userId));
   const memoryContext = await loadMemoryContext(userId);
   const fullPrompt = memoryContext
     ? `${basePrompt}\n\n${memoryContext}`

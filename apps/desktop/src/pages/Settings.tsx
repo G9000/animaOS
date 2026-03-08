@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
-import { api, type ProviderInfo, type AgentConfig } from "../lib/api";
+import {
+  api,
+  getUnlockToken,
+  type ProviderInfo,
+  type AgentConfig,
+} from "../lib/api";
 
 const SUGGESTED_MODELS: Record<string, string[]> = {
   ollama: [
@@ -44,6 +49,9 @@ export default function Settings() {
   const [vaultPayload, setVaultPayload] = useState("");
   const [vaultBusy, setVaultBusy] = useState(false);
   const [vaultStatus, setVaultStatus] = useState("");
+  const [showUnlockKey, setShowUnlockKey] = useState(false);
+  const [unlockKey, setUnlockKey] = useState("");
+  const [unlockCopied, setUnlockCopied] = useState(false);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -55,9 +63,21 @@ export default function Settings() {
         setModel(cfg.model);
         setOllamaUrl(cfg.ollamaUrl || "http://localhost:11434");
         setSystemPrompt(cfg.systemPrompt || "");
+        setUnlockKey(getUnlockToken() || "");
       },
     );
   }, [user?.id]);
+
+  const handleCopyUnlockKey = async () => {
+    if (!unlockKey) return;
+    try {
+      await navigator.clipboard.writeText(unlockKey);
+      setUnlockCopied(true);
+      setTimeout(() => setUnlockCopied(false), 1500);
+    } catch {
+      // ignore clipboard failures
+    }
+  };
 
   const handleProviderChange = (newProvider: string) => {
     setProvider(newProvider);
@@ -333,6 +353,49 @@ export default function Settings() {
           />
           {vaultStatus && (
             <p className="text-xs text-(--color-text-muted)">{vaultStatus}</p>
+          )}
+        </section>
+
+        <section className="pt-6 border-t border-(--color-border) space-y-3">
+          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+            Session Unlock Key
+          </h2>
+          <p className="text-xs text-(--color-text-muted)">
+            Hidden by default. This key unlocks decrypted local data for your current session only.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                if (!showUnlockKey) setUnlockKey(getUnlockToken() || "");
+                setShowUnlockKey((v) => !v);
+              }}
+              className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary)"
+            >
+              {showUnlockKey ? "Hide Key" : "Reveal Key"}
+            </button>
+            <button
+              onClick={() => setUnlockKey(getUnlockToken() || "")}
+              className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary)"
+            >
+              Refresh
+            </button>
+            {showUnlockKey && (
+              <button
+                onClick={() => void handleCopyUnlockKey()}
+                disabled={!unlockKey}
+                className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) disabled:opacity-50"
+              >
+                {unlockCopied ? "Copied" : "Copy"}
+              </button>
+            )}
+          </div>
+          {showUnlockKey && (
+            <textarea
+              readOnly
+              value={unlockKey || "No active unlock key. Sign in again to create one."}
+              rows={3}
+              className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-xs text-(--color-text-muted) outline-none resize-none"
+            />
           )}
         </section>
       </div>

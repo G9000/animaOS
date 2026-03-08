@@ -1,31 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
-import { api } from "../lib/api";
-import { apiUrl } from "../lib/runtime";
-
-interface MemoryEntry {
-  path: string;
-  meta: {
-    category: string;
-    tags: string[];
-    created: string;
-    updated: string;
-    source: string;
-  };
-  snippet: string;
-}
-
-interface MemoryFile {
-  path: string;
-  meta: {
-    category: string;
-    tags: string[];
-    created: string;
-    updated: string;
-    source: string;
-  };
-  content: string;
-}
+import { api, type MemoryEntry, type MemoryFile } from "../lib/api";
 
 export default function Memory() {
   const { user } = useAuth();
@@ -59,14 +34,10 @@ export default function Memory() {
     if (!user?.id) return;
     setLoading(true);
     try {
-      const url =
-        section === "all"
-          ? apiUrl(`/memory/${user.id}`)
-          : apiUrl(
-              `/memory/${user.id}?section=${encodeURIComponent(section)}`,
-            );
-      const res = await fetch(url);
-      const data = await res.json();
+      const data = await api.memory.list(
+        user.id,
+        section === "all" ? undefined : section,
+      );
       setMemories(data.memories || []);
     } catch (err) {
       console.error("Failed to load memories:", err);
@@ -80,10 +51,7 @@ export default function Memory() {
     setLoading(true);
     try {
       setSearchPerformed(true);
-      const res = await fetch(
-        apiUrl(`/memory/${user.id}/search?q=${encodeURIComponent(searchQuery)}`),
-      );
-      const data = await res.json();
+      const data = await api.memory.search(user.id, searchQuery);
       setSearchResults(data.results || []);
     } catch (err) {
       console.error("Search failed:", err);
@@ -100,12 +68,7 @@ export default function Memory() {
       const parts = path.split("/");
       const sectionName = parts[0];
       const filename = parts.slice(2).join("/");
-      const res = await fetch(
-        apiUrl(
-          `/memory/${user.id}/${encodeURIComponent(sectionName)}/${encodeURIComponent(filename)}`,
-        ),
-      );
-      const data = await res.json();
+      const data = await api.memory.read(user.id, sectionName, filename);
       setSelectedFile(data);
       setEditContent(data.content);
     } catch (err) {
@@ -136,19 +99,10 @@ export default function Memory() {
       const parts = selectedFile.path.split("/");
       const sectionName = parts[0];
       const filename = parts.slice(2).join("/");
-      await fetch(
-        apiUrl(
-          `/memory/${user.id}/${encodeURIComponent(sectionName)}/${encodeURIComponent(filename)}`,
-        ),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            content: editContent,
-            tags: selectedFile.meta.tags,
-          }),
-        },
-      );
+      await api.memory.write(user.id, sectionName, filename, {
+        content: editContent,
+        tags: selectedFile.meta.tags,
+      });
       await openFile(selectedFile.path);
       setIsEditing(false);
       loadMemories();
@@ -165,12 +119,7 @@ export default function Memory() {
       const parts = path.split("/");
       const sectionName = parts[0];
       const filename = parts.slice(2).join("/");
-      await fetch(
-        apiUrl(
-          `/memory/${user.id}/${encodeURIComponent(sectionName)}/${encodeURIComponent(filename)}`,
-        ),
-        { method: "DELETE" },
-      );
+      await api.memory.remove(user.id, sectionName, filename);
       setSelectedFile(null);
       loadMemories();
     } catch (err) {
@@ -216,19 +165,10 @@ export default function Memory() {
         .map((tag) => tag.trim())
         .filter(Boolean);
 
-      await fetch(
-        apiUrl(
-          `/memory/${user.id}/${encodeURIComponent(sectionName)}/${encodeURIComponent(newFilename.trim())}`,
-        ),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            content: newContent || "# New Memory\n",
-            tags,
-          }),
-        },
-      );
+      await api.memory.write(user.id, sectionName, newFilename.trim(), {
+        content: newContent || "# New Memory\n",
+        tags,
+      });
 
       const createdPath = `${sectionName}/${user.id}/${newFilename.trim().endsWith(".md") ? newFilename.trim() : `${newFilename.trim()}.md`}`;
       setSection("all");

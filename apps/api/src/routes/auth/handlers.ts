@@ -12,36 +12,6 @@ import {
 import { readUnlockToken } from "../../lib/require-unlock";
 import { readMemory, writeMemory } from "../../memory";
 
-async function getOrCreateLocalOwner() {
-  const [existing] = await db
-    .select({
-      id: users.id,
-      username: users.username,
-      name: users.name,
-      createdAt: users.createdAt,
-    })
-    .from(users)
-    .where(eq(users.username, "local_owner"));
-
-  if (existing) return existing;
-
-  const [created] = await db
-    .insert(users)
-    .values({
-      username: "local_owner",
-      password: "local-only",
-      name: "Local Owner",
-    })
-    .returning({
-      id: users.id,
-      username: users.username,
-      name: users.name,
-      createdAt: users.createdAt,
-    });
-
-  return created;
-}
-
 async function ensureMemoryFile(
   section: string,
   userId: number,
@@ -207,8 +177,4 @@ export async function me(c: Context) {
 export async function logout(c: Context) {
   revokeUnlockSession(readUnlockToken(c));
   return c.json({ success: true });
-}
-
-export async function localBootstrap(c: Context) {
-  return c.json({ error: "Local bootstrap is disabled. Use login/register." }, 410);
 }

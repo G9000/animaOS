@@ -15,7 +15,7 @@ import {
   telegramLinks,
   users,
 } from "../db/schema";
-import { MEMORY_ROOT, SOUL_PATH } from "./runtime-paths";
+import { MEMORY_ROOT, SOUL_DIR } from "./runtime-paths";
 
 const VAULT_VERSION = 1;
 const ARGON2_TIME_COST = 3;
@@ -42,7 +42,7 @@ interface VaultPayload {
   createdAt: string;
   database: DatabaseSnapshot;
   memoryFiles: Record<string, string>;
-  soul: string;
+  soulFiles: Record<string, string>;
 }
 
 interface VaultEnvelope {
@@ -167,6 +167,18 @@ async function readMemorySnapshot(): Promise<Record<string, string>> {
   return snapshot;
 }
 
+async function readSoulSnapshot(): Promise<Record<string, string>> {
+  const files = await walkFiles(SOUL_DIR);
+  const snapshot: Record<string, string> = {};
+
+  for (const fullPath of files) {
+    const rel = relative(SOUL_DIR, fullPath).replace(/\\/g, "/");
+    snapshot[rel] = await readFile(fullPath, "utf8");
+  }
+
+  return snapshot;
+}
+
 async function writeMemorySnapshot(memoryFiles: Record<string, string>): Promise<void> {
   await rm(MEMORY_ROOT, { recursive: true, force: true });
   await mkdir(MEMORY_ROOT, { recursive: true });
@@ -174,6 +186,18 @@ async function writeMemorySnapshot(memoryFiles: Record<string, string>): Promise
   for (const [rel, content] of Object.entries(memoryFiles)) {
     const safeRel = rel.replace(/^(\.\.(\/|\\|$))+/, "");
     const target = join(MEMORY_ROOT, safeRel);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
+}
+
+async function writeSoulSnapshot(soulFiles: Record<string, string>): Promise<void> {
+  await rm(SOUL_DIR, { recursive: true, force: true });
+  await mkdir(SOUL_DIR, { recursive: true });
+
+  for (const [rel, content] of Object.entries(soulFiles)) {
+    const safeRel = rel.replace(/^(\.\.(\/|\\|$))+/, "");
+    const target = join(SOUL_DIR, safeRel);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content, "utf8");
   }
@@ -229,7 +253,7 @@ export async function exportVault(passphrase: string): Promise<{
     createdAt: new Date().toISOString(),
     database: await exportDatabaseSnapshot(),
     memoryFiles: await readMemorySnapshot(),
-    soul: existsSync(SOUL_PATH) ? await readFile(SOUL_PATH, "utf8") : "",
+    soulFiles: await readSoulSnapshot(),
   };
 
   const plaintext = JSON.stringify(payload);
@@ -260,7 +284,7 @@ export async function importVault(vault: string, passphrase: string): Promise<{
 
   await restoreDatabaseSnapshot(payload.database);
   await writeMemorySnapshot(payload.memoryFiles || {});
-  await writeFile(SOUL_PATH, payload.soul || "", "utf8");
+  await writeSoulSnapshot(payload.soulFiles || {});
 
   return {
     restoredUsers: payload.database.users.length,

@@ -8,7 +8,7 @@ import type { ProviderConfig } from "../llm/types";
 import { createModel } from "./models";
 import { loadMemoryContext } from "./context";
 import { getAgentRunnableConfig, langGraphCheckpointer } from "./checkpointer";
-import { getSoulPrompt } from "./prompt";
+import { getSoulPromptForUser } from "./prompt";
 import { getOrBuildAgent } from "./cache";
 import { KEEP_RECENT_MESSAGES, SUMMARIZE_THRESHOLD } from "./builder";
 
@@ -58,7 +58,7 @@ export async function maybeSummarizeThread(
       : JSON.stringify(summaryResult.content);
 
   // Get the cached agent so we can update state via the graph
-  const basePrompt = config.systemPrompt || getSoulPrompt();
+  const basePrompt = config.systemPrompt || (await getSoulPromptForUser(userId));
   const memoryContext = await loadMemoryContext(userId);
   const fullPrompt = memoryContext
     ? `${basePrompt}\n\n${memoryContext}`

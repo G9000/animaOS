@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DEFAULT_SOUL_PATH, PROMPTS_DIR, SOUL_PATH } from "../lib/runtime-paths";
+import { readUserSoul } from "../lib/user-soul";
 
 function readPromptFile(path: string): string | null {
   try {
@@ -32,6 +33,7 @@ function loadSoulPrompt(): string {
 }
 
 let cachedSoulPrompt: string | null = null;
+const cachedSoulPromptByUser = new Map<number, string>();
 const promptTemplateCache = new Map<string, string>();
 
 export function getSoulPrompt(): string {
@@ -39,6 +41,26 @@ export function getSoulPrompt(): string {
     cachedSoulPrompt = loadSoulPrompt();
   }
   return cachedSoulPrompt;
+}
+
+export async function getSoulPromptForUser(userId: number): Promise<string> {
+  const cached = cachedSoulPromptByUser.get(userId);
+  if (cached) return cached;
+
+  try {
+    const { content } = await readUserSoul(userId);
+    const prompt = content.trim();
+    if (prompt) {
+      cachedSoulPromptByUser.set(userId, prompt);
+      return prompt;
+    }
+  } catch {
+    // Fall through to global prompt fallback.
+  }
+
+  const fallback = getSoulPrompt();
+  cachedSoulPromptByUser.set(userId, fallback);
+  return fallback;
 }
 
 export function getPromptTemplate(name: string): string {
@@ -71,5 +93,6 @@ export function renderPromptTemplate(
 
 export function invalidateSoulPromptCache(): void {
   cachedSoulPrompt = null;
+  cachedSoulPromptByUser.clear();
   promptTemplateCache.clear();
 }

@@ -7,13 +7,14 @@ import * as schema from "../db/schema";
 import { createModel } from "./models";
 import { readMemory } from "../memory";
 import { getAgentConfig } from "./config";
-import { getSoulPrompt, renderPromptTemplate } from "./prompt";
+import { getSoulPromptForUser, renderPromptTemplate } from "./prompt";
 import { isTaskOpen } from "../lib/task-date";
 import { maybeDecryptForUser } from "../lib/data-crypto";
 
-function buildBriefPrompt(): string {
+async function buildBriefPrompt(userId: number): Promise<string> {
+  const soulPrompt = await getSoulPromptForUser(userId);
   return renderPromptTemplate("brief-system", {
-    soul_prompt: getSoulPrompt(),
+    soul_prompt: soulPrompt,
   });
 }
 
@@ -239,7 +240,7 @@ export async function generateBrief(userId: number): Promise<DailyBrief> {
 
   try {
     const result = await model.invoke([
-      new SystemMessage(buildBriefPrompt()),
+      new SystemMessage(await buildBriefPrompt(userId)),
       new HumanMessage(contextParts.join("\n\n")),
     ]);
 
