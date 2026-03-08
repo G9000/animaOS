@@ -57,7 +57,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <span className="truncate">{user?.name}</span>
           </button>
           <button
-            onClick={logout}
+            onClick={() => {
+              void logout().then(() => navigate("/login"));
+            }}
             className="w-full px-3 py-1.5 rounded-md text-[12px] text-(--color-text-muted)/50 hover:text-(--color-danger) text-left transition-colors"
           >
             Log out

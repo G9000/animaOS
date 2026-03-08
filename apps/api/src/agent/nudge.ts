@@ -6,6 +6,7 @@ import { db } from "../db";
 import * as schema from "../db/schema";
 import { readMemory, listMemories } from "../memory";
 import { isTaskOverdue } from "../lib/task-date";
+import { maybeDecryptForUser } from "../lib/data-crypto";
 
 export interface Nudge {
   type: "stale_focus" | "overdue_tasks" | "journal_gap" | "long_absence";
@@ -60,7 +61,10 @@ async function checkOverdueTasks(userId: number): Promise<Nudge | null> {
     const overdue = openTasks.filter((t) => isTaskOverdue(t.dueDate));
 
     if (overdue.length > 0) {
-      const names = overdue.slice(0, 3).map((t) => `"${t.text}"`).join(", ");
+      const names = overdue
+        .slice(0, 3)
+        .map((t) => `"${maybeDecryptForUser(userId, t.text)}"`)
+        .join(", ");
       const extra = overdue.length > 3 ? ` and ${overdue.length - 3} more` : "";
       return {
         type: "overdue_tasks",

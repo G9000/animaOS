@@ -41,6 +41,8 @@ From repo root unless noted:
 ## Repository Notes
 
 - `memory/` is intentionally local-only and fully git-ignored.
+- Auth is local-owner bootstrap (no mandatory email identity flow).
+- User backup/sync uses encrypted vault export/import with a user passphrase (argon2id + AES-256-GCM).
 - Keep prompts in `apps/api/prompts/*.md` and load via `renderPromptTemplate(...)`.
 - Use `apps/api/src/lib/task-date.ts` as the shared due-date logic source.
 

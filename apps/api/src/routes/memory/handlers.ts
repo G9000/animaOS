@@ -12,6 +12,7 @@ import {
   writeJournalEntry,
   type MemorySection,
 } from "../../memory";
+import { requireUnlockedUser } from "../../lib/require-unlock";
 
 // GET /memory/:userId
 export async function listUserMemories(c: Context) {
@@ -19,6 +20,8 @@ export async function listUserMemories(c: Context) {
   const section = c.req.query("section") as MemorySection | undefined;
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const entries = section
     ? await listMemories(section, userId)
@@ -34,6 +37,8 @@ export async function searchUserMemories(c: Context) {
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
   if (!query) return c.json({ error: "Missing query param 'q'" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const results = await searchMemories(userId, query);
   return c.json({ count: results.length, results });
@@ -46,6 +51,8 @@ export async function readUserMemory(c: Context) {
   const filename = c.req.param("filename") || "";
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   try {
     const file = await readMemory(section, userId, filename);
@@ -62,6 +69,8 @@ export async function writeUserMemory(c: Context) {
   const filename = c.req.param("filename") || "";
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const body = await c.req.json<{ content: string; tags?: string[] }>();
   if (!body.content) return c.json({ error: "Missing content" }, 400);
@@ -82,6 +91,8 @@ export async function appendUserMemory(c: Context) {
   const filename = c.req.param("filename") || "";
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const body = await c.req.json<{ content: string }>();
   if (!body.content) return c.json({ error: "Missing content" }, 400);
@@ -101,6 +112,8 @@ export async function deleteUserMemory(c: Context) {
   const filename = c.req.param("filename") || "";
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const deleted = await deleteMemory(section, userId, filename);
   return c.json({ deleted });
@@ -111,6 +124,8 @@ export async function writeJournal(c: Context) {
   const userId = parseInt(c.req.param("userId") || "");
 
   if (isNaN(userId)) return c.json({ error: "Invalid userId" }, 400);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const body = await c.req.json<{ entry: string; date?: string }>();
   if (!body.entry) return c.json({ error: "Missing entry" }, 400);

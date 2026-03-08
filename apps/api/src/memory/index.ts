@@ -8,6 +8,11 @@ import { readdir, readFile, writeFile, mkdir, unlink, stat } from "fs/promises";
 import { join, basename, relative } from "path";
 import { existsSync } from "fs";
 import { MEMORY_ROOT } from "../lib/runtime-paths";
+import {
+  decryptTextWithDek,
+  encryptTextWithDek,
+  requireDekForUser,
+} from "../lib/data-crypto";
 
 // --- Types ---
 
@@ -210,6 +215,40 @@ function relPath(fullPath: string): string {
   return relative(MEMORY_ROOT, fullPath).replace(/\\/g, "/");
 }
 
+function encryptMemoryRaw(userId: number, raw: string): string {
+  const dek = requireDekForUser(userId);
+  return encryptTextWithDek(raw, dek);
+}
+
+function decryptMemoryRaw(userId: number, raw: string): string {
+  // Backward compatibility for any pre-encryption plaintext files.
+  if (!raw.startsWith("enc1:")) return raw;
+  const dek = requireDekForUser(userId);
+  return decryptTextWithDek(raw, dek);
+}
+
+async function migratePlaintextMemoryFileIfNeeded(
+  filePath: string,
+  userId: number,
+  raw: string,
+): Promise<void> {
+  if (raw.startsWith("enc1:")) return;
+  const encrypted = encryptMemoryRaw(userId, raw);
+  await writeFile(filePath, encrypted, "utf-8");
+}
+
+function parseUserIdFromRelativePath(path: string): number {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length < 3) {
+    throw new Error(`Invalid memory path: ${path}`);
+  }
+  const userId = Number(parts[1]);
+  if (!Number.isFinite(userId)) {
+    throw new Error(`Invalid userId in memory path: ${path}`);
+  }
+  return userId;
+}
+
 /**
  * List known sections for a user.
  * Includes default sections plus any custom top-level folders under /memory
@@ -267,14 +306,15 @@ export async function writeMemory(
   };
 
   const raw = serializeFrontmatter(fullMeta, content);
+  const encryptedRaw = encryptMemoryRaw(userId, raw);
 
   // Write with retry and validation
   await retryWithBackoff(
     async () => {
-      await writeFile(filePath, raw, "utf-8");
+      await writeFile(filePath, encryptedRaw, "utf-8");
 
       // Validate the write succeeded
-      const isValid = await validateFileWritten(filePath, raw);
+      const isValid = await validateFileWritten(filePath, encryptedRaw);
       if (!isValid) {
         throw new Error(`File validation failed for ${filePath}`);
       }
@@ -329,7 +369,9 @@ export async function readMemory(
   filename: string,
 ): Promise<MemoryFile> {
   const filePath = memoryPath(section, userId, filename);
-  const raw = await readFile(filePath, "utf-8");
+  const encryptedRaw = await readFile(filePath, "utf-8");
+  await migratePlaintextMemoryFileIfNeeded(filePath, userId, encryptedRaw);
+  const raw = decryptMemoryRaw(userId, encryptedRaw);
   const { meta, content } = parseFrontmatter(raw);
 
   return {
@@ -374,7 +416,9 @@ export async function listMemories(
 
     try {
       const filePath = join(dir, file);
-      const raw = await readFile(filePath, "utf-8");
+      const encryptedRaw = await readFile(filePath, "utf-8");
+      await migratePlaintextMemoryFileIfNeeded(filePath, userId, encryptedRaw);
+      const raw = decryptMemoryRaw(userId, encryptedRaw);
       const { meta, content } = parseFrontmatter(raw);
 
       entries.push({
@@ -473,7 +517,10 @@ export async function readMemoryByPath(
   relativePath: string,
 ): Promise<MemoryFile> {
   const filePath = join(MEMORY_ROOT, relativePath);
-  const raw = await readFile(filePath, "utf-8");
+  const encryptedRaw = await readFile(filePath, "utf-8");
+  const userId = parseUserIdFromRelativePath(relativePath);
+  await migratePlaintextMemoryFileIfNeeded(filePath, userId, encryptedRaw);
+  const raw = decryptMemoryRaw(userId, encryptedRaw);
   const { meta, content } = parseFrontmatter(raw);
 
   return {

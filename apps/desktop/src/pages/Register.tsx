@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, setUnlockToken } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 export default function Register() {
@@ -12,20 +12,30 @@ export default function Register() {
   const { setUser } = useAuth();
   const navigate = useNavigate();
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function registerAccount() {
+    if (!name || !username || !password) {
+      setError("Please fill in all fields");
+      return;
+    }
+
     setError("");
     setLoading(true);
 
     try {
       const user = await api.auth.register(username, password, name);
-      setUser(user);
+      setUnlockToken(user.unlockToken);
+      setUser({ id: user.id, username: user.username, name: user.name });
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await registerAccount();
   }
 
   return (

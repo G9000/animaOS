@@ -134,6 +134,15 @@ This matters for several reasons:
 
 For ANIMA OS, local-first architecture is not branding. It is part of the system's conceptual integrity.
 
+### 6.1 Identity and Key Ownership
+
+ANIMA OS treats identity as local ownership first, not platform account first.
+
+- No mandatory email-based authentication is required for core local usage.
+- The user remains the root of trust through a local device identity and user-held secret.
+- Portability is handled via encrypted vault exports/imports, so users can carry data offline (for example, USB transfer) or sync through storage they choose.
+- Vault encryption should be strong, memory-hard, and versioned so data can migrate safely over time.
+
 ---
 
 ## 7. Memory As Infrastructure

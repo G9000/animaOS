@@ -43,7 +43,7 @@ export default function Profile() {
 
     try {
       await api.users.delete(user!.id);
-      logout();
+      await logout();
       navigate("/login");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");

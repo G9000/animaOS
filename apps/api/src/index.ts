@@ -10,6 +10,7 @@ import telegram from "./routes/telegram";
 import discord from "./routes/discord";
 import tasks from "./routes/tasks";
 import channel from "./routes/channel";
+import vault from "./routes/vault";
 import { startTaskReminderCron } from "./cron/task-reminders";
 import { ensureRuntimeLayout } from "./lib/runtime-paths";
 import { startDiscordGatewayRelay } from "./discord/gateway-relay";
@@ -29,6 +30,7 @@ app.use(
       "https://tauri.localhost",
       "tauri://localhost",
     ],
+    credentials: true,
   }),
 );
 
@@ -43,6 +45,7 @@ app.route("/api/telegram", telegram);
 app.route("/api/discord", discord);
 app.route("/api/tasks", tasks);
 app.route("/api/channel", channel);
+app.route("/api/vault", vault);
 
 
 // Health check

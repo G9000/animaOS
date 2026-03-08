@@ -7,6 +7,8 @@ import { db } from "../../db";
 import * as schema from "../../db/schema";
 import { listProviders, defaultModels } from "../../llm";
 import { updateConfigSchema } from "./schema";
+import { requireUnlockedUser } from "../../lib/require-unlock";
+import { maybeDecryptForUser, maybeEncryptForUser } from "../../lib/data-crypto";
 
 type ConfigInput = z.infer<typeof updateConfigSchema>;
 
@@ -23,6 +25,9 @@ export function getProviders(c: Context) {
 // GET /config/:userId
 export async function getConfig(c: Context) {
   const userId = Number(c.req.param("userId"));
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
+
   const [cfg] = await db
     .select()
     .from(schema.agentConfig)
@@ -43,13 +48,18 @@ export async function getConfig(c: Context) {
     model: cfg.model,
     ollamaUrl: cfg.ollamaUrl,
     hasApiKey: !!cfg.apiKey,
-    systemPrompt: cfg.systemPrompt,
+    systemPrompt: cfg.systemPrompt
+      ? maybeDecryptForUser(userId, cfg.systemPrompt)
+      : null,
   });
 }
 
 // PUT /config/:userId
 export async function updateConfig(c: Context) {
   const userId = Number(c.req.param("userId"));
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
+
   const data = c.req.valid("json" as never) as ConfigInput;
 
   const [existing] = await db
@@ -62,10 +72,13 @@ export async function updateConfig(c: Context) {
       provider: data.provider,
       model: data.model,
       ollamaUrl: data.ollamaUrl || existing.ollamaUrl,
-      systemPrompt: data.systemPrompt ?? existing.systemPrompt,
+      systemPrompt:
+        data.systemPrompt !== undefined
+          ? maybeEncryptForUser(userId, data.systemPrompt)
+          : existing.systemPrompt,
     };
     // Only update API key if provided (don't clear it accidentally)
-    if (data.apiKey) updateData.apiKey = data.apiKey;
+    if (data.apiKey) updateData.apiKey = maybeEncryptForUser(userId, data.apiKey);
 
     await db
       .update(schema.agentConfig)
@@ -76,9 +89,12 @@ export async function updateConfig(c: Context) {
       userId,
       provider: data.provider,
       model: data.model,
-      apiKey: data.apiKey,
+      apiKey: data.apiKey ? maybeEncryptForUser(userId, data.apiKey) : null,
       ollamaUrl: data.ollamaUrl || "http://localhost:11434",
-      systemPrompt: data.systemPrompt,
+      systemPrompt:
+        data.systemPrompt !== undefined
+          ? maybeEncryptForUser(userId, data.systemPrompt)
+          : null,
     });
   }
 

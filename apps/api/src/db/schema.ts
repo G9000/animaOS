@@ -12,6 +12,21 @@ export const users = sqliteTable("users", {
   updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
 });
 
+export const userKeys = sqliteTable("user_keys", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull().unique(),
+  kdfSalt: text("kdf_salt").notNull(),
+  kdfTimeCost: integer("kdf_time_cost").notNull(),
+  kdfMemoryCostKib: integer("kdf_memory_cost_kib").notNull(),
+  kdfParallelism: integer("kdf_parallelism").notNull(),
+  kdfKeyLength: integer("kdf_key_length").notNull(),
+  wrapIv: text("wrap_iv").notNull(),
+  wrapTag: text("wrap_tag").notNull(),
+  wrappedDek: text("wrapped_dek").notNull(),
+  createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
+  updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 

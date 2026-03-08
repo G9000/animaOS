@@ -50,6 +50,13 @@
       "when": 1778562000000,
       "tag": "0006_discord_links",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1778565600000,
+      "tag": "0007_user_keys",
+      "breakpoints": true
     }
   ]
 }

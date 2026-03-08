@@ -1,4 +1,4 @@
-import { existsSync, copyFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function requireEnv(name: string): string {
@@ -25,14 +25,6 @@ export function ensureRuntimeLayoutSync(): void {
   mkdirSync(DATA_DIR, { recursive: true });
   mkdirSync(MEMORY_ROOT, { recursive: true });
   mkdirSync(SOUL_DIR, { recursive: true });
-
-  if (!existsSync(SOUL_PATH)) {
-    if (DEFAULT_SOUL_PATH && existsSync(DEFAULT_SOUL_PATH)) {
-      copyFileSync(DEFAULT_SOUL_PATH, SOUL_PATH);
-    } else {
-      writeFileSync(SOUL_PATH, "# ANIMA Soul\n", "utf-8");
-    }
-  }
 }
 
 export async function ensureRuntimeLayout(): Promise<void> {

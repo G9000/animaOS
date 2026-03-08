@@ -7,7 +7,7 @@ import { getSoul, updateSoul } from "./handlers";
 
 const soul = new Hono();
 
-soul.get("/", getSoul);
-soul.put("/", zValidator("json", updateSoulSchema), updateSoul);
+soul.get("/:userId", getSoul);
+soul.put("/:userId", zValidator("json", updateSoulSchema), updateSoul);
 
 export default soul;

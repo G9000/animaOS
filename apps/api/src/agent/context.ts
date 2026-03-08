@@ -10,6 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
+import { maybeDecryptForUser } from "../lib/data-crypto";
 
 const MAX_CONTEXT_CHARS = 3000;
 
@@ -122,10 +123,10 @@ export async function loadMemoryContext(userId: number): Promise<string> {
       const taskLines: string[] = [];
       for (const t of openTasks) {
         const extra = t.dueDate ? ` (due: ${t.dueDate})` : "";
-        taskLines.push(`- [ ] ${t.text}${extra}`);
+        taskLines.push(`- [ ] ${maybeDecryptForUser(userId, t.text)}${extra}`);
       }
       for (const t of doneTasks.slice(-3)) {
-        taskLines.push(`- [x] ${t.text}`);
+        taskLines.push(`- [x] ${maybeDecryptForUser(userId, t.text)}`);
       }
       if (taskLines.length > 0) {
         parts.push(`## Tasks\n${taskLines.join("\n")}`);

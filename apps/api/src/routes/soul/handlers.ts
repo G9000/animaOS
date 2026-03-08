@@ -1,33 +1,38 @@
 // Soul route handlers
 
 import type { Context } from "hono";
-import { readFileSync, writeFileSync } from "node:fs";
 import { invalidateSoulCache } from "../../agent/graph";
-import { SOUL_PATH } from "../../lib/runtime-paths";
-
-function getSoulPath(): string {
-  return SOUL_PATH;
-}
+import { readUserSoul, writeUserSoul } from "../../lib/user-soul";
+import { requireUnlockedUser } from "../../lib/require-unlock";
 
 // GET /soul
-export function getSoul(c: Context) {
-  const path = getSoulPath();
+export async function getSoul(c: Context) {
+  const userId = Number(c.req.param("userId"));
+  if (!Number.isFinite(userId)) return c.json({ error: "Invalid userId" }, 400);
+
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   try {
-    const content = readFileSync(path, "utf-8");
+    const { content, path } = await readUserSoul(userId);
     return c.json({ content, path });
   } catch {
-    return c.json({ content: "", path }, 200);
+    return c.json({ content: "", path: "" }, 200);
   }
 }
 
 // PUT /soul
-export function updateSoul(c: Context) {
+export async function updateSoul(c: Context) {
+  const userId = Number(c.req.param("userId"));
+  if (!Number.isFinite(userId)) return c.json({ error: "Invalid userId" }, 400);
+
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
+
   const { content } = c.req.valid("json" as never);
-  const path = getSoulPath();
 
   try {
-    writeFileSync(path, content, "utf-8");
+    const { path } = await writeUserSoul(userId, content);
     invalidateSoulCache();
     return c.json({ status: "saved", path });
   } catch (err: any) {

@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { API_BASE } from "../lib/runtime";
+import { api } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 
 export default function Soul() {
+  const { user } = useAuth();
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
   const [loading, setLoading] = useState(true);
@@ -13,15 +15,16 @@ export default function Soul() {
   const hasChanges = content !== original;
 
   useEffect(() => {
-    fetch(`${API_BASE}/soul`)
-      .then((r) => r.json())
+    if (!user) return;
+    api.soul
+      .get(user.id)
       .then((data) => {
         setContent(data.content || "");
         setOriginal(data.content || "");
       })
-      .catch((err) => setError(err.message))
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load soul"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [user]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -29,16 +32,8 @@ export default function Soul() {
     setSaved(false);
 
     try {
-      const res = await fetch(`${API_BASE}/soul`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to save");
-      }
+      if (!user) throw new Error("User not found");
+      await api.soul.update(user.id, content);
 
       setOriginal(content);
       setSaved(true);

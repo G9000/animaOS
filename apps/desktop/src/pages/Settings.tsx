@@ -40,6 +40,10 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [vaultPassphrase, setVaultPassphrase] = useState("");
+  const [vaultPayload, setVaultPayload] = useState("");
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultStatus, setVaultStatus] = useState("");
 
   useEffect(() => {
     if (!user?.id) return;
@@ -83,6 +87,62 @@ export default function Settings() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleVaultExport = async () => {
+    if (!vaultPassphrase || vaultPassphrase.length < 8) {
+      setVaultStatus("Passphrase must be at least 8 characters.");
+      return;
+    }
+
+    setVaultBusy(true);
+    setVaultStatus("");
+    try {
+      const result = await api.vault.export(vaultPassphrase);
+      const blob = new Blob([result.vault], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = result.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setVaultStatus(`Vault exported (${Math.round(result.size / 1024)} KB).`);
+    } catch (err) {
+      setVaultStatus(err instanceof Error ? err.message : "Vault export failed.");
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const handleVaultImport = async () => {
+    if (!vaultPassphrase || vaultPassphrase.length < 8) {
+      setVaultStatus("Passphrase must be at least 8 characters.");
+      return;
+    }
+    if (!vaultPayload.trim()) {
+      setVaultStatus("Paste vault payload or load a vault file first.");
+      return;
+    }
+
+    setVaultBusy(true);
+    setVaultStatus("");
+    try {
+      const result = await api.vault.import(vaultPassphrase, vaultPayload);
+      setVaultStatus(
+        `Vault restored: ${result.restoredUsers} users, ${result.restoredMemoryFiles} memory files.`,
+      );
+    } catch (err) {
+      setVaultStatus(err instanceof Error ? err.message : "Vault import failed.");
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const handleVaultFile = async (file: File | null) => {
+    if (!file) return;
+    const text = await file.text();
+    setVaultPayload(text);
+    setVaultStatus(`Loaded ${file.name}.`);
   };
 
   const requiresKey = provider !== "ollama";
@@ -224,6 +284,57 @@ export default function Settings() {
             </span>
           )}
         </div>
+
+        {/* Vault */}
+        <section className="pt-6 border-t border-(--color-border) space-y-3">
+          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+            Vault Backup
+          </h2>
+          <input
+            type="password"
+            value={vaultPassphrase}
+            onChange={(e) => setVaultPassphrase(e.target.value)}
+            className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/50 outline-none focus:border-(--color-primary) transition-colors"
+            placeholder="Vault passphrase (min 8 chars)"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={handleVaultExport}
+              disabled={vaultBusy}
+              className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) disabled:opacity-50"
+            >
+              {vaultBusy ? "Working..." : "Export Vault"}
+            </button>
+            <button
+              onClick={handleVaultImport}
+              disabled={vaultBusy}
+              className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) disabled:opacity-50"
+            >
+              {vaultBusy ? "Working..." : "Import Vault"}
+            </button>
+            <label className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) cursor-pointer">
+              Load File
+              <input
+                type="file"
+                accept="application/json,.json,.vault"
+                className="hidden"
+                onChange={(e) => {
+                  void handleVaultFile(e.target.files?.[0] || null);
+                }}
+              />
+            </label>
+          </div>
+          <textarea
+            value={vaultPayload}
+            onChange={(e) => setVaultPayload(e.target.value)}
+            rows={5}
+            className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-xs text-(--color-text) placeholder:text-(--color-text-muted)/50 outline-none focus:border-(--color-primary) transition-colors resize-y"
+            placeholder="Vault JSON payload (for import)..."
+          />
+          {vaultStatus && (
+            <p className="text-xs text-(--color-text-muted)">{vaultStatus}</p>
+          )}
+        </section>
       </div>
     </div>
   );

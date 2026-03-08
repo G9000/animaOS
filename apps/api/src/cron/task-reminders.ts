@@ -13,6 +13,7 @@ import { db } from "../db";
 import * as schema from "../db/schema";
 import { redisConnection } from "../lib/redis";
 import { parseDueDateDeadline } from "../lib/task-date";
+import { maybeDecryptForUser, maybeEncryptForUser } from "../lib/data-crypto";
 
 const QUEUE_NAME = "task-reminders";
 const FOLLOWUP_WINDOW_MINUTES = 24 * 60;
@@ -74,7 +75,7 @@ async function notifyUser(userId: number, message: string): Promise<void> {
   await db.insert(schema.messages).values({
     userId,
     role: "system",
-    content: message,
+    content: maybeEncryptForUser(userId, message),
   });
 
   // Telegram is best-effort — never block in-app delivery
@@ -127,6 +128,8 @@ async function processReminder(job: Job<ReminderJobData>): Promise<void> {
     minute: "2-digit",
   });
 
+  const taskText = maybeDecryptForUser(userId, task.text);
+
   if (phase.startsWith("pre")) {
     if (minutesUntilDue <= 0) {
       console.log(
@@ -142,7 +145,7 @@ async function processReminder(job: Job<ReminderJobData>): Promise<void> {
           : "⏰";
     await notifyUser(
       userId,
-      `${urgencyLabel} Heads up — "${task.text}" is due at ${dueTime} (in ~${Math.round(minutesUntilDue)} min)`,
+      `${urgencyLabel} Heads up — "${taskText}" is due at ${dueTime} (in ~${Math.round(minutesUntilDue)} min)`,
     );
     console.log(
       `[task-reminder] Pre-reminder (${phase}) sent for task ${taskId} (user ${userId})`,
@@ -161,7 +164,7 @@ async function processReminder(job: Job<ReminderJobData>): Promise<void> {
 
   await notifyUser(
     userId,
-    `👋 Did you get to "${task.text}"? It was due at ${dueTime} (${minsAgo} min ago). Let me know if it's done or if you need to reschedule.`,
+    `👋 Did you get to "${taskText}"? It was due at ${dueTime} (${minsAgo} min ago). Let me know if it's done or if you need to reschedule.`,
   );
   console.log(
     `[task-reminder] Follow-up sent for task ${taskId} (user ${userId})`,

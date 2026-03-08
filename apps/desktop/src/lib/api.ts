@@ -5,24 +5,46 @@ interface ApiOptions {
   body?: unknown;
 }
 
+const UNLOCK_TOKEN_KEY = "anima_unlock_token";
+
+export function getUnlockToken(): string | null {
+  return localStorage.getItem(UNLOCK_TOKEN_KEY);
+}
+
+export function setUnlockToken(token: string): void {
+  localStorage.setItem(UNLOCK_TOKEN_KEY, token);
+}
+
+export function clearUnlockToken(): void {
+  localStorage.removeItem(UNLOCK_TOKEN_KEY);
+}
+
 async function request<T>(
   endpoint: string,
   options: ApiOptions = {},
 ): Promise<T> {
   const { method = "GET", body } = options;
+  const token = getUnlockToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers["x-anima-unlock"] = token;
 
   const res = await fetch(`${API_BASE}${endpoint}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-    },
+    credentials: "include",
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    throw new Error(data.error || "Something went wrong");
+    const message =
+      (data as { error?: string; message?: string }).error ||
+      (data as { error?: string; message?: string }).message ||
+      "Something went wrong";
+    throw new Error(message);
   }
 
   return data as T;
@@ -41,6 +63,11 @@ export interface User {
 
 export interface LoginResponse extends User {
   message: string;
+  unlockToken: string;
+}
+
+export interface AuthResponse extends User {
+  unlockToken: string;
 }
 
 export interface ChatMessage {
@@ -124,10 +151,14 @@ export const api = {
         body: { username, password },
       }),
     register: (username: string, password: string, name: string) =>
-      request<User>("/auth/register", {
+      request<AuthResponse>("/auth/register", {
         method: "POST",
         body: { username, password, name },
       }),
+    me: () => request<User>("/auth/me"),
+    logout: () => request<{ success: boolean }>("/auth/logout", { method: "POST" }),
+    localBootstrap: () =>
+      request<AuthResponse>("/auth/local/bootstrap", { method: "POST" }),
   },
   users: {
     me: (id: number) => request<User>(`/users/${id}`),
@@ -149,7 +180,11 @@ export const api = {
     ): AsyncGenerator<string> {
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(getUnlockToken() ? { "x-anima-unlock": getUnlockToken()! } : {}),
+        },
         body: JSON.stringify({ message, userId, stream: true }),
       });
 
@@ -262,6 +297,29 @@ export const api = {
 
     delete: (id: number) =>
       request<{ status: string }>(`/tasks/${id}`, { method: "DELETE" }),
+  },
+  soul: {
+    get: (userId: number) => request<{ content: string; path: string }>(`/soul/${userId}`),
+    update: (userId: number, content: string) =>
+      request<{ status: string; path: string }>(`/soul/${userId}`, {
+        method: "PUT",
+        body: { content },
+      }),
+  },
+  vault: {
+    export: (passphrase: string) =>
+      request<{ filename: string; vault: string; size: number }>("/vault/export", {
+        method: "POST",
+        body: { passphrase },
+      }),
+    import: (passphrase: string, vault: string) =>
+      request<{ status: string; restoredUsers: number; restoredMemoryFiles: number }>(
+        "/vault/import",
+        {
+          method: "POST",
+          body: { passphrase, vault },
+        },
+      ),
   },
   translate: async (text: string, targetLang: string): Promise<string> => {
     const res = await fetch(

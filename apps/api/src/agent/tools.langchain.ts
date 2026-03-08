@@ -26,6 +26,7 @@ import {
 import { getActionContracts } from "./capabilities/contracts";
 import { defineCapability } from "./capabilities/registry";
 import { defaultCapabilityRuntime } from "./capabilities/runtime";
+import { maybeDecryptForUser, maybeEncryptForUser } from "../lib/data-crypto";
 
 // Each tool receives userId via closure when created.
 // This keeps the LangChain tool interface clean (no userId param exposed to the LLM).
@@ -509,7 +510,7 @@ export function createTools(userId: number) {
         completed,
         tasks: rows.map((t) => ({
           id: t.id,
-          text: t.text,
+          text: maybeDecryptForUser(userId, t.text),
           done: t.done,
           priority: t.priority,
           dueDate: t.dueDate,
@@ -565,7 +566,7 @@ export function createTools(userId: number) {
         .insert(schema.tasks)
         .values({
           userId,
-          text,
+          text: maybeEncryptForUser(userId, text),
           priority: priority ?? 0,
           dueDate: resolvedDueDate,
         })
@@ -576,7 +577,7 @@ export function createTools(userId: number) {
         status: "added",
         task: {
           id: created.id,
-          text: created.text,
+          text,
           done: false,
           priority: created.priority,
           dueDate: created.dueDate,
@@ -637,8 +638,10 @@ export function createTools(userId: number) {
           .where(eq(schema.tasks.userId, userId));
         const needle = task.trim().toLowerCase();
         const match =
-          rows.find((t) => t.text.toLowerCase() === needle) ||
-          rows.find((t) => t.text.toLowerCase().includes(needle));
+          rows.find((t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle) ||
+          rows.find((t) =>
+            maybeDecryptForUser(userId, t.text).toLowerCase().includes(needle),
+          );
         targetId = match?.id;
       }
 
@@ -663,7 +666,7 @@ export function createTools(userId: number) {
 
       return JSON.stringify({
         status: "completed",
-        task: { id: updated.id, text: updated.text },
+        task: { id: updated.id, text: maybeDecryptForUser(userId, updated.text) },
       });
     },
     {
@@ -702,8 +705,10 @@ export function createTools(userId: number) {
           .where(eq(schema.tasks.userId, userId));
         const needle = taskQuery.trim().toLowerCase();
         const match =
-          rows.find((t) => t.text.toLowerCase() === needle) ||
-          rows.find((t) => t.text.toLowerCase().includes(needle));
+          rows.find((t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle) ||
+          rows.find((t) =>
+            maybeDecryptForUser(userId, t.text).toLowerCase().includes(needle),
+          );
         targetId = match?.id;
       }
 
@@ -714,7 +719,7 @@ export function createTools(userId: number) {
       const data: Record<string, unknown> = {
         updatedAt: new Date().toISOString(),
       };
-      if (text !== undefined) data.text = text;
+      if (text !== undefined) data.text = maybeEncryptForUser(userId, text);
       if (priority !== undefined) data.priority = priority;
 
       // Resolve new due date the same way as add_task
@@ -749,7 +754,10 @@ export function createTools(userId: number) {
         status: "updated",
         task: {
           id: updated.id,
-          text: updated.text,
+          text:
+            text !== undefined
+              ? text
+              : maybeDecryptForUser(userId, updated.text),
           priority: updated.priority,
           dueDate: updated.dueDate,
           done: updated.done,
@@ -807,8 +815,10 @@ export function createTools(userId: number) {
           .where(eq(schema.tasks.userId, userId));
         const needle = taskQuery.trim().toLowerCase();
         const match =
-          rows.find((t) => t.text.toLowerCase() === needle) ||
-          rows.find((t) => t.text.toLowerCase().includes(needle));
+          rows.find((t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle) ||
+          rows.find((t) =>
+            maybeDecryptForUser(userId, t.text).toLowerCase().includes(needle),
+          );
         targetId = match?.id;
       }
 
@@ -828,7 +838,7 @@ export function createTools(userId: number) {
 
       return JSON.stringify({
         status: "deleted",
-        task: { id: deleted.id, text: deleted.text },
+        task: { id: deleted.id, text: maybeDecryptForUser(userId, deleted.text) },
       });
     },
     {

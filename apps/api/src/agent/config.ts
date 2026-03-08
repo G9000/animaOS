@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import type { ProviderConfig } from "../llm/types";
+import { maybeDecryptForUser } from "../lib/data-crypto";
 
 /**
  * Load the user's agent config from the DB, falling back to local Ollama
@@ -19,9 +20,11 @@ export async function getAgentConfig(
     return {
       provider: cfg.provider as any,
       model: cfg.model,
-      apiKey: cfg.apiKey || undefined,
+      apiKey: cfg.apiKey ? maybeDecryptForUser(userId, cfg.apiKey) : undefined,
       ollamaUrl: cfg.ollamaUrl || undefined,
-      systemPrompt: cfg.systemPrompt || undefined,
+      systemPrompt: cfg.systemPrompt
+        ? maybeDecryptForUser(userId, cfg.systemPrompt)
+        : undefined,
     };
   }
 

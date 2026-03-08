@@ -6,6 +6,7 @@ import type { ProviderConfig } from "../llm/types";
 import { createModel } from "./models";
 import { extractMemories } from "./extract";
 import { maybeSummarizeThread } from "./summarize";
+import { maybeEncryptForUser } from "../lib/data-crypto";
 
 // ── Message helpers ──────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ export async function saveMessage(
   await db.insert(schema.messages).values({
     userId,
     role,
-    content,
+    content: maybeEncryptForUser(userId, content),
     model,
     provider,
   });

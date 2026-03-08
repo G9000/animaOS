@@ -9,6 +9,7 @@ import { readMemory } from "../memory";
 import { getAgentConfig } from "./config";
 import { getSoulPrompt, renderPromptTemplate } from "./prompt";
 import { isTaskOpen } from "../lib/task-date";
+import { maybeDecryptForUser } from "../lib/data-crypto";
 
 function buildBriefPrompt(): string {
   return renderPromptTemplate("brief-system", {
@@ -61,7 +62,9 @@ async function loadOpenTasks(userId: number): Promise<string[]> {
       .from(schema.tasks)
       .where(eq(schema.tasks.userId, userId));
 
-    return rows.filter((r) => isTaskOpen(r.done, r.dueDate)).map((r) => r.text);
+    return rows
+      .filter((r) => isTaskOpen(r.done, r.dueDate))
+      .map((r) => maybeDecryptForUser(userId, r.text));
   } catch (err) {
     logBriefContextError("tasks", err);
     return [];
@@ -85,8 +88,9 @@ async function loadRecentTopics(userId: number): Promise<string[]> {
     return rows
       .reverse()
       .slice(-6)
-      .filter((r) => r.content.length > 10 && r.content.length < 200)
-      .map((r) => r.content.slice(0, 100));
+      .map((r) => maybeDecryptForUser(userId, r.content))
+      .filter((content) => content.length > 10 && content.length < 200)
+      .map((content) => content.slice(0, 100));
   } catch (err) {
     logBriefContextError("recent-topics", err);
     return [];

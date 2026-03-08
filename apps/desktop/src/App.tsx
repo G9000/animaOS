@@ -1,10 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "./context/AuthContext";
-import ProtectedRoute from "./components/ProtectedRoute";
+import { AuthProvider } from "./context/AuthContext";
 import Layout from "./components/Layout";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
+import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import Chat from "./pages/Chat";
@@ -12,6 +10,8 @@ import Memory from "./pages/Memory";
 import Settings from "./pages/Settings";
 import Soul from "./pages/Soul";
 import Tasks from "./pages/Tasks";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
 import "./index.css";
 
 // Register global shortcut to summon ANIMA (Cmd+Shift+A / Ctrl+Shift+A)
@@ -45,100 +45,24 @@ function useGlobalShortcut() {
   }, []);
 }
 
-function PublicRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <Navigate to="/" replace /> : <>{children}</>;
-}
-
 function AppRoutes() {
+  const withLayout = (page: ReactNode) => (
+    <ProtectedRoute>
+      <Layout>{page}</Layout>
+    </ProtectedRoute>
+  );
+
   return (
     <Routes>
-      <Route
-        path="/login"
-        element={
-          <PublicRoute>
-            <Login />
-          </PublicRoute>
-        }
-      />
-      <Route
-        path="/register"
-        element={
-          <PublicRoute>
-            <Register />
-          </PublicRoute>
-        }
-      />
-      <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Dashboard />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/chat"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Chat />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/memory"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Memory />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/profile"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Profile />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Settings />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/tasks"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Tasks />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/soul"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <Soul />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
+      <Route path="/" element={withLayout(<Dashboard />)} />
+      <Route path="/chat" element={withLayout(<Chat />)} />
+      <Route path="/memory" element={withLayout(<Memory />)} />
+      <Route path="/profile" element={withLayout(<Profile />)} />
+      <Route path="/settings" element={withLayout(<Settings />)} />
+      <Route path="/tasks" element={withLayout(<Tasks />)} />
+      <Route path="/soul" element={withLayout(<Soul />)} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

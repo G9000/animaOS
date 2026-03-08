@@ -10,10 +10,14 @@ import { checkNudges } from "../../agent/nudge";
 import { consolidateMemories } from "../../agent/consolidate";
 import { readMemory, listMemories, listAllMemories } from "../../memory";
 import { handleChannelMessage, handleChannelStreamMessage } from "../../channels";
+import { requireUnlockedUser } from "../../lib/require-unlock";
+import { maybeDecryptForUser } from "../../lib/data-crypto";
 
 // POST /chat
 export async function sendMessage(c: Context) {
   const { message, userId, stream } = c.req.valid("json" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   if (!stream) {
     try {
@@ -75,6 +79,9 @@ export async function sendMessage(c: Context) {
 // GET /chat/history
 export async function getHistory(c: Context) {
   const { userId, limit } = c.req.valid("query" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
+
   const messages = await db
     .select()
     .from(schema.messages)
@@ -82,12 +89,20 @@ export async function getHistory(c: Context) {
     .orderBy(desc(schema.messages.id))
     .limit(limit);
 
-  return c.json(messages.reverse());
+  return c.json(
+    messages.reverse().map((msg) => ({
+      ...msg,
+      content: maybeDecryptForUser(userId, msg.content),
+    })),
+  );
 }
 
 // DELETE /chat/history
 export async function clearHistory(c: Context) {
   const { userId } = c.req.valid("json" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
+
   await db.delete(schema.messages).where(eq(schema.messages.userId, userId));
   await resetAgentThread(userId).catch(() => {
     // Ignore reset failures so chat history clear still succeeds.
@@ -98,6 +113,8 @@ export async function clearHistory(c: Context) {
 // GET /chat/brief
 export async function getBrief(c: Context) {
   const { userId } = c.req.valid("query" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   try {
     const brief = await generateBrief(userId);
@@ -110,6 +127,8 @@ export async function getBrief(c: Context) {
 // GET /chat/nudges
 export async function getNudges(c: Context) {
   const { userId } = c.req.valid("query" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   try {
     const nudges = await checkNudges(userId);
@@ -122,6 +141,8 @@ export async function getNudges(c: Context) {
 // GET /chat/home
 export async function getHome(c: Context) {
   const { userId } = c.req.valid("query" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   const [focusResult, taskRows, journalEntries, allMemories, messageCount] =
     await Promise.all([
@@ -153,7 +174,7 @@ export async function getHome(c: Context) {
   // Tasks from DB
   const tasks = (taskRows as any[]).map((t) => ({
     id: t.id,
-    text: t.text,
+    text: maybeDecryptForUser(userId, t.text),
     done: t.done,
     priority: t.priority,
     dueDate: t.dueDate,
@@ -195,6 +216,8 @@ export async function getHome(c: Context) {
 // POST /chat/consolidate
 export async function consolidate(c: Context) {
   const { userId } = c.req.valid("json" as never);
+  const auth = requireUnlockedUser(c, userId);
+  if (!auth.ok) return auth.response;
 
   try {
     const result = await consolidateMemories(userId);

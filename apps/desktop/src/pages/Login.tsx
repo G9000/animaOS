@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, setUnlockToken } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 export default function Login() {
@@ -18,6 +18,7 @@ export default function Login() {
 
     try {
       const res = await api.auth.login(username, password);
+      setUnlockToken(res.unlockToken);
       setUser({ id: res.id, username: res.username, name: res.name });
       navigate("/");
     } catch (err) {
