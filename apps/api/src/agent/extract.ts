@@ -1,15 +1,12 @@
 // Post-conversation memory extraction.
 // After each exchange, runs a lightweight LLM pass to extract
 // facts, preferences, goals, and relationships — then stores them
-// in the markdown memory system, deduplicating against existing entries.
+// in the markdown memory system, deduplicating via semantic search.
 
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import {
-  appendMemory,
-  searchMemories,
-  type MemorySection,
-} from "../memory";
+import { appendMemory, searchMemories, type MemorySection } from "../memory";
+import { semanticSearch } from "../memory/manager";
 
 interface ExtractedItem {
   category: "fact" | "preference" | "goal" | "relationship";
@@ -51,7 +48,9 @@ function parseExtractionResponse(text: string): ExtractedItem[] {
         item &&
         typeof item.category === "string" &&
         typeof item.content === "string" &&
-        ["fact", "preference", "goal", "relationship"].includes(item.category) &&
+        ["fact", "preference", "goal", "relationship"].includes(
+          item.category,
+        ) &&
         item.content.trim().length > 0,
     );
   } catch {
@@ -85,11 +84,32 @@ function categoryToFilename(category: string): string {
   }
 }
 
-async function isDuplicate(
-  userId: number,
-  content: string,
-): Promise<boolean> {
-  // Search existing memories for similar content
+async function isDuplicate(userId: number, content: string): Promise<boolean> {
+  // Try semantic search first (vector-based dedup — much more accurate)
+  try {
+    const results = await semanticSearch(userId, content, { maxResults: 3 });
+    if (results.length > 0) {
+      // If the top result has a high similarity score, it's likely a duplicate
+      const topScore = results[0].score;
+      if (topScore > 0.85) return true;
+
+      // Also check for near-exact text overlap
+      const contentLower = content.toLowerCase();
+      return results.some((r) => {
+        const snippetLower = r.snippet.toLowerCase();
+        return (
+          snippetLower.includes(contentLower) ||
+          contentLower.includes(
+            snippetLower.slice(0, Math.min(snippetLower.length, 60)),
+          )
+        );
+      });
+    }
+  } catch {
+    // Vector search not available — fall back to keyword search
+  }
+
+  // Fallback: keyword-based dedup
   const keywords = content
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, "")
@@ -102,13 +122,14 @@ async function isDuplicate(
 
   const existing = await searchMemories(userId, keywords);
 
-  // Check if any existing memory contains substantially similar content
   const contentLower = content.toLowerCase();
   return existing.some((entry) => {
     const snippetLower = entry.snippet.toLowerCase();
     return (
       snippetLower.includes(contentLower) ||
-      contentLower.includes(snippetLower.slice(0, Math.min(snippetLower.length, 60)))
+      contentLower.includes(
+        snippetLower.slice(0, Math.min(snippetLower.length, 60)),
+      )
     );
   });
 }
@@ -181,9 +202,7 @@ export async function extractMemories(
     }
 
     if (stored > 0) {
-      console.log(
-        `[extract] Stored ${stored} new memories for user ${userId}`,
-      );
+      console.log(`[extract] Stored ${stored} new memories for user ${userId}`);
     }
   } catch (err) {
     console.error(

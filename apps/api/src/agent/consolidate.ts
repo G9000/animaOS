@@ -10,6 +10,7 @@ import {
   writeMemory,
   type MemorySection,
 } from "../memory";
+import { scheduleIndex } from "../memory/manager";
 import { getAgentConfig } from "./config";
 
 const CONSOLIDATION_PROMPT = `You are a memory consolidation system. Given a memory file's content, clean it up by:
@@ -97,6 +98,10 @@ async function consolidateFile(
     tags: [...(file.meta.tags || []), "consolidated"],
     source: "consolidation",
   });
+
+  // Re-index the consolidated file for vector search
+  const memPath = `${section}/${filename}`;
+  scheduleIndex(userId, memPath, section);
 
   console.log(
     `[consolidate] ${section}/${filename}: ${bulletCount} → ${newBullets} entries`,

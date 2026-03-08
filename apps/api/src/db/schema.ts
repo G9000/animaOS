@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -44,7 +44,6 @@ export const messages = sqliteTable("messages", {
   toolResult: text("tool_result"),
   createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
 });
-
 
 export const agentConfig = sqliteTable("agent_config", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -125,3 +124,61 @@ export type DiscordLink = typeof discordLinks.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type AgentThread = typeof agentThreads.$inferSelect;
+
+// --- Vector Memory tables (OpenClaw-style) ---
+
+export const memoryChunks = sqliteTable("memory_chunks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  sourcePath: text("source_path").notNull(),
+  section: text("section").notNull(),
+  chunkIndex: integer("chunk_index").notNull(),
+  content: text("content").notNull(),
+  embedding: text("embedding"), // JSON-serialized float array
+  embeddingModel: text("embedding_model"),
+  tokenCount: integer("token_count").notNull().default(0),
+  startLine: integer("start_line").notNull().default(0),
+  endLine: integer("end_line").notNull().default(0),
+  checksum: text("checksum").notNull(),
+  createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
+  updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
+});
+
+export const memoryDailyLogs = sqliteTable("memory_daily_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  date: text("date").notNull(),
+  entryCount: integer("entry_count").notNull().default(0),
+  lastFlushedAt: text("last_flushed_at"),
+  createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
+  updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
+});
+
+export const memorySearchConfig = sqliteTable("memory_search_config", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  embeddingProvider: text("embedding_provider").notNull().default("openai"),
+  embeddingModel: text("embedding_model")
+    .notNull()
+    .default("text-embedding-3-small"),
+  hybridEnabled: integer("hybrid_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  vectorWeight: real("vector_weight").notNull().default(0.7),
+  textWeight: real("text_weight").notNull().default(0.3),
+  temporalDecayEnabled: integer("temporal_decay_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  halfLifeDays: integer("half_life_days").notNull().default(30),
+  mmrEnabled: integer("mmr_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  mmrLambda: real("mmr_lambda").notNull().default(0.7),
+  maxResults: integer("max_results").notNull().default(8),
+  createdAt: text("created_at").default("CURRENT_TIMESTAMP"),
+  updatedAt: text("updated_at").default("CURRENT_TIMESTAMP"),
+});
+
+export type MemoryChunk = typeof memoryChunks.$inferSelect;
+export type NewMemoryChunk = typeof memoryChunks.$inferInsert;
+export type MemorySearchConfig = typeof memorySearchConfig.$inferSelect;

@@ -42,6 +42,12 @@ export const BUILTIN_ACTION_CONTRACTS: readonly ActionContract[] = [
     summary: "Append an entry to today's journal file.",
   },
   {
+    capabilityId: "memory-ops",
+    name: "daily_log",
+    summary:
+      "Append a note to today's daily memory log for short-term context.",
+  },
+  {
     capabilityId: "tasks",
     name: "list_tasks",
     summary: "List open and completed tasks.",

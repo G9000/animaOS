@@ -21,8 +21,10 @@ import {
   listMemories as listMemoryFiles,
   listAllMemories,
   writeJournalEntry,
+  writeDailyLog,
   type MemorySection,
 } from "../memory";
+import { semanticSearch } from "../memory/manager";
 import { getActionContracts } from "./capabilities/contracts";
 import { defineCapability } from "./capabilities/registry";
 import { defaultCapabilityRuntime } from "./capabilities/runtime";
@@ -296,6 +298,28 @@ export function createTools(userId: number) {
 
   const recall = tool(
     async ({ query }) => {
+      // Try semantic (vector + BM25 hybrid) search first, fall back to keyword
+      try {
+        const semantic = await semanticSearch(userId, query, { maxResults: 8 });
+        if (semantic.length > 0) {
+          return JSON.stringify({
+            results: semantic.map((m) => ({
+              file: m.path,
+              section: m.section,
+              content: m.snippet,
+              score: Math.round(m.score * 100) / 100,
+            })),
+            searchType: "semantic",
+          });
+        }
+      } catch (err) {
+        console.warn(
+          "[tool:recall] Semantic search failed, falling back:",
+          (err as Error).message,
+        );
+      }
+
+      // Fallback to keyword search
       const results = await searchMemories(userId, query);
 
       if (results.length === 0) {
@@ -313,14 +337,17 @@ export function createTools(userId: number) {
           tags: m.meta.tags,
           updated: m.meta.updated,
         })),
+        searchType: "keyword",
       });
     },
     {
       name: "recall",
       description:
-        "Search long-term memory for information about the user. Searches across all memory files (user profile, knowledge, relationships, journal) for matching content.",
+        "Search long-term memory using semantic similarity. Returns the most relevant memories across all sections (user profile, knowledge, relationships, daily logs). Powered by vector + keyword hybrid search with temporal-awareness.",
       schema: z.object({
-        query: z.string().describe("Search query to find relevant memories"),
+        query: z
+          .string()
+          .describe("Search query — can be a question, topic, or keywords"),
       }),
     },
   );
@@ -493,6 +520,28 @@ export function createTools(userId: number) {
     },
   );
 
+  const dailyLog = tool(
+    async ({ content }) => {
+      const result = await writeDailyLog(userId, content);
+      return JSON.stringify({
+        status: "logged",
+        path: result.path,
+      });
+    },
+    {
+      name: "daily_log",
+      description:
+        "Append a note to today's daily memory log (memory/daily/YYYY-MM-DD.md). Use this to save key facts, decisions, or events from the current conversation that should be remembered tomorrow. The daily log is automatically included in context for the next 2 days.",
+      schema: z.object({
+        content: z
+          .string()
+          .describe(
+            "Content to log — key facts, decisions, context from this conversation",
+          ),
+      }),
+    },
+  );
+
   const listTasks = tool(
     async () => {
       const rows = await db
@@ -638,7 +687,9 @@ export function createTools(userId: number) {
           .where(eq(schema.tasks.userId, userId));
         const needle = task.trim().toLowerCase();
         const match =
-          rows.find((t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle) ||
+          rows.find(
+            (t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle,
+          ) ||
           rows.find((t) =>
             maybeDecryptForUser(userId, t.text).toLowerCase().includes(needle),
           );
@@ -666,7 +717,10 @@ export function createTools(userId: number) {
 
       return JSON.stringify({
         status: "completed",
-        task: { id: updated.id, text: maybeDecryptForUser(userId, updated.text) },
+        task: {
+          id: updated.id,
+          text: maybeDecryptForUser(userId, updated.text),
+        },
       });
     },
     {
@@ -705,7 +759,9 @@ export function createTools(userId: number) {
           .where(eq(schema.tasks.userId, userId));
         const needle = taskQuery.trim().toLowerCase();
         const match =
-          rows.find((t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle) ||
+          rows.find(
+            (t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle,
+          ) ||
           rows.find((t) =>
             maybeDecryptForUser(userId, t.text).toLowerCase().includes(needle),
           );
@@ -815,7 +871,9 @@ export function createTools(userId: number) {
           .where(eq(schema.tasks.userId, userId));
         const needle = taskQuery.trim().toLowerCase();
         const match =
-          rows.find((t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle) ||
+          rows.find(
+            (t) => maybeDecryptForUser(userId, t.text).toLowerCase() === needle,
+          ) ||
           rows.find((t) =>
             maybeDecryptForUser(userId, t.text).toLowerCase().includes(needle),
           );
@@ -838,7 +896,10 @@ export function createTools(userId: number) {
 
       return JSON.stringify({
         status: "deleted",
-        task: { id: deleted.id, text: maybeDecryptForUser(userId, deleted.text) },
+        task: {
+          id: deleted.id,
+          text: maybeDecryptForUser(userId, deleted.text),
+        },
       });
     },
     {
@@ -1060,7 +1121,13 @@ export function createTools(userId: number) {
     id: "memory-core",
     summary: "Core memory CRUD and semantic retrieval.",
     actions: getActionContracts("memory-core"),
-    tools: [remember, recall, readMemoryFile, writeMemoryFile, appendMemoryFile],
+    tools: [
+      remember,
+      recall,
+      readMemoryFile,
+      writeMemoryFile,
+      appendMemoryFile,
+    ],
   });
 
   const profileCapability = defineCapability({
@@ -1072,9 +1139,9 @@ export function createTools(userId: number) {
 
   const memoryOpsCapability = defineCapability({
     id: "memory-ops",
-    summary: "Memory browsing and journal capture.",
+    summary: "Memory browsing, journal capture, and daily logging.",
     actions: getActionContracts("memory-ops"),
-    tools: [browseMemories, journal],
+    tools: [browseMemories, journal, dailyLog],
   });
 
   const tasksCapability = defineCapability({
@@ -1098,17 +1165,14 @@ export function createTools(userId: number) {
     tools: [getWeather, getCurrentTime],
   });
 
-  return defaultCapabilityRuntime.buildToolset(
-    { userId },
-    [
-      memoryCoreCapability,
-      profileCapability,
-      memoryOpsCapability,
-      tasksCapability,
-      focusCapability,
-      environmentCapability,
-    ],
-  );
+  return defaultCapabilityRuntime.buildToolset({ userId }, [
+    memoryCoreCapability,
+    profileCapability,
+    memoryOpsCapability,
+    tasksCapability,
+    focusCapability,
+    environmentCapability,
+  ]);
 }
 
 // WMO weather codes → readable text

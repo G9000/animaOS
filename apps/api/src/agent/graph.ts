@@ -28,12 +28,13 @@ export interface AgentResult {
 
 // ── Runtime resolver ─────────────────────────────────────────────
 
-async function resolveAgentRuntime(userId: number) {
+async function resolveAgentRuntime(userId: number, conversationHint?: string) {
   const config = await getAgentConfig(userId);
   const runnableConfig = await getAgentRunnableConfig(userId);
 
-  const basePrompt = config.systemPrompt || (await getSoulPromptForUser(userId));
-  const memoryContext = await loadMemoryContext(userId);
+  const basePrompt =
+    config.systemPrompt || (await getSoulPromptForUser(userId));
+  const memoryContext = await loadMemoryContext(userId, conversationHint);
   const fullPrompt = memoryContext
     ? `${basePrompt}\n\n${memoryContext}`
     : basePrompt;
@@ -85,7 +86,10 @@ export async function* streamAgent(
   userMessage: string,
   userId: number,
 ): AsyncGenerator<string> {
-  const { config, runnableConfig, agent } = await resolveAgentRuntime(userId);
+  const { config, runnableConfig, agent } = await resolveAgentRuntime(
+    userId,
+    userMessage,
+  );
   await saveMessage(userId, "user", userMessage);
 
   let fullResponse = "";

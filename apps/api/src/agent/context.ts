@@ -1,139 +1,162 @@
-// Memory context loader — builds a compact summary of what ANIMA knows
-// about the user, injected into the system prompt each conversation.
+// Memory context loader — OpenClaw-style conversation-aware retrieval.
+//
+// Instead of fixed-section context stuffing, this module:
+// 1. Loads essential profile data (always needed)
+// 2. Reads recent daily logs (today + yesterday)
+// 3. Uses semantic search to retrieve the most relevant memories for the current conversation
+// 4. Injects tasks from DB
+//
+// This ensures the agent always has the right context for the current conversation,
+// rather than a generic dump of sections.
 
-import {
-  listMemories,
-  listSections,
-  readMemory,
-  type MemorySection,
-} from "../memory";
+import { readMemory, readRecentDailyLogs, type MemorySection } from "../memory";
+import { retrieveContextMemories } from "../memory/manager";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { maybeDecryptForUser } from "../lib/data-crypto";
 
-const MAX_CONTEXT_CHARS = 3000;
+// Increased from 3000 — semantic retrieval is much more selective
+const MAX_CONTEXT_CHARS = 6000;
 
-interface SectionConfig {
+// Essential files always loaded (like OpenClaw's SOUL.md + USER.md bootstrap)
+const ESSENTIAL_FILES: {
   section: MemorySection;
-  files: string[];
+  filename: string;
   label: string;
-}
-
-// Priority order: user profile data first, then relationships, then knowledge.
-// Journal is excluded — it's too verbose for context injection.
-const SECTIONS: SectionConfig[] = [
-  { section: "user", files: ["facts", "preferences", "current-focus"], label: "About the user" },
-  { section: "relationships", files: [], label: "People" },
-  { section: "knowledge", files: [], label: "Knowledge" },
+}[] = [
+  { section: "user", filename: "facts", label: "Facts" },
+  { section: "user", filename: "preferences", label: "Preferences" },
+  { section: "user", filename: "current-focus", label: "Current Focus" },
 ];
 
-async function loadSectionContent(
-  section: MemorySection,
-  userId: number,
-  specificFiles: string[],
-): Promise<string[]> {
+/**
+ * Load essential profile data — always included regardless of conversation topic.
+ * These are the "bootstrap files" equivalent from OpenClaw.
+ */
+async function loadEssentialContext(userId: number): Promise<string> {
   const lines: string[] = [];
 
-  if (specificFiles.length > 0) {
-    // Load specific files in order
-    for (const filename of specificFiles) {
-      try {
-        const file = await readMemory(section, userId, filename);
-        const body = file.content.trim();
-        if (body) {
-          lines.push(body);
-        }
-      } catch {
-        // File doesn't exist yet — skip
+  for (const { section, filename, label } of ESSENTIAL_FILES) {
+    try {
+      const file = await readMemory(section, userId, filename);
+      const body = file.content.trim();
+      if (body) {
+        lines.push(`### ${label}\n${body}`);
       }
-    }
-  } else {
-    // Load all files in this section
-    const entries = await listMemories(section, userId);
-    for (const entry of entries.slice(0, 5)) {
-      // Read full content for top 5 files
-      const parts = entry.path.split("/");
-      const filename = parts[parts.length - 1]?.replace(/\.md$/, "");
-      if (!filename) continue;
-
-      try {
-        const file = await readMemory(section, userId, filename);
-        const body = file.content.trim();
-        if (body) {
-          lines.push(body);
-        }
-      } catch {
-        // Skip unreadable
-      }
+    } catch {
+      // File doesn't exist yet — skip
     }
   }
 
-  return lines;
+  return lines.length > 0 ? `## About the user\n${lines.join("\n\n")}` : "";
 }
 
 /**
- * Load a compact memory context string for injection into the system prompt.
- * Returns empty string if no memories exist.
+ * Load recent daily logs — like OpenClaw's "read today + yesterday at session start".
  */
-export async function loadMemoryContext(userId: number): Promise<string> {
-  const parts: string[] = [];
-  let totalChars = 0;
-  const customSections = (await listSections(userId)).filter(
-    (section) => !["user", "relationships", "knowledge", "journal"].includes(section),
-  );
-  const plan: SectionConfig[] = [
-    ...SECTIONS,
-    ...customSections.map((section) => ({
-      section,
-      files: [],
-      label: `Memory: ${section}`,
-    })),
-  ];
+async function loadDailyContext(userId: number): Promise<string> {
+  const logs = await readRecentDailyLogs(userId, 2);
+  if (logs.length === 0) return "";
 
-  for (const { section, files, label } of plan) {
-    if (totalChars >= MAX_CONTEXT_CHARS) break;
+  const parts = logs.map((log) => `### ${log.date}\n${log.content}`);
+  return `## Recent Context\n${parts.join("\n\n")}`;
+}
 
-    const lines = await loadSectionContent(section, userId, files);
-    if (lines.length === 0) continue;
-
-    const sectionText = lines.join("\n");
-    const remaining = MAX_CONTEXT_CHARS - totalChars;
-    const trimmed =
-      sectionText.length > remaining
-        ? sectionText.slice(0, remaining).trimEnd()
-        : sectionText;
-
-    if (trimmed) {
-      parts.push(`## ${label}\n${trimmed}`);
-      totalChars += trimmed.length;
-    }
-  }
-
-  // Inject tasks from DB
+/**
+ * Load tasks from DB.
+ */
+async function loadTaskContext(userId: number): Promise<string> {
   try {
     const taskRows = await db
       .select()
       .from(schema.tasks)
       .where(eq(schema.tasks.userId, userId));
 
-    if (taskRows.length > 0) {
-      const openTasks = taskRows.filter((t) => !t.done);
-      const doneTasks = taskRows.filter((t) => t.done);
-      const taskLines: string[] = [];
-      for (const t of openTasks) {
-        const extra = t.dueDate ? ` (due: ${t.dueDate})` : "";
-        taskLines.push(`- [ ] ${maybeDecryptForUser(userId, t.text)}${extra}`);
-      }
-      for (const t of doneTasks.slice(-3)) {
-        taskLines.push(`- [x] ${maybeDecryptForUser(userId, t.text)}`);
-      }
-      if (taskLines.length > 0) {
-        parts.push(`## Tasks\n${taskLines.join("\n")}`);
-      }
+    if (taskRows.length === 0) return "";
+
+    const openTasks = taskRows.filter((t) => !t.done);
+    const doneTasks = taskRows.filter((t) => t.done);
+    const taskLines: string[] = [];
+
+    for (const t of openTasks) {
+      const extra = t.dueDate ? ` (due: ${t.dueDate})` : "";
+      taskLines.push(`- [ ] ${maybeDecryptForUser(userId, t.text)}${extra}`);
     }
+    for (const t of doneTasks.slice(-3)) {
+      taskLines.push(`- [x] ${maybeDecryptForUser(userId, t.text)}`);
+    }
+
+    return taskLines.length > 0 ? `## Tasks\n${taskLines.join("\n")}` : "";
   } catch {
-    // tasks table might not exist yet
+    return "";
+  }
+}
+
+/**
+ * Load memory context for injection into the system prompt.
+ *
+ * New approach (OpenClaw-style):
+ * 1. Essential profile data (always loaded)
+ * 2. Recent daily logs (today + yesterday)
+ * 3. Tasks from DB
+ * 4. Conversation-aware semantic retrieval (when conversationHint is provided)
+ *
+ * The `conversationHint` parameter lets us retrieve memories relevant to
+ * what the user is currently talking about, instead of a fixed dump.
+ */
+export async function loadMemoryContext(
+  userId: number,
+  conversationHint?: string,
+): Promise<string> {
+  const parts: string[] = [];
+  let totalChars = 0;
+
+  // 1. Essential profile data (always loaded)
+  const essential = await loadEssentialContext(userId);
+  if (essential) {
+    parts.push(essential);
+    totalChars += essential.length;
+  }
+
+  // 2. Recent daily logs
+  const daily = await loadDailyContext(userId);
+  if (daily && totalChars + daily.length < MAX_CONTEXT_CHARS) {
+    parts.push(daily);
+    totalChars += daily.length;
+  }
+
+  // 3. Tasks
+  const tasks = await loadTaskContext(userId);
+  if (tasks && totalChars + tasks.length < MAX_CONTEXT_CHARS) {
+    parts.push(tasks);
+    totalChars += tasks.length;
+  }
+
+  // 4. Conversation-aware semantic retrieval
+  if (conversationHint) {
+    try {
+      const remainingTokens = Math.floor((MAX_CONTEXT_CHARS - totalChars) / 4);
+      if (remainingTokens > 200) {
+        const semantic = await retrieveContextMemories(
+          userId,
+          conversationHint,
+          remainingTokens,
+        );
+        if (semantic) {
+          // Strip the header since we'll add our own
+          const body = semantic.replace(/^#[^\n]*\n[^\n]*\n[^\n]*\n\n?/, "");
+          if (body.trim()) {
+            parts.push(`## Relevant Memories\n${body.trim()}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[context] Semantic retrieval failed:",
+        (err as Error).message,
+      );
+    }
   }
 
   if (parts.length === 0) return "";

@@ -7,15 +7,18 @@
 import { readdir, readFile, writeFile, mkdir, unlink, stat } from "fs/promises";
 import { join, basename, relative } from "path";
 import { existsSync } from "fs";
-import {
-  USER_DATA_ROOT,
-  getUserMemoryDir,
-} from "../lib/runtime-paths";
+import { USER_DATA_ROOT, getUserMemoryDir } from "../lib/runtime-paths";
 import {
   decryptTextWithDek,
   encryptTextWithDek,
   requireDekForUser,
 } from "../lib/data-crypto";
+import {
+  scheduleIndex,
+  removeFromIndex,
+  semanticSearch as vectorSearch,
+  type MemorySearchResult,
+} from "./manager";
 
 // --- Types ---
 
@@ -316,7 +319,11 @@ export async function writeMemory(
     `writeMemory(${relPath(filePath)})`,
   );
 
-  return { path: relPath(filePath), meta: fullMeta, content };
+  // Schedule vector index update (debounced, non-blocking)
+  const memPath = relPath(filePath);
+  scheduleIndex(userId, memPath, section);
+
+  return { path: memPath, meta: fullMeta, content };
 }
 
 /**
@@ -381,6 +388,8 @@ export async function deleteMemory(
   const filePath = memoryPath(section, userId, filename);
   try {
     await unlink(filePath);
+    // Remove from vector index
+    removeFromIndex(userId, relPath(filePath)).catch(() => {});
     return true;
   } catch {
     return false;
@@ -436,10 +445,44 @@ export async function listAllMemories(userId: number): Promise<MemoryEntry[]> {
 }
 
 /**
- * Search memory files by keyword across all sections for a user.
- * Searches both content and tags.
+ * Search memory files using hybrid semantic + keyword search.
+ * Uses vector embeddings + BM25 + temporal decay + MMR re-ranking.
+ * Falls back to keyword-only search when embeddings are unavailable.
  */
 export async function searchMemories(
+  userId: number,
+  query: string,
+  options?: { maxResults?: number; section?: string },
+): Promise<MemoryEntry[]> {
+  try {
+    // Try semantic search first (vector + BM25 hybrid)
+    const results = await vectorSearch(userId, query, options);
+    if (results.length > 0) {
+      return results.map((r) => ({
+        path: r.path,
+        meta: {
+          category: r.section,
+          tags: [],
+          created: "",
+          updated: "",
+          source: "search",
+        },
+        snippet: r.snippet,
+      }));
+    }
+  } catch (err) {
+    console.warn(
+      "[memory] Semantic search failed, falling back to keyword:",
+      (err as Error).message,
+    );
+  }
+
+  // Fallback: keyword search over all files
+  return keywordSearchFallback(userId, query);
+}
+
+/** Legacy keyword-only search — used as fallback when vector index is empty */
+async function keywordSearchFallback(
   userId: number,
   query: string,
 ): Promise<MemoryEntry[]> {
@@ -458,7 +501,6 @@ export async function searchMemories(
         .join(" ")
         .toLowerCase();
 
-      // Score: how many query terms appear in the text
       const score = queryTerms.filter((term) =>
         searchText.includes(term),
       ).length;
@@ -483,7 +525,8 @@ export async function loadFullMemoryContext(userId: number): Promise<string> {
     try {
       // Determine section from path
       const parts = entry.path.split("/").filter(Boolean);
-      const section = parts.length >= 4 ? parts[2] : parts[parts.length - 2] || "memory";
+      const section =
+        parts.length >= 4 ? parts[2] : parts[parts.length - 2] || "memory";
       const filename = basename(entry.path, ".md");
 
       // Read full content
@@ -534,6 +577,62 @@ export async function writeJournalEntry(
     source: "agent",
   });
 }
+
+/**
+ * Write to today's daily memory log.
+ * Like OpenClaw's memory/YYYY-MM-DD.md — a running log of what happened today.
+ */
+export async function writeDailyLog(
+  userId: number,
+  content: string,
+  date?: string,
+): Promise<MemoryFile> {
+  const dateStr = date || new Date().toISOString().slice(0, 10);
+
+  return appendMemory("daily", userId, dateStr, content, {
+    category: "daily",
+    tags: ["daily-log", "auto"],
+    source: "agent",
+  });
+}
+
+/**
+ * Read today's (and optionally yesterday's) daily log.
+ * Used for session startup context, like OpenClaw's "read today + yesterday".
+ */
+export async function readRecentDailyLogs(
+  userId: number,
+  days: number = 2,
+): Promise<{ date: string; content: string }[]> {
+  const logs: { date: string; content: string }[] = [];
+  const today = new Date();
+
+  for (let i = 0; i < days; i++) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().slice(0, 10);
+
+    try {
+      const file = await readMemory("daily", userId, dateStr);
+      if (file.content.trim()) {
+        logs.push({ date: dateStr, content: file.content.trim() });
+      }
+    } catch {
+      // No log for this date — that's fine
+    }
+  }
+
+  return logs;
+}
+
+// --- Re-export semantic search capabilities ---
+export {
+  semanticSearch,
+  retrieveContextMemories,
+  reindexAll,
+  getIndexStats,
+  type MemorySearchResult,
+} from "./manager";
 
 // --- Export memory root for reference ---
 export { SECTIONS };
