@@ -1,13 +1,16 @@
 // Memory filesystem — reads/writes markdown files with YAML frontmatter
 // as ANIMA's long-term memory store.
 //
-// Memory lives under ANIMA_DATA_DIR: /memory/{section}/{userId}/{file}.md
+// Memory lives under ANIMA_DATA_DIR: /users/{userId}/memory/{section}/{file}.md
 // This module handles all CRUD operations on the filesystem.
 
 import { readdir, readFile, writeFile, mkdir, unlink, stat } from "fs/promises";
 import { join, basename, relative } from "path";
 import { existsSync } from "fs";
-import { MEMORY_ROOT } from "../lib/runtime-paths";
+import {
+  USER_DATA_ROOT,
+  getUserMemoryDir,
+} from "../lib/runtime-paths";
 import {
   decryptTextWithDek,
   encryptTextWithDek,
@@ -26,7 +29,7 @@ export interface MemoryFrontmatter {
 }
 
 export interface MemoryFile {
-  /** Relative path from memory root, e.g. "user/1/preferences.md" */
+  /** Relative path from user data root, e.g. "1/memory/user/preferences.md" */
   path: string;
   /** Parsed frontmatter */
   meta: MemoryFrontmatter;
@@ -45,6 +48,10 @@ export interface MemoryEntry {
 
 const SECTIONS = ["user", "knowledge", "relationships", "journal"] as const;
 export type MemorySection = string;
+
+function userMemoryRoot(userId: number): string {
+  return getUserMemoryDir(userId);
+}
 
 // --- Frontmatter Parser/Serializer ---
 // Lightweight — no dependency needed. Handles simple YAML frontmatter.
@@ -122,7 +129,7 @@ async function ensureDir(
   section: MemorySection,
   userId: number,
 ): Promise<string> {
-  const dir = join(MEMORY_ROOT, section, String(userId));
+  const dir = join(userMemoryRoot(userId), section);
   await mkdir(dir, { recursive: true });
   return dir;
 }
@@ -207,12 +214,12 @@ function memoryPath(
   // Sanitize filename
   const safe = filename.replace(/[^a-zA-Z0-9_\-\.]/g, "_");
   const name = safe.endsWith(".md") ? safe : `${safe}.md`;
-  return join(MEMORY_ROOT, section, String(userId), name);
+  return join(userMemoryRoot(userId), section, name);
 }
 
 /** Relative path from memory root */
 function relPath(fullPath: string): string {
-  return relative(MEMORY_ROOT, fullPath).replace(/\\/g, "/");
+  return relative(USER_DATA_ROOT, fullPath).replace(/\\/g, "/");
 }
 
 function encryptMemoryRaw(userId: number, raw: string): string {
@@ -221,20 +228,8 @@ function encryptMemoryRaw(userId: number, raw: string): string {
 }
 
 function decryptMemoryRaw(userId: number, raw: string): string {
-  // Backward compatibility for any pre-encryption plaintext files.
-  if (!raw.startsWith("enc1:")) return raw;
   const dek = requireDekForUser(userId);
   return decryptTextWithDek(raw, dek);
-}
-
-async function migratePlaintextMemoryFileIfNeeded(
-  filePath: string,
-  userId: number,
-  raw: string,
-): Promise<void> {
-  if (raw.startsWith("enc1:")) return;
-  const encrypted = encryptMemoryRaw(userId, raw);
-  await writeFile(filePath, encrypted, "utf-8");
 }
 
 function parseUserIdFromRelativePath(path: string): number {
@@ -242,34 +237,29 @@ function parseUserIdFromRelativePath(path: string): number {
   if (parts.length < 3) {
     throw new Error(`Invalid memory path: ${path}`);
   }
-  const userId = Number(parts[1]);
-  if (!Number.isFinite(userId)) {
-    throw new Error(`Invalid userId in memory path: ${path}`);
-  }
-  return userId;
+
+  const userId = Number(parts[0]);
+  if (Number.isFinite(userId)) return userId;
+  throw new Error(`Invalid userId in memory path: ${path}`);
 }
 
 /**
  * List known sections for a user.
- * Includes default sections plus any custom top-level folders under /memory
- * that contain the user's directory.
+ * Includes default sections plus any custom section folders under /users/{userId}/memory.
  */
 export async function listSections(userId: number): Promise<MemorySection[]> {
   const merged = new Set<string>(SECTIONS);
+  const userRoot = userMemoryRoot(userId);
 
-  if (!existsSync(MEMORY_ROOT)) {
+  if (!existsSync(userRoot)) {
     return Array.from(merged);
   }
 
-  const topLevel = await readdir(MEMORY_ROOT, { withFileTypes: true });
+  const topLevel = await readdir(userRoot, { withFileTypes: true });
   for (const entry of topLevel) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith(".")) continue;
-
-    const userDir = join(MEMORY_ROOT, entry.name, String(userId));
-    if (existsSync(userDir)) {
-      merged.add(entry.name);
-    }
+    merged.add(entry.name);
   }
 
   return Array.from(merged);
@@ -370,7 +360,6 @@ export async function readMemory(
 ): Promise<MemoryFile> {
   const filePath = memoryPath(section, userId, filename);
   const encryptedRaw = await readFile(filePath, "utf-8");
-  await migratePlaintextMemoryFileIfNeeded(filePath, userId, encryptedRaw);
   const raw = decryptMemoryRaw(userId, encryptedRaw);
   const { meta, content } = parseFrontmatter(raw);
 
@@ -405,7 +394,7 @@ export async function listMemories(
   section: MemorySection,
   userId: number,
 ): Promise<MemoryEntry[]> {
-  const dir = join(MEMORY_ROOT, section, String(userId));
+  const dir = join(userMemoryRoot(userId), section);
   if (!existsSync(dir)) return [];
 
   const files = await readdir(dir);
@@ -417,7 +406,6 @@ export async function listMemories(
     try {
       const filePath = join(dir, file);
       const encryptedRaw = await readFile(filePath, "utf-8");
-      await migratePlaintextMemoryFileIfNeeded(filePath, userId, encryptedRaw);
       const raw = decryptMemoryRaw(userId, encryptedRaw);
       const { meta, content } = parseFrontmatter(raw);
 
@@ -494,7 +482,8 @@ export async function loadFullMemoryContext(userId: number): Promise<string> {
   for (const entry of entries) {
     try {
       // Determine section from path
-      const section = entry.path.split("/")[0];
+      const parts = entry.path.split("/").filter(Boolean);
+      const section = parts.length >= 4 ? parts[2] : parts[parts.length - 2] || "memory";
       const filename = basename(entry.path, ".md");
 
       // Read full content
@@ -516,10 +505,9 @@ export async function loadFullMemoryContext(userId: number): Promise<string> {
 export async function readMemoryByPath(
   relativePath: string,
 ): Promise<MemoryFile> {
-  const filePath = join(MEMORY_ROOT, relativePath);
+  const filePath = join(USER_DATA_ROOT, relativePath);
   const encryptedRaw = await readFile(filePath, "utf-8");
   const userId = parseUserIdFromRelativePath(relativePath);
-  await migratePlaintextMemoryFileIfNeeded(filePath, userId, encryptedRaw);
   const raw = decryptMemoryRaw(userId, encryptedRaw);
   const { meta, content } = parseFrontmatter(raw);
 
@@ -548,4 +536,4 @@ export async function writeJournalEntry(
 }
 
 // --- Export memory root for reference ---
-export { MEMORY_ROOT, SECTIONS };
+export { SECTIONS };

@@ -33,12 +33,10 @@ fn api_binary_name() -> &'static str {
 }
 
 fn ensure_customer_data_layout(data_dir: &Path) -> Result<(), String> {
-    let memory_dir = data_dir.join("memory");
-    let soul_dir = data_dir.join("soul");
+    let users_dir = data_dir.join("users");
 
     create_dir_all(data_dir).map_err(|err| format!("failed creating data dir: {err}"))?;
-    create_dir_all(&memory_dir).map_err(|err| format!("failed creating memory dir: {err}"))?;
-    create_dir_all(&soul_dir).map_err(|err| format!("failed creating soul dir: {err}"))?;
+    create_dir_all(&users_dir).map_err(|err| format!("failed creating users dir: {err}"))?;
 
     Ok(())
 }

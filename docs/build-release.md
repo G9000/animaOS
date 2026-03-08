@@ -65,8 +65,8 @@ No repo path fallback is used at runtime.
 At first launch, the app creates a per-user data directory and stores:
 
 - `anima.db`
-- `memory/`
-- `soul/<userId>.soul.md`
+- `users/<userId>/memory/`
+- `users/<userId>/soul.md`
 
 Typical locations:
 

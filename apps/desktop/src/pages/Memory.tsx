@@ -60,14 +60,19 @@ export default function Memory() {
     }
   };
 
+  const parseMemoryPath = (path: string): { section: string; filename: string } => {
+    const parts = path.split("/").filter(Boolean);
+    const sectionName = parts[2] || "";
+    const filename = parts.slice(3).join("/");
+    return { section: sectionName, filename };
+  };
+
   const openFile = async (path: string) => {
     if (!user?.id) return;
     setLoading(true);
     setIsEditing(false);
     try {
-      const parts = path.split("/");
-      const sectionName = parts[0];
-      const filename = parts.slice(2).join("/");
+      const { section: sectionName, filename } = parseMemoryPath(path);
       const data = await api.memory.read(user.id, sectionName, filename);
       setSelectedFile(data);
       setEditContent(data.content);
@@ -96,9 +101,7 @@ export default function Memory() {
     if (!user?.id || !selectedFile) return;
     setLoading(true);
     try {
-      const parts = selectedFile.path.split("/");
-      const sectionName = parts[0];
-      const filename = parts.slice(2).join("/");
+      const { section: sectionName, filename } = parseMemoryPath(selectedFile.path);
       await api.memory.write(user.id, sectionName, filename, {
         content: editContent,
         tags: selectedFile.meta.tags,
@@ -116,9 +119,7 @@ export default function Memory() {
   const deleteFile = async (path: string) => {
     if (!user?.id || !confirm("Delete this memory file?")) return;
     try {
-      const parts = path.split("/");
-      const sectionName = parts[0];
-      const filename = parts.slice(2).join("/");
+      const { section: sectionName, filename } = parseMemoryPath(path);
       await api.memory.remove(user.id, sectionName, filename);
       setSelectedFile(null);
       loadMemories();
@@ -170,7 +171,7 @@ export default function Memory() {
         tags,
       });
 
-      const createdPath = `${sectionName}/${user.id}/${newFilename.trim().endsWith(".md") ? newFilename.trim() : `${newFilename.trim()}.md`}`;
+      const createdPath = `${user.id}/memory/${sectionName}/${newFilename.trim().endsWith(".md") ? newFilename.trim() : `${newFilename.trim()}.md`}`;
       setSection("all");
       setSearchQuery("");
       setSearchResults([]);
@@ -204,7 +205,7 @@ export default function Memory() {
   const groupBySection = (entries: MemoryEntry[]) => {
     return entries.reduce(
       (acc, entry) => {
-        const s = entry.path.split("/")[0];
+        const s = entry.path.split("/")[2] || "unknown";
         if (!acc[s]) acc[s] = [];
         acc[s].push(entry);
         return acc;
@@ -214,7 +215,7 @@ export default function Memory() {
   };
 
   const discoveredSections = Array.from(
-    new Set(memories.map((entry) => entry.path.split("/")[0]).filter(Boolean)),
+    new Set(memories.map((entry) => entry.path.split("/")[2]).filter(Boolean)),
   ).sort();
   const sections = ["all", ...Array.from(new Set([...defaultSections, ...discoveredSections]))];
   const displayMemories =

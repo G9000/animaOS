@@ -268,7 +268,7 @@ export function createTools(userId: number) {
           status: "stored",
           content,
           category,
-          file: `${section}/${userId}/${filename}.md`,
+          file: `${userId}/memory/${section}/${filename}.md`,
         });
       } catch (err) {
         console.error("[tool:remember] Failed to store memory:", err);

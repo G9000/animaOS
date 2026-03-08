@@ -58,7 +58,7 @@ If user config does not exist, defaults are:
 ## Persona / System Prompt Resolution
 Prompt priority is:
 1. Per-user `systemPrompt` from DB (Settings page)
-2. Per-user encrypted soul file (`soul/<userId>.soul.md`)
+2. Per-user encrypted soul file (`users/<userId>/soul.md`)
 3. Built-in `DEFAULT_SYSTEM_PROMPT`
 
 ## Graph Construction

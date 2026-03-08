@@ -204,14 +204,6 @@ export async function syncReminderJobsForTask(
       /* job doesn't exist */
     }
   }
-  // Also clean legacy "pre" jobId from before priority-based reminders
-  try {
-    const legacy = await reminderQueue.getJob(jobId(task.id, "pre"));
-    if (legacy) await legacy.remove();
-  } catch {
-    /* fine */
-  }
-
   for (let i = 0; i < preOffsets.length; i++) {
     const offsetMs = -preOffsets[i] * 60_000;
     const runAtMs = dueMs + offsetMs;
@@ -280,9 +272,8 @@ export async function cancelReminderJobsForTask(
   taskId: number,
   reason?: string,
 ): Promise<void> {
-  // Cancel all possible pre-reminder slots + followup + legacy "pre"
+  // Cancel all possible pre-reminder slots + followup.
   const phases = [
-    "pre",
     "followup",
     "pre-0",
     "pre-1",

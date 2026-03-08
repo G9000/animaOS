@@ -3,7 +3,7 @@
 ## Phase 0: Clean Foundation
 **Goal:** Fix structural issues before building new features.
 
-- [ ] Remove legacy `memories` SQLite table — memory is markdown-based now, the table is dead weight
+- [ ] Remove obsolete `memories` SQLite table — memory is markdown-based now, the table is dead weight
 - [ ] Fix default system prompt in `graph.ts` to align with `soul.md` (remove the "sardonic" fallback personality)
 - [ ] Strip multi-user auth down to single-user — local PIN or passphrase at most
 - [ ] Remove or disable email integration and translation feature (park for later)

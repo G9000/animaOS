@@ -15,7 +15,7 @@ import {
   telegramLinks,
   users,
 } from "../db/schema";
-import { MEMORY_ROOT, SOUL_DIR } from "./runtime-paths";
+import { USER_DATA_ROOT } from "./runtime-paths";
 
 const VAULT_VERSION = 1;
 const ARGON2_TIME_COST = 3;
@@ -41,8 +41,7 @@ interface VaultPayload {
   version: number;
   createdAt: string;
   database: DatabaseSnapshot;
-  memoryFiles: Record<string, string>;
-  soulFiles: Record<string, string>;
+  userFiles: Record<string, string>;
 }
 
 interface VaultEnvelope {
@@ -155,49 +154,25 @@ async function walkFiles(dir: string): Promise<string[]> {
   return out;
 }
 
-async function readMemorySnapshot(): Promise<Record<string, string>> {
-  const files = await walkFiles(MEMORY_ROOT);
+async function readUserDataSnapshot(): Promise<Record<string, string>> {
+  const files = await walkFiles(USER_DATA_ROOT);
   const snapshot: Record<string, string> = {};
 
   for (const fullPath of files) {
-    const rel = relative(MEMORY_ROOT, fullPath).replace(/\\/g, "/");
+    const rel = relative(USER_DATA_ROOT, fullPath).replace(/\\/g, "/");
     snapshot[rel] = await readFile(fullPath, "utf8");
   }
 
   return snapshot;
 }
 
-async function readSoulSnapshot(): Promise<Record<string, string>> {
-  const files = await walkFiles(SOUL_DIR);
-  const snapshot: Record<string, string> = {};
+async function writeUserDataSnapshot(userFiles: Record<string, string>): Promise<void> {
+  await rm(USER_DATA_ROOT, { recursive: true, force: true });
+  await mkdir(USER_DATA_ROOT, { recursive: true });
 
-  for (const fullPath of files) {
-    const rel = relative(SOUL_DIR, fullPath).replace(/\\/g, "/");
-    snapshot[rel] = await readFile(fullPath, "utf8");
-  }
-
-  return snapshot;
-}
-
-async function writeMemorySnapshot(memoryFiles: Record<string, string>): Promise<void> {
-  await rm(MEMORY_ROOT, { recursive: true, force: true });
-  await mkdir(MEMORY_ROOT, { recursive: true });
-
-  for (const [rel, content] of Object.entries(memoryFiles)) {
+  for (const [rel, content] of Object.entries(userFiles)) {
     const safeRel = rel.replace(/^(\.\.(\/|\\|$))+/, "");
-    const target = join(MEMORY_ROOT, safeRel);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, content, "utf8");
-  }
-}
-
-async function writeSoulSnapshot(soulFiles: Record<string, string>): Promise<void> {
-  await rm(SOUL_DIR, { recursive: true, force: true });
-  await mkdir(SOUL_DIR, { recursive: true });
-
-  for (const [rel, content] of Object.entries(soulFiles)) {
-    const safeRel = rel.replace(/^(\.\.(\/|\\|$))+/, "");
-    const target = join(SOUL_DIR, safeRel);
+    const target = join(USER_DATA_ROOT, safeRel);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content, "utf8");
   }
@@ -252,8 +227,7 @@ export async function exportVault(passphrase: string): Promise<{
     version: VAULT_VERSION,
     createdAt: new Date().toISOString(),
     database: await exportDatabaseSnapshot(),
-    memoryFiles: await readMemorySnapshot(),
-    soulFiles: await readSoulSnapshot(),
+    userFiles: await readUserDataSnapshot(),
   };
 
   const plaintext = JSON.stringify(payload);
@@ -283,11 +257,14 @@ export async function importVault(vault: string, passphrase: string): Promise<{
   }
 
   await restoreDatabaseSnapshot(payload.database);
-  await writeMemorySnapshot(payload.memoryFiles || {});
-  await writeSoulSnapshot(payload.soulFiles || {});
+  await writeUserDataSnapshot(payload.userFiles || {});
+
+  const restoredMemoryFiles = Object.keys(payload.userFiles || {}).filter(
+    (path) => path.includes("/memory/") && path.endsWith(".md"),
+  ).length;
 
   return {
     restoredUsers: payload.database.users.length,
-    restoredMemoryFiles: Object.keys(payload.memoryFiles || {}).length,
+    restoredMemoryFiles,
   };
 }
