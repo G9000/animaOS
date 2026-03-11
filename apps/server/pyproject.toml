@@ -9,8 +9,11 @@ description = "Python backend for ANIMA."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "alembic>=1.16.5",
   "fastapi>=0.115.12",
   "pydantic-settings>=2.11.0",
+  "psycopg[binary]>=3.2.9",
+  "sqlalchemy>=2.0.43",
   "uvicorn[standard]>=0.35.0"
 ]
 

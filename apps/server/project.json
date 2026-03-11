@@ -31,6 +31,27 @@
         "cwd": "apps/server",
         "command": "uv run --project . pytest"
       }
+    },
+    "db-heads": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/server",
+        "command": "uv run --project . alembic -c alembic.ini heads"
+      }
+    },
+    "db-current": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/server",
+        "command": "uv run --project . alembic -c alembic.ini current"
+      }
+    },
+    "db-upgrade": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/server",
+        "command": "uv run --project . alembic -c alembic.ini upgrade head"
+      }
     }
   },
   "tags": ["scope:backend", "lang:python"]

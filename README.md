@@ -40,6 +40,9 @@ From repo root unless noted:
 - `bun run lint`: lint `apps/server` and type-check `apps/desktop`
 - `bun run test`: run Python backend tests
 - `bun run python:sync`: sync the `uv` workspace
+- `bun run db:server:heads`: show Alembic heads for `apps/server`
+- `bun run db:server:current`: show current Alembic revision for `apps/server`
+- `bun run db:server:upgrade`: apply server migrations to head
 - `bun run db:push`: apply legacy API DB migrations
 - `bun run db:studio`: open legacy Drizzle Studio
 
