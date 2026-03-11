@@ -20,6 +20,8 @@ Mixed monorepo for ANIMA:
 ```bash
 bun install
 uv sync --all-packages
+bun run db:server:up
+bun run db:server:upgrade
 bun run dev
 ```
 
@@ -40,6 +42,9 @@ From repo root unless noted:
 - `bun run lint`: lint `apps/server` and type-check `apps/desktop`
 - `bun run test`: run Python backend tests
 - `bun run python:sync`: sync the `uv` workspace
+- `bun run db:server:up`: start local Postgres for `apps/server`
+- `bun run db:server:down`: stop the local Postgres service
+- `bun run db:server:logs`: tail local Postgres logs
 - `bun run db:server:heads`: show Alembic heads for `apps/server`
 - `bun run db:server:current`: show current Alembic revision for `apps/server`
 - `bun run db:server:upgrade`: apply server migrations to head
@@ -50,6 +55,7 @@ From repo root unless noted:
 
 - `memory/` is intentionally local-only and fully git-ignored.
 - The Python backend migration starts in `apps/server`; `apps/api` remains available until feature parity is reached.
+- The Python backend now targets PostgreSQL by default via `ANIMA_DATABASE_URL`.
 - Auth is local-owner bootstrap (no mandatory email identity flow).
 - User backup/sync uses encrypted vault export/import with a user passphrase (argon2id + AES-256-GCM).
 - Keep prompts in `apps/api/prompts/*.md` and load via `renderPromptTemplate(...)`.

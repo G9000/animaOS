@@ -1,10 +1,6 @@
-from pathlib import Path
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_SQLITE_PATH = REPO_ROOT / ".anima" / "dev" / "server.db"
-DEFAULT_DATABASE_URL = f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
+DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres:postgres@127.0.0.1:5433/anima"
 
 
 class Settings(BaseSettings):
