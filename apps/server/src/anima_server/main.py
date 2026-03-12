@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .api.routes.auth import router as auth_router
+from .api.routes.chat import router as chat_router
 from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .config import settings
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(auth_router)
+    app.include_router(chat_router)
     app.include_router(users_router)
     app.include_router(vault_router)
 

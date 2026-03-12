@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     database_echo: bool = False
     data_dir: Path = DEFAULT_DATA_DIR
+    agent_provider: str = "scaffold"
+    agent_model: str = "python-agent-scaffold"
+    agent_stream_chunk_size: int = 48
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",

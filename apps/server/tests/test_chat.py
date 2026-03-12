@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+from collections.abc import Generator
+from contextlib import contextmanager
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from anima_server.db.base import Base
+from anima_server.db.session import get_db
+from anima_server.main import create_app
+from anima_server.services.agent_graph import clear_agent_threads, invalidate_agent_graph_cache
+from anima_server.services.sessions import unlock_session_store
+
+
+def _build_session_factory() -> tuple[Engine, sessionmaker]:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    return engine, factory
+
+
+def _register_user(client: TestClient, username: str = "alice") -> dict[str, object]:
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "username": username,
+            "password": "pw1234",
+            "name": "Alice",
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+@contextmanager
+def _client() -> Generator[TestClient, None, None]:
+    engine, factory = _build_session_factory()
+    Base.metadata.create_all(bind=engine)
+
+    app = create_app()
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    unlock_session_store.clear()
+    clear_agent_threads()
+    invalidate_agent_graph_cache()
+
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        clear_agent_threads()
+        invalidate_agent_graph_cache()
+        unlock_session_store.clear()
+        app.dependency_overrides.clear()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_chat_requires_unlocked_session() -> None:
+    with _client() as client:
+        response = client.post(
+            "/api/chat",
+            json={"message": "hello", "userId": 1},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"error": "Session locked. Please sign in again."}
+
+
+def test_chat_returns_scaffold_response_and_tracks_turns() -> None:
+    with _client() as client:
+        user = _register_user(client)
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        user_id = int(user["id"])
+
+        first = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "hello", "userId": user_id},
+        )
+        second = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "still there?", "userId": user_id},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["provider"] == "scaffold"
+    assert first.json()["model"] == "python-agent-scaffold"
+    assert "turn 1" in first.json()["response"]
+    assert "Last message: hello" in first.json()["response"]
+
+    assert second.status_code == 200
+    assert "turn 2" in second.json()["response"]
+    assert second.json()["toolsUsed"] == []
+
+
+def test_chat_reset_clears_scaffold_thread_state() -> None:
+    with _client() as client:
+        user = _register_user(client, username="reset-me")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        user_id = int(user["id"])
+
+        client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "first", "userId": user_id},
+        )
+        reset_response = client.post(
+            "/api/chat/reset",
+            headers=headers,
+            json={"userId": user_id},
+        )
+        after_reset = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "again", "userId": user_id},
+        )
+
+    assert reset_response.status_code == 200
+    assert reset_response.json() == {"status": "reset"}
+    assert "turn 1" in after_reset.json()["response"]
+
+
+def test_chat_stream_returns_sse_events() -> None:
+    with _client() as client:
+        user = _register_user(client, username="stream-me")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        user_id = int(user["id"])
+
+        with client.stream(
+            "POST",
+            "/api/chat",
+            headers=headers,
+            json={"message": "stream this", "userId": user_id, "stream": True},
+        ) as response:
+            body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: chunk" in body
+    assert "event: done" in body
+    assert "stream this" in body
