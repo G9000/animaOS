@@ -15,3 +15,14 @@ def test_health() -> None:
         "service": "server",
         "environment": "development",
     }
+
+
+def test_api_health() -> None:
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "service": "server",
+        "environment": "development",
+    }
