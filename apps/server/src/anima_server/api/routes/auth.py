@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.db import get_db
 from anima_server.schemas.auth import (
     LoginRequest,
@@ -24,14 +25,6 @@ from anima_server.services.auth import (
 from anima_server.services.sessions import unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def read_unlock_token(request: Request) -> str | None:
-    token = request.headers.get("x-anima-unlock")
-    if token is None:
-        return None
-    normalized = token.strip()
-    return normalized or None
 
 
 @router.post(

@@ -92,6 +92,9 @@ def serialize_user(user: User) -> dict[str, object]:
         "id": user.id,
         "username": user.username,
         "name": user.display_name,
+        "gender": user.gender,
+        "age": user.age,
+        "birthday": user.birthday,
     }
     if user.created_at is not None:
         payload["createdAt"] = user.created_at.isoformat()

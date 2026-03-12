@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .api.routes.auth import router as auth_router
+from .api.routes.users import router as users_router
 from .config import settings
 
 CORS_ORIGINS = [
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(auth_router)
+    app.include_router(users_router)
 
     return app
 

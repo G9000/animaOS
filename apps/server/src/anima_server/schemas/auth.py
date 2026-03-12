@@ -21,6 +21,9 @@ class UserResponse(BaseModel):
     id: int
     username: str
     name: str
+    gender: str | None = None
+    age: int | None = None
+    birthday: str | None = None
     createdAt: str | None = None
     updatedAt: str | None = None
 

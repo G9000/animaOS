@@ -50,6 +50,16 @@ class UnlockSessionStore:
         with self._lock:
             self._sessions.pop(token, None)
 
+    def revoke_user(self, user_id: int) -> None:
+        with self._lock:
+            matching_tokens = [
+                token
+                for token, session in self._sessions.items()
+                if session.user_id == user_id
+            ]
+            for token in matching_tokens:
+                self._sessions.pop(token, None)
+
     def clear(self) -> None:
         with self._lock:
             self._sessions.clear()
