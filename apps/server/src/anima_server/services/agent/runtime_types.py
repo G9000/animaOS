@@ -66,6 +66,12 @@ class StepExecutionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class StepStreamEvent:
+    content_delta: str = ""
+    result: StepExecutionResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class StepTrace:
     step_index: int
     request_messages: tuple[MessageSnapshot, ...] = ()

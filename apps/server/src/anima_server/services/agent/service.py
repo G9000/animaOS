@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from threading import Lock
 
 from anima_server.config import settings
@@ -22,7 +22,13 @@ from anima_server.services.agent.persistence import (
 )
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.state import AgentResult
-from anima_server.services.agent.streaming import AgentStreamEvent, build_stream_events
+from anima_server.services.agent.streaming import (
+    AgentStreamEvent,
+    build_done_event,
+    build_error_event,
+    build_usage_event,
+    summarize_usage,
+)
 from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
 from sqlalchemy.orm import Session
 
@@ -55,6 +61,16 @@ def invalidate_agent_runtime_cache() -> None:
 
 
 async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult:
+    return await _execute_agent_turn(user_message, user_id, db)
+
+
+async def _execute_agent_turn(
+    user_message: str,
+    user_id: int,
+    db: Session,
+    *,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+) -> AgentResult:
     thread = get_or_create_thread(db, user_id)
     history = load_thread_history(db, thread.id)
     run = create_run(
@@ -63,7 +79,7 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
         user_id=user_id,
         provider=settings.agent_provider,
         model=settings.agent_model,
-        mode="blocking",
+        mode="streaming" if event_callback is not None else "blocking",
     )
     initial_sequence_id = next_sequence_id(db, thread.id)
     append_user_message(
@@ -88,6 +104,7 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
             history,
             conversation_turn_count=conversation_turn_count,
             memory_blocks=memory_blocks,
+            event_callback=event_callback,
         )
     except Exception as exc:
         mark_run_failed(db, run, str(exc))
@@ -117,6 +134,11 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
         user_message=user_message,
         assistant_response=result.response,
     )
+    if event_callback is not None:
+        usage = summarize_usage(result)
+        if usage is not None:
+            await event_callback(build_usage_event(usage))
+        await event_callback(build_done_event(result))
     return result
 
 
@@ -125,11 +147,34 @@ async def stream_agent(
     user_id: int,
     db: Session,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
-    result = await run_agent(user_message, user_id, db)
-    chunk_size = max(1, settings.agent_stream_chunk_size)
-    for event in build_stream_events(result, chunk_size=chunk_size):
-        await asyncio.sleep(0)
-        yield event
+    queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
+
+    async def emit(event: AgentStreamEvent) -> None:
+        await queue.put(event)
+
+    async def worker() -> None:
+        try:
+            await _execute_agent_turn(
+                user_message,
+                user_id,
+                db,
+                event_callback=emit,
+            )
+        except Exception as exc:
+            await queue.put(build_error_event(str(exc)))
+        finally:
+            await queue.put(None)
+
+    worker_task = asyncio.create_task(worker())
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await asyncio.sleep(0)
+            yield event
+    finally:
+        await worker_task
 
 
 async def reset_agent_thread(user_id: int, db: Session) -> None:

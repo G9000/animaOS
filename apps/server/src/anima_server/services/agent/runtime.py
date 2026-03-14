@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from anima_server.config import settings
@@ -25,8 +25,16 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
 )
 from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.agent.streaming import (
+    AgentStreamEvent,
+    build_chunk_event,
+    build_tool_call_event,
+    build_tool_return_event,
+)
 from anima_server.services.agent.system_prompt import SystemPromptContext, build_system_prompt
 from anima_server.services.agent.tools import get_tool_rules, get_tool_summaries, get_tools
+
+StreamEventCallback = Callable[[AgentStreamEvent], Awaitable[None]]
 
 
 class AgentRuntime:
@@ -79,6 +87,7 @@ class AgentRuntime:
         *,
         conversation_turn_count: int | None = None,
         memory_blocks: Sequence[MemoryBlock] = (),
+        event_callback: StreamEventCallback | None = None,
     ) -> AgentResult:
         system_prompt = self.build_system_prompt(memory_blocks=memory_blocks)
         messages = build_conversation_messages(
@@ -98,7 +107,7 @@ class AgentRuntime:
                 sorted(rules_solver.get_allowed_tools(self._tool_names))
             )
             force_tool_call = bool(allowed_tool_names) and rules_solver.should_force_tool_call()
-            step_result = await self._run_step(
+            step_result, streamed_assistant_text = await self._run_step(
                 messages=messages,
                 user_id=user_id,
                 conversation_turn_count=conversation_turn_count,
@@ -106,6 +115,7 @@ class AgentRuntime:
                 system_prompt=system_prompt,
                 allowed_tool_names=allowed_tool_names,
                 force_tool_call=force_tool_call,
+                event_callback=event_callback,
             )
             tool_results: list[ToolExecutionResult] = []
             terminal_tool_hit = False
@@ -114,6 +124,12 @@ class AgentRuntime:
 
             if not step_result.tool_calls:
                 response = step_result.assistant_text or response
+                if (
+                    event_callback is not None
+                    and step_result.assistant_text
+                    and not streamed_assistant_text
+                ):
+                    await event_callback(build_chunk_event(step_result.assistant_text))
                 step_traces.append(
                     StepTrace(
                         step_index=step_index,
@@ -127,6 +143,10 @@ class AgentRuntime:
                 )
                 stop_reason = StopReason.END_TURN
                 break
+
+            if event_callback is not None:
+                for tool_call in step_result.tool_calls:
+                    await event_callback(build_tool_call_event(step_index, tool_call))
 
             for tool_call in step_result.tool_calls:
                 violation = rules_solver.validate_tool_call(
@@ -148,6 +168,10 @@ class AgentRuntime:
                             name=tool_result.name,
                         )
                     )
+                    if event_callback is not None:
+                        await event_callback(
+                            build_tool_return_event(step_index, tool_result)
+                        )
                     rule_violation_hit = True
                     break
 
@@ -166,6 +190,10 @@ class AgentRuntime:
                             name=tool_result.name,
                         )
                     )
+                    if event_callback is not None:
+                        await event_callback(
+                            build_tool_return_event(step_index, tool_result)
+                        )
                     stop_reason = StopReason.AWAITING_APPROVAL
                     awaiting_approval = True
                     break
@@ -182,6 +210,8 @@ class AgentRuntime:
                         name=tool_result.name,
                     )
                 )
+                if event_callback is not None:
+                    await event_callback(build_tool_return_event(step_index, tool_result))
                 rules_solver.update_state(tool_call.name, tool_result.output)
                 if tool_call.name not in tools_used:
                     tools_used.append(tool_call.name)
@@ -236,23 +266,37 @@ class AgentRuntime:
         system_prompt: str,
         allowed_tool_names: Sequence[str],
         force_tool_call: bool,
-    ) -> StepExecutionResult:
-        step_result = await self._adapter.invoke(
-            LLMRequest(
-                messages=tuple(messages),
-                user_id=user_id,
-                conversation_turn_count=conversation_turn_count,
-                step_index=step_index,
-                max_steps=self._max_steps,
-                system_prompt=system_prompt,
-                available_tools=tuple(
-                    self._tool_registry[name]
-                    for name in allowed_tool_names
-                    if name in self._tool_registry
-                ),
-                force_tool_call=force_tool_call,
-            )
+        event_callback: StreamEventCallback | None = None,
+    ) -> tuple[StepExecutionResult, bool]:
+        request = LLMRequest(
+            messages=tuple(messages),
+            user_id=user_id,
+            conversation_turn_count=conversation_turn_count,
+            step_index=step_index,
+            max_steps=self._max_steps,
+            system_prompt=system_prompt,
+            available_tools=tuple(
+                self._tool_registry[name]
+                for name in allowed_tool_names
+                if name in self._tool_registry
+            ),
+            force_tool_call=force_tool_call,
         )
+        streamed_assistant_text = False
+
+        if event_callback is None:
+            step_result = await self._adapter.invoke(request)
+        else:
+            step_result = None
+            async for stream_event in self._adapter.stream(request):
+                if stream_event.content_delta:
+                    streamed_assistant_text = True
+                    await event_callback(build_chunk_event(stream_event.content_delta))
+                if stream_event.result is not None:
+                    step_result = stream_event.result
+
+            if step_result is None:
+                raise RuntimeError("Adapter stream ended without a final step result.")
 
         if step_result.assistant_text or step_result.tool_calls:
             messages.append(
@@ -262,7 +306,7 @@ class AgentRuntime:
                 )
             )
 
-        return step_result
+        return step_result, streamed_assistant_text
 
 
 def build_loop_runtime() -> AgentRuntime:

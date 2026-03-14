@@ -21,7 +21,7 @@ from anima_server.services.agent import (
     run_agent,
     stream_agent,
 )
-from anima_server.services.agent.llm import LLMConfigError
+from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.system_prompt import PromptTemplateError
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -38,7 +38,7 @@ async def send_message(
     if not payload.stream:
         try:
             result = await run_agent(payload.message, payload.userId, db)
-        except (LLMConfigError, PromptTemplateError) as exc:
+        except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
@@ -52,7 +52,7 @@ async def send_message(
 
     try:
         ensure_agent_ready()
-    except (LLMConfigError, PromptTemplateError) as exc:
+    except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),

@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from anima_server.services.agent.adapters.openai_compatible import OpenAICompatibleAdapter
-from anima_server.services.agent.runtime_types import LLMRequest, ToolCall
+from anima_server.services.agent.openai_compatible_client import OpenAICompatibleStreamChunk
+from anima_server.services.agent.runtime_types import LLMRequest, StepStreamEvent, ToolCall
 from anima_server.services.agent.tools import send_message
 
 
@@ -46,6 +47,27 @@ class FakeChatClient:
         self.invocations.append(list(input))
         return self._response
 
+    async def astream(self, input: list[object]):
+        self.invocations.append(list(input))
+        yield OpenAICompatibleStreamChunk(content_delta="hello ")
+        yield OpenAICompatibleStreamChunk(
+            content_delta="world",
+            tool_call_deltas=(
+                {
+                    "index": 0,
+                    "id": "call-1",
+                    "name": "send_message",
+                    "arguments": '{"message":"hello world"}',
+                },
+            ),
+            usage_metadata={
+                "input_tokens": 5,
+                "output_tokens": 7,
+                "total_tokens": 12,
+            },
+            done=True,
+        )
+
 
 @pytest.mark.asyncio
 async def test_openai_compatible_adapter_uses_generic_chat_client_surface() -> None:
@@ -83,3 +105,45 @@ async def test_openai_compatible_adapter_uses_generic_chat_client_surface() -> N
     assert result.usage.prompt_tokens == 5
     assert result.usage.completion_tokens == 7
     assert result.usage.total_tokens == 12
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_adapter_streams_chunks_and_final_result() -> None:
+    client = FakeChatClient(FakeResponse())
+    adapter = OpenAICompatibleAdapter(
+        client,
+        provider="ollama",
+        model="test-model",
+    )
+
+    events = [
+        event
+        async for event in adapter.stream(
+            LLMRequest(
+                messages=("message",),
+                user_id=1,
+                step_index=0,
+                max_steps=4,
+                system_prompt="system",
+                available_tools=(send_message,),
+                force_tool_call=True,
+            )
+        )
+    ]
+
+    assert events[:2] == [
+        StepStreamEvent(content_delta="hello "),
+        StepStreamEvent(content_delta="world"),
+    ]
+    final_event = events[-1]
+    assert final_event.result is not None
+    assert final_event.result.assistant_text == "hello world"
+    assert final_event.result.tool_calls == (
+        ToolCall(
+            id="call-1",
+            name="send_message",
+            arguments={"message": "hello world"},
+        ),
+    )
+    assert final_event.result.usage is not None
+    assert final_event.result.usage.total_tokens == 12

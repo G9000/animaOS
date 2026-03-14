@@ -17,6 +17,10 @@ from anima_server.db.session import get_db
 from anima_server.main import create_app
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
 from anima_server.services.agent import invalidate_agent_runtime_cache
+from anima_server.services.agent.openai_compatible_client import (
+    OpenAICompatibleResponse,
+    OpenAICompatibleStreamChunk,
+)
 from anima_server.services.sessions import unlock_session_store
 
 
@@ -217,12 +221,47 @@ def test_chat_stream_returns_sse_events() -> None:
     assert "stream this" in body
 
 
-def test_chat_ollama_provider_returns_error_until_client_is_wired() -> None:
+def test_chat_stream_ollama_emits_live_chunks(monkeypatch) -> None:
     original_provider = settings.agent_provider
     original_model = settings.agent_model
     original_persona_template = settings.agent_persona_template
     original_base_url = settings.agent_base_url
     original_api_key = settings.agent_api_key
+
+    class FakeStreamingChatClient:
+        def __init__(self) -> None:
+            self.bound_tools: list[object] = []
+            self.tool_choice: str | None = None
+
+        def bind_tools(
+            self,
+            tools: list[object],
+            *,
+            tool_choice: str | None = None,
+            **_: object,
+        ) -> "FakeStreamingChatClient":
+            self.bound_tools = list(tools)
+            self.tool_choice = tool_choice
+            return self
+
+        async def ainvoke(self, input: list[object]) -> OpenAICompatibleResponse:
+            assert input
+            return OpenAICompatibleResponse(content="hello world")
+
+        async def astream(self, input: list[object]):
+            assert input
+            yield OpenAICompatibleStreamChunk(content_delta="hello ")
+            yield OpenAICompatibleStreamChunk(
+                content_delta="world",
+                usage_metadata={
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8,
+                },
+                done=True,
+            )
+
+    fake_client = FakeStreamingChatClient()
 
     try:
         settings.agent_provider = "ollama"
@@ -231,6 +270,86 @@ def test_chat_ollama_provider_returns_error_until_client_is_wired() -> None:
         settings.agent_base_url = ""
         settings.agent_api_key = ""
         invalidate_agent_runtime_cache()
+        monkeypatch.setattr(
+            "anima_server.services.agent.adapters.openai_compatible.create_llm",
+            lambda: fake_client,
+        )
+
+        with _client() as client:
+            user = _register_user(client, username="ollama-stream")
+            headers = {"x-anima-unlock": str(user["unlockToken"])}
+            user_id = int(user["id"])
+
+            with client.stream(
+                "POST",
+                "/api/chat",
+                headers=headers,
+                json={"message": "hello", "userId": user_id, "stream": True},
+            ) as response:
+                body = "".join(response.iter_text())
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_persona_template = original_persona_template
+        settings.agent_base_url = original_base_url
+        settings.agent_api_key = original_api_key
+        invalidate_agent_runtime_cache()
+
+    assert response.status_code == 200
+    assert body.count("event: chunk") == 2
+    assert "hello " in body
+    assert "world" in body
+    assert "event: usage" in body
+    assert "event: done" in body
+
+
+def test_chat_ollama_provider_uses_live_adapter_surface(monkeypatch) -> None:
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_persona_template = settings.agent_persona_template
+    original_base_url = settings.agent_base_url
+    original_api_key = settings.agent_api_key
+
+    class FakeLiveChatClient:
+        def __init__(self) -> None:
+            self.bound_tools: list[object] = []
+            self.tool_choice: str | None = None
+
+        def bind_tools(
+            self,
+            tools: list[object],
+            *,
+            tool_choice: str | None = None,
+            **_: object,
+        ) -> "FakeLiveChatClient":
+            self.bound_tools = list(tools)
+            self.tool_choice = tool_choice
+            return self
+
+        async def ainvoke(self, input: list[object]) -> OpenAICompatibleResponse:
+            assert input
+            return OpenAICompatibleResponse(
+                content="hello from ollama adapter",
+                usage_metadata={
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8,
+                },
+            )
+
+    fake_client = FakeLiveChatClient()
+
+    try:
+        settings.agent_provider = "ollama"
+        settings.agent_model = "llama3.2"
+        settings.agent_persona_template = "default"
+        settings.agent_base_url = ""
+        settings.agent_api_key = ""
+        invalidate_agent_runtime_cache()
+        monkeypatch.setattr(
+            "anima_server.services.agent.adapters.openai_compatible.create_llm",
+            lambda: fake_client,
+        )
 
         with _client() as client:
             user = _register_user(client, username="ollama-loop")
@@ -250,8 +369,46 @@ def test_chat_ollama_provider_returns_error_until_client_is_wired() -> None:
         settings.agent_api_key = original_api_key
         invalidate_agent_runtime_cache()
 
+    assert response.status_code == 200
+    assert response.json()["provider"] == "ollama"
+    assert response.json()["model"] == "llama3.2"
+    assert response.json()["response"] == "hello from ollama adapter"
+    assert fake_client.tool_choice == "auto"
+    assert [getattr(tool, "name", "") for tool in fake_client.bound_tools] == [
+        "current_datetime",
+        "send_message",
+    ]
+
+
+def test_chat_openrouter_without_api_key_returns_error() -> None:
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_api_key = settings.agent_api_key
+
+    try:
+        settings.agent_provider = "openrouter"
+        settings.agent_model = "openai/gpt-4.1-mini"
+        settings.agent_api_key = ""
+        invalidate_agent_runtime_cache()
+
+        with _client() as client:
+            user = _register_user(client, username="openrouter-missing-key")
+            headers = {"x-anima-unlock": str(user["unlockToken"])}
+            user_id = int(user["id"])
+
+            response = client.post(
+                "/api/chat",
+                headers=headers,
+                json={"message": "hello", "userId": user_id},
+            )
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_api_key = original_api_key
+        invalidate_agent_runtime_cache()
+
     assert response.status_code == 503
-    assert "scaffolded only" in response.json()["error"]
+    assert "ANIMA_AGENT_API_KEY is required" in response.json()["error"]
 
 
 def test_chat_invalid_persona_template_returns_error() -> None:
