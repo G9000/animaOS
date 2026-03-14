@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     agent_persona_template: str = "default"
     agent_base_url: str = ""
     agent_api_key: str = ""
+    agent_max_steps: int = 4
     agent_max_tokens: int = 4096
     agent_stream_chunk_size: int = 48
 

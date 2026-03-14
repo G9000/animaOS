@@ -13,7 +13,7 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.session import get_db
 from anima_server.main import create_app
-from anima_server.services.agent import clear_agent_threads, invalidate_agent_graph_cache
+from anima_server.services.agent import clear_agent_threads, invalidate_agent_runtime_cache
 from anima_server.services.sessions import unlock_session_store
 
 
@@ -63,14 +63,14 @@ def _client() -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = override_get_db
     unlock_session_store.clear()
     clear_agent_threads()
-    invalidate_agent_graph_cache()
+    invalidate_agent_runtime_cache()
 
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         clear_agent_threads()
-        invalidate_agent_graph_cache()
+        invalidate_agent_runtime_cache()
         unlock_session_store.clear()
         app.dependency_overrides.clear()
         Base.metadata.drop_all(bind=engine)
@@ -176,10 +176,10 @@ def test_chat_ollama_provider_returns_error_until_client_is_wired() -> None:
         settings.agent_persona_template = "default"
         settings.agent_base_url = ""
         settings.agent_api_key = ""
-        invalidate_agent_graph_cache()
+        invalidate_agent_runtime_cache()
 
         with _client() as client:
-            user = _register_user(client, username="ollama-scaffold")
+            user = _register_user(client, username="ollama-loop")
             headers = {"x-anima-unlock": str(user["unlockToken"])}
             user_id = int(user["id"])
 
@@ -194,7 +194,7 @@ def test_chat_ollama_provider_returns_error_until_client_is_wired() -> None:
         settings.agent_persona_template = original_persona_template
         settings.agent_base_url = original_base_url
         settings.agent_api_key = original_api_key
-        invalidate_agent_graph_cache()
+        invalidate_agent_runtime_cache()
 
     assert response.status_code == 503
     assert "scaffolded only" in response.json()["error"]
@@ -207,7 +207,7 @@ def test_chat_invalid_persona_template_returns_error() -> None:
     try:
         settings.agent_provider = "scaffold"
         settings.agent_persona_template = "../broken"
-        invalidate_agent_graph_cache()
+        invalidate_agent_runtime_cache()
 
         with _client() as client:
             user = _register_user(client, username="bad-persona")
@@ -222,7 +222,7 @@ def test_chat_invalid_persona_template_returns_error() -> None:
     finally:
         settings.agent_provider = original_provider
         settings.agent_persona_template = original_persona_template
-        invalidate_agent_graph_cache()
+        invalidate_agent_runtime_cache()
 
     assert response.status_code == 503
     assert "Invalid persona template name" in response.json()["error"]

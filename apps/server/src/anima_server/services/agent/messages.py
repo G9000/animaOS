@@ -60,7 +60,7 @@ def render_scaffold_response(
 ) -> str:
     normalized_message = user_message.strip() or "[empty]"
     return (
-        f"Python agent graph scaffold is active for user {user_id}. "
-        f"This is turn {turn_number}. Replace the scaffold node with a real model call. "
+        f"Python agent scaffold is active for user {user_id}. "
+        f"This is turn {turn_number}. Replace the scaffold runtime with a real model call. "
         f"Last message: {normalized_message}"
     )

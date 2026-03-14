@@ -5,23 +5,24 @@ from collections.abc import AsyncGenerator
 from threading import Lock
 
 from anima_server.config import settings
-from anima_server.services.agent.builders import build_graph
 from anima_server.services.agent.llm import invalidate_llm_cache
-from anima_server.services.agent.runner import GraphRunner
+from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.state import AgentResult
 from anima_server.services.agent.store import thread_store
+from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
 
-_graph_lock = Lock()
-_cached_runner: GraphRunner | None = None
+_runner_lock = Lock()
+_cached_runner: AgentRuntime | None = None
 
 
-def get_or_build_runner() -> GraphRunner:
+def get_or_build_runner() -> AgentRuntime:
     global _cached_runner
     if _cached_runner is not None:
         return _cached_runner
-    with _graph_lock:
+
+    with _runner_lock:
         if _cached_runner is None:
-            _cached_runner = build_graph()
+            _cached_runner = build_loop_runtime()
         return _cached_runner
 
 
@@ -30,11 +31,12 @@ def ensure_agent_ready() -> None:
     runner.prepare_system_prompt()
 
 
-def invalidate_agent_graph_cache() -> None:
+def invalidate_agent_runtime_cache() -> None:
     global _cached_runner
-    with _graph_lock:
+    with _runner_lock:
         _cached_runner = None
     invalidate_llm_cache()
+    invalidate_system_prompt_template_cache()
 
 
 def clear_agent_threads() -> None:

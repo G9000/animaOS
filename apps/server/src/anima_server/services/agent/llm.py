@@ -45,6 +45,7 @@ def create_llm() -> BaseChatModel:
 def invalidate_llm_cache() -> None:
     create_llm.cache_clear()
 
+
 def resolve_base_url(provider: str) -> str:
     configured_base_url = settings.agent_base_url.strip()
     if configured_base_url:
