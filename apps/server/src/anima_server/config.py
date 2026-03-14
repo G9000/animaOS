@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     database_echo: bool = False
     data_dir: Path = DEFAULT_DATA_DIR
     agent_provider: str = "scaffold"
-    agent_model: str = "python-agent-scaffold"
+    agent_model: str = "llama3.2"
+    agent_base_url: str = ""
+    agent_api_key: str = ""
+    agent_max_tokens: int = 4096
     agent_stream_chunk_size: int = 48
 
     model_config = SettingsConfigDict(

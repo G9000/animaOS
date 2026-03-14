@@ -9,10 +9,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.session import get_db
 from anima_server.main import create_app
-from anima_server.services.agent_graph import clear_agent_threads, invalidate_agent_graph_cache
+from anima_server.services.agent import clear_agent_threads, invalidate_agent_graph_cache
 from anima_server.services.sessions import unlock_session_store
 
 
@@ -160,3 +161,37 @@ def test_chat_stream_returns_sse_events() -> None:
     assert "event: chunk" in body
     assert "event: done" in body
     assert "stream this" in body
+
+
+def test_chat_ollama_provider_returns_error_until_client_is_wired() -> None:
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_base_url = settings.agent_base_url
+    original_api_key = settings.agent_api_key
+
+    try:
+        settings.agent_provider = "ollama"
+        settings.agent_model = "llama3.2"
+        settings.agent_base_url = ""
+        settings.agent_api_key = ""
+        invalidate_agent_graph_cache()
+
+        with _client() as client:
+            user = _register_user(client, username="ollama-scaffold")
+            headers = {"x-anima-unlock": str(user["unlockToken"])}
+            user_id = int(user["id"])
+
+            response = client.post(
+                "/api/chat",
+                headers=headers,
+                json={"message": "hello", "userId": user_id},
+            )
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_base_url = original_base_url
+        settings.agent_api_key = original_api_key
+        invalidate_agent_graph_cache()
+
+    assert response.status_code == 503
+    assert "scaffolded only" in response.json()["error"]

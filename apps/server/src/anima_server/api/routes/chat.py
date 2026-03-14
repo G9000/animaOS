@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from anima_server.api.deps.unlock import require_unlocked_user
@@ -13,7 +13,13 @@ from anima_server.schemas.chat import (
     ChatResetResponse,
     ChatResponse,
 )
-from anima_server.services.agent_graph import reset_agent_thread, run_agent, stream_agent
+from anima_server.services.agent import (
+    ensure_agent_ready,
+    reset_agent_thread,
+    run_agent,
+    stream_agent,
+)
+from anima_server.services.agent.llm import LLMConfigError
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -26,7 +32,13 @@ async def send_message(
     require_unlocked_user(request, payload.userId)
 
     if not payload.stream:
-        result = await run_agent(payload.message, payload.userId)
+        try:
+            result = await run_agent(payload.message, payload.userId)
+        except LLMConfigError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
         return ChatResponse(
             response=result.response,
             model=result.model,
@@ -34,13 +46,18 @@ async def send_message(
             toolsUsed=result.tools_used,
         )
 
+    try:
+        ensure_agent_ready()
+    except LLMConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
     async def event_stream() -> AsyncGenerator[str, None]:
-        try:
-            async for chunk in stream_agent(payload.message, payload.userId):
-                yield _format_sse_event("chunk", {"content": chunk})
-            yield _format_sse_event("done", {"status": "complete"})
-        except Exception as exc:
-            yield _format_sse_event("error", {"error": str(exc)})
+        async for chunk in stream_agent(payload.message, payload.userId):
+            yield _format_sse_event("chunk", {"content": chunk})
+        yield _format_sse_event("done", {"status": "complete"})
 
     return StreamingResponse(
         event_stream(),
