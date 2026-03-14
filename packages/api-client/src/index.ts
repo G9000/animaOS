@@ -196,6 +196,7 @@ export interface DbTableInfo {
 export interface DbTableData {
   table: string;
   columns: string[];
+  primaryKeys: string[];
   rows: Record<string, unknown>[];
   total: number;
 }
@@ -569,6 +570,20 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { sql },
         }),
+      deleteRow: (tableName: string, conditions: Record<string, unknown>) =>
+        request<{ deleted: number }>(
+          `/db/tables/${encodeURIComponent(tableName)}/rows`,
+          { method: "DELETE", body: { conditions } },
+        ),
+      updateRow: (
+        tableName: string,
+        conditions: Record<string, unknown>,
+        updates: Record<string, unknown>,
+      ) =>
+        request<{ updated: number }>(
+          `/db/tables/${encodeURIComponent(tableName)}/rows`,
+          { method: "PUT", body: { conditions, updates } },
+        ),
     },
   };
 }

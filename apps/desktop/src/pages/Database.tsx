@@ -19,11 +19,24 @@ export default function Database() {
   const [page, setPage] = useState(0);
   const queryRef = useRef<HTMLTextAreaElement>(null);
 
+  // Edit / delete gating
+  const [editMode, setEditMode] = useState(false);
+  const [editingRow, setEditingRow] = useState<number | null>(null);
+  const [editValues, setEditValues] = useState<Record<string, string>>({});
+
   const PAGE_SIZE = 100;
 
   useEffect(() => {
     loadTables();
   }, []);
+
+  // Reset editing state when edit mode is toggled off
+  useEffect(() => {
+    if (!editMode) {
+      setEditingRow(null);
+      setEditValues({});
+    }
+  }, [editMode]);
 
   async function loadTables() {
     setLoading(true);
@@ -43,6 +56,8 @@ export default function Database() {
     setError(null);
     setPage(pageNum);
     setView("rows");
+    setEditingRow(null);
+    setEditValues({});
     try {
       const data = await api.db.tableRows(name, PAGE_SIZE, pageNum * PAGE_SIZE);
       setTableData(data);
@@ -76,6 +91,82 @@ export default function Database() {
   }
 
   // ---------------------------------------------------------------------------
+  // Row editing helpers
+  // ---------------------------------------------------------------------------
+
+  function buildConditions(row: Record<string, unknown>): Record<string, unknown> {
+    if (!tableData) return {};
+    const pks = tableData.primaryKeys ?? [];
+    if (pks.length > 0) {
+      const cond: Record<string, unknown> = {};
+      for (const pk of pks) cond[pk] = row[pk];
+      return cond;
+    }
+    // Fallback: use all columns
+    return { ...row };
+  }
+
+  function startEdit(rowIndex: number, row: Record<string, unknown>) {
+    setEditingRow(rowIndex);
+    const vals: Record<string, string> = {};
+    for (const [k, v] of Object.entries(row)) {
+      vals[k] = v === null || v === undefined ? "" : String(v);
+    }
+    setEditValues(vals);
+  }
+
+  function cancelEdit() {
+    setEditingRow(null);
+    setEditValues({});
+  }
+
+  async function saveEdit(originalRow: Record<string, unknown>) {
+    if (!tableData) return;
+    const conditions = buildConditions(originalRow);
+    const updates: Record<string, unknown> = {};
+    for (const col of tableData.columns) {
+      const newVal = editValues[col] ?? "";
+      const oldVal =
+        originalRow[col] === null || originalRow[col] === undefined
+          ? ""
+          : String(originalRow[col]);
+      if (newVal !== oldVal) {
+        updates[col] = newVal === "" ? null : newVal;
+      }
+    }
+    if (Object.keys(updates).length === 0) {
+      cancelEdit();
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await api.db.updateRow(tableData.table, conditions, updates);
+      cancelEdit();
+      await openTable(tableData.table, page);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteRow(row: Record<string, unknown>) {
+    if (!tableData) return;
+    const conditions = buildConditions(row);
+    setLoading(true);
+    setError(null);
+    try {
+      await api.db.deleteRow(tableData.table, conditions);
+      await openTable(tableData.table, page);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Render helpers
   // ---------------------------------------------------------------------------
 
@@ -86,7 +177,12 @@ export default function Database() {
     return String(value);
   }
 
-  function renderDataTable(columns: string[], rows: Record<string, unknown>[]) {
+  function renderDataTable(
+    columns: string[],
+    rows: Record<string, unknown>[],
+    options?: { editable?: boolean },
+  ) {
+    const editable = options?.editable && editMode;
     if (columns.length === 0) {
       return <p className="text-text-muted text-sm">No columns</p>;
     }
@@ -95,6 +191,11 @@ export default function Database() {
         <table className="w-full text-[12px] font-mono">
           <thead className="sticky top-0 z-10">
             <tr className="bg-bg-card border-b border-border">
+              {editable && (
+                <th className="px-2 py-2 text-left text-text-muted font-medium whitespace-nowrap w-[80px]">
+                  Actions
+                </th>
+              )}
               {columns.map((col) => (
                 <th
                   key={col}
@@ -106,27 +207,85 @@ export default function Database() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr
-                key={i}
-                className="border-b border-border/50 hover:bg-bg-card/60 transition-colors"
-              >
-                {columns.map((col) => (
-                  <td
-                    key={col}
-                    className="px-3 py-1.5 whitespace-nowrap max-w-[300px] truncate"
-                  >
-                    <span
-                      className={
-                        row[col] === null ? "text-text-muted/40 italic" : ""
-                      }
+            {rows.map((row, i) => {
+              const isEditing = editable && editingRow === i;
+              return (
+                <tr
+                  key={i}
+                  className="border-b border-border/50 hover:bg-bg-card/60 transition-colors"
+                >
+                  {editable && (
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      {isEditing ? (
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => saveEdit(row)}
+                            className="text-[10px] text-primary hover:text-primary-hover"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={cancelEdit}
+                            className="text-[10px] text-text-muted hover:text-text"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => startEdit(i, row)}
+                            className="text-[10px] text-text-muted hover:text-primary transition-colors"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => deleteRow(row)}
+                            className="text-[10px] text-text-muted hover:text-danger transition-colors"
+                          >
+                            Del
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  )}
+                  {columns.map((col) => (
+                    <td
+                      key={col}
+                      className="px-3 py-1.5 whitespace-nowrap max-w-[300px] truncate"
                     >
-                      {renderCell(row[col])}
-                    </span>
-                  </td>
-                ))}
-              </tr>
-            ))}
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editValues[col] ?? ""}
+                          onChange={(e) =>
+                            setEditValues((prev) => ({
+                              ...prev,
+                              [col]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEdit(row);
+                            if (e.key === "Escape") cancelEdit();
+                          }}
+                          className="w-full min-w-[80px] bg-bg-input border border-border rounded px-1.5 py-0.5 text-[12px] font-mono outline-none focus:border-primary/40"
+                        />
+                      ) : (
+                        <span
+                          className={
+                            row[col] === null
+                              ? "text-text-muted/40 italic"
+                              : ""
+                          }
+                        >
+                          {renderCell(row[col])}
+                        </span>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -198,7 +357,21 @@ export default function Database() {
             Query this table
           </button>
         </div>
-        {renderDataTable(tableData.columns, tableData.rows)}
+
+        {/* Edit mode toggle */}
+        <label className="inline-flex items-center gap-2 select-none cursor-pointer">
+          <input
+            type="checkbox"
+            checked={editMode}
+            onChange={(e) => setEditMode(e.target.checked)}
+            className="w-3.5 h-3.5 accent-danger cursor-pointer"
+          />
+          <span className="text-xs text-text-muted">
+            Enable editing
+          </span>
+        </label>
+
+        {renderDataTable(tableData.columns, tableData.rows, { editable: true })}
         {totalPages > 1 && (
           <div className="flex items-center gap-2 justify-center pt-1">
             <button

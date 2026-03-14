@@ -16,6 +16,11 @@ const SETTINGS_SECTIONS = [
     label: "Vault",
     description: "Encrypted backup export and import.",
   },
+  {
+    to: "/settings/advanced",
+    label: "Advanced",
+    description: "Debug tools and developer options.",
+  },
 ];
 
 export default function Settings() {
@@ -30,7 +35,7 @@ export default function Settings() {
           </p>
         </header>
 
-        <nav className="grid gap-2 md:grid-cols-3">
+        <nav className="grid gap-2 md:grid-cols-4">
           {SETTINGS_SECTIONS.map((section) => (
             <NavLink
               key={section.to}

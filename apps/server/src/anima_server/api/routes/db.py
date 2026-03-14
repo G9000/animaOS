@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
@@ -10,6 +13,30 @@ from anima_server.db import get_db
 router = APIRouter(prefix="/api/db", tags=["db"])
 
 MAX_ROWS = 500
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+_VALID_TABLE_NAME = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_table(insp: Any, table_name: str) -> None:
+    """Raise 404 when *table_name* does not exist."""
+    if table_name not in insp.get_table_names():
+        raise HTTPException(
+            status_code=404, detail=f"Table '{table_name}' not found"
+        )
+
+
+def _pk_columns(insp: Any, table_name: str) -> list[str]:
+    pk = insp.get_pk_constraint(table_name)
+    return list(pk.get("constrained_columns") or [])
+
+
+# --------------------------------------------------------------------------- #
+# Read endpoints
+# --------------------------------------------------------------------------- #
 
 
 @router.get("/tables")
@@ -36,13 +63,10 @@ def get_table_rows(
 ) -> dict[str, object]:
     require_unlocked_session(request)
     insp = inspect(db.get_bind())
-    all_tables = insp.get_table_names()
-    if table_name not in all_tables:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=404, detail=f"Table '{table_name}' not found")
+    _validate_table(insp, table_name)
 
     columns = [col["name"] for col in insp.get_columns(table_name)]
+    pk_cols = _pk_columns(insp, table_name)
     total = db.execute(
         text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar() or 0
     rows_raw = db.execute(
@@ -50,7 +74,13 @@ def get_table_rows(
         {"lim": limit, "off": offset},
     ).fetchall()
     rows = [dict(zip(columns, row)) for row in rows_raw]
-    return {"table": table_name, "columns": columns, "rows": rows, "total": total}
+    return {
+        "table": table_name,
+        "columns": columns,
+        "primaryKeys": pk_cols,
+        "rows": rows,
+        "total": total,
+    }
 
 
 @router.post("/query")
@@ -62,13 +92,11 @@ def run_query(
     require_unlocked_session(request)
     sql = (body.get("sql") or "").strip()
     if not sql:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Empty query")
 
     # Only allow SELECT statements for safety
     first_word = sql.split()[0].upper() if sql.split() else ""
     if first_word not in ("SELECT", "PRAGMA", "EXPLAIN"):
-        from fastapi import HTTPException
         raise HTTPException(
             status_code=400, detail="Only SELECT, PRAGMA, and EXPLAIN queries are allowed")
 
@@ -77,3 +105,88 @@ def run_query(
     rows = [dict(zip(columns, row))
             for row in result.fetchall()] if result.returns_rows else []
     return {"columns": columns, "rows": rows, "rowCount": len(rows)}
+
+
+# --------------------------------------------------------------------------- #
+# Mutation endpoints (edit / delete)
+# --------------------------------------------------------------------------- #
+
+
+class RowConditions(BaseModel):
+    conditions: dict[str, Any]
+
+
+class RowUpdate(BaseModel):
+    conditions: dict[str, Any]
+    updates: dict[str, Any]
+
+
+@router.delete("/tables/{table_name}/rows")
+def delete_row(
+    table_name: str,
+    body: RowConditions,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    require_unlocked_session(request)
+    insp = inspect(db.get_bind())
+    _validate_table(insp, table_name)
+
+    if not body.conditions:
+        raise HTTPException(status_code=400, detail="Conditions required")
+
+    where_parts: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (col, val) in enumerate(body.conditions.items()):
+        placeholder = f"w{i}"
+        if val is None:
+            where_parts.append(f'"{col}" IS NULL')
+        else:
+            where_parts.append(f'"{col}" = :{placeholder}')
+            params[placeholder] = val
+
+    where_clause = " AND ".join(where_parts)
+    sql = f'DELETE FROM "{table_name}" WHERE {where_clause}'
+    result = db.execute(text(sql), params)
+    db.commit()
+    return {"deleted": result.rowcount}
+
+
+@router.put("/tables/{table_name}/rows")
+def update_row(
+    table_name: str,
+    body: RowUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    require_unlocked_session(request)
+    insp = inspect(db.get_bind())
+    _validate_table(insp, table_name)
+
+    if not body.conditions:
+        raise HTTPException(status_code=400, detail="Conditions required")
+    if not body.updates:
+        raise HTTPException(status_code=400, detail="Updates required")
+
+    set_parts: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (col, val) in enumerate(body.updates.items()):
+        placeholder = f"s{i}"
+        set_parts.append(f'"{col}" = :{placeholder}')
+        params[placeholder] = val
+
+    where_parts: list[str] = []
+    for i, (col, val) in enumerate(body.conditions.items()):
+        placeholder = f"w{i}"
+        if val is None:
+            where_parts.append(f'"{col}" IS NULL')
+        else:
+            where_parts.append(f'"{col}" = :{placeholder}')
+            params[placeholder] = val
+
+    set_clause = ", ".join(set_parts)
+    where_clause = " AND ".join(where_parts)
+    sql = f'UPDATE "{table_name}" SET {set_clause} WHERE {where_clause}'
+    result = db.execute(text(sql), params)
+    db.commit()
+    return {"updated": result.rowcount}

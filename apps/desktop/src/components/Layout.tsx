@@ -1,7 +1,9 @@
+import { useState, useEffect, useCallback } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { getDbViewerEnabled } from "../pages/settings/AdvancedSettings";
 
-const NAV_ITEMS = [
+const STATIC_NAV_ITEMS = [
   { to: "/", label: "Home" },
   { to: "/tasks", label: "Tasks" },
   { to: "/chat", label: "Chat" },
@@ -9,12 +11,26 @@ const NAV_ITEMS = [
   { to: "/soul", label: "Soul" },
   { to: "/consciousness", label: "Mind" },
   { to: "/settings", label: "Settings" },
-  { to: "/database", label: "DB" },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
+
+  const syncSetting = useCallback(() => {
+    setDbEnabled(getDbViewerEnabled());
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("anima-settings-changed", syncSetting);
+    return () =>
+      window.removeEventListener("anima-settings-changed", syncSetting);
+  }, [syncSetting]);
+
+  const navItems = dbEnabled
+    ? [...STATIC_NAV_ITEMS, { to: "/database", label: "DB" }]
+    : STATIC_NAV_ITEMS;
 
   return (
     <div className="flex h-screen bg-(--color-bg) text-(--color-text)">
@@ -29,7 +45,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Nav */}
         <nav className="flex-1 flex flex-col gap-0.5 px-2">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
