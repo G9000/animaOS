@@ -137,27 +137,40 @@ class SqliteCheckpointSaver extends BaseCheckpointSaver {
     config: RunnableConfig,
     options?: CheckpointListOptions,
   ): AsyncGenerator<CheckpointTuple> {
-    const rows = await db
-      .select()
-      .from(schema.langgraphCheckpoints)
-      .orderBy(desc(schema.langgraphCheckpoints.id));
-
     const threadId = getThreadId(config);
     const checkpointNs = config.configurable?.checkpoint_ns;
     const checkpointId = config.configurable?.checkpoint_id;
     const beforeCheckpointId = options?.before?.configurable?.checkpoint_id;
     const metadataFilter = options?.filter;
 
+    // Build a filtered query to avoid loading all rows into memory.
+    const conditions: ReturnType<typeof eq>[] = [];
+    if (threadId) {
+      conditions.push(eq(schema.langgraphCheckpoints.threadId, threadId));
+    }
+    if (typeof checkpointNs === "string") {
+      conditions.push(eq(schema.langgraphCheckpoints.checkpointNs, checkpointNs));
+    }
+    if (typeof checkpointId === "string") {
+      conditions.push(eq(schema.langgraphCheckpoints.checkpointId, checkpointId));
+    }
+
+    const query = conditions.length > 0
+      ? db
+          .select()
+          .from(schema.langgraphCheckpoints)
+          .where(and(...conditions))
+          .orderBy(desc(schema.langgraphCheckpoints.id))
+      : db
+          .select()
+          .from(schema.langgraphCheckpoints)
+          .orderBy(desc(schema.langgraphCheckpoints.id));
+
+    const rows = await query;
+
     let yielded = 0;
 
     for (const row of rows) {
-      if (threadId && row.threadId !== threadId) continue;
-      if (typeof checkpointNs === "string" && row.checkpointNs !== checkpointNs) {
-        continue;
-      }
-      if (typeof checkpointId === "string" && row.checkpointId !== checkpointId) {
-        continue;
-      }
       if (
         typeof beforeCheckpointId === "string" &&
         row.checkpointId >= beforeCheckpointId

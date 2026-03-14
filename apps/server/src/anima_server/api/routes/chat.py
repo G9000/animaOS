@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -30,6 +31,8 @@ from anima_server.services.agent import (
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
 from anima_server.services.agent.system_prompt import PromptTemplateError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -69,8 +72,11 @@ async def send_message(
         try:
             async for event in stream_agent(payload.message, payload.userId, db):
                 yield _format_sse_event(event.event, event.data)
-        except Exception as exc:
+        except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             yield _format_sse_event("error", {"error": str(exc)})
+        except Exception:
+            logger.exception("Unexpected error during SSE streaming")
+            yield _format_sse_event("error", {"error": "An internal error occurred during streaming."})
 
     return StreamingResponse(
         event_stream(),

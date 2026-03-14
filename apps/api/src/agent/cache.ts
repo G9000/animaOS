@@ -17,7 +17,13 @@ function agentCacheKey(
   config: ProviderConfig,
   fullSystemPrompt: string,
 ): string {
-  return `${config.provider}:${config.model}:${config.apiKey ?? ""}:${config.ollamaUrl ?? ""}:${fullSystemPrompt.length}`;
+  // Use a fast hash of prompt content — length alone can collide when
+  // different prompts happen to share the same character count.
+  let hash = 0;
+  for (let i = 0; i < fullSystemPrompt.length; i++) {
+    hash = (hash * 31 + fullSystemPrompt.charCodeAt(i)) | 0;
+  }
+  return `${config.provider}:${config.model}:${config.apiKey ?? ""}:${config.ollamaUrl ?? ""}:${hash}`;
 }
 
 /**

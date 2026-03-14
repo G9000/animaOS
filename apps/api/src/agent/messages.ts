@@ -79,7 +79,10 @@ export async function persistAssistantTurn(
 
   // Fire-and-forget memory extraction.
   const extractionModel = createModel(config);
-  extractMemories(extractionModel, userMessage, responseText, userId);
+  extractMemories(extractionModel, userMessage, responseText, userId).catch(
+    (err) =>
+      console.error("[agent] Memory extraction failed:", (err as Error).message),
+  );
 
   // Fire-and-forget: summarize old messages if checkpoint is growing large.
   maybeSummarizeThread(userId, config).catch((err) =>
