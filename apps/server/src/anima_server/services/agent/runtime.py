@@ -7,6 +7,7 @@ from anima_server.config import settings
 from anima_server.services.agent.adapters import build_adapter
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.executor import ToolExecutor
+from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.messages import (
     build_conversation_messages,
     make_assistant_message,
@@ -54,11 +55,19 @@ class AgentRuntime:
         self._max_steps = max_steps
 
     def prepare_system_prompt(self) -> str:
+        return self.build_system_prompt()
+
+    def build_system_prompt(
+        self,
+        *,
+        memory_blocks: Sequence[MemoryBlock] = (),
+    ) -> str:
         self._adapter.prepare()
         return build_system_prompt(
             SystemPromptContext(
                 persona_template=self._persona_template,
                 tool_summaries=self._tool_summaries,
+                memory_blocks=memory_blocks,
             )
         )
 
@@ -69,8 +78,9 @@ class AgentRuntime:
         history: list[StoredMessage],
         *,
         conversation_turn_count: int | None = None,
+        memory_blocks: Sequence[MemoryBlock] = (),
     ) -> AgentResult:
-        system_prompt = self.prepare_system_prompt()
+        system_prompt = self.build_system_prompt(memory_blocks=memory_blocks)
         messages = build_conversation_messages(
             history,
             user_message,

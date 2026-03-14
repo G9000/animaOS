@@ -10,11 +10,14 @@ from typing import Any
 
 from jinja2 import Environment, StrictUndefined, Template
 
+from anima_server.services.agent.memory_blocks import MemoryBlock, serialize_memory_blocks
+
 
 @dataclass(frozen=True, slots=True)
 class SystemPromptContext:
     persona_template: str = "default"
     tool_summaries: Sequence[str] = field(default_factory=tuple)
+    memory_blocks: Sequence[MemoryBlock] = field(default_factory=tuple)
     user_context: str = ""
     additional_instructions: Sequence[str] = field(default_factory=tuple)
     now: datetime | None = None
@@ -28,6 +31,7 @@ TEMPLATES_DIR = Path(__file__).with_name("templates")
 SYSTEM_PROMPT_TEMPLATE_PATH = TEMPLATES_DIR / "system_prompt.md.j2"
 SYSTEM_RULES_TEMPLATE_PATH = TEMPLATES_DIR / "system_rules.md.j2"
 GUARDRAILS_TEMPLATE_PATH = TEMPLATES_DIR / "guardrails.md.j2"
+MEMORY_BLOCKS_TEMPLATE_PATH = TEMPLATES_DIR / "memory_blocks.md.j2"
 PERSONA_TEMPLATES_DIR = TEMPLATES_DIR / "persona"
 _TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
@@ -50,12 +54,15 @@ def build_system_prompt(
         },
     )
     persona = build_persona_prompt(resolved.persona_template)
+    memory_blocks = serialize_memory_blocks(resolved.memory_blocks)
     template_context = {
         "system_rules": system_rules,
         "guardrails": guardrails,
         "persona": persona,
         "persona_template": resolved.persona_template,
         "tool_summaries": [item.strip() for item in resolved.tool_summaries if item.strip()],
+        "memory_blocks": memory_blocks,
+        "memory_blocks_text": render_memory_blocks_template(memory_blocks),
         "user_context": resolved.user_context.strip(),
         "additional_instructions": [
             item.strip() for item in resolved.additional_instructions if item.strip()
@@ -71,6 +78,17 @@ def invalidate_system_prompt_template_cache() -> None:
 
 def render_system_prompt_template(context: dict[str, Any]) -> str:
     return render_template(SYSTEM_PROMPT_TEMPLATE_PATH, context)
+
+
+def render_memory_blocks_template(memory_blocks: list[dict[str, object]]) -> str:
+    if not memory_blocks:
+        return ""
+    return render_template(
+        MEMORY_BLOCKS_TEMPLATE_PATH,
+        {
+            "memory_blocks": memory_blocks,
+        },
+    )
 
 
 def build_persona_prompt(template_name: str) -> str:

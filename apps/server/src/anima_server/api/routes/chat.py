@@ -59,9 +59,11 @@ async def send_message(
         ) from exc
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        async for chunk in stream_agent(payload.message, payload.userId, db):
-            yield _format_sse_event("chunk", {"content": chunk})
-        yield _format_sse_event("done", {"status": "complete"})
+        try:
+            async for event in stream_agent(payload.message, payload.userId, db):
+                yield _format_sse_event(event.event, event.data)
+        except Exception as exc:
+            yield _format_sse_event("error", {"error": str(exc)})
 
     return StreamingResponse(
         event_stream(),

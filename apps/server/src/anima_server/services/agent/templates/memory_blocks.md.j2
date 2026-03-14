@@ -1,0 +1,8 @@
+{% for block in memory_blocks %}
+<{{ block.label }}>
+{% if block.description %}Description: {{ block.description }}
+{% endif %}{% if block.read_only %}Read only: true
+{% endif %}{{ block.value }}
+</{{ block.label }}>
+
+{% endfor %}

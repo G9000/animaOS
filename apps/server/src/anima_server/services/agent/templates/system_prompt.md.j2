@@ -10,6 +10,11 @@ Persona:
 Runtime:
 - Current UTC time: {{ now_iso }}
 
+{% if memory_blocks %}
+Memory Blocks:
+{{ memory_blocks_text }}
+
+{% endif %}
 {% if user_context %}
 User Context:
 - {{ user_context }}

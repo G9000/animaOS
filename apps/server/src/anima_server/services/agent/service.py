@@ -6,6 +6,7 @@ from threading import Lock
 
 from anima_server.config import settings
 from anima_server.services.agent.compaction import compact_thread_context
+from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 from anima_server.services.agent.llm import invalidate_llm_cache
 from anima_server.services.agent.persistence import (
     append_user_message,
@@ -20,6 +21,7 @@ from anima_server.services.agent.persistence import (
 )
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.state import AgentResult
+from anima_server.services.agent.streaming import AgentStreamEvent, build_stream_events
 from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
 from sqlalchemy.orm import Session
 
@@ -71,6 +73,11 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
         sequence_id=initial_sequence_id,
     )
     conversation_turn_count = count_messages_by_role(db, thread.id, "user")
+    memory_blocks = build_runtime_memory_blocks(
+        db,
+        user_id=user_id,
+        thread_id=thread.id,
+    )
 
     try:
         runner = get_or_build_runner()
@@ -79,6 +86,7 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
             user_id,
             history,
             conversation_turn_count=conversation_turn_count,
+            memory_blocks=memory_blocks,
         )
     except Exception as exc:
         mark_run_failed(db, run, str(exc))
@@ -110,12 +118,12 @@ async def stream_agent(
     user_message: str,
     user_id: int,
     db: Session,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[AgentStreamEvent, None]:
     result = await run_agent(user_message, user_id, db)
     chunk_size = max(1, settings.agent_stream_chunk_size)
-    for start in range(0, len(result.response), chunk_size):
+    for event in build_stream_events(result, chunk_size=chunk_size):
         await asyncio.sleep(0)
-        yield result.response[start : start + chunk_size]
+        yield event
 
 
 async def reset_agent_thread(user_id: int, db: Session) -> None:

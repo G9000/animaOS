@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 from anima_server.db.base import Base
 from anima_server.models import AgentMessage, AgentThread, User
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
+from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.messages import is_assistant_message, to_runtime_message
 from anima_server.services.agent.persistence import load_thread_history
 from anima_server.services.agent.rules import InitToolRule, RequiresApprovalToolRule, TerminalToolRule
@@ -176,6 +177,45 @@ async def test_runtime_stops_before_executing_approval_required_tool() -> None:
     assert result.step_traces[0].tool_results[0].output == (
         "Approval required before running tool: delete_file"
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_renders_memory_blocks_into_system_prompt() -> None:
+    adapter = QueueAdapter([StepExecutionResult(assistant_text="ok")])
+    runtime = AgentRuntime(adapter=adapter, max_steps=1)
+
+    await runtime.invoke(
+        "hello",
+        user_id=1,
+        history=[],
+        memory_blocks=(
+            MemoryBlock(
+                label="human",
+                description="Stable facts about the user for this thread.",
+                value="Display name: Alice",
+            ),
+            MemoryBlock(
+                label="current_focus",
+                description="User-declared current focus from local memory.",
+                value="# Current Focus\n\n- [ ] Finish the runtime migration",
+            ),
+            MemoryBlock(
+                label="thread_summary",
+                description="Compressed summary of earlier conversation context.",
+                value="Conversation summary:\n- User likes green tea.",
+            ),
+        ),
+    )
+
+    system_prompt = adapter.requests[0].messages[0].content
+
+    assert "Memory Blocks:" in system_prompt
+    assert "<human>" in system_prompt
+    assert "Display name: Alice" in system_prompt
+    assert "<current_focus>" in system_prompt
+    assert "Finish the runtime migration" in system_prompt
+    assert "<thread_summary>" in system_prompt
+    assert "User likes green tea." in system_prompt
 
 
 def test_assistant_tool_calls_round_trip_from_persistence() -> None:

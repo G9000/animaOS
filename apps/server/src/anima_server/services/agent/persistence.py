@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
@@ -32,12 +32,9 @@ def load_thread_history(db: Session, thread_id: int) -> list[StoredMessage]:
         .where(
             AgentMessage.thread_id == thread_id,
             AgentMessage.is_in_context.is_(True),
-            AgentMessage.role.in_(("summary", "user", "assistant", "tool")),
+            AgentMessage.role.in_(("user", "assistant", "tool")),
         )
-        .order_by(
-            case((AgentMessage.role == "summary", 0), else_=1),
-            AgentMessage.sequence_id,
-        )
+        .order_by(AgentMessage.sequence_id)
     ).all()
 
     history: list[StoredMessage] = []
