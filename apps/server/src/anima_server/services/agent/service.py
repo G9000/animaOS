@@ -6,6 +6,7 @@ from threading import Lock
 
 from anima_server.config import settings
 from anima_server.services.agent.compaction import compact_thread_context
+from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
 from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 from anima_server.services.agent.llm import invalidate_llm_cache
 from anima_server.services.agent.persistence import (
@@ -111,6 +112,11 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
         keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
     )
     db.commit()
+    schedule_background_memory_consolidation(
+        user_id=user_id,
+        user_message=user_message,
+        assistant_response=result.response,
+    )
     return result
 
 

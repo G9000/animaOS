@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -53,6 +55,7 @@ def _client() -> Generator[TestClient, None, None]:
     Base.metadata.create_all(bind=engine)
 
     app = create_app()
+    original_data_dir = settings.data_dir
 
     def override_get_db() -> Generator[Session, None, None]:
         db = factory()
@@ -66,15 +69,19 @@ def _client() -> Generator[TestClient, None, None]:
     unlock_session_store.clear()
     invalidate_agent_runtime_cache()
 
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        invalidate_agent_runtime_cache()
-        unlock_session_store.clear()
-        app.dependency_overrides.clear()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
+    with TemporaryDirectory() as temp_dir:
+        settings.data_dir = Path(temp_dir) / "anima-data"
+
+        try:
+            with TestClient(app) as test_client:
+                yield test_client
+        finally:
+            settings.data_dir = original_data_dir
+            invalidate_agent_runtime_cache()
+            unlock_session_store.clear()
+            app.dependency_overrides.clear()
+            Base.metadata.drop_all(bind=engine)
+            engine.dispose()
 
 
 def test_chat_requires_unlocked_session() -> None:
