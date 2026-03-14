@@ -13,7 +13,8 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.session import get_db
 from anima_server.main import create_app
-from anima_server.services.agent import clear_agent_threads, invalidate_agent_runtime_cache
+from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
+from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.sessions import unlock_session_store
 
 
@@ -61,15 +62,14 @@ def _client() -> Generator[TestClient, None, None]:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.test_session_factory = factory
     unlock_session_store.clear()
-    clear_agent_threads()
     invalidate_agent_runtime_cache()
 
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
-        clear_agent_threads()
         invalidate_agent_runtime_cache()
         unlock_session_store.clear()
         app.dependency_overrides.clear()
@@ -99,6 +99,7 @@ def test_chat_returns_scaffold_response_and_tracks_turns() -> None:
             headers=headers,
             json={"message": "hello", "userId": user_id},
         )
+        invalidate_agent_runtime_cache()
         second = client.post(
             "/api/chat",
             headers=headers,
@@ -137,10 +138,56 @@ def test_chat_reset_clears_scaffold_thread_state() -> None:
             headers=headers,
             json={"message": "again", "userId": user_id},
         )
+        session = client.app.state.test_session_factory()
+        try:
+            assert session.query(AgentThread).count() == 1
+            assert session.query(AgentMessage).count() == 2
+            assert session.query(AgentRun).count() == 1
+            assert session.query(AgentStep).count() == 1
+        finally:
+            session.close()
 
     assert reset_response.status_code == 200
     assert reset_response.json() == {"status": "reset"}
     assert "turn 1" in after_reset.json()["response"]
+
+
+def test_chat_persists_runtime_rows() -> None:
+    with _client() as client:
+        user = _register_user(client, username="persist-me")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        user_id = int(user["id"])
+
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "hello", "userId": user_id},
+        )
+
+        session = client.app.state.test_session_factory()
+        try:
+            thread = session.query(AgentThread).one()
+            run = session.query(AgentRun).one()
+            step = session.query(AgentStep).one()
+            messages = (
+                session.query(AgentMessage)
+                .order_by(AgentMessage.sequence_id)
+                .all()
+            )
+        finally:
+            session.close()
+
+    assert response.status_code == 200
+    assert thread.user_id == user_id
+    assert run.thread_id == thread.id
+    assert run.status == "completed"
+    assert run.mode == "blocking"
+    assert run.stop_reason == "end_turn"
+    assert step.run_id == run.id
+    assert step.step_index == 0
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert messages[0].content_text == "hello"
+    assert "turn 1" in (messages[1].content_text or "")
 
 
 def test_chat_stream_returns_sse_events() -> None:

@@ -45,8 +45,26 @@ class LLMRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageSnapshot:
+    role: str
+    content: str
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class StepExecutionResult:
     assistant_text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     usage: UsageStats | None = None
     raw_response: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StepTrace:
+    step_index: int
+    request_messages: tuple[MessageSnapshot, ...] = ()
+    assistant_text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_results: tuple[ToolExecutionResult, ...] = ()
+    usage: UsageStats | None = None

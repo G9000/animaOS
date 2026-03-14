@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from anima_server.services.agent.state import StoredMessage
 
@@ -22,6 +22,12 @@ def build_conversation_messages(
 def to_langchain_message(message: StoredMessage) -> Any:
     if message.role == "assistant":
         return AIMessage(content=message.content)
+    if message.role == "tool":
+        return ToolMessage(
+            content=message.content,
+            tool_call_id=message.tool_call_id or message.tool_name or "tool",
+            name=message.tool_name,
+        )
     return HumanMessage(content=message.content)
 
 

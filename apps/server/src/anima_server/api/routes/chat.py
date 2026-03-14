@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.db import get_db
 from anima_server.schemas.chat import (
     ChatRequest,
     ChatResetRequest,
@@ -29,12 +31,13 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 async def send_message(
     payload: ChatRequest,
     request: Request,
+    db: Session = Depends(get_db),
 ) -> ChatResponse | StreamingResponse:
     require_unlocked_user(request, payload.userId)
 
     if not payload.stream:
         try:
-            result = await run_agent(payload.message, payload.userId)
+            result = await run_agent(payload.message, payload.userId, db)
         except (LLMConfigError, PromptTemplateError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -56,7 +59,7 @@ async def send_message(
         ) from exc
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        async for chunk in stream_agent(payload.message, payload.userId):
+        async for chunk in stream_agent(payload.message, payload.userId, db):
             yield _format_sse_event("chunk", {"content": chunk})
         yield _format_sse_event("done", {"status": "complete"})
 
@@ -74,9 +77,10 @@ async def send_message(
 async def reset_chat_thread(
     payload: ChatResetRequest,
     request: Request,
+    db: Session = Depends(get_db),
 ) -> ChatResetResponse:
     require_unlocked_user(request, payload.userId)
-    await reset_agent_thread(payload.userId)
+    await reset_agent_thread(payload.userId, db)
     return ChatResetResponse(status="reset")
 
 

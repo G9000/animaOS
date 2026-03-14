@@ -6,10 +6,20 @@ from threading import Lock
 
 from anima_server.config import settings
 from anima_server.services.agent.llm import invalidate_llm_cache
+from anima_server.services.agent.persistence import (
+    append_user_message,
+    create_run,
+    get_or_create_thread,
+    load_thread_history,
+    mark_run_failed,
+    next_sequence_id,
+    persist_agent_result,
+    reset_thread,
+)
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.state import AgentResult
-from anima_server.services.agent.store import thread_store
 from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
+from sqlalchemy.orm import Session
 
 _runner_lock = Lock()
 _cached_runner: AgentRuntime | None = None
@@ -39,28 +49,57 @@ def invalidate_agent_runtime_cache() -> None:
     invalidate_system_prompt_template_cache()
 
 
-def clear_agent_threads() -> None:
-    thread_store.clear()
+async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult:
+    thread = get_or_create_thread(db, user_id)
+    history = load_thread_history(db, thread.id)
+    run = create_run(
+        db,
+        thread_id=thread.id,
+        user_id=user_id,
+        provider=settings.agent_provider,
+        model=settings.agent_model,
+        mode="blocking",
+    )
+    initial_sequence_id = next_sequence_id(db, thread.id)
+    append_user_message(
+        db,
+        thread=thread,
+        run_id=run.id,
+        content=user_message,
+        sequence_id=initial_sequence_id,
+    )
 
+    try:
+        runner = get_or_build_runner()
+        result = await runner.invoke(user_message, user_id, history)
+    except Exception as exc:
+        mark_run_failed(db, run, str(exc))
+        db.commit()
+        raise
 
-async def run_agent(user_message: str, user_id: int) -> AgentResult:
-    history = thread_store.read(user_id)
-    runner = get_or_build_runner()
-    result = await runner.invoke(user_message, user_id, history)
-    thread_store.append_turn(user_id, user_message, result.response)
+    persist_agent_result(
+        db,
+        thread=thread,
+        run=run,
+        result=result,
+        initial_sequence_id=initial_sequence_id + 1,
+    )
+    db.commit()
     return result
 
 
 async def stream_agent(
     user_message: str,
     user_id: int,
+    db: Session,
 ) -> AsyncGenerator[str, None]:
-    result = await run_agent(user_message, user_id)
+    result = await run_agent(user_message, user_id, db)
     chunk_size = max(1, settings.agent_stream_chunk_size)
     for start in range(0, len(result.response), chunk_size):
         await asyncio.sleep(0)
         yield result.response[start : start + chunk_size]
 
 
-async def reset_agent_thread(user_id: int) -> None:
-    thread_store.reset(user_id)
+async def reset_agent_thread(user_id: int, db: Session) -> None:
+    reset_thread(db, user_id)
+    db.commit()

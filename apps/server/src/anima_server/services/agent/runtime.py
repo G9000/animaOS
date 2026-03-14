@@ -8,12 +8,15 @@ from anima_server.config import settings
 from anima_server.services.agent.adapters import build_adapter
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.executor import ToolExecutor
-from anima_server.services.agent.messages import build_conversation_messages
+from anima_server.services.agent.messages import build_conversation_messages, message_content
 from anima_server.services.agent.runtime_types import (
     LLMRequest,
+    MessageSnapshot,
     StepExecutionResult,
+    StepTrace,
     StopReason,
     ToolCall,
+    ToolExecutionResult,
 )
 from anima_server.services.agent.state import AgentResult, StoredMessage
 from anima_server.services.agent.system_prompt import SystemPromptContext, build_system_prompt
@@ -62,8 +65,10 @@ class AgentRuntime:
         stop_reason = StopReason.END_TURN
         response = ""
         tools_used: list[str] = []
+        step_traces: list[StepTrace] = []
 
         for step_index in range(self._max_steps):
+            request_messages = _snapshot_messages(messages)
             step_result = await self._run_step(
                 messages=messages,
                 user_id=user_id,
@@ -71,8 +76,19 @@ class AgentRuntime:
                 system_prompt=system_prompt,
             )
             response = step_result.assistant_text or response
+            tool_results: list[ToolExecutionResult] = []
+            terminal_tool_hit = False
 
             if not step_result.tool_calls:
+                step_traces.append(
+                    StepTrace(
+                        step_index=step_index,
+                        request_messages=request_messages,
+                        assistant_text=step_result.assistant_text,
+                        tool_calls=step_result.tool_calls,
+                        usage=step_result.usage,
+                    )
+                )
                 stop_reason = StopReason.END_TURN
                 break
 
@@ -81,6 +97,7 @@ class AgentRuntime:
                     tools_used.append(tool_call.name)
 
                 tool_result = await self._tool_executor.execute(tool_call)
+                tool_results.append(tool_result)
                 messages.append(
                     ToolMessage(
                         content=tool_result.output,
@@ -90,8 +107,21 @@ class AgentRuntime:
                 )
                 if tool_result.is_terminal:
                     stop_reason = StopReason.TERMINAL_TOOL
+                    terminal_tool_hit = True
                     break
-            else:
+
+            step_traces.append(
+                StepTrace(
+                    step_index=step_index,
+                    request_messages=request_messages,
+                    assistant_text=step_result.assistant_text,
+                    tool_calls=step_result.tool_calls,
+                    tool_results=tuple(tool_results),
+                    usage=step_result.usage,
+                )
+            )
+
+            if not terminal_tool_hit:
                 continue
 
             break
@@ -105,7 +135,9 @@ class AgentRuntime:
             response=response,
             model=self._adapter.model,
             provider=self._adapter.provider,
+            stop_reason=stop_reason.value,
             tools_used=tools_used,
+            step_traces=step_traces,
         )
 
     async def _run_step(
@@ -164,3 +196,29 @@ def _to_langchain_tool_call(tool_call: ToolCall) -> dict[str, object]:
         "args": dict(tool_call.arguments),
         "type": "tool_call",
     }
+
+
+def _snapshot_messages(messages: list[object]) -> tuple[MessageSnapshot, ...]:
+    snapshots: list[MessageSnapshot] = []
+
+    for message in messages:
+        message_type = getattr(message, "type", "")
+        if message_type == "ai":
+            role = "assistant"
+        elif message_type == "tool":
+            role = "tool"
+        elif message_type == "system":
+            role = "system"
+        else:
+            role = "user"
+
+        snapshots.append(
+            MessageSnapshot(
+                role=role,
+                content=message_content(message),
+                tool_name=getattr(message, "name", None),
+                tool_call_id=getattr(message, "tool_call_id", None),
+            )
+        )
+
+    return tuple(snapshots)
