@@ -95,7 +95,7 @@ async def get_chat_history(
         ChatHistoryMessage(
             id=row.id,
             userId=userId,
-            role=row.role,
+            role="assistant" if row.role == "tool" else row.role,
             content=row.content_text,
             createdAt=row.created_at,
         )

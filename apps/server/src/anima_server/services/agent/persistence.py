@@ -69,7 +69,7 @@ def list_transcript_messages(
         .outerjoin(AgentRun, AgentMessage.run_id == AgentRun.id)
         .where(
             AgentMessage.thread_id == thread.id,
-            AgentMessage.role.in_(("user", "assistant", "system")),
+            AgentMessage.role.in_(("user", "assistant", "system", "tool")),
             AgentMessage.content_text.is_not(None),
             AgentMessage.content_text != "",
             or_(AgentMessage.run_id.is_(None), AgentRun.status != "failed"),
@@ -78,7 +78,16 @@ def list_transcript_messages(
         .limit(limit)
     ).all()
     rows.reverse()
-    return rows
+    # Filter out assistant rows that are tool-call wrappers; the actual
+    # response text lives in the paired "tool" row that follows.
+    return [
+        row for row in rows
+        if not (
+            row.role == "assistant"
+            and isinstance(row.content_json, dict)
+            and "tool_calls" in row.content_json
+        )
+    ]
 
 
 def create_run(
