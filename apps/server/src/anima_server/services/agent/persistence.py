@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
+from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
 from anima_server.services.agent.state import AgentResult, StoredMessage
 
@@ -31,9 +32,12 @@ def load_thread_history(db: Session, thread_id: int) -> list[StoredMessage]:
         .where(
             AgentMessage.thread_id == thread_id,
             AgentMessage.is_in_context.is_(True),
-            AgentMessage.role.in_(("user", "assistant", "tool")),
+            AgentMessage.role.in_(("summary", "user", "assistant", "tool")),
         )
-        .order_by(AgentMessage.sequence_id)
+        .order_by(
+            case((AgentMessage.role == "summary", 0), else_=1),
+            AgentMessage.sequence_id,
+        )
     ).all()
 
     history: list[StoredMessage] = []
@@ -162,6 +166,16 @@ def clear_threads(db: Session) -> None:
     db.execute(delete(AgentThread))
 
 
+def count_messages_by_role(db: Session, thread_id: int, role: str) -> int:
+    count = db.scalar(
+        select(func.count(AgentMessage.id)).where(
+            AgentMessage.thread_id == thread_id,
+            AgentMessage.role == role,
+        )
+    )
+    return int(count or 0)
+
+
 def next_sequence_id(db: Session, thread_id: int) -> int:
     max_sequence = db.scalar(
         select(func.max(AgentMessage.sequence_id)).where(AgentMessage.thread_id == thread_id)
@@ -196,6 +210,11 @@ def append_message(
         tool_call_id=tool_call_id,
         tool_args_json=tool_args_json,
         is_in_context=True,
+        token_estimate=estimate_message_tokens(
+            content_text=content_text,
+            content_json=content_json,
+            tool_name=tool_name,
+        ),
     )
     db.add(message)
 

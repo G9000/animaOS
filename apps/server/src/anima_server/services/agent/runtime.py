@@ -67,6 +67,8 @@ class AgentRuntime:
         user_message: str,
         user_id: int,
         history: list[StoredMessage],
+        *,
+        conversation_turn_count: int | None = None,
     ) -> AgentResult:
         system_prompt = self.prepare_system_prompt()
         messages = build_conversation_messages(
@@ -89,6 +91,7 @@ class AgentRuntime:
             step_result = await self._run_step(
                 messages=messages,
                 user_id=user_id,
+                conversation_turn_count=conversation_turn_count,
                 step_index=step_index,
                 system_prompt=system_prompt,
                 allowed_tool_names=allowed_tool_names,
@@ -218,6 +221,7 @@ class AgentRuntime:
         *,
         messages: list[object],
         user_id: int,
+        conversation_turn_count: int | None,
         step_index: int,
         system_prompt: str,
         allowed_tool_names: Sequence[str],
@@ -227,6 +231,7 @@ class AgentRuntime:
             LLMRequest(
                 messages=tuple(messages),
                 user_id=user_id,
+                conversation_turn_count=conversation_turn_count,
                 step_index=step_index,
                 max_steps=self._max_steps,
                 system_prompt=system_prompt,

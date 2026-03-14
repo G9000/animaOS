@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-
 from anima_server.config import settings
-from anima_server.services.agent.llm import create_llm
-from anima_server.services.agent.messages import message_content
+from anima_server.services.agent.llm import ChatClient, create_llm
+from anima_server.services.agent.messages import (
+    message_content,
+    message_tool_calls,
+    message_usage_payload,
+)
 from anima_server.services.agent.runtime_types import (
     LLMRequest,
     StepExecutionResult,
@@ -22,7 +23,7 @@ from .base import BaseLLMAdapter
 class OpenAICompatibleAdapter(BaseLLMAdapter):
     def __init__(
         self,
-        llm: BaseChatModel,
+        llm: ChatClient,
         *,
         provider: str,
         model: str,
@@ -51,15 +52,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             )
 
         response = await llm.ainvoke(list(request.messages))
-        if not isinstance(response, AIMessage):
-            return StepExecutionResult(
-                assistant_text=message_content(response),
-                raw_response=response,
-            )
-
         return StepExecutionResult(
             assistant_text=message_content(response),
-            tool_calls=_normalize_tool_calls(getattr(response, "tool_calls", [])),
+            tool_calls=_normalize_tool_calls(message_tool_calls(response)),
             usage=_normalize_usage(response),
             raw_response=response,
         )
@@ -92,13 +87,8 @@ def _normalize_tool_calls(raw_tool_calls: Sequence[Any]) -> tuple[ToolCall, ...]
     return tuple(normalized)
 
 
-def _normalize_usage(message: AIMessage) -> UsageStats | None:
-    raw_usage = getattr(message, "usage_metadata", None)
-    if not isinstance(raw_usage, dict):
-        response_metadata = getattr(message, "response_metadata", {})
-        if isinstance(response_metadata, dict):
-            raw_usage = response_metadata.get("token_usage") or response_metadata.get("usage")
-
+def _normalize_usage(message: Any) -> UsageStats | None:
+    raw_usage = message_usage_payload(message)
     if not isinstance(raw_usage, dict):
         return None
 

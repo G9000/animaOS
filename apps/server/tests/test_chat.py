@@ -273,3 +273,83 @@ def test_chat_invalid_persona_template_returns_error() -> None:
 
     assert response.status_code == 503
     assert "Invalid persona template name" in response.json()["error"]
+
+
+def test_chat_compacts_thread_context_into_summary() -> None:
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_max_tokens = settings.agent_max_tokens
+    original_trigger_ratio = settings.agent_compaction_trigger_ratio
+    original_keep_last_messages = settings.agent_compaction_keep_last_messages
+
+    try:
+        settings.agent_provider = "scaffold"
+        settings.agent_model = "llama3.2"
+        settings.agent_max_tokens = 60
+        settings.agent_compaction_trigger_ratio = 0.5
+        settings.agent_compaction_keep_last_messages = 2
+        invalidate_agent_runtime_cache()
+
+        with _client() as client:
+            user = _register_user(client, username="compact-me")
+            headers = {"x-anima-unlock": str(user["unlockToken"])}
+            user_id = int(user["id"])
+
+            first = client.post(
+                "/api/chat",
+                headers=headers,
+                json={
+                    "message": "first message with enough text to trigger compaction later",
+                    "userId": user_id,
+                },
+            )
+            second = client.post(
+                "/api/chat",
+                headers=headers,
+                json={
+                    "message": "second message with enough text to trigger compaction later",
+                    "userId": user_id,
+                },
+            )
+            third = client.post(
+                "/api/chat",
+                headers=headers,
+                json={
+                    "message": "third message with enough text to trigger compaction later",
+                    "userId": user_id,
+                },
+            )
+
+            session = client.app.state.test_session_factory()
+            try:
+                in_context_messages = (
+                    session.query(AgentMessage)
+                    .filter(AgentMessage.is_in_context.is_(True))
+                    .order_by(AgentMessage.sequence_id)
+                    .all()
+                )
+                compacted_messages = (
+                    session.query(AgentMessage)
+                    .filter(AgentMessage.is_in_context.is_(False))
+                    .order_by(AgentMessage.sequence_id)
+                    .all()
+                )
+            finally:
+                session.close()
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_max_tokens = original_max_tokens
+        settings.agent_compaction_trigger_ratio = original_trigger_ratio
+        settings.agent_compaction_keep_last_messages = original_keep_last_messages
+        invalidate_agent_runtime_cache()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+    assert "turn 3" in third.json()["response"]
+    summary_messages = [message for message in in_context_messages if message.role == "summary"]
+    assert len(summary_messages) == 1
+    assert "Conversation summary:" in (summary_messages[0].content_text or "")
+    assert any(message.role == "user" for message in compacted_messages)
+    assert any(message.role == "assistant" for message in compacted_messages)

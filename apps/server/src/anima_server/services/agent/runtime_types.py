@@ -43,6 +43,7 @@ class LLMRequest:
     step_index: int
     max_steps: int
     system_prompt: str
+    conversation_turn_count: int | None = None
     available_tools: Sequence[Any] = ()
     force_tool_call: bool = False
 

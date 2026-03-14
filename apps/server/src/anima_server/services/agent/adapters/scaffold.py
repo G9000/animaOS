@@ -24,9 +24,14 @@ class ScaffoldAdapter(BaseLLMAdapter):
             if is_user_message(message)
         ]
         user_message = message_content(human_turns[-1]) if human_turns else ""
+        turn_number = (
+            request.conversation_turn_count
+            if request.conversation_turn_count is not None
+            else len(human_turns)
+        )
         response = render_scaffold_response(
             user_id=request.user_id,
             user_message=user_message,
-            turn_number=len(human_turns),
+            turn_number=turn_number,
         )
         return StepExecutionResult(assistant_text=response)

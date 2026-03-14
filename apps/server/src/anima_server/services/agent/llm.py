@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
-from typing import Final
-
-from langchain_core.language_models import BaseChatModel
+from typing import Any, Final, Protocol
 
 from anima_server.config import settings
 
@@ -19,8 +18,22 @@ class LLMConfigError(RuntimeError):
     """Raised when the LLM provider is misconfigured."""
 
 
+class ChatClient(Protocol):
+    async def ainvoke(self, input: Sequence[Any]) -> Any:
+        """Invoke the chat model with a normalized message list."""
+
+    def bind_tools(
+        self,
+        tools: Sequence[Any],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Return a tool-bound chat client."""
+
+
 @lru_cache(maxsize=1)
-def create_llm() -> BaseChatModel:
+def create_llm() -> ChatClient:
     """Validate the configured provider until a concrete client is wired in."""
     provider = settings.agent_provider
 
@@ -37,7 +50,7 @@ def create_llm() -> BaseChatModel:
 
     raise LLMConfigError(
         f"agent_provider={provider!r} is scaffolded only. "
-        f"Wire a LangChain chat client against {resolve_base_url(provider)!r} "
+        f"Wire a chat client against {resolve_base_url(provider)!r} "
         "before enabling live model calls."
     )
 

@@ -5,9 +5,11 @@ from collections.abc import AsyncGenerator
 from threading import Lock
 
 from anima_server.config import settings
+from anima_server.services.agent.compaction import compact_thread_context
 from anima_server.services.agent.llm import invalidate_llm_cache
 from anima_server.services.agent.persistence import (
     append_user_message,
+    count_messages_by_role,
     create_run,
     get_or_create_thread,
     load_thread_history,
@@ -68,10 +70,16 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
         content=user_message,
         sequence_id=initial_sequence_id,
     )
+    conversation_turn_count = count_messages_by_role(db, thread.id, "user")
 
     try:
         runner = get_or_build_runner()
-        result = await runner.invoke(user_message, user_id, history)
+        result = await runner.invoke(
+            user_message,
+            user_id,
+            history,
+            conversation_turn_count=conversation_turn_count,
+        )
     except Exception as exc:
         mark_run_failed(db, run, str(exc))
         db.commit()
@@ -83,6 +91,16 @@ async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult
         run=run,
         result=result,
         initial_sequence_id=initial_sequence_id + 1,
+    )
+    compact_thread_context(
+        db,
+        thread=thread,
+        run_id=run.id,
+        trigger_token_limit=max(
+            1,
+            int(settings.agent_max_tokens * settings.agent_compaction_trigger_ratio),
+        ),
+        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
     )
     db.commit()
     return result

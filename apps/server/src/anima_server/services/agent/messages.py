@@ -22,6 +22,8 @@ def build_conversation_messages(
 
 
 def to_runtime_message(message: StoredMessage) -> Any:
+    if message.role in {"summary", "system"}:
+        return make_summary_message(message.content)
     if message.role == "assistant":
         return make_assistant_message(
             message.content,
@@ -37,6 +39,10 @@ def to_runtime_message(message: StoredMessage) -> Any:
 
 
 def make_system_message(content: str) -> Any:
+    return SystemMessage(content=content)
+
+
+def make_summary_message(content: str) -> Any:
     return SystemMessage(content=content)
 
 
@@ -86,9 +92,7 @@ def extract_last_assistant_content(messages: list[Any]) -> str:
 def extract_tools_used(messages: list[Any]) -> list[str]:
     names: list[str] = []
     for message in messages:
-        if not hasattr(message, "tool_calls"):
-            continue
-        for tool_call in message.tool_calls:
+        for tool_call in message_tool_calls(message):
             name = (
                 tool_call.get("name", "")
                 if isinstance(tool_call, dict)
@@ -102,6 +106,26 @@ def extract_tools_used(messages: list[Any]) -> list[str]:
 def message_content(message: Any) -> str:
     content = getattr(message, "content", "")
     return content if isinstance(content, str) else str(content)
+
+
+def message_tool_calls(message: Any) -> Sequence[Any]:
+    raw_tool_calls = getattr(message, "tool_calls", ())
+    if isinstance(raw_tool_calls, (list, tuple)):
+        return raw_tool_calls
+    return ()
+
+
+def message_usage_payload(message: Any) -> dict[str, object] | None:
+    raw_usage = getattr(message, "usage_metadata", None)
+    if isinstance(raw_usage, dict):
+        return raw_usage
+
+    response_metadata = getattr(message, "response_metadata", None)
+    if not isinstance(response_metadata, dict):
+        return None
+
+    usage_payload = response_metadata.get("token_usage") or response_metadata.get("usage")
+    return usage_payload if isinstance(usage_payload, dict) else None
 
 
 def render_scaffold_response(
