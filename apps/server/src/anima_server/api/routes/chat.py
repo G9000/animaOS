@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
 from anima_server.schemas.chat import (
+    ChatHistoryClearResponse,
+    ChatHistoryMessage,
     ChatRequest,
     ChatResetRequest,
     ChatResetResponse,
@@ -17,6 +19,7 @@ from anima_server.schemas.chat import (
 )
 from anima_server.services.agent import (
     ensure_agent_ready,
+    list_agent_history,
     reset_agent_thread,
     run_agent,
     stream_agent,
@@ -73,6 +76,38 @@ async def send_message(
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get("/history", response_model=list[ChatHistoryMessage])
+async def get_chat_history(
+    request: Request,
+    userId: int = Query(gt=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[ChatHistoryMessage]:
+    require_unlocked_user(request, userId)
+    rows = list_agent_history(userId, db, limit=limit)
+    return [
+        ChatHistoryMessage(
+            id=row.id,
+            userId=userId,
+            role=row.role,
+            content=row.content_text or "",
+            createdAt=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.delete("/history", response_model=ChatHistoryClearResponse)
+async def clear_chat_history(
+    payload: ChatResetRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ChatHistoryClearResponse:
+    require_unlocked_user(request, payload.userId)
+    await reset_agent_thread(payload.userId, db)
+    return ChatHistoryClearResponse(status="cleared")
 
 
 @router.post("/reset", response_model=ChatResetResponse)

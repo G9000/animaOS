@@ -10,7 +10,7 @@ from anima_server.services.agent.tools import send_message
 
 class FakeResponse:
     def __init__(self) -> None:
-        self.content = "hello from adapter"
+        self.content = "<think>private reasoning</think>\n\nhello from adapter"
         self.tool_calls = [
             {
                 "id": "call-1",
@@ -49,7 +49,10 @@ class FakeChatClient:
 
     async def astream(self, input: list[object]):
         self.invocations.append(list(input))
-        yield OpenAICompatibleStreamChunk(content_delta="hello ")
+        yield OpenAICompatibleStreamChunk(content_delta="<think>private")
+        yield OpenAICompatibleStreamChunk(
+            content_delta=" reasoning</think>\n\nhello ",
+        )
         yield OpenAICompatibleStreamChunk(
             content_delta="world",
             tool_call_deltas=(
@@ -147,3 +150,46 @@ async def test_openai_compatible_adapter_streams_chunks_and_final_result() -> No
     )
     assert final_event.result.usage is not None
     assert final_event.result.usage.total_tokens == 12
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_adapter_strips_split_reasoning_tags() -> None:
+    class SplitReasoningChatClient(FakeChatClient):
+        async def astream(self, input: list[object]):
+            self.invocations.append(list(input))
+            yield OpenAICompatibleStreamChunk(content_delta="<thi")
+            yield OpenAICompatibleStreamChunk(content_delta="nk>hidden")
+            yield OpenAICompatibleStreamChunk(content_delta=" plan</th")
+            yield OpenAICompatibleStreamChunk(content_delta="ink>\n\nvisible ")
+            yield OpenAICompatibleStreamChunk(
+                content_delta="answer",
+                done=True,
+            )
+
+    client = SplitReasoningChatClient(FakeResponse())
+    adapter = OpenAICompatibleAdapter(
+        client,
+        provider="ollama",
+        model="test-model",
+    )
+
+    events = [
+        event
+        async for event in adapter.stream(
+            LLMRequest(
+                messages=("message",),
+                user_id=1,
+                step_index=0,
+                max_steps=4,
+                system_prompt="system",
+            )
+        )
+    ]
+
+    assert events[:2] == [
+        StepStreamEvent(content_delta="visible "),
+        StepStreamEvent(content_delta="answer"),
+    ]
+    final_event = events[-1]
+    assert final_event.result is not None
+    assert final_event.result.assistant_text == "visible answer"

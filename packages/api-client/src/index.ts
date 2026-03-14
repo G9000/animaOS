@@ -213,35 +213,60 @@ export function createApiClient(options: ApiClientOptions) {
 
     const decoder = new TextDecoder();
     let buffer = "";
+    let sawVisibleContent = false;
+    let terminalToolOutput: string | null = null;
+    let emittedTerminalToolOutput = false;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
-      for (const line of lines) {
-        if (line.startsWith("event: error")) {
+      let delimiterIndex = buffer.indexOf("\n\n");
+      while (delimiterIndex !== -1) {
+        const rawEvent = buffer.slice(0, delimiterIndex);
+        buffer = buffer.slice(delimiterIndex + 2);
+        delimiterIndex = buffer.indexOf("\n\n");
+
+        const parsedEvent = parseSseEvent(rawEvent);
+        if (!parsedEvent) continue;
+
+        const { event, payload } = parsedEvent;
+        if (payload.error) {
+          throw new Error(payload.error);
+        }
+
+        if (event === "chunk" && typeof payload.content === "string" && payload.content) {
+          sawVisibleContent = true;
+          yield payload.content;
           continue;
         }
 
-        if (line.startsWith("data: ")) {
-          const payload = JSON.parse(line.slice(6)) as {
-            error?: string;
-            content?: string;
-          };
+        if (
+          event === "tool_return" &&
+          payload.isTerminal === true &&
+          typeof payload.output === "string" &&
+          payload.output
+        ) {
+          terminalToolOutput = payload.output;
+          continue;
+        }
 
-          if (payload.error) {
-            throw new Error(payload.error);
-          }
-
-          if (payload.content) {
-            yield payload.content;
-          }
+        if (
+          event === "done" &&
+          !sawVisibleContent &&
+          !emittedTerminalToolOutput &&
+          terminalToolOutput
+        ) {
+          emittedTerminalToolOutput = true;
+          yield terminalToolOutput;
         }
       }
+    }
+
+    if (!sawVisibleContent && !emittedTerminalToolOutput && terminalToolOutput) {
+      yield terminalToolOutput;
     }
   }
 
@@ -404,3 +429,40 @@ export function createApiClient(options: ApiClientOptions) {
 }
 
 export type ApiClient = ReturnType<typeof createApiClient>;
+
+type StreamEventPayload = {
+  error?: string;
+  content?: string;
+  output?: string;
+  isTerminal?: boolean;
+};
+
+function parseSseEvent(
+  rawEvent: string,
+): { event: string; payload: StreamEventPayload } | null {
+  let event = "message";
+  const dataLines: string[] = [];
+
+  for (const line of rawEvent.split("\n")) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null;
+  }
+
+  try {
+    return {
+      event,
+      payload: JSON.parse(dataLines.join("\n")) as StreamEventPayload,
+    };
+  } catch {
+    return null;
+  }
+}

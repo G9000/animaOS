@@ -11,6 +11,10 @@ from anima_server.services.agent.llm import (
     resolve_base_url,
     wrap_llm_error,
 )
+from anima_server.services.agent.output_filter import (
+    ReasoningTraceFilter,
+    strip_reasoning_traces,
+)
 from anima_server.services.agent.messages import (
     message_content,
     message_tool_calls,
@@ -68,7 +72,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 base_url=self._base_url,
             ) from exc
         return StepExecutionResult(
-            assistant_text=message_content(response),
+            assistant_text=strip_reasoning_traces(message_content(response)),
             tool_calls=_normalize_tool_calls(message_tool_calls(response)),
             usage=_normalize_usage(response),
             raw_response=response,
@@ -85,13 +89,16 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         content_parts: list[str] = []
         tool_call_state: dict[int, dict[str, object]] = {}
         usage: UsageStats | None = None
+        reasoning_filter = ReasoningTraceFilter()
 
         try:
             async for chunk in llm.astream(list(request.messages)):
                 content_delta = getattr(chunk, "content_delta", "")
                 if content_delta:
-                    content_parts.append(content_delta)
-                    yield StepStreamEvent(content_delta=content_delta)
+                    visible_delta = reasoning_filter.feed(content_delta)
+                    if visible_delta:
+                        content_parts.append(visible_delta)
+                        yield StepStreamEvent(content_delta=visible_delta)
 
                 for delta in _stream_tool_call_deltas(chunk):
                     index = delta.get("index", 0)
@@ -120,6 +127,11 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 provider=self.provider,
                 base_url=self._base_url,
             ) from exc
+
+        remaining_visible_text = reasoning_filter.flush()
+        if remaining_visible_text:
+            content_parts.append(remaining_visible_text)
+            yield StepStreamEvent(content_delta=remaining_visible_text)
 
         yield StepStreamEvent(
             result=StepExecutionResult(

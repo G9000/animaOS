@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -21,4 +23,18 @@ class ChatResetRequest(BaseModel):
 
 
 class ChatResetResponse(BaseModel):
+    status: str
+
+
+class ChatHistoryMessage(BaseModel):
+    id: int
+    userId: int
+    role: str
+    content: str
+    model: str | None = None
+    provider: str | None = None
+    createdAt: datetime | None = None
+
+
+class ChatHistoryClearResponse(BaseModel):
     status: str

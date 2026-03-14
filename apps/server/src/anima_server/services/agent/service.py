@@ -14,6 +14,7 @@ from anima_server.services.agent.persistence import (
     count_messages_by_role,
     create_run,
     get_or_create_thread,
+    list_transcript_messages,
     load_thread_history,
     mark_run_failed,
     next_sequence_id,
@@ -30,6 +31,7 @@ from anima_server.services.agent.streaming import (
     summarize_usage,
 )
 from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
+from anima_server.models import AgentMessage
 from sqlalchemy.orm import Session
 
 _runner_lock = Lock()
@@ -175,6 +177,14 @@ async def stream_agent(
             yield event
     finally:
         await worker_task
+
+
+def list_agent_history(user_id: int, db: Session, *, limit: int = 50) -> list[AgentMessage]:
+    return list_transcript_messages(
+        db,
+        user_id=user_id,
+        limit=limit,
+    )
 
 
 async def reset_agent_thread(user_id: int, db: Session) -> None:

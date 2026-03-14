@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         extra="ignore",
     )
 

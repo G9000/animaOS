@@ -3,6 +3,7 @@ from __future__ import annotations
 from anima_server.services.agent.service import (
     ensure_agent_ready,
     invalidate_agent_runtime_cache,
+    list_agent_history,
     reset_agent_thread,
     run_agent,
     stream_agent,
@@ -11,6 +12,7 @@ from anima_server.services.agent.service import (
 __all__ = [
     "ensure_agent_ready",
     "invalidate_agent_runtime_cache",
+    "list_agent_history",
     "reset_agent_thread",
     "run_agent",
     "stream_agent",

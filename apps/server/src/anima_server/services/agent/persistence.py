@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
@@ -49,6 +49,31 @@ def load_thread_history(db: Session, thread_id: int) -> list[StoredMessage]:
             )
         )
     return history
+
+
+def list_transcript_messages(
+    db: Session,
+    *,
+    user_id: int,
+    limit: int,
+) -> list[AgentMessage]:
+    thread = db.scalar(select(AgentThread).where(AgentThread.user_id == user_id))
+    if thread is None:
+        return []
+
+    rows = db.scalars(
+        select(AgentMessage)
+        .where(
+            AgentMessage.thread_id == thread.id,
+            AgentMessage.role.in_(("user", "assistant", "system")),
+            AgentMessage.content_text.is_not(None),
+            AgentMessage.content_text != "",
+        )
+        .order_by(desc(AgentMessage.sequence_id))
+        .limit(limit)
+    ).all()
+    rows.reverse()
+    return rows
 
 
 def create_run(
