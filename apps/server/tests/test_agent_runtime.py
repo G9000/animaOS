@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -22,6 +23,7 @@ from anima_server.services.agent.runtime import AgentRuntime
 from anima_server.services.agent.runtime_types import LLMRequest, StepExecutionResult, StopReason, ToolCall
 from anima_server.services.agent.state import StoredMessage
 from anima_server.services.agent.tools import current_datetime, send_message
+from anima_server.services.agent.streaming import AgentStreamEvent
 
 
 class QueueAdapter(BaseLLMAdapter):
@@ -209,6 +211,63 @@ async def test_runtime_stops_before_executing_approval_required_tool() -> None:
     assert result.step_traces[0].tool_results[0].output == (
         "Approval required before running tool: delete_file"
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_surfaces_malformed_tool_args_as_explicit_step_error() -> None:
+    calls: list[str] = []
+    events: list[AgentStreamEvent] = []
+
+    @tool
+    def remember(note: str = "default") -> str:
+        """Store a note."""
+        calls.append(note)
+        return note
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-bad",
+                        name="remember",
+                        arguments={},
+                        parse_error="Malformed tool-call arguments (invalid JSON).",
+                        raw_arguments="{broken json",
+                    ),
+                )
+            ),
+            StepExecutionResult(assistant_text="Recovered after tool argument failure."),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[remember, send_message],
+        max_steps=3,
+    )
+
+    async def collect(event: AgentStreamEvent) -> None:
+        events.append(event)
+
+    result = await runtime.invoke(
+        "start",
+        user_id=1,
+        history=[],
+        event_callback=collect,
+    )
+
+    assert calls == []
+    assert result.response == "Recovered after tool argument failure."
+    assert len(result.step_traces) == 2
+    assert result.step_traces[0].tool_calls[0].parse_error == (
+        "Malformed tool-call arguments (invalid JSON)."
+    )
+    assert result.step_traces[0].tool_results[0].is_error is True
+    assert "malformed arguments" in result.step_traces[0].tool_results[0].output.lower()
+    assert [event.event for event in events[:2]] == ["tool_call", "tool_return"]
+    assert events[0].data["parseError"] == "Malformed tool-call arguments (invalid JSON)."
+    assert events[0].data["rawArguments"] == "{broken json"
+    assert events[1].data["isError"] is True
 
 
 @pytest.mark.asyncio

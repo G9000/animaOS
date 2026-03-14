@@ -150,19 +150,38 @@ def _normalize_tool_calls(raw_tool_calls: Sequence[Any]) -> tuple[ToolCall, ...]
             name = str(raw_tool_call.get("name", "")).strip()
             call_id = str(raw_tool_call.get("id") or f"tool-call-{index}")
             arguments = raw_tool_call.get("args", {})
+            parse_error = raw_tool_call.get("parse_error")
+            raw_arguments = raw_tool_call.get("raw_arguments")
         else:
             name = str(getattr(raw_tool_call, "name", "")).strip()
             call_id = str(getattr(raw_tool_call, "id", None) or f"tool-call-{index}")
             arguments = getattr(raw_tool_call, "args", {})
+            parse_error = getattr(raw_tool_call, "parse_error", None)
+            raw_arguments = getattr(raw_tool_call, "raw_arguments", None)
 
         if not name:
             continue
+
+        normalized_arguments: dict[str, object] = arguments if isinstance(arguments, dict) else {}
+        normalized_parse_error = (
+            str(parse_error).strip() if isinstance(parse_error, str) and parse_error.strip() else None
+        )
+        normalized_raw_arguments = (
+            str(raw_arguments)[:500]
+            if isinstance(raw_arguments, str) and raw_arguments
+            else None
+        )
+        if normalized_parse_error is None and arguments not in ({}, None) and not isinstance(arguments, dict):
+            normalized_parse_error = "Tool-call arguments must be a JSON object."
+            normalized_raw_arguments = str(arguments)[:500]
 
         normalized.append(
             ToolCall(
                 id=call_id,
                 name=name,
-                arguments=arguments if isinstance(arguments, dict) else {},
+                arguments=normalized_arguments,
+                parse_error=normalized_parse_error,
+                raw_arguments=normalized_raw_arguments,
             )
         )
 
@@ -211,15 +230,19 @@ def _finalize_stream_tool_calls(
         )
         try:
             arguments = _parse_stream_arguments(arguments_text)
+            parse_error: str | None = None
+            raw_arguments: str | None = None
         except MalformedToolArgumentsError:
-            # Surface the malformed arguments as an unparseable marker
-            # so the executor treats this as a step error rather than silently defaulting.
-            arguments = {"__parse_error__": True, "__raw__": arguments_text[:500]}
+            parse_error = "Malformed tool-call arguments (invalid JSON)."
+            raw_arguments = arguments_text[:500]
+            arguments = {}
         normalized.append(
             ToolCall(
                 id=call_id if isinstance(call_id, str) and call_id else f"tool-call-{index}",
                 name=name.strip(),
                 arguments=arguments,
+                parse_error=parse_error,
+                raw_arguments=raw_arguments,
             )
         )
     return tuple(normalized)

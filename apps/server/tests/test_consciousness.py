@@ -1054,7 +1054,12 @@ def test_executor_rejects_parse_error_args() -> None:
     executor = ToolExecutor([current_datetime])
     result = asyncio.get_event_loop().run_until_complete(
         executor.execute(
-            ToolCall(id="tc-1", name="current_datetime", arguments={"__parse_error__": True, "__raw__": "bad"}),
+            ToolCall(
+                id="tc-1",
+                name="current_datetime",
+                parse_error="Malformed tool-call arguments (invalid JSON).",
+                raw_arguments="bad",
+            ),
         )
     )
     assert result.is_error is True

@@ -28,12 +28,15 @@ class ToolExecutor:
                 is_error=True,
             )
 
-        if tool_call.arguments.get("__parse_error__"):
-            raw = tool_call.arguments.get("__raw__", "")
+        if tool_call.parse_error is not None:
+            raw = tool_call.raw_arguments or ""
             return ToolExecutionResult(
                 call_id=tool_call.id,
                 name=tool_call.name,
-                output=f"Tool {tool_call.name} received malformed arguments (invalid JSON): {raw[:200]}",
+                output=(
+                    f"Tool {tool_call.name} received malformed arguments: "
+                    f"{tool_call.parse_error} Raw arguments: {raw[:200]}"
+                ).rstrip(),
                 is_error=True,
             )
 

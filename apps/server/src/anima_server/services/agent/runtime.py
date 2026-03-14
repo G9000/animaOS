@@ -427,10 +427,14 @@ def _snapshot_tool_calls(raw_tool_calls: object) -> tuple[ToolCall, ...]:
             name = str(raw_tool_call.get("name", "")).strip()
             call_id = str(raw_tool_call.get("id") or f"tool-call-{index}")
             arguments = raw_tool_call.get("args", {})
+            parse_error = raw_tool_call.get("parse_error")
+            raw_arguments = raw_tool_call.get("raw_arguments")
         else:
             name = str(getattr(raw_tool_call, "name", "")).strip()
             call_id = str(getattr(raw_tool_call, "id", None) or f"tool-call-{index}")
             arguments = getattr(raw_tool_call, "args", {})
+            parse_error = getattr(raw_tool_call, "parse_error", None)
+            raw_arguments = getattr(raw_tool_call, "raw_arguments", None)
 
         if not name:
             continue
@@ -440,6 +444,16 @@ def _snapshot_tool_calls(raw_tool_calls: object) -> tuple[ToolCall, ...]:
                 id=call_id,
                 name=name,
                 arguments=arguments if isinstance(arguments, dict) else {},
+                parse_error=(
+                    str(parse_error).strip()
+                    if isinstance(parse_error, str) and parse_error.strip()
+                    else None
+                ),
+                raw_arguments=(
+                    str(raw_arguments)[:500]
+                    if isinstance(raw_arguments, str) and raw_arguments
+                    else None
+                ),
             )
         )
 

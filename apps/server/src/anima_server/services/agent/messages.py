@@ -170,9 +170,14 @@ def render_scaffold_response(
 
 
 def to_tool_call_payload(tool_call: ToolCall) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "id": tool_call.id,
         "name": tool_call.name,
         "args": dict(tool_call.arguments),
         "type": "tool_call",
     }
+    if tool_call.parse_error is not None:
+        payload["parse_error"] = tool_call.parse_error
+    if tool_call.raw_arguments is not None:
+        payload["raw_arguments"] = tool_call.raw_arguments
+    return payload

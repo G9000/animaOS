@@ -193,3 +193,92 @@ async def test_openai_compatible_adapter_strips_split_reasoning_tags() -> None:
     final_event = events[-1]
     assert final_event.result is not None
     assert final_event.result.assistant_text == "visible answer"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_adapter_preserves_sync_tool_parse_errors() -> None:
+    client = FakeChatClient(FakeResponse())
+    client._response.tool_calls = [
+        {
+            "id": "call-bad",
+            "name": "send_message",
+            "args": {},
+            "parse_error": "Malformed tool-call arguments (invalid JSON).",
+            "raw_arguments": "{broken json",
+        }
+    ]
+    adapter = OpenAICompatibleAdapter(
+        client,
+        provider="ollama",
+        model="test-model",
+    )
+
+    result = await adapter.invoke(
+        LLMRequest(
+            messages=("message",),
+            user_id=1,
+            step_index=0,
+            max_steps=4,
+            system_prompt="system",
+        )
+    )
+
+    assert result.tool_calls == (
+        ToolCall(
+            id="call-bad",
+            name="send_message",
+            arguments={},
+            parse_error="Malformed tool-call arguments (invalid JSON).",
+            raw_arguments="{broken json",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_adapter_streams_structured_parse_errors() -> None:
+    class BrokenArgsChatClient(FakeChatClient):
+        async def astream(self, input: list[object]):
+            self.invocations.append(list(input))
+            yield OpenAICompatibleStreamChunk(
+                tool_call_deltas=(
+                    {
+                        "index": 0,
+                        "id": "call-bad",
+                        "name": "send_message",
+                        "arguments": "{broken json",
+                    },
+                ),
+                done=True,
+            )
+
+    client = BrokenArgsChatClient(FakeResponse())
+    adapter = OpenAICompatibleAdapter(
+        client,
+        provider="ollama",
+        model="test-model",
+    )
+
+    events = [
+        event
+        async for event in adapter.stream(
+            LLMRequest(
+                messages=("message",),
+                user_id=1,
+                step_index=0,
+                max_steps=4,
+                system_prompt="system",
+            )
+        )
+    ]
+
+    final_event = events[-1]
+    assert final_event.result is not None
+    assert final_event.result.tool_calls == (
+        ToolCall(
+            id="call-bad",
+            name="send_message",
+            arguments={},
+            parse_error="Malformed tool-call arguments (invalid JSON).",
+            raw_arguments="{broken json",
+        ),
+    )

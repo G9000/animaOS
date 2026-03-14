@@ -26,14 +26,19 @@ def build_chunk_event(content: str) -> AgentStreamEvent:
 
 
 def build_tool_call_event(step_index: int, tool_call: ToolCall) -> AgentStreamEvent:
+    data: dict[str, object] = {
+        "stepIndex": step_index,
+        "id": tool_call.id,
+        "name": tool_call.name,
+        "arguments": dict(tool_call.arguments),
+    }
+    if tool_call.parse_error is not None:
+        data["parseError"] = tool_call.parse_error
+    if tool_call.raw_arguments is not None:
+        data["rawArguments"] = tool_call.raw_arguments
     return AgentStreamEvent(
         event="tool_call",
-        data={
-            "stepIndex": step_index,
-            "id": tool_call.id,
-            "name": tool_call.name,
-            "arguments": dict(tool_call.arguments),
-        },
+        data=data,
     )
 
 

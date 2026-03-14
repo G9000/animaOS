@@ -18,6 +18,8 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    parse_error: str | None = None
+    raw_arguments: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

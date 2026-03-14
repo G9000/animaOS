@@ -245,16 +245,22 @@ def _normalize_request_tool_calls(raw_tool_calls: object) -> list[dict[str, obje
             continue
         call_id = str(raw_tool_call.get("id") or f"tool-call-{index}")
         arguments = raw_tool_call.get("args", {})
+        parse_error = raw_tool_call.get("parse_error")
+        raw_arguments = raw_tool_call.get("raw_arguments")
+        if isinstance(parse_error, str) and parse_error.strip() and isinstance(raw_arguments, str):
+            serialized_arguments = raw_arguments
+        else:
+            serialized_arguments = json.dumps(
+                arguments if isinstance(arguments, dict) else {},
+                ensure_ascii=True,
+            )
         normalized.append(
             {
                 "id": call_id,
                 "type": "function",
                 "function": {
                     "name": name,
-                    "arguments": json.dumps(
-                        arguments if isinstance(arguments, dict) else {},
-                        ensure_ascii=True,
-                    ),
+                    "arguments": serialized_arguments,
                 },
             }
         )
@@ -275,14 +281,17 @@ def _normalize_response_tool_calls(raw_tool_calls: object) -> tuple[dict[str, ob
         name = str(function.get("name", "")).strip()
         if not name:
             continue
-        arguments = _parse_tool_arguments(function.get("arguments"))
-        normalized.append(
-            {
-                "id": str(raw_tool_call.get("id") or f"tool-call-{index}"),
-                "name": name,
-                "args": arguments,
-            }
-        )
+        arguments, parse_error, raw_arguments = _parse_tool_arguments(function.get("arguments"))
+        payload: dict[str, object] = {
+            "id": str(raw_tool_call.get("id") or f"tool-call-{index}"),
+            "name": name,
+            "args": arguments,
+        }
+        if parse_error is not None:
+            payload["parse_error"] = parse_error
+        if raw_arguments is not None:
+            payload["raw_arguments"] = raw_arguments
+        normalized.append(payload)
     return tuple(normalized)
 
 
@@ -311,16 +320,22 @@ def _normalize_stream_tool_call_deltas(
     return tuple(normalized)
 
 
-def _parse_tool_arguments(raw_arguments: object) -> dict[str, object]:
+def _parse_tool_arguments(raw_arguments: object) -> tuple[dict[str, object], str | None, str | None]:
     if isinstance(raw_arguments, dict):
-        return dict(raw_arguments)
+        return dict(raw_arguments), None, None
     if not isinstance(raw_arguments, str) or not raw_arguments.strip():
-        return {}
+        return {}, None, None
     try:
         parsed = json.loads(raw_arguments)
     except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+        return {}, "Malformed tool-call arguments (invalid JSON).", raw_arguments[:500]
+    if not isinstance(parsed, dict):
+        return (
+            {},
+            f"Tool-call arguments must be a JSON object, got {type(parsed).__name__}.",
+            raw_arguments[:500],
+        )
+    return parsed, None, None
 
 
 def _serialize_tool_choice(

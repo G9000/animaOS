@@ -334,6 +334,18 @@ def _deserialize_tool_calls(
                 id=str(raw_tool_call.get("id") or f"tool-call-{index}"),
                 name=name,
                 arguments=arguments if isinstance(arguments, dict) else {},
+                parse_error=(
+                    str(raw_tool_call.get("parse_error")).strip()
+                    if isinstance(raw_tool_call.get("parse_error"), str)
+                    and str(raw_tool_call.get("parse_error")).strip()
+                    else None
+                ),
+                raw_arguments=(
+                    str(raw_tool_call.get("raw_arguments"))[:500]
+                    if isinstance(raw_tool_call.get("raw_arguments"), str)
+                    and raw_tool_call.get("raw_arguments")
+                    else None
+                ),
             )
         )
 

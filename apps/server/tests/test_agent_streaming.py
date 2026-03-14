@@ -77,3 +77,45 @@ def test_build_stream_events_emits_tool_events_chunks_usage_and_done() -> None:
         "model": "test-model",
         "toolsUsed": ["send_message"],
     }
+
+
+def test_build_stream_events_include_tool_parse_error_metadata() -> None:
+    result = AgentResult(
+        response="",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="end_turn",
+        step_traces=[
+            StepTrace(
+                step_index=0,
+                tool_calls=(
+                    ToolCall(
+                        id="call-bad",
+                        name="send_message",
+                        arguments={},
+                        parse_error="Malformed tool-call arguments (invalid JSON).",
+                        raw_arguments="{broken json",
+                    ),
+                ),
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-bad",
+                        name="send_message",
+                        output="Tool send_message received malformed arguments.",
+                        is_error=True,
+                    ),
+                ),
+            )
+        ],
+    )
+
+    events = list(build_stream_events(result, chunk_size=16))
+
+    assert events[0].data == {
+        "stepIndex": 0,
+        "id": "call-bad",
+        "name": "send_message",
+        "arguments": {},
+        "parseError": "Malformed tool-call arguments (invalid JSON).",
+        "rawArguments": "{broken json",
+    }

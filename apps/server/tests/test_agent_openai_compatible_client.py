@@ -212,3 +212,50 @@ async def test_openai_compatible_chat_client_streams_sse_chunks() -> None:
         ),
         OpenAICompatibleStreamChunk(done=True),
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_client_preserves_malformed_tool_args() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-bad",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "send_message",
+                                        "arguments": "{broken json",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = OpenAICompatibleChatClient(
+        provider="ollama",
+        model="llama3.2",
+        base_url="http://ollama.local/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = await client.ainvoke([HumanMessage(content="hello")])
+
+    assert response.tool_calls == (
+        {
+            "id": "call-bad",
+            "name": "send_message",
+            "args": {},
+            "parse_error": "Malformed tool-call arguments (invalid JSON).",
+            "raw_arguments": "{broken json",
+        },
+    )
