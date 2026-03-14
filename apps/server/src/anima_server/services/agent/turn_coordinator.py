@@ -20,7 +20,7 @@ _user_locks: OrderedDict[int, asyncio.Lock] = OrderedDict()
 def get_user_lock(user_id: int) -> asyncio.Lock:
     """Return a per-user asyncio.Lock, creating one if needed.
 
-    Evicts the least-recently-used entry when the cache exceeds *_MAX_USER_LOCKS*
+    Evicts the least-recently-used entry when the cache exceeds ``_MAX_USER_LOCKS``
     to prevent unbounded memory growth.
     """
     with _global_lock:

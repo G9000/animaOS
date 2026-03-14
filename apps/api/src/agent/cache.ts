@@ -17,8 +17,8 @@ function agentCacheKey(
   config: ProviderConfig,
   fullSystemPrompt: string,
 ): string {
-  // Use a fast hash of prompt content — length alone can collide when
-  // different prompts happen to share the same character count.
+  // Use a fast DJB2-style hash of prompt content — length alone can collide
+  // when different prompts happen to share the same character count.
   let hash = 0;
   for (let i = 0; i < fullSystemPrompt.length; i++) {
     hash = (hash * 31 + fullSystemPrompt.charCodeAt(i)) | 0;
