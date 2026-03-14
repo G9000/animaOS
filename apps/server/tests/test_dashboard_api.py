@@ -241,6 +241,7 @@ def test_soul_get_put() -> None:
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["content"] == ""
+        assert resp.json()["source"] == "database"
 
         # Update soul
         resp = client.put(
@@ -249,14 +250,12 @@ def test_soul_get_put() -> None:
             json={"content": "I am a helpful companion."},
         )
         assert resp.status_code == 200
-        soul_path = Path(resp.json()["path"])
-        raw_content = soul_path.read_text(encoding="utf-8")
-        assert raw_content != "I am a helpful companion."
-        assert raw_content.startswith("enc1:")
+        assert resp.json()["status"] == "updated"
 
         # Verify
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.json()["content"] == "I am a helpful companion."
+        assert resp.json()["source"] == "database"
 
 
 def test_soul_get_migrates_legacy_plaintext_file() -> None:
@@ -272,6 +271,6 @@ def test_soul_get_migrates_legacy_plaintext_file() -> None:
 
         assert resp.status_code == 200
         assert resp.json()["content"] == "Legacy plaintext soul"
-        migrated_content = soul_path.read_text(encoding="utf-8")
-        assert migrated_content != "Legacy plaintext soul"
-        assert migrated_content.startswith("enc1:")
+        assert resp.json()["source"] == "migrated"
+        # File should be removed after migration
+        assert not soul_path.exists()

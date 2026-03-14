@@ -31,6 +31,11 @@ def build_runtime_memory_blocks(
 ) -> tuple[MemoryBlock, ...]:
     blocks: list[MemoryBlock] = []
 
+    # Soul block (Priority 0 — user-authored personality directive)
+    soul_block = build_soul_memory_block(db, user_id=user_id)
+    if soul_block is not None:
+        blocks.append(soul_block)
+
     # Self-model blocks (Priority 1 — always present, never truncated)
     for sm_block in build_self_model_memory_blocks(db, user_id=user_id):
         blocks.append(sm_block)
@@ -307,6 +312,30 @@ def build_session_memory_block(
         description="Working notes for this conversation session. You can update these with the note_to_self tool.",
         value=text,
         read_only=False,
+    )
+
+
+def build_soul_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    """Build a memory block from the user's soul directive."""
+    from anima_server.models import SelfModelBlock
+
+    block = db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == user_id,
+            SelfModelBlock.section == "soul",
+        )
+    )
+    if block is None or not block.content.strip():
+        return None
+
+    return MemoryBlock(
+        label="soul",
+        description="The user's personality directive — who they want me to be. This is their vision for our relationship.",
+        value=block.content.strip(),
     )
 
 
