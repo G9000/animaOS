@@ -149,3 +149,89 @@ class AgentMessage(Base):
     )
 
     thread: Mapped[AgentThread] = relationship(back_populates="messages")
+
+
+class MemoryItem(Base):
+    __tablename__ = "memory_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(
+        String(24), nullable=False,
+    )  # fact, preference, goal, relationship, focus
+    importance: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3,
+    )  # 1-5
+    source: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="extraction",
+    )  # extraction, user, reflection
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_referenced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    reference_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class MemoryEpisode(Base):
+    __tablename__ = "memory_episodes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    thread_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_threads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+    time: Mapped[str | None] = mapped_column(String(8), nullable=True)  # HH:MM:SS
+    topics_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    emotional_arc: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    significance_score: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3,
+    )  # 1-5
+    turn_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class MemoryDailyLog(Base):
+    __tablename__ = "memory_daily_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_response: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

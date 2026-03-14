@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,12 +11,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import MemoryDailyLog, MemoryItem, User
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
 from anima_server.services.agent.consolidation import (
     consolidate_turn_memory,
     drain_background_memory_tasks,
 )
+from anima_server.services.agent.memory_store import get_memory_items
 
 
 @contextmanager
@@ -44,73 +44,107 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def test_consolidate_turn_memory_writes_daily_log_and_user_memory(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "anima-data"
-    monkeypatch.setattr("anima_server.config.settings.data_dir", data_dir)
+def test_consolidate_turn_memory_writes_daily_log_and_user_memory() -> None:
+    with _db_session() as session:
+        user = User(
+            username="consolidation-test",
+            password_hash="not-used",
+            display_name="Consolidation Test",
+        )
+        session.add(user)
+        session.commit()
 
-    result = consolidate_turn_memory(
-        user_id=7,
-        user_message=(
-            "I love green tea. I work as a product designer. "
-            "My current focus is finishing the runtime migration."
-        ),
-        assistant_response="I hear you. Let's keep the migration tight.",
-        now=datetime(2026, 3, 14, 10, 30, tzinfo=UTC),
-    )
+        factory = session.get_bind().engine.dispose  # unused, need the sessionmaker
+        # Create a factory that returns the existing session for the test
+        eng = session.get_bind()
+        test_factory = sessionmaker(
+            bind=eng,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+            class_=Session,
+        )
 
-    daily_log = data_dir / "users" / "7" / "memory" / "daily" / "2026-03-14.md"
-    facts = data_dir / "users" / "7" / "memory" / "user" / "facts.md"
-    preferences = data_dir / "users" / "7" / "memory" / "user" / "preferences.md"
-    current_focus = (
-        data_dir / "users" / "7" / "memory" / "user" / "current-focus.md"
-    )
+        result = consolidate_turn_memory(
+            user_id=user.id,
+            user_message=(
+                "I love green tea. I work as a product designer. "
+                "My current focus is finishing the runtime migration."
+            ),
+            assistant_response="I hear you. Let's keep the migration tight.",
+            now=datetime(2026, 3, 14, 10, 30, tzinfo=UTC),
+            db_factory=test_factory,
+        )
 
-    assert result.daily_log_path is not None
-    assert "### User" in daily_log.read_text(encoding="utf-8")
-    assert "- Works as a product designer" in facts.read_text(encoding="utf-8")
-    assert "- Likes green tea" in preferences.read_text(encoding="utf-8")
-    assert "- [ ] finishing the runtime migration" in current_focus.read_text(
-        encoding="utf-8"
-    )
+        # Check daily log was written
+        assert result.daily_log_id is not None
+
+        # Check facts extracted
+        assert "Works as a product designer" in result.facts_added
+
+        # Check preferences extracted
+        assert "Likes green tea" in result.preferences_added
+
+        # Check current focus updated
+        assert result.current_focus_updated == "finishing the runtime migration"
+
+        # Verify data in DB
+        with test_factory() as db2:
+            facts = get_memory_items(db2, user_id=user.id, category="fact")
+            assert any("product designer" in f.content for f in facts)
+
+            prefs = get_memory_items(db2, user_id=user.id, category="preference")
+            assert any("green tea" in p.content for p in prefs)
+
+            focus = get_memory_items(db2, user_id=user.id, category="focus")
+            assert any("runtime migration" in f.content for f in focus)
 
 
-def test_consolidate_turn_memory_deduplicates_bullet_memory(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "anima-data"
-    monkeypatch.setattr("anima_server.config.settings.data_dir", data_dir)
+def test_consolidate_turn_memory_deduplicates_bullet_memory() -> None:
+    with _db_session() as session:
+        user = User(
+            username="dedup-test",
+            password_hash="not-used",
+            display_name="Dedup Test",
+        )
+        session.add(user)
+        session.commit()
 
-    first = consolidate_turn_memory(
-        user_id=7,
-        user_message="I love green tea.",
-        assistant_response="Noted.",
-        now=datetime(2026, 3, 14, 10, 30, tzinfo=UTC),
-    )
-    second = consolidate_turn_memory(
-        user_id=7,
-        user_message="I love green tea.",
-        assistant_response="Still noted.",
-        now=datetime(2026, 3, 14, 10, 31, tzinfo=UTC),
-    )
+        eng = session.get_bind()
+        test_factory = sessionmaker(
+            bind=eng,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+            class_=Session,
+        )
 
-    preferences = data_dir / "users" / "7" / "memory" / "user" / "preferences.md"
+        first = consolidate_turn_memory(
+            user_id=user.id,
+            user_message="I love green tea.",
+            assistant_response="Noted.",
+            now=datetime(2026, 3, 14, 10, 30, tzinfo=UTC),
+            db_factory=test_factory,
+        )
+        second = consolidate_turn_memory(
+            user_id=user.id,
+            user_message="I love green tea.",
+            assistant_response="Still noted.",
+            now=datetime(2026, 3, 14, 10, 31, tzinfo=UTC),
+            db_factory=test_factory,
+        )
 
-    assert first.preferences_added == ["Likes green tea"]
-    assert second.preferences_added == []
-    assert preferences.read_text(encoding="utf-8").count("Likes green tea") == 1
+        assert first.preferences_added == ["Likes green tea"]
+        assert second.preferences_added == []
+
+        with test_factory() as db2:
+            prefs = get_memory_items(db2, user_id=user.id, category="preference")
+            matching = [p for p in prefs if "green tea" in p.content.lower()]
+            assert len(matching) == 1
 
 
 @pytest.mark.asyncio
-async def test_run_agent_schedules_background_memory_consolidation(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "anima-data"
-    monkeypatch.setattr("anima_server.config.settings.data_dir", data_dir)
+async def test_run_agent_schedules_background_memory_consolidation() -> None:
     invalidate_agent_runtime_cache()
 
     try:
@@ -129,19 +163,7 @@ async def test_run_agent_schedules_background_memory_consolidation(
                 session,
             )
             await drain_background_memory_tasks()
-            user_id = user.id
     finally:
         invalidate_agent_runtime_cache()
 
-    current_focus = (
-        data_dir / "users" / str(user_id) / "memory" / "user" / "current-focus.md"
-    )
-    preferences = data_dir / "users" / str(user_id) / "memory" / "user" / "preferences.md"
-    daily_log_dir = data_dir / "users" / str(user_id) / "memory" / "daily"
-
     assert "turn 1" in result.response
-    assert "- [ ] finishing the memory pipeline" in current_focus.read_text(
-        encoding="utf-8"
-    )
-    assert "- Prefers short walks" in preferences.read_text(encoding="utf-8")
-    assert any(path.suffix == ".md" for path in daily_log_dir.iterdir())

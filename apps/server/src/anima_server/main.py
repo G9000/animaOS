@@ -9,6 +9,7 @@ from .api.routes.chat import router as chat_router
 from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .config import settings
+from .services.core import ensure_core_manifest
 
 CORS_ORIGINS = [
     "http://localhost:1420",
@@ -20,6 +21,7 @@ CORS_ORIGINS = [
 
 
 def create_app() -> FastAPI:
+    ensure_core_manifest()
     app = FastAPI(title=settings.app_name)
     app.add_middleware(
         CORSMiddleware,

@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-import re
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, User
-from anima_server.services.storage import get_user_data_dir
+from anima_server.models import AgentMessage, MemoryEpisode, User
+from anima_server.services.agent.memory_store import get_current_focus, get_memory_items
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,12 +16,6 @@ class MemoryBlock:
     value: str
     description: str = ""
     read_only: bool = True
-
-
-CURRENT_FOCUS_PATH = Path("memory") / "user" / "current-focus.md"
-CURRENT_FOCUS_PLACEHOLDER = "Define your current focus"
-_FRONTMATTER_RE = re.compile(r"^---\r?\n[\s\S]*?\r?\n---\r?\n?")
-_CHECKBOX_LINE_RE = re.compile(r"^- \[(?: |x|X)\]\s+(?P<value>.+?)\s*$", re.MULTILINE)
 
 
 def build_runtime_memory_blocks(
@@ -38,13 +30,25 @@ def build_runtime_memory_blocks(
     if human_block is not None:
         blocks.append(human_block)
 
-    current_focus_block = build_current_focus_memory_block(user_id=user_id)
+    facts_block = build_facts_memory_block(db, user_id=user_id)
+    if facts_block is not None:
+        blocks.append(facts_block)
+
+    preferences_block = build_preferences_memory_block(db, user_id=user_id)
+    if preferences_block is not None:
+        blocks.append(preferences_block)
+
+    current_focus_block = build_current_focus_memory_block(db, user_id=user_id)
     if current_focus_block is not None:
         blocks.append(current_focus_block)
 
     summary_block = build_thread_summary_block(db, thread_id=thread_id)
     if summary_block is not None:
         blocks.append(summary_block)
+
+    episodes_block = build_episodes_memory_block(db, user_id=user_id)
+    if episodes_block is not None:
+        blocks.append(episodes_block)
 
     return tuple(blocks)
 
@@ -80,15 +84,54 @@ def build_human_memory_block(
     )
 
 
-def build_current_focus_memory_block(*, user_id: int) -> MemoryBlock | None:
-    current_focus = load_current_focus_memory(user_id=user_id)
-    if current_focus is None:
+def build_facts_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    items = get_memory_items(db, user_id=user_id, category="fact", limit=30)
+    if not items:
         return None
+    value = "\n".join(f"- {item.content}" for item in items)
+    if len(value) > 2000:
+        value = value[:2000]
+    return MemoryBlock(
+        label="facts",
+        description="Known facts about the user.",
+        value=value,
+    )
 
+
+def build_preferences_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    items = get_memory_items(db, user_id=user_id, category="preference", limit=20)
+    if not items:
+        return None
+    value = "\n".join(f"- {item.content}" for item in items)
+    if len(value) > 2000:
+        value = value[:2000]
+    return MemoryBlock(
+        label="preferences",
+        description="User preferences.",
+        value=value,
+    )
+
+
+def build_current_focus_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    focus = get_current_focus(db, user_id=user_id)
+    if not focus:
+        return None
     return MemoryBlock(
         label="current_focus",
-        description="User-declared current focus from local memory.",
-        value=current_focus,
+        description="User's current focus.",
+        value=focus,
     )
 
 
@@ -121,38 +164,28 @@ def build_thread_summary_block(
     )
 
 
-def load_current_focus_memory(*, user_id: int) -> str | None:
-    path = get_user_data_dir(user_id) / CURRENT_FOCUS_PATH
-    if not path.is_file():
+def build_episodes_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    episodes = db.scalars(
+        select(MemoryEpisode)
+        .where(MemoryEpisode.user_id == user_id)
+        .order_by(MemoryEpisode.created_at.desc())
+        .limit(5)
+    ).all()
+    if not episodes:
         return None
-
-    try:
-        raw_text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-
-    if not raw_text:
-        return None
-
-    body = strip_frontmatter(raw_text).strip()
-    if not body:
-        return None
-
-    if is_placeholder_current_focus(body):
-        return None
-
-    return body
-
-
-def strip_frontmatter(text: str) -> str:
-    return _FRONTMATTER_RE.sub("", text, count=1)
-
-
-def is_placeholder_current_focus(text: str) -> bool:
-    match = _CHECKBOX_LINE_RE.search(text)
-    if match is None:
-        return False
-    return match.group("value").strip() == CURRENT_FOCUS_PLACEHOLDER
+    lines: list[str] = []
+    for ep in reversed(episodes):
+        topics = ", ".join(ep.topics_json or [])
+        lines.append(f"- {ep.date}: {ep.summary} (Topics: {topics})")
+    return MemoryBlock(
+        label="recent_episodes",
+        description="Recent conversation experiences with the user.",
+        value="\n".join(lines),
+    )
 
 
 def serialize_memory_blocks(

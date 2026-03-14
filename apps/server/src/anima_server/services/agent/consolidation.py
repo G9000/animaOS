@@ -10,11 +10,9 @@ from threading import Lock
 
 from anima_server.config import settings
 from anima_server.services.agent.memory_store import (
-    FACTS_PATH,
-    PREFERENCES_PATH,
-    append_daily_log_entry,
-    append_unique_bullets,
-    write_current_focus,
+    add_daily_log,
+    add_memory_item,
+    set_current_focus,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +36,7 @@ class PatternExtractor:
 
 @dataclass(slots=True)
 class MemoryConsolidationResult:
-    daily_log_path: str | None = None
+    daily_log_id: int | None = None
     facts_added: list[str] = field(default_factory=list)
     preferences_added: list[str] = field(default_factory=list)
     current_focus_updated: str | None = None
@@ -101,27 +99,51 @@ def consolidate_turn_memory(
     user_message: str,
     assistant_response: str,
     now: datetime | None = None,
+    db_factory: Callable[..., object] | None = None,
 ) -> MemoryConsolidationResult:
-    timestamp = now or datetime.now(UTC)
+    from anima_server.db.session import SessionLocal
+
+    factory = db_factory or SessionLocal
     result = MemoryConsolidationResult()
-    daily_log_path = append_daily_log_entry(
-        user_id,
-        user_message=user_message,
-        assistant_response=assistant_response,
-        now=timestamp,
-    )
-    result.daily_log_path = daily_log_path.as_posix()
 
-    extracted = extract_turn_memory(user_message)
-    result.facts_added = append_unique_bullets(user_id, FACTS_PATH, extracted.facts)
-    result.preferences_added = append_unique_bullets(
-        user_id,
-        PREFERENCES_PATH,
-        extracted.preferences,
-    )
+    with factory() as db:
+        log = add_daily_log(
+            db,
+            user_id=user_id,
+            user_message=user_message,
+            assistant_response=assistant_response,
+        )
+        result.daily_log_id = log.id
 
-    if extracted.current_focus and write_current_focus(user_id, extracted.current_focus):
-        result.current_focus_updated = extracted.current_focus
+        extracted = extract_turn_memory(user_message)
+
+        for fact in extracted.facts:
+            item = add_memory_item(
+                db,
+                user_id=user_id,
+                content=fact,
+                category="fact",
+                source="extraction",
+            )
+            if item is not None:
+                result.facts_added.append(fact)
+
+        for pref in extracted.preferences:
+            item = add_memory_item(
+                db,
+                user_id=user_id,
+                content=pref,
+                category="preference",
+                source="extraction",
+            )
+            if item is not None:
+                result.preferences_added.append(pref)
+
+        if extracted.current_focus:
+            set_current_focus(db, user_id=user_id, focus=extracted.current_focus)
+            result.current_focus_updated = extracted.current_focus
+
+        db.commit()
 
     return result
 

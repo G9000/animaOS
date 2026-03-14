@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -10,10 +9,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentThread, User
+from anima_server.models import AgentMessage, AgentThread, MemoryItem, User
 from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 from anima_server.services.agent.persistence import load_thread_history
-from anima_server.services.storage import get_user_data_dir
 
 
 @contextmanager
@@ -40,13 +38,7 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def test_build_runtime_memory_blocks_includes_human_and_thread_summary(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "anima-data"
-    monkeypatch.setattr("anima_server.config.settings.data_dir", data_dir)
-
+def test_build_runtime_memory_blocks_includes_human_and_thread_summary() -> None:
     with _db_session() as session:
         user = User(
             username="alice-memory",
@@ -85,21 +77,54 @@ def test_build_runtime_memory_blocks_includes_human_and_thread_summary(
     assert "User likes green tea." in blocks[1].value
 
 
-def _write_current_focus(user_id: int, content: str) -> None:
-    current_focus_path = (
-        get_user_data_dir(user_id) / "memory" / "user" / "current-focus.md"
-    )
-    current_focus_path.parent.mkdir(parents=True, exist_ok=True)
-    current_focus_path.write_text(content, encoding="utf-8")
+def test_build_runtime_memory_blocks_includes_facts_and_preferences() -> None:
+    with _db_session() as session:
+        user = User(
+            username="facts-prefs",
+            password_hash="not-used",
+            display_name="Facts Prefs",
+        )
+        session.add(user)
+        session.flush()
+
+        thread = AgentThread(user_id=user.id, status="active")
+        session.add(thread)
+        session.flush()
+
+        session.add_all([
+            MemoryItem(
+                user_id=user.id,
+                content="Works as a software engineer",
+                category="fact",
+                importance=4,
+                source="extraction",
+            ),
+            MemoryItem(
+                user_id=user.id,
+                content="Likes green tea",
+                category="preference",
+                importance=3,
+                source="extraction",
+            ),
+        ])
+        session.commit()
+
+        blocks = build_runtime_memory_blocks(
+            session,
+            user_id=user.id,
+            thread_id=thread.id,
+        )
+
+    labels = [block.label for block in blocks]
+    assert "facts" in labels
+    assert "preferences" in labels
+    facts_block = next(b for b in blocks if b.label == "facts")
+    prefs_block = next(b for b in blocks if b.label == "preferences")
+    assert "software engineer" in facts_block.value
+    assert "green tea" in prefs_block.value
 
 
-def test_build_runtime_memory_blocks_includes_current_focus_from_local_memory(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "anima-data"
-    monkeypatch.setattr("anima_server.config.settings.data_dir", data_dir)
-
+def test_build_runtime_memory_blocks_includes_current_focus_from_db() -> None:
     with _db_session() as session:
         user = User(
             username="focus-memory",
@@ -112,26 +137,17 @@ def test_build_runtime_memory_blocks_includes_current_focus_from_local_memory(
         thread = AgentThread(user_id=user.id, status="active")
         session.add(thread)
         session.flush()
-        session.commit()
 
-        _write_current_focus(
-            user.id,
-            "\n".join(
-                [
-                    "---",
-                    "category: goal",
-                    "updated: 2026-03-14T12:00:00Z",
-                    "---",
-                    "",
-                    "# Current Focus",
-                    "",
-                    "- [ ] Finish the loop-runtime migration",
-                    "",
-                    "## Note",
-                    "Keep memory ownership inside ANIMA.",
-                ]
-            ),
+        session.add(
+            MemoryItem(
+                user_id=user.id,
+                content="Finish the loop-runtime migration",
+                category="focus",
+                importance=4,
+                source="user",
+            )
         )
+        session.commit()
 
         blocks = build_runtime_memory_blocks(
             session,
@@ -139,25 +155,18 @@ def test_build_runtime_memory_blocks_includes_current_focus_from_local_memory(
             thread_id=thread.id,
         )
 
-    assert [block.label for block in blocks] == ["human", "current_focus"]
-    assert "# Current Focus" in blocks[1].value
-    assert "Finish the loop-runtime migration" in blocks[1].value
-    assert "Keep memory ownership inside ANIMA." in blocks[1].value
-    assert "category: goal" not in blocks[1].value
+    labels = [block.label for block in blocks]
+    assert "current_focus" in labels
+    focus_block = next(b for b in blocks if b.label == "current_focus")
+    assert "loop-runtime migration" in focus_block.value
 
 
-def test_build_runtime_memory_blocks_omits_placeholder_current_focus(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "anima-data"
-    monkeypatch.setattr("anima_server.config.settings.data_dir", data_dir)
-
+def test_build_runtime_memory_blocks_omits_empty_focus() -> None:
     with _db_session() as session:
         user = User(
-            username="placeholder-focus",
+            username="no-focus",
             password_hash="not-used",
-            display_name="Placeholder Focus",
+            display_name="No Focus",
         )
         session.add(user)
         session.flush()
@@ -166,11 +175,6 @@ def test_build_runtime_memory_blocks_omits_placeholder_current_focus(
         session.add(thread)
         session.flush()
         session.commit()
-
-        _write_current_focus(
-            user.id,
-            "# Current Focus\n\n- [ ] Define your current focus\n",
-        )
 
         blocks = build_runtime_memory_blocks(
             session,

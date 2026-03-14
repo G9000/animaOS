@@ -1,155 +1,152 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import UTC, datetime
-import re
-from pathlib import Path
 
-from anima_server.services.storage import get_user_data_dir
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-MEMORY_ROOT = Path("memory")
-CURRENT_FOCUS_PATH = Path("user") / "current-focus.md"
-FACTS_PATH = Path("user") / "facts.md"
-PREFERENCES_PATH = Path("user") / "preferences.md"
-DAILY_PATH = Path("daily")
-_BULLET_LINE_RE = re.compile(r"^- (?!\[)(?P<value>.+?)\s*$", re.MULTILINE)
+from anima_server.models import MemoryDailyLog, MemoryItem
 
 
-def resolve_memory_path(user_id: int, relative_path: Path) -> Path:
-    return get_user_data_dir(user_id) / MEMORY_ROOT / relative_path
-
-
-def read_memory_text(user_id: int, relative_path: Path) -> str | None:
-    path = resolve_memory_path(user_id, relative_path)
-    if not path.is_file():
-        return None
-
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-
-def write_memory_text(user_id: int, relative_path: Path, content: str) -> Path:
-    path = resolve_memory_path(user_id, relative_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
-def append_memory_text(
+def add_memory_item(
+    db: Session,
+    *,
     user_id: int,
-    relative_path: Path,
     content: str,
+    category: str,
+    importance: int = 3,
+    source: str = "extraction",
+) -> MemoryItem | None:
+    existing = get_memory_items(db, user_id=user_id, category=category)
+    for item in existing:
+        if _is_duplicate(item.content, content):
+            return None
+
+    memory_item = MemoryItem(
+        user_id=user_id,
+        content=content,
+        category=category,
+        importance=importance,
+        source=source,
+    )
+    db.add(memory_item)
+    db.flush()
+    return memory_item
+
+
+def get_memory_items(
+    db: Session,
     *,
-    separator: str = "\n\n",
-) -> Path:
-    existing = read_memory_text(user_id, relative_path)
-    if existing and existing.strip():
-        merged = existing.rstrip() + separator + content.strip()
-    else:
-        merged = content.strip()
-    return write_memory_text(user_id, relative_path, merged + "\n")
-
-
-def append_unique_bullets(
     user_id: int,
-    relative_path: Path,
-    bullet_items: Sequence[str],
-) -> list[str]:
-    normalized_items: list[str] = []
-    for item in bullet_items:
-        normalized = normalize_bullet_item(item)
-        if normalized:
-            normalized_items.append(normalized)
-    if not normalized_items:
-        return []
-
-    existing = read_memory_text(user_id, relative_path) or ""
-    existing_keys = {normalize_bullet_key(item) for item in extract_bullet_items(existing)}
-
-    additions: list[str] = []
-    for item in normalized_items:
-        key = normalize_bullet_key(item)
-        if key in existing_keys:
-            continue
-        additions.append(item)
-        existing_keys.add(key)
-
-    if not additions:
-        return []
-
-    addition_text = "\n".join(f"- {item}" for item in additions)
-    append_memory_text(user_id, relative_path, addition_text, separator="\n")
-    return additions
+    category: str | None = None,
+    limit: int = 50,
+    active_only: bool = True,
+) -> list[MemoryItem]:
+    query = select(MemoryItem).where(MemoryItem.user_id == user_id)
+    if category is not None:
+        query = query.where(MemoryItem.category == category)
+    if active_only:
+        query = query.where(MemoryItem.superseded_by.is_(None))
+    query = query.order_by(MemoryItem.created_at.desc()).limit(limit)
+    return list(db.scalars(query).all())
 
 
-def extract_bullet_items(text: str) -> list[str]:
-    return [match.group("value").strip() for match in _BULLET_LINE_RE.finditer(text)]
-
-
-def render_current_focus(focus: str, note: str | None = None) -> str:
-    lines = ["# Current Focus", "", f"- [ ] {focus.strip()}"]
-    if note and note.strip():
-        lines.extend(["", "## Note", note.strip()])
-    return "\n".join(lines).strip() + "\n"
-
-
-def write_current_focus(user_id: int, focus: str, note: str | None = None) -> bool:
-    content = render_current_focus(focus, note)
-    existing = read_memory_text(user_id, CURRENT_FOCUS_PATH)
-    if existing is not None and existing.strip() == content.strip():
-        return False
-    write_memory_text(user_id, CURRENT_FOCUS_PATH, content)
-    return True
-
-
-def append_daily_log_entry(
-    user_id: int,
+def supersede_memory_item(
+    db: Session,
     *,
+    old_item_id: int,
+    new_content: str,
+    importance: int | None = None,
+) -> MemoryItem:
+    old_item = db.get(MemoryItem, old_item_id)
+    if old_item is None:
+        raise ValueError(f"Memory item {old_item_id} not found")
+
+    new_item = MemoryItem(
+        user_id=old_item.user_id,
+        content=new_content,
+        category=old_item.category,
+        importance=importance if importance is not None else old_item.importance,
+        source=old_item.source,
+    )
+    db.add(new_item)
+    db.flush()
+
+    old_item.superseded_by = new_item.id
+    old_item.updated_at = datetime.now(UTC)
+    db.add(old_item)
+    db.flush()
+    return new_item
+
+
+def add_daily_log(
+    db: Session,
+    *,
+    user_id: int,
     user_message: str,
     assistant_response: str,
-    now: datetime | None = None,
-) -> Path:
-    timestamp = now or datetime.now(UTC)
-    filename = f"{timestamp.date().isoformat()}.md"
-    entry = render_daily_log_entry(
-        timestamp=timestamp,
+) -> MemoryDailyLog:
+    log = MemoryDailyLog(
+        user_id=user_id,
+        date=datetime.now(UTC).date().isoformat(),
         user_message=user_message,
         assistant_response=assistant_response,
     )
-    return append_memory_text(user_id, DAILY_PATH / filename, entry)
+    db.add(log)
+    db.flush()
+    return log
 
 
-def render_daily_log_entry(
+def get_current_focus(db: Session, *, user_id: int) -> str | None:
+    item = db.scalar(
+        select(MemoryItem)
+        .where(
+            MemoryItem.user_id == user_id,
+            MemoryItem.category == "focus",
+            MemoryItem.superseded_by.is_(None),
+        )
+        .order_by(MemoryItem.created_at.desc())
+        .limit(1)
+    )
+    if item is None:
+        return None
+    return item.content
+
+
+def set_current_focus(
+    db: Session,
     *,
-    timestamp: datetime,
-    user_message: str,
-    assistant_response: str,
-) -> str:
-    return "\n".join(
-        [
-            f"## {timestamp.isoformat()}",
-            "",
-            "### User",
-            to_blockquote(user_message),
-            "",
-            "### Assistant",
-            to_blockquote(assistant_response),
-        ]
-    ).strip()
+    user_id: int,
+    focus: str,
+) -> MemoryItem:
+    existing = db.scalar(
+        select(MemoryItem)
+        .where(
+            MemoryItem.user_id == user_id,
+            MemoryItem.category == "focus",
+            MemoryItem.superseded_by.is_(None),
+        )
+        .order_by(MemoryItem.created_at.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        return supersede_memory_item(
+            db,
+            old_item_id=existing.id,
+            new_content=focus,
+        )
+
+    item = MemoryItem(
+        user_id=user_id,
+        content=focus,
+        category="focus",
+        importance=4,
+        source="user",
+    )
+    db.add(item)
+    db.flush()
+    return item
 
 
-def to_blockquote(text: str) -> str:
-    lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
-    if not lines:
-        return "> "
-    return "\n".join(f"> {line}" for line in lines)
-
-
-def normalize_bullet_item(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip(" \t\r\n\"'`.,;:!?")
-
-
-def normalize_bullet_key(value: str) -> str:
-    return normalize_bullet_item(value).lower()
+def _is_duplicate(existing_content: str, new_content: str) -> bool:
+    return existing_content.strip().lower() == new_content.strip().lower()
