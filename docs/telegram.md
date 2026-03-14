@@ -1,6 +1,9 @@
 # Telegram Integration
 
-This project now supports Telegram chat via a webhook endpoint:
+This project supports Telegram chat through the legacy `apps/api` webhook
+surface. The current Python server in `apps/server` does not expose this route.
+
+Endpoint:
 
 - `POST /api/telegram/webhook`
 

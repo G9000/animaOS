@@ -1,6 +1,6 @@
 # ANIMA Server Agent Runtime Migration Plan
 
-Status: in progress (server loop runtime, core persistence, basic tool rules, basic persisted compaction, richer prompt memory blocks, native openai-compatible streaming, and basic background memory consolidation live)
+Status: archived migration plan (the server loop runtime is live; remaining hardening work now lives in `docs/agent-runtime-improvements.md` and `docs/roadmap.md`)
 
 This document defines how `apps/server` is migrating from the former LangGraph scaffold to a Letta-inspired orchestration loop while keeping ANIMA-owned prompts, memory, persistence, and API contracts.
 
@@ -29,20 +29,21 @@ Implemented now:
 - persisted `summary` messages now collapse older in-context history while keeping recent turns live
 - scaffold turn counting survives compaction because turn count now comes from persisted thread state
 - runtime memory blocks in `apps/server/src/anima_server/services/agent/memory_blocks.py`
-- `human`, `current_focus`, and `thread_summary` blocks now feed prompt construction each turn
+- prompt construction now includes `soul`, self-model sections, emotional context, semantic retrieval, facts, preferences, goals, relationships, tasks, `current_focus`, `thread_summary`, recent episodes, and session memory
 - persisted `summary` rows are no longer replayed as ordinary conversation history; they are injected through the prompt memory layer instead
 - real OpenAI-compatible provider client for `ollama`, `openrouter`, and `vllm` in `apps/server/src/anima_server/services/agent/openai_compatible_client.py`
 - structured stream events in `apps/server/src/anima_server/services/agent/streaming.py`
 - SSE path now emits a unified event model (`tool_call`, `tool_return`, `chunk`, `usage`, `done`, `error`) from the shared loop runtime, with live provider chunk streaming when the adapter supports it
 - in-process post-response memory consolidation in `apps/server/src/anima_server/services/agent/consolidation.py`
 - background memory writes now create daily logs every turn and promote durable user facts, preferences, goals, relationships, and explicit `current_focus` statements into database-backed memory tables
+- prompt-budget enforcement now happens before final prompt assembly in `apps/server/src/anima_server/services/agent/prompt_budget.py`
 - parity coverage for scaffold chat, streaming, reset, provider errors, persona template failures, and persisted runtime rows
 
 Still pending:
 
-- session/task blocks and additional ANIMA-owned memory sources beyond `human`, `current_focus`, and `thread_summary`
 - richer live step emission beyond chunk streaming, especially incremental tool-call deltas and wider provider-specific coverage
-- richer memory extraction and consolidation beyond the initial heuristic pipeline
+- stronger memory extraction, duplicate-merging, and retrieval hardening beyond the current pipeline
+- making encrypted-Core expectations explicit and continuing to reduce the remaining legacy file-backed surface
 
 ## Why This Migration Exists
 
@@ -133,7 +134,7 @@ ANIMA memory remains ANIMA-owned. The runtime can render memory blocks into prom
 - user profile
 - current focus
 - structured memory tables
-- encrypted `soul.md`
+- database-backed soul content with legacy file migration on first read
 - persisted summaries
 
 ### 3. `/api/chat` remains stable
@@ -756,7 +757,7 @@ Mitigation:
 The runtime migration is functionally complete. The current follow-up work is:
 
 1. Finish encrypted Core defaults: make encrypted SQLite startup explicit and fail clearly when the expected passphrase or SQLCipher path is wrong.
-2. Migrate the remaining file-backed artifacts: `soul.md` is encrypted on write, but it still lives outside the main database and `manifest.json` remains plaintext metadata.
+2. Reduce the remaining legacy file-backed surface and decide whether `manifest.json` should remain plaintext metadata.
 3. Broaden reflective memory maintenance: keep improving contradiction scans, synthesis quality, and self-model work built on top of the sleep-task pipeline.
 4. Harden retrieval and search: embeddings already persist in SQLite and the vector index is process-local, so the next step is clarifying persistence and ranking behavior.
 
@@ -764,7 +765,9 @@ See `docs/roadmap.md` for the live roadmap.
 
 ## Historical Next Steps
 
-Priority has been clarified. The runtime migration is functionally complete. The next work follows the roadmap in `docs/roadmap.md`:
+The items below are preserved as the original sequencing notes from this
+migration brief. Several are now complete in code and are kept here only for
+historical context.
 
 1. **Wire facts and preferences into prompts** (Phase 0) — the system already extracts these but never reads them back into context. Add `facts` and `preferences` memory blocks to `build_runtime_memory_blocks()`.
 2. **Encrypt all memory files at rest** (Phase 1) — implement transparent encrypt-on-write / decrypt-on-read in `memory_store.py` using the vault DEK. This makes the Core a true cold wallet.

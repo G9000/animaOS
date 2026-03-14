@@ -42,7 +42,7 @@ What is already true:
 
 - the database can be encrypted with SQLCipher when `ANIMA_CORE_PASSPHRASE` is configured
 - vault export/import is encrypted
-- `soul.md` migrated into the encrypted database (no longer file-backed)
+- `soul.md` migrated into the database (no longer file-backed, and covered when the Core is encrypted)
 
 What still needs to happen:
 
@@ -131,7 +131,7 @@ Status: complete
 
 Delivered:
 
-- embeddings generated for memories via OpenAI or Ollama providers
+- embeddings generated for memories via the server's OpenAI-compatible providers (`ollama`, `openrouter`, `vllm`)
 - query-aware semantic retrieval: user messages are embedded and matched against stored memory embeddings at conversation time
 - semantically relevant memories injected as a dedicated memory block in the system prompt
 - process-local vector index rebuildable from SQLite-backed embeddings

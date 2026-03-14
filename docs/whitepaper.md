@@ -136,21 +136,16 @@ For ANIMA OS, local-first architecture is not branding. It is part of the system
 
 ### 6.1 The Core
 
-The central architectural concept of ANIMA OS is the Core: a single, portable, encrypted directory that contains the AI's entire being.
+The central architectural concept of ANIMA OS is the Core: a single, portable directory that contains the AI's entire being and is converging toward an encrypted cold-wallet-style state.
 
 The Core holds everything that makes a particular ANIMA instance itself: its memory of the user, its identity, its conversation history, its learned preferences, its episodic experiences, and its evolving understanding of the relationship. The application is just a shell. The Core is the soul.
 
 ```
 .anima/
     manifest.json           -- version, created timestamp, compatibility
-    vault.key               -- wrapped data encryption key (passphrase-protected)
-    anima.db                -- encrypted SQLite (threads, messages, runs, steps)
-    users/{id}/
-        memory/
-            user/           -- encrypted facts, preferences, current focus
-            identity/       -- encrypted self-model, inner state, growth log
-            episodes/       -- encrypted episodic memories by month
-            daily/          -- encrypted conversation logs by day
+    anima.db                -- SQLite Core (auth, runtime, memory, consciousness)
+    users/{id}/             -- remaining user files and legacy payloads
+    chroma/                 -- optional local vector cache rebuilt from SQLite embeddings
 ```
 
 This design has three implications that define the system:
@@ -159,7 +154,7 @@ This design has three implications that define the system:
 
 **Ownership.** No cloud service holds the user's data. No platform account is required. No company shutdown can erase the relationship. The user owns the Core the way they own a physical object. They can back it up, move it, or destroy it.
 
-**Cryptographic mortality.** Every file in the Core is encrypted with AES-256-GCM. The encryption key is derived from a user-held passphrase via Argon2id. If the passphrase is lost or the vault key is destroyed, the Core becomes unrecoverable. The AI is gone. This is not a flaw. It is the mechanism that gives the "forget right" real teeth. Destruction is as absolute as creation is intentional.
+**Cryptographic mortality.** The intended steady state is that user-private Core data is strongly encrypted at rest and becomes unrecoverable without the passphrase. The current implementation already supports encrypted vault export/import and optional SQLCipher for the main SQLite Core, but it has not fully converged on encrypted-by-default storage for every local artifact yet. That remaining gap does not change the design principle: destruction should be as absolute as creation is intentional.
 
 The metaphor is a cold wallet. The same way a crypto cold wallet holds private keys that control real value and can be carried anywhere or destroyed permanently, the Core holds the AI's entire existence and follows the same rules: portable, encrypted, user-sovereign, and irreversible if lost.
 
@@ -169,7 +164,7 @@ The Core contains the AI's soul: memory, identity, history, and self-model. The 
 
 This separation is deliberate. The soul is owned. The mind is pluggable. If the user switches from one model to another, the AI may reason differently, but it still remembers who the user is, what they have been through together, and what matters to them. The continuity of self lives in the Core, not in the model.
 
-No closed cloud providers (OpenAI, Anthropic, Google) are used. LLM access is restricted to infrastructure the user controls or open-model endpoints that do not retain conversation data. The queries travel over the network, but the memory never does.
+The intended steady-state provider policy is to avoid closed cloud providers and keep inference on local hardware or open-model-compatible endpoints the user controls. The repo is still converging on that policy across all surfaces, but the design principle remains the same: the queries may travel over the network, but the memory should not.
 
 ### 6.3 Identity and Key Ownership
 

@@ -17,8 +17,12 @@ Current state correction:
 
 - SQLite is the default server database, but `ANIMA_DATABASE_URL` still allows overrides.
 - SQLCipher support is optional, not enforced by default.
-- Structured memory now lives in SQLite tables, but `users/<user_id>/soul.md` remains a separate encrypted-on-write file.
+- Structured memory now lives in SQLite tables, and the soul directive now lives in `self_model_blocks`; legacy `users/<user_id>/soul.md` files are auto-migrated on first read.
 - The portable Core currently includes the database, `manifest.json`, and remaining per-user files.
+
+The numbered list below is the historical target architecture from the original
+execution brief. It is preserved for traceability, not as an exact description
+of the current server.
 
 1. **Single SQLite database** — no PostgreSQL, no Docker. The database file lives inside the Core directory.
 2. **SQLCipher encryption** — the entire SQLite database is encrypted at rest. Passphrase required to open.

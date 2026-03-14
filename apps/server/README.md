@@ -1,6 +1,10 @@
 # anima-server
 
-FastAPI backend scaffold for the Python migration.
+FastAPI backend used for the current local-development runtime.
+
+Note: the packaged Tauri desktop app still bundles the legacy `apps/api`
+sidecar. This Python server is the active backend for local development and the
+main server-side implementation in this repo.
 
 ## Commands
 

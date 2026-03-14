@@ -1,6 +1,10 @@
 # Discord Integration
 
-ANIMA supports Discord chat through a webhook relay endpoint:
+ANIMA supports Discord chat through the legacy `apps/api` webhook relay
+surface. The current Python server in `apps/server` does not expose this
+route.
+
+Endpoint:
 
 - `POST /api/discord/webhook`
 

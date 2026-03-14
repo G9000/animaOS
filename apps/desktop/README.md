@@ -6,7 +6,7 @@ ANIMA desktop client built with Tauri + React + TypeScript.
 
 Use the root-level packaging guide:
 
-- [docs/build-release.md](/Users/julio/anima-os-lite/docs/build-release.md)
+- [Build & Packaging Guide](../../docs/build-release.md)
 
 Quick command (from repo root):
 

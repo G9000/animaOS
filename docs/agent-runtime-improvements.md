@@ -1,7 +1,7 @@
 ---
 title: Python Agent Runtime Improvement Plan
 last_edited: 2026-03-14
-status: implemented
+status: active
 scope: apps/server
 ---
 
@@ -10,6 +10,14 @@ scope: apps/server
 This document records the current assessment of the Python agent runtime in `apps/server` and the next improvements that would most increase durability, clarity, and product quality.
 
 It is intentionally not a migration doc. The loop runtime already exists. The question now is how to harden it without losing the product direction that makes ANIMA distinctive.
+
+Status note for 2026-03-14: several recommendations from the original review
+have already landed in code. The runtime now has a prompt-budget planner
+(`prompt_budget.py`), explicit staged execution in `service.py`, unified
+provider/config truth around `scaffold`, `ollama`, `openrouter`, and `vllm`,
+per-user reflection scheduling, and no longer carries `ContinueToolRule`.
+Read any conflicting sections below as historical assessment context, not as
+the latest implementation snapshot.
 
 ## Current State
 
@@ -35,23 +43,17 @@ Relevant passing test subsets on 2026-03-14:
 - `uv run --project apps/server pytest apps/server/tests/test_agent_runtime.py apps/server/tests/test_chat.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_session_memory.py -q`
 - `uv run --project apps/server pytest apps/server/tests/test_consciousness.py -q`
 
-## 1. Make Turns Atomic and Serialized
+## 1. Finish Hardening Turn Atomicity and Serialization
 
 ### Current state
 
-The request path in [`apps/server/src/anima_server/services/agent/service.py`](../apps/server/src/anima_server/services/agent/service.py) still performs read-then-write turn setup in process memory:
+The request path in [`apps/server/src/anima_server/services/agent/service.py`](../apps/server/src/anima_server/services/agent/service.py) now serializes turns per `user_id`, stages turn execution explicitly, and marks orphaned user messages out of active context on failure.
 
-- load or create thread
-- allocate `sequence_id`
-- append the user message
-- invoke the model
-- persist assistant and tool output afterward
-
-The current sequence allocator in [`apps/server/src/anima_server/services/agent/persistence.py`](../apps/server/src/anima_server/services/agent/persistence.py) is still `max(sequence_id) + 1`, while uniqueness is enforced only by the database constraint on `thread_id, sequence_id`.
+The remaining gap is that the current sequence allocator in [`apps/server/src/anima_server/services/agent/persistence.py`](../apps/server/src/anima_server/services/agent/persistence.py) is still `max(sequence_id) + 1`, while uniqueness is enforced only by the database constraint on `thread_id, sequence_id`.
 
 ### Why this matters
 
-This is the runtime's most important remaining correctness gap.
+This remains one of the runtime's most important correctness gaps.
 
 This is not primarily a multi-user concern. It is a same-user, same-thread concurrency concern.
 
@@ -75,7 +77,6 @@ For a companion product built on continuity, this matters more than another tool
 
 ### What to change
 
-- Serialize turns per `user_id` or `thread_id`.
 - Move sequence allocation to a DB-safe primitive instead of `max + 1`.
 - Treat a turn as one atomic unit with an explicit policy for failure.
 - Ensure failed turns do not replay orphaned user messages as valid history.
@@ -97,7 +98,7 @@ That keeps these concerns out of the service facade and gives the runtime a sing
 - failed LLM invocation does not pollute live context
 - retry after failure produces a clean next turn
 
-## 2. Add a Real Prompt-Budget Planner
+## 2. Keep Hardening the Prompt-Budget Planner
 
 ### Current state
 
@@ -116,7 +117,7 @@ The runtime now injects many memory layers via [`apps/server/src/anima_server/se
 - recent episodes
 - session memory
 
-Compaction in [`apps/server/src/anima_server/services/agent/compaction.py`](../apps/server/src/anima_server/services/agent/compaction.py) still budgets only transcript messages.
+[`apps/server/src/anima_server/services/agent/prompt_budget.py`](../apps/server/src/anima_server/services/agent/prompt_budget.py) now applies tiered budgets before final prompt assembly, but the planner is still character-based and the transcript compaction path in [`apps/server/src/anima_server/services/agent/compaction.py`](../apps/server/src/anima_server/services/agent/compaction.py) remains largely separate from that budget logic.
 
 ### Why this matters
 
@@ -124,11 +125,11 @@ This is now the main scalability issue inside the runtime.
 
 The richest context increasingly lives outside the transcript. That means the system can exceed practical context budgets even if transcript compaction is working correctly.
 
-The priority comments in `memory_blocks.py` are useful design intent, but they are not runtime enforcement. Right now the runtime has richer memory than it has budget governance.
+The runtime now has real budget governance, but it still needs stronger enforcement, better observability, and clearer interaction between transcript compaction and memory-block budgeting.
 
 ### What to change
 
-Introduce one prompt-budget planner that runs before final prompt assembly and decides:
+Keep iterating on one prompt-budget planner that decides:
 
 - which blocks are mandatory
 - which blocks are optional
@@ -193,36 +194,28 @@ In prompt-budget terms, this means:
 2. strongly prefer: `self_identity`, current focus, recent thread summary
 3. optional under budget pressure: lower-priority self-model sections and broad memory context
 
-## 3. Split the Turn Pipeline into Explicit Stages
+## 3. Keep the Turn Pipeline Explicit and Observable
 
 ### Current state
 
-[`apps/server/src/anima_server/services/agent/service.py`](../apps/server/src/anima_server/services/agent/service.py) now handles:
+[`apps/server/src/anima_server/services/agent/service.py`](../apps/server/src/anima_server/services/agent/service.py) is now split into explicit stages:
 
-- semantic retrieval
-- feedback signal collection
-- memory-block construction
-- tool-context setup
-- runtime invocation
-- persistence
-- compaction
-- consolidation scheduling
-- reflection scheduling
+- `_prepare_turn_context(...)`
+- `_invoke_turn_runtime(...)`
+- `_persist_turn_result(...)`
+- `_run_post_turn_hooks(...)`
+
+That split is a real improvement, but the service layer still owns many cross-cutting concerns and is the most likely place for future complexity to accumulate.
 
 ### Why this matters
 
-This file still reads clearly, but it is already the point where otherwise-good features will start colliding.
+The file still reads clearly, but it is already the point where otherwise-good features will start colliding.
 
 The risk is not style. The risk is that turn semantics become implicit because too many concerns are interleaved in one function.
 
 ### What to change
 
-Split the service path into explicit stages, for example:
-
-- `prepare_turn_context(...)`
-- `invoke_turn_runtime(...)`
-- `persist_turn_result(...)`
-- `run_post_turn_hooks(...)`
+Keep preserving stage boundaries as new features land, and avoid letting the service facade turn back into a god-function.
 
 ### Why this is worth doing
 
@@ -231,75 +224,64 @@ Split the service path into explicit stages, for example:
 - easier to test individual stages
 - easier to add future memory layers without turning the entrypoint into a god-function
 
-## 4. Unify Provider Truth Between Runtime and Config
+## 4. Keep Provider Truth Unified Between Runtime and Config
 
 ### Current state
 
 The runtime provider list in [`apps/server/src/anima_server/services/agent/llm.py`](../apps/server/src/anima_server/services/agent/llm.py) supports:
 
+- `scaffold`
 - `ollama`
 - `openrouter`
 - `vllm`
 
-The config route in [`apps/server/src/anima_server/api/routes/config.py`](../apps/server/src/anima_server/api/routes/config.py) still advertises:
-
-- `ollama`
-- `openai`
-- `anthropic`
+The config route in [`apps/server/src/anima_server/api/routes/config.py`](../apps/server/src/anima_server/api/routes/config.py) now advertises the same real provider set and validates updates against it.
 
 ### Why this matters
 
-This creates impossible states:
+This is one of the cleaner contracts in the runtime today, and it should stay that way:
 
-- the UI can present providers that the runtime cannot actually load
-- docs and behavior drift apart
-- debugging becomes harder because config values no longer imply real runtime capability
+- the UI cannot present providers that the runtime cannot actually load
+- docs and behavior stay closer to implementation
+- debugging is simpler because config values imply real runtime capability
 
 ### What to change
 
-- Derive API-visible providers from the same source the runtime uses.
-- Validate config updates against that source.
-- Remove dead providers unless there is active implementation work behind them.
+Keep deriving API-visible providers from the same source the runtime uses, and do not reintroduce legacy or fantasy providers without real adapter support behind them.
 
 ### Why this is worth doing
 
 This is a small cleanup with disproportionate architectural value. A runtime that has a clear contract feels much more stable than one that accepts fantasy states.
 
-## 5. Harden Streaming and Tool Protocol Handling
+## 5. Harden Tool Protocol Handling and Streaming Edge Cases
 
 ### Current state
 
-The streaming path in [`apps/server/src/anima_server/services/agent/service.py`](../apps/server/src/anima_server/services/agent/service.py) runs a worker task and awaits it in `finally`.
+The streaming path in [`apps/server/src/anima_server/services/agent/service.py`](../apps/server/src/anima_server/services/agent/service.py) now cancels the worker task when the client disconnects or the generator closes.
 
 The OpenAI-compatible streaming adapter in [`apps/server/src/anima_server/services/agent/adapters/openai_compatible.py`](../apps/server/src/anima_server/services/agent/adapters/openai_compatible.py) also treats malformed streamed tool-call arguments as `{}`.
 
 ### Why this matters
 
-Two issues remain:
-
-- disconnected SSE clients can still leave the worker running to completion
-- malformed tool-call arguments degrade silently rather than failing explicitly
+The main issue that still remains is malformed streamed tool-call arguments degrading silently rather than failing explicitly.
 
 For a local companion, these are acceptable in early development. For a durable runtime, they are weak contracts.
 
 ### What to change
 
-- cancel worker tasks when the client disconnects
-- make adapter and tool execution paths cancellation-aware
 - treat invalid streamed tool-call arguments as a step error, not as an empty dict
 - add argument validation before tool execution
 
 ### Tests to add
 
-- streaming disconnect cancels the worker
 - malformed tool-call JSON yields a structured step failure
 - tools never run with silently-defaulted arguments after protocol corruption
 
-## 6. Either Implement or Remove `ContinueToolRule`
+## 6. Keep the Tool-Rule Surface Small and Truthful
 
 ### Current state
 
-[`apps/server/src/anima_server/services/agent/rules.py`](../apps/server/src/anima_server/services/agent/rules.py) defines `ContinueToolRule`, but the current loop in [`apps/server/src/anima_server/services/agent/runtime.py`](../apps/server/src/anima_server/services/agent/runtime.py) does not use it as a meaningful orchestration decision.
+[`apps/server/src/anima_server/services/agent/rules.py`](../apps/server/src/anima_server/services/agent/rules.py) now keeps a smaller rule surface: terminal, init, child, and approval rules.
 
 ### Why this matters
 
@@ -309,36 +291,30 @@ That is especially risky in agent systems, where people start designing prompts 
 
 ### What to change
 
-Choose one:
-
-- fully implement continue-tool semantics in the loop
-- remove the rule until there is a real use case
+Only add new rule types when the runtime has explicit semantics and tests behind them.
 
 ### Why this is worth doing
 
 Keeping the runtime small and truthful is a major strength of this codebase. Preserve that.
 
-## 7. Scope Reflection Per User or Thread
+## 7. Decide Whether Reflection Should Stay Per User or Move to Per Thread
 
 ### Current state
 
-[`apps/server/src/anima_server/services/agent/reflection.py`](../apps/server/src/anima_server/services/agent/reflection.py) still stores one global pending task and one global last-activity timestamp for the whole process.
+[`apps/server/src/anima_server/services/agent/reflection.py`](../apps/server/src/anima_server/services/agent/reflection.py) now scopes pending tasks and last-activity tracking per `user_id`, so one user's activity no longer cancels another user's reflection.
 
 ### Why this matters
 
-This is acceptable only if the runtime is permanently single-user in one process with one active conversational surface.
+This is acceptable if "conversation inactivity" is meant to be a user-level concept.
 
-The rest of the schema does not model the system that way. The DB and API still model users and threads explicitly.
+The open question is whether multiple active threads for the same user should share one inactivity timer or have separate reflection lifecycles.
 
 ### What to change
 
-- track reflection timers by `user_id` or `thread_id`
-- keep cancellation scoped to that key
-- make the runtime consistent about what "conversation inactivity" means
+Decide explicitly whether per-user scope is the right product behavior or whether reflection should become thread-scoped.
 
 ### Tests to add
 
-- user A activity does not cancel user B reflection
 - repeated activity for one thread resets only that thread's timer
 
 ## 8. Clarify What Persistence Is Supposed to Guarantee
@@ -450,13 +426,12 @@ The codebase is leaving the phase where "feature exists" is enough. The next pha
 If improvement work needs to be staged, the highest-leverage order is:
 
 1. atomic turns and sequence safety
-2. prompt-budget planner
-3. split the turn pipeline into explicit stages
-4. provider/config unification
-5. streaming and tool-protocol hardening
-6. per-user reflection scheduling
-7. self-model write governance
-8. invariant-focused tests
+2. prompt-budget planner hardening
+3. tool-protocol hardening
+4. persistence-contract clarification
+5. self-model write governance
+6. decide whether reflection stays per-user or moves per-thread
+7. invariant-focused tests
 
 ## Closing View
 
