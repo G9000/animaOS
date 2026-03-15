@@ -24,19 +24,19 @@ export function DashboardTasksCard({
   onDeleteTask,
 }: DashboardTasksCardProps) {
   return (
-    <div className="bg-(--color-bg-card) border border-(--color-border) rounded-xl p-5 space-y-4">
+    <div className="bg-bg-card border border-border rounded-xl p-5 space-y-4">
       {home?.currentFocus && (
         <div>
-          <p className="text-[10px] uppercase tracking-wider text-(--color-text-muted)/50 mb-1.5">
+          <p className="text-[10px] uppercase tracking-wider text-text-muted/50 mb-1.5">
             Focusing on
           </p>
-          <p className="text-sm text-(--color-text)">{home.currentFocus}</p>
+          <p className="text-sm text-text">{home.currentFocus}</p>
         </div>
       )}
 
       <div>
         {home?.currentFocus && (
-          <div className="border-t border-(--color-border) -mx-5 mb-4" />
+          <div className="border-t border-border -mx-5 mb-4" />
         )}
 
         <form onSubmit={onAddTask} className="flex gap-2 mb-3">
@@ -45,12 +45,12 @@ export function DashboardTasksCard({
             value={newTask}
             onChange={(e) => onNewTaskChange(e.target.value)}
             placeholder="Add a task..."
-            className="flex-1 bg-transparent border border-(--color-border) rounded-lg px-3 py-1.5 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/25 outline-none focus:border-(--color-text-muted)/30 transition-colors"
+            className="flex-1 bg-transparent border border-border rounded-lg px-3 py-1.5 text-sm text-text placeholder:text-text-muted/25 outline-none focus:border-text-muted/30 transition-colors"
           />
           {newTask.trim() && (
             <button
               type="submit"
-              className="text-xs text-(--color-primary) hover:text-(--color-text) px-2 transition-colors"
+              className="text-xs text-primary hover:text-text px-2 transition-colors"
             >
               +
             </button>
@@ -62,7 +62,7 @@ export function DashboardTasksCard({
             <div key={task.id} className="flex items-start gap-2.5 group">
               <button
                 onClick={() => onToggleTask(task)}
-                className="w-4 h-4 rounded-full border border-(--color-border) shrink-0 mt-0.5 hover:border-(--color-primary)/60 hover:bg-(--color-primary)/10 transition-colors cursor-pointer"
+                className="w-4 h-4 rounded-full border border-border shrink-0 mt-0.5 hover:border-primary/60 hover:bg-primary/10 transition-colors cursor-pointer"
               />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
@@ -72,14 +72,14 @@ export function DashboardTasksCard({
                       title={PRIORITY_INDICATOR[task.priority]?.label}
                     />
                   )}
-                  <span className="text-sm text-(--color-text)/80 truncate">{task.text}</span>
+                  <span className="text-sm text-text/80 truncate">{task.text}</span>
                 </div>
                 {task.dueDate && (
                   <p
                     className={`text-[10px] mt-0.5 ${
                       new Date(task.dueDate).getTime() < Date.now()
                         ? "text-red-400/80"
-                        : "text-(--color-text-muted)/40"
+                        : "text-text-muted/40"
                     }`}
                   >
                     {formatDueDate(task.dueDate)}
@@ -88,7 +88,7 @@ export function DashboardTasksCard({
               </div>
               <button
                 onClick={() => onDeleteTask(task.id)}
-                className="text-[10px] text-(--color-text-muted)/0 group-hover:text-(--color-text-muted)/40 hover:!text-(--color-text-muted) transition-colors"
+                className="text-[10px] text-text-muted/0 group-hover:text-text-muted/40 hover:!text-text-muted transition-colors"
               >
                 ×
               </button>
@@ -98,21 +98,21 @@ export function DashboardTasksCard({
             <div key={task.id} className="flex items-start gap-2.5 opacity-40 group">
               <button
                 onClick={() => onToggleTask(task)}
-                className="w-4 h-4 rounded-full bg-(--color-success)/20 border border-(--color-success)/30 shrink-0 mt-0.5 flex items-center justify-center cursor-pointer hover:bg-(--color-success)/30 transition-colors"
+                className="w-4 h-4 rounded-full bg-success/20 border border-success/30 shrink-0 mt-0.5 flex items-center justify-center cursor-pointer hover:bg-success/30 transition-colors"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-(--color-success)/60" />
+                <span className="w-1.5 h-1.5 rounded-full bg-success/60" />
               </button>
               <span className="text-sm line-through flex-1 truncate">{task.text}</span>
               <button
                 onClick={() => onDeleteTask(task.id)}
-                className="text-[10px] text-(--color-text-muted)/0 group-hover:text-(--color-text-muted)/40 hover:!text-(--color-text-muted) transition-colors"
+                className="text-[10px] text-text-muted/0 group-hover:text-text-muted/40 hover:!text-text-muted transition-colors"
               >
                 ×
               </button>
             </div>
           ))}
           {doneTasks.length > 3 && (
-            <p className="text-[10px] text-(--color-text-muted)/30 pl-6.5">
+            <p className="text-[10px] text-text-muted/30 pl-6.5">
               +{doneTasks.length - 3} completed
             </p>
           )}

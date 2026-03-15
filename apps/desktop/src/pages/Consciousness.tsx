@@ -165,45 +165,45 @@ export default function Consciousness() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-5 py-3 border-b border-(--color-border)">
+      <div className="px-5 py-3 border-b border-border">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <span className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+            <span className="text-[11px] text-text-muted uppercase tracking-wider">
               Mind
             </span>
             {selfModel && (
-              <span className="text-[10px] text-(--color-text-muted)/50">
+              <span className="text-[10px] text-text-muted/50">
                 {Object.keys(selfModel.sections).length} sections
               </span>
             )}
           </div>
           <div className="flex items-center gap-3">
             {actionMessage && (
-              <span className="text-[10px] text-(--color-text-muted) tracking-wider">
+              <span className="text-[10px] text-text-muted tracking-wider">
                 {actionMessage}
               </span>
             )}
             <button
               onClick={handleReflect}
               disabled={reflecting || sleeping}
-              className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider transition-colors disabled:opacity-30"
+              className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider transition-colors disabled:opacity-30"
             >
               {reflecting ? "Reflecting..." : "Reflect"}
             </button>
             <button
               onClick={handleSleep}
               disabled={sleeping || reflecting}
-              className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider transition-colors disabled:opacity-30"
+              className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider transition-colors disabled:opacity-30"
             >
               {sleeping ? "Running..." : "Sleep tasks"}
             </button>
             {saved && (
-              <span className="text-[10px] text-(--color-primary) tracking-wider uppercase">
+              <span className="text-[10px] text-primary tracking-wider uppercase">
                 Saved
               </span>
             )}
             {error && (
-              <span className="text-[10px] text-(--color-danger) tracking-wider">
+              <span className="text-[10px] text-danger tracking-wider">
                 {error}
               </span>
             )}
@@ -211,14 +211,14 @@ export default function Consciousness() {
               <>
                 <button
                   onClick={cancelEdit}
-                  className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider transition-colors"
+                  className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSave}
                   disabled={saving}
-                  className="px-3 py-1 bg-(--color-bg-card) border border-(--color-primary) text-(--color-text) text-[10px] uppercase tracking-wider rounded-sm hover:bg-(--color-bg-input) disabled:opacity-30 transition-colors"
+                  className="px-3 py-1 bg-bg-card border border-primary text-text text-[10px] uppercase tracking-wider rounded-sm hover:bg-bg-input disabled:opacity-30 transition-colors"
                 >
                   {saving ? "Saving..." : "Save"}
                 </button>
@@ -227,7 +227,7 @@ export default function Consciousness() {
             {!editing && isEditable && currentSection && (
               <button
                 onClick={startEdit}
-                className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider transition-colors"
+                className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider transition-colors"
               >
                 Edit
               </button>
@@ -237,7 +237,7 @@ export default function Consciousness() {
       </div>
 
       {/* Tabs */}
-      <div className="px-5 py-2 border-b border-(--color-border) flex gap-1">
+      <div className="px-5 py-2 border-b border-border flex gap-1">
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -247,8 +247,8 @@ export default function Consciousness() {
             }}
             className={`text-[10px] px-2 py-1 rounded uppercase tracking-wider transition-colors ${
               tab === t.key
-                ? "bg-(--color-primary) text-(--color-bg)"
-                : "text-(--color-text-muted) hover:text-(--color-text) bg-(--color-bg-card)"
+                ? "bg-primary text-bg"
+                : "text-text-muted hover:text-text bg-bg-card"
             }`}
           >
             {t.label}
@@ -257,12 +257,12 @@ export default function Consciousness() {
       </div>
 
       {/* Description */}
-      <div className="px-5 py-2.5 border-b border-(--color-border)/50">
-        <p className="text-xs text-(--color-text-muted) leading-relaxed max-w-lg">
+      <div className="px-5 py-2.5 border-b border-border/50">
+        <p className="text-xs text-text-muted leading-relaxed max-w-lg">
           {SECTION_DESCRIPTIONS[tab]}
         </p>
         {editing && (
-          <p className="text-[10px] text-(--color-text-muted)/40 mt-0.5">
+          <p className="text-[10px] text-text-muted/40 mt-0.5">
             Cmd+S to save · Esc to cancel
           </p>
         )}
@@ -272,7 +272,7 @@ export default function Consciousness() {
       <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
         {loading && (
           <div className="flex items-center justify-center h-full">
-            <span className="text-xs text-(--color-text-muted) animate-pulse uppercase tracking-wider">
+            <span className="text-xs text-text-muted animate-pulse uppercase tracking-wider">
               Loading...
             </span>
           </div>
@@ -286,7 +286,7 @@ export default function Consciousness() {
             onChange={(e) => setEditContent(e.target.value)}
             onKeyDown={handleKeyDown}
             spellCheck={false}
-            className="w-full h-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-5 py-4 text-sm text-(--color-text) outline-none focus:border-(--color-primary) transition-colors resize-none leading-relaxed"
+            className="w-full h-full bg-bg-input border border-border rounded-sm px-5 py-4 text-sm text-text outline-none focus:border-primary transition-colors resize-none leading-relaxed"
             autoFocus
           />
         )}
@@ -298,8 +298,8 @@ export default function Consciousness() {
 
       {/* Footer */}
       {currentSection && !editing && (
-        <div className="px-5 py-2 border-t border-(--color-border) flex items-center gap-4">
-          <span className="text-[10px] text-(--color-text-muted)/30">
+        <div className="px-5 py-2 border-t border-border flex items-center gap-4">
+          <span className="text-[10px] text-text-muted/30">
             v{currentSection.version} · updated by {currentSection.updatedBy}
             {currentSection.updatedAt &&
               ` · ${new Date(currentSection.updatedAt).toLocaleDateString()}`}
@@ -313,7 +313,7 @@ export default function Consciousness() {
 function SectionView({ section }: { section: SelfModelSection | null }) {
   if (!section || !section.content.trim()) {
     return (
-      <div className="text-xs text-(--color-text-muted)/60">
+      <div className="text-xs text-text-muted/60">
         No content yet. This section will be populated as ANIMA learns from your conversations.
       </div>
     );
@@ -327,7 +327,7 @@ function SectionView({ section }: { section: SelfModelSection | null }) {
         return (
           <p
             key={i}
-            className={`text-sm text-(--color-text)/90 leading-relaxed ${
+            className={`text-sm text-text/90 leading-relaxed ${
               isBullet ? "pl-3" : ""
             }`}
           >
@@ -342,7 +342,7 @@ function SectionView({ section }: { section: SelfModelSection | null }) {
 function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
   if (!emotions) {
     return (
-      <div className="text-xs text-(--color-text-muted)/60">
+      <div className="text-xs text-text-muted/60">
         No emotional data available yet.
       </div>
     );
@@ -352,11 +352,11 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
     <div className="max-w-2xl space-y-6">
       {/* Dominant emotion */}
       {emotions.dominantEmotion && (
-        <div className="bg-(--color-bg-card) border border-(--color-border) rounded-md px-4 py-3">
-          <span className="text-[10px] text-(--color-text-muted)/50 uppercase tracking-wider">
+        <div className="bg-bg-card border border-border rounded-md px-4 py-3">
+          <span className="text-[10px] text-text-muted/50 uppercase tracking-wider">
             Dominant Emotion
           </span>
-          <p className="text-lg text-(--color-text) mt-1 capitalize">
+          <p className="text-lg text-text mt-1 capitalize">
             {emotions.dominantEmotion}
           </p>
         </div>
@@ -365,10 +365,10 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Synthesized context */}
       {emotions.synthesizedContext && (
         <div>
-          <span className="text-[10px] text-(--color-text-muted)/50 uppercase tracking-wider">
+          <span className="text-[10px] text-text-muted/50 uppercase tracking-wider">
             Emotional Context
           </span>
-          <p className="text-sm text-(--color-text)/80 leading-relaxed mt-1">
+          <p className="text-sm text-text/80 leading-relaxed mt-1">
             {emotions.synthesizedContext}
           </p>
         </div>
@@ -377,17 +377,17 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Recent signals */}
       {emotions.recentSignals.length > 0 && (
         <div>
-          <span className="text-[10px] text-(--color-text-muted)/50 uppercase tracking-wider">
+          <span className="text-[10px] text-text-muted/50 uppercase tracking-wider">
             Recent Signals
           </span>
           <div className="mt-2 space-y-2">
             {emotions.recentSignals.map((signal, i) => (
               <div
                 key={i}
-                className="bg-(--color-bg-card) border border-(--color-border) rounded-md px-4 py-2.5"
+                className="bg-bg-card border border-border rounded-md px-4 py-2.5"
               >
                 <div className="flex items-center gap-3">
-                  <span className="text-sm text-(--color-text) capitalize">
+                  <span className="text-sm text-text capitalize">
                     {signal.emotion}
                   </span>
                   <div className="flex gap-0.5">
@@ -396,28 +396,28 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
                         key={n}
                         className={`w-1.5 h-1.5 rounded-full ${
                           n <= Math.round(signal.confidence * 5)
-                            ? "bg-(--color-primary)"
-                            : "bg-(--color-border)"
+                            ? "bg-primary"
+                            : "bg-border"
                         }`}
                       />
                     ))}
                   </div>
-                  <span className="text-[9px] text-(--color-text-muted)/40 uppercase tracking-wider">
+                  <span className="text-[9px] text-text-muted/40 uppercase tracking-wider">
                     {signal.trajectory}
                   </span>
                 </div>
                 {signal.topic && (
-                  <p className="text-xs text-(--color-text-muted)/60 mt-1">
+                  <p className="text-xs text-text-muted/60 mt-1">
                     re: {signal.topic}
                   </p>
                 )}
                 {signal.evidence && (
-                  <p className="text-xs text-(--color-text-muted)/40 mt-0.5 italic">
+                  <p className="text-xs text-text-muted/40 mt-0.5 italic">
                     "{signal.evidence}"
                   </p>
                 )}
                 {signal.createdAt && (
-                  <span className="text-[9px] text-(--color-text-muted)/30 mt-1 block">
+                  <span className="text-[9px] text-text-muted/30 mt-1 block">
                     {new Date(signal.createdAt).toLocaleString()}
                   </span>
                 )}
@@ -428,7 +428,7 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       )}
 
       {emotions.recentSignals.length === 0 && !emotions.dominantEmotion && (
-        <div className="text-xs text-(--color-text-muted)/60">
+        <div className="text-xs text-text-muted/60">
           No emotional signals detected yet. They emerge naturally from conversations.
         </div>
       )}

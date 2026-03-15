@@ -29,7 +29,7 @@ export default function Settings() {
       <div className="max-w-3xl mx-auto px-8 py-8 space-y-8">
         <header className="space-y-2">
           <h1 className="text-sm tracking-widest uppercase">Settings</h1>
-          <p className="text-sm text-(--color-text-muted)">
+          <p className="text-sm text-text-muted">
             Runtime configuration, vault operations, and authentication controls live
             in separate sections now.
           </p>
@@ -44,8 +44,8 @@ export default function Settings() {
               className={({ isActive }) =>
                 `rounded-sm border p-4 transition-colors ${
                   isActive
-                    ? "border-(--color-primary) bg-(--color-bg-card) text-(--color-text)"
-                    : "border-(--color-border) text-(--color-text-muted) hover:border-(--color-text-muted) hover:text-(--color-text)"
+                    ? "border-primary bg-bg-card text-text"
+                    : "border-border text-text-muted hover:border-text-muted hover:text-text"
                 }`
               }
             >

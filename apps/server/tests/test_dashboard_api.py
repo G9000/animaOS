@@ -1,75 +1,8 @@
 from __future__ import annotations
 
-import shutil
-from collections.abc import Generator
-from contextlib import contextmanager
-from pathlib import Path
-
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from anima_server.config import settings
-from anima_server.db.base import Base
-from anima_server.db.session import get_db
-from anima_server.main import create_app
-from anima_server.services.agent import invalidate_agent_runtime_cache
-from anima_server.services.agent.vector_store import reset_vector_store
-from anima_server.services.sessions import unlock_session_store
-from conftest import create_managed_temp_dir
-
-
-def _build_session_factory() -> tuple[Engine, sessionmaker]:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    factory = sessionmaker(
-        bind=engine,
-        autoflush=False,
-        autocommit=False,
-        expire_on_commit=False,
-        class_=Session,
-    )
-    return engine, factory
-
-
-@contextmanager
-def _client() -> Generator[TestClient, None, None]:
-    engine, factory = _build_session_factory()
-    Base.metadata.create_all(bind=engine)
-
-    app = create_app()
-    original_data_dir = settings.data_dir
-    temp_root = create_managed_temp_dir("anima-dashboard-test-")
-
-    def override_get_db() -> Generator[Session, None, None]:
-        db = factory()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    unlock_session_store.clear()
-    invalidate_agent_runtime_cache()
-    settings.data_dir = temp_root / "anima-data"
-
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        reset_vector_store()
-        settings.data_dir = original_data_dir
-        invalidate_agent_runtime_cache()
-        unlock_session_store.clear()
-        app.dependency_overrides.clear()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
-        shutil.rmtree(temp_root, ignore_errors=True)
+from conftest import managed_test_client
 
 
 def _register_user(client: TestClient) -> dict[str, object]:
@@ -82,7 +15,7 @@ def _register_user(client: TestClient) -> dict[str, object]:
 
 
 def test_brief_endpoint() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
@@ -97,13 +30,12 @@ def test_brief_endpoint() -> None:
 
 
 def test_greeting_endpoint() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        resp = client.get(
-            f"/api/chat/greeting?userId={user_id}", headers=headers)
+        resp = client.get(f"/api/chat/greeting?userId={user_id}", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "message" in data
@@ -117,13 +49,12 @@ def test_greeting_endpoint() -> None:
 
 
 def test_nudges_endpoint() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        resp = client.get(
-            f"/api/chat/nudges?userId={user_id}", headers=headers)
+        resp = client.get(f"/api/chat/nudges?userId={user_id}", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "nudges" in data
@@ -131,7 +62,7 @@ def test_nudges_endpoint() -> None:
 
 
 def test_home_endpoint() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
@@ -148,7 +79,7 @@ def test_home_endpoint() -> None:
 
 
 def test_config_providers() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         resp = client.get("/api/config/providers")
         assert resp.status_code == 200
         providers = resp.json()
@@ -159,7 +90,7 @@ def test_config_providers() -> None:
 
 
 def test_config_get_update() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
@@ -172,17 +103,15 @@ def test_config_get_update() -> None:
 
 
 def test_home_journal_streak() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        # Create a memory item so we have something to search
         client.post(
             f"/api/memory/{user_id}/items",
             headers=headers,
-            json={"content": "Loves hiking in mountains",
-                  "category": "preference"},
+            json={"content": "Loves hiking in mountains", "category": "preference"},
         )
 
         resp = client.get(f"/api/chat/home?userId={user_id}", headers=headers)
@@ -193,7 +122,7 @@ def test_home_journal_streak() -> None:
 
 
 def test_memory_search() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
@@ -209,40 +138,32 @@ def test_memory_search() -> None:
             json={"content": "Likes dark mode", "category": "preference"},
         )
 
-        # Search for "designer"
-        resp = client.get(
-            f"/api/memory/{user_id}/search?q=designer", headers=headers)
+        resp = client.get(f"/api/memory/{user_id}/search?q=designer", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] == 1
         assert data["results"][0]["content"] == "Works as a designer"
 
-        # Search for "dark"
-        resp = client.get(
-            f"/api/memory/{user_id}/search?q=dark", headers=headers)
+        resp = client.get(f"/api/memory/{user_id}/search?q=dark", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["count"] == 1
 
-        # Search for nonexistent
-        resp = client.get(
-            f"/api/memory/{user_id}/search?q=zzzzz", headers=headers)
+        resp = client.get(f"/api/memory/{user_id}/search?q=zzzzz", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["count"] == 0
 
 
 def test_user_directive_get_put() -> None:
-    with _client() as client:
+    with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        # Get empty user directive
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["content"] == ""
         assert resp.json()["source"] == "database"
 
-        # Update user directive
         resp = client.put(
             f"/api/soul/{user_id}",
             headers=headers,
@@ -251,7 +172,6 @@ def test_user_directive_get_put() -> None:
         assert resp.status_code == 200
         assert resp.json()["status"] == "updated"
 
-        # Verify
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.json()["content"] == "I am a helpful companion."
         assert resp.json()["source"] == "database"

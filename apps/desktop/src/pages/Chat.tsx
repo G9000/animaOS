@@ -227,9 +227,9 @@ export default function Chat() {
   return (
     <div className="flex flex-col h-full relative bg-[radial-gradient(circle_at_15%_20%,rgba(168,168,192,0.09),transparent_28%),radial-gradient(circle_at_85%_0%,rgba(168,168,192,0.06),transparent_30%)]">
       {/* Toolbar */}
-      <div className="px-3 md:px-5 py-2.5 border-b border-(--color-border) bg-(--color-bg)/85 backdrop-blur-sm">
+      <div className="px-3 md:px-5 py-2.5 border-b border-border bg-bg/85 backdrop-blur-sm">
         <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
-          <span className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <span className="text-[11px] text-text-muted uppercase tracking-wider">
             Chat
           </span>
           <div className="flex items-center gap-3">
@@ -237,13 +237,13 @@ export default function Chat() {
             <div className="relative" ref={langDropdownRef}>
               <button
                 onClick={() => setShowLangSettings((v) => !v)}
-                className="flex items-center gap-1.5 text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider transition-colors"
+                className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-text uppercase tracking-wider transition-colors"
               >
                 TL {currentLangLabel}
               </button>
               {showLangSettings && (
-                <div className="absolute right-0 top-full mt-2 z-20 bg-(--color-bg-card) border border-(--color-border) rounded-sm py-1 shadow-xl min-w-[140px] max-h-64 overflow-y-auto">
-                  <div className="px-3 py-1.5 text-[10px] text-(--color-text-muted) uppercase tracking-widest border-b border-(--color-border)">
+                <div className="absolute right-0 top-full mt-2 z-20 bg-bg-card border border-border rounded-sm py-1 shadow-xl min-w-[140px] max-h-64 overflow-y-auto">
+                  <div className="px-3 py-1.5 text-[10px] text-text-muted uppercase tracking-widest border-b border-border">
                     Translate to
                   </div>
                   {LANGUAGES.map((lang) => (
@@ -252,8 +252,8 @@ export default function Chat() {
                       onClick={() => handleLangChange(lang.code)}
                       className={`block w-full text-left px-3 py-1.5 text-xs transition-colors ${
                         translateLang === lang.code
-                          ? "text-(--color-text) bg-(--color-bg-input)"
-                          : "text-(--color-text-muted) hover:text-(--color-text) hover:bg-(--color-bg-input)"
+                          ? "text-text bg-bg-input"
+                          : "text-text-muted hover:text-text hover:bg-bg-input"
                       }`}
                     >
                       {lang.label}
@@ -264,7 +264,7 @@ export default function Chat() {
             </div>
             <button
               onClick={clearHistory}
-              className="text-[10px] text-(--color-text-muted) hover:text-(--color-danger) uppercase tracking-wider transition-colors"
+              className="text-[10px] text-text-muted hover:text-danger uppercase tracking-wider transition-colors"
             >
               Clear
             </button>
@@ -282,10 +282,10 @@ export default function Chat() {
           {messages.length === 0 && !streaming && (
             <div className="flex items-center justify-center h-full min-h-[35vh]">
               <div className="text-center space-y-3">
-                <div className="text-2xl text-(--color-text-muted)/20 tracking-widest">
+                <div className="text-2xl text-text-muted/20 tracking-widest">
                   ◈
                 </div>
-                <p className="text-(--color-text-muted) text-xs tracking-wider uppercase">
+                <p className="text-text-muted text-xs tracking-wider uppercase">
                   Ready
                 </p>
               </div>
@@ -303,15 +303,15 @@ export default function Chat() {
           {/* Streaming indicator */}
           {streaming && streamBuffer && (
             <div className="flex gap-3 animate-in fade-in duration-200">
-              <div className="text-[10px] text-(--color-text-muted)/70 pt-1.5 select-none shrink-0 w-8 text-right uppercase">
+              <div className="text-[10px] text-text-muted/70 pt-1.5 select-none shrink-0 w-8 text-right uppercase">
                 {AI_LABEL}
               </div>
-              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-(--color-bg-card) border border-(--color-border) rounded-md px-3 py-2.5 md:px-4 md:py-3">
+              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-bg-card border border-border rounded-md px-3 py-2.5 md:px-4 md:py-3">
                 <div className="prose prose-invert prose-sm md:prose-base max-w-none">
                   <ReactMarkdown rehypePlugins={[rehypeHighlight, rehypeRaw]}>
                     {streamBuffer}
                   </ReactMarkdown>
-                  <span className="inline-block w-1.5 h-4 bg-(--color-primary) ml-0.5 animate-pulse" />
+                  <span className="inline-block w-1.5 h-4 bg-primary ml-0.5 animate-pulse" />
                 </div>
               </div>
             </div>
@@ -319,21 +319,21 @@ export default function Chat() {
 
           {streaming && !streamBuffer && (
             <div className="flex gap-3 animate-in fade-in duration-200">
-              <div className="text-[10px] text-(--color-text-muted)/70 pt-1.5 select-none shrink-0 w-8 text-right uppercase">
+              <div className="text-[10px] text-text-muted/70 pt-1.5 select-none shrink-0 w-8 text-right uppercase">
                 {AI_LABEL}
               </div>
-              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-(--color-bg-card) border border-(--color-border) rounded-md px-3 py-2.5 md:px-4 md:py-3">
+              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-bg-card border border-border rounded-md px-3 py-2.5 md:px-4 md:py-3">
                 <div className="flex gap-1.5 items-center h-5">
-                  <span className="w-1.5 h-1.5 bg-(--color-text-muted) rounded-full animate-bounce [animation-delay:0ms]" />
-                  <span className="w-1.5 h-1.5 bg-(--color-text-muted) rounded-full animate-bounce [animation-delay:150ms]" />
-                  <span className="w-1.5 h-1.5 bg-(--color-text-muted) rounded-full animate-bounce [animation-delay:300ms]" />
+                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce [animation-delay:0ms]" />
+                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce [animation-delay:150ms]" />
+                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce [animation-delay:300ms]" />
                 </div>
               </div>
             </div>
           )}
 
           {error && (
-            <div className="mx-8 bg-(--color-bg-card) border border-(--color-danger)/30 rounded px-4 py-3 text-(--color-danger) text-sm">
+            <div className="mx-8 bg-bg-card border border-danger/30 rounded px-4 py-3 text-danger text-sm">
               {error}
             </div>
           )}
@@ -345,7 +345,7 @@ export default function Chat() {
       {!isAtBottom && (
         <button
           onClick={() => scrollToBottom("smooth")}
-          className="absolute right-3 md:right-6 bottom-20 md:bottom-24 z-20 text-[10px] px-2.5 py-1 rounded-full border border-(--color-border) bg-(--color-bg-card)/90 backdrop-blur text-(--color-text-muted) hover:text-(--color-text) transition-colors uppercase tracking-wider"
+          className="absolute right-3 md:right-6 bottom-20 md:bottom-24 z-20 text-[10px] px-2.5 py-1 rounded-full border border-border bg-bg-card/90 backdrop-blur text-text-muted hover:text-text transition-colors uppercase tracking-wider"
         >
           Latest
         </button>
@@ -354,10 +354,10 @@ export default function Chat() {
       {/* Input */}
       <form
         onSubmit={handleSubmit}
-        className="border-t border-(--color-border) px-2.5 md:px-5 py-3 md:py-4 bg-(--color-bg-card)/60 backdrop-blur-sm"
+        className="border-t border-border px-2.5 md:px-5 py-3 md:py-4 bg-bg-card/60 backdrop-blur-sm"
       >
-        <div className="flex gap-2.5 md:gap-3 items-end max-w-5xl mx-auto border border-(--color-border) rounded-md px-2.5 md:px-3 py-2 bg-(--color-bg-card)">
-          <div className="text-[11px] md:text-xs text-(--color-primary)/60 pt-1.5 md:pt-2 select-none shrink-0">
+        <div className="flex gap-2.5 md:gap-3 items-end max-w-5xl mx-auto border border-border rounded-md px-2.5 md:px-3 py-2 bg-bg-card">
+          <div className="text-[11px] md:text-xs text-primary/60 pt-1.5 md:pt-2 select-none shrink-0">
             ▸
           </div>
           <textarea
@@ -368,12 +368,12 @@ export default function Chat() {
             placeholder="Say something..."
             disabled={streaming}
             rows={1}
-            className="flex-1 bg-transparent text-[14px] md:text-sm text-(--color-text) placeholder:text-(--color-text-muted)/40 outline-none resize-none max-h-40 md:max-h-32 py-1 leading-relaxed"
+            className="flex-1 bg-transparent text-[14px] md:text-sm text-text placeholder:text-text-muted/40 outline-none resize-none max-h-40 md:max-h-32 py-1 leading-relaxed"
           />
           <button
             type="submit"
             disabled={!input.trim() || streaming}
-            className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) disabled:opacity-20 uppercase tracking-wider pb-1 transition-colors"
+            className="text-[10px] text-text-muted hover:text-text disabled:opacity-20 uppercase tracking-wider pb-1 transition-colors"
           >
             Send
           </button>
@@ -426,7 +426,7 @@ function MessageBubble({
   return (
     <div className={`group flex gap-3 ${isUser ? "justify-end" : ""}`}>
       {!isUser && (
-        <div className="text-[10px] text-(--color-text-muted)/70 pt-1.5 select-none shrink-0 w-8 text-right uppercase">
+        <div className="text-[10px] text-text-muted/70 pt-1.5 select-none shrink-0 w-8 text-right uppercase">
           {isSystem ? "SYS" : AI_LABEL}
         </div>
       )}
@@ -436,10 +436,10 @@ function MessageBubble({
         <div
           className={`rounded-md px-3 py-2.5 md:px-4 md:py-3 shadow-[0_0_0_1px_rgba(255,255,255,0.02)] ${
             isUser
-              ? "bg-linear-to-b from-(--color-bg-input) to-(--color-bg-card) border border-(--color-border) text-(--color-text)"
+              ? "bg-linear-to-b from-bg-input to-bg-card border border-border text-text"
               : isSystem
-                ? "bg-(--color-primary)/[0.06] border border-(--color-primary)/20"
-                : "bg-(--color-bg-card)/85 border border-(--color-border)"
+                ? "bg-primary/[0.06] border border-primary/20"
+                : "bg-bg-card/85 border border-border"
           }`}
         >
           {isUser ? (
@@ -457,12 +457,12 @@ function MessageBubble({
 
         {/* Translation result */}
         {translating && (
-          <div className="text-[11px] text-(--color-text-muted)/60 mt-1.5 px-1 animate-pulse">
+          <div className="text-[11px] text-text-muted/60 mt-1.5 px-1 animate-pulse">
             Translating...
           </div>
         )}
         {translation && !translating && (
-          <div className="mt-1.5 w-full px-3 py-2 md:px-4 md:py-2.5 rounded bg-(--color-bg-card)/60 border border-(--color-border)/40 text-[13px] md:text-sm text-(--color-text-muted) leading-relaxed">
+          <div className="mt-1.5 w-full px-3 py-2 md:px-4 md:py-2.5 rounded bg-bg-card/60 border border-border/40 text-[13px] md:text-sm text-text-muted leading-relaxed">
             {translation}
           </div>
         )}
@@ -472,19 +472,17 @@ function MessageBubble({
           <button
             onClick={handleTranslate}
             disabled={translating}
-            className="text-[10px] text-(--color-text-muted)/50 hover:text-(--color-text-muted) uppercase tracking-wider transition-colors disabled:opacity-30"
+            className="text-[10px] text-text-muted/50 hover:text-text-muted uppercase tracking-wider transition-colors disabled:opacity-30"
           >
             {translation ? "HIDE" : "TL"}
           </button>
           {timestamp && (
-            <span className="text-[10px] text-(--color-text-muted)/30">
-              {timestamp}
-            </span>
+            <span className="text-[10px] text-text-muted/30">{timestamp}</span>
           )}
         </div>
       </div>
       {isUser && (
-        <div className="text-[10px] text-(--color-text-muted)/70 pt-1.5 select-none shrink-0 w-8 uppercase">
+        <div className="text-[10px] text-text-muted/70 pt-1.5 select-none shrink-0 w-8 uppercase">
           {USER_LABEL}
         </div>
       )}

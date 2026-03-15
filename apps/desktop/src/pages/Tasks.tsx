@@ -221,8 +221,8 @@ export default function Tasks() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-medium text-(--color-text)">Tasks</h1>
-            <p className="text-xs text-(--color-text-muted)/50 mt-0.5">
+            <h1 className="text-lg font-medium text-text">Tasks</h1>
+            <p className="text-xs text-text-muted/50 mt-0.5">
               {openCount} open
               {overdueCount > 0 && (
                 <span className="text-red-400 ml-1.5">
@@ -240,7 +240,7 @@ export default function Tasks() {
               if (!showCreate)
                 setTimeout(() => createInputRef.current?.focus(), 50);
             }}
-            className="px-3 py-1.5 rounded-lg text-xs bg-(--color-primary)/10 text-(--color-primary) hover:bg-(--color-primary)/20 transition-colors"
+            className="px-3 py-1.5 rounded-lg text-xs bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
           >
             {showCreate ? "Cancel" : "+ New task"}
           </button>
@@ -250,7 +250,7 @@ export default function Tasks() {
         {showCreate && (
           <form
             onSubmit={handleCreate}
-            className="bg-(--color-bg-card) border border-(--color-border) rounded-xl p-4 space-y-3"
+            className="bg-bg-card border border-border rounded-xl p-4 space-y-3"
           >
             <input
               ref={createInputRef}
@@ -258,11 +258,11 @@ export default function Tasks() {
               value={newText}
               onChange={(e) => setNewText(e.target.value)}
               placeholder='E.g. "Buy groceries tomorrow at 5pm" — time is parsed automatically'
-              className="w-full bg-transparent border border-(--color-border) rounded-lg px-3 py-2 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/25 outline-none focus:border-(--color-text-muted)/30 transition-colors"
+              className="w-full bg-transparent border border-border rounded-lg px-3 py-2 text-sm text-text placeholder:text-text-muted/25 outline-none focus:border-text-muted/30 transition-colors"
             />
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
-                <span className="text-[11px] text-(--color-text-muted)/50">
+                <span className="text-[11px] text-text-muted/50">
                   Priority:
                 </span>
                 {[0, 1, 2].map((p) => (
@@ -276,8 +276,8 @@ export default function Tasks() {
                           ? "bg-red-500/20 text-red-400"
                           : p === 1
                             ? "bg-amber-400/20 text-amber-400"
-                            : "bg-(--color-bg-input) text-(--color-text)"
-                        : "text-(--color-text-muted)/40 hover:text-(--color-text-muted)"
+                            : "bg-bg-input text-text"
+                        : "text-text-muted/40 hover:text-text-muted"
                     }`}
                   >
                     {PRIORITY_LABELS[p]}
@@ -288,12 +288,12 @@ export default function Tasks() {
               <button
                 type="submit"
                 disabled={!newText.trim()}
-                className="px-4 py-1.5 rounded-lg text-xs bg-(--color-primary) text-white hover:opacity-90 transition-opacity disabled:opacity-30"
+                className="px-4 py-1.5 rounded-lg text-xs bg-primary text-white hover:opacity-90 transition-opacity disabled:opacity-30"
               >
                 Add task
               </button>
             </div>
-            <p className="text-[10px] text-(--color-text-muted)/30">
+            <p className="text-[10px] text-text-muted/30">
               Tip: Include time like "in 30 min", "at 3pm", "next Monday" —
               reminders are set automatically.
             </p>
@@ -301,15 +301,15 @@ export default function Tasks() {
         )}
 
         {/* Filter tabs */}
-        <div className="flex gap-1 border-b border-(--color-border) pb-px">
+        <div className="flex gap-1 border-b border-border pb-px">
           {(["open", "done", "all"] as ViewFilter[]).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
               className={`px-3 py-1.5 text-xs capitalize transition-colors border-b-2 -mb-px ${
                 filter === f
-                  ? "border-(--color-primary) text-(--color-text)"
-                  : "border-transparent text-(--color-text-muted)/50 hover:text-(--color-text-muted)"
+                  ? "border-primary text-text"
+                  : "border-transparent text-text-muted/50 hover:text-text-muted"
               }`}
             >
               {f}
@@ -322,13 +322,13 @@ export default function Tasks() {
         {/* Task list */}
         {loading ? (
           <div className="flex justify-center py-12">
-            <span className="text-xs text-(--color-text-muted)/40 animate-pulse">
+            <span className="text-xs text-text-muted/40 animate-pulse">
               Loading tasks...
             </span>
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-sm text-(--color-text-muted)/40">
+            <p className="text-sm text-text-muted/40">
               {filter === "open"
                 ? "No open tasks. Nice!"
                 : filter === "done"
@@ -341,9 +341,9 @@ export default function Tasks() {
             {filtered.map((task) => (
               <div
                 key={task.id}
-                className={`group flex items-start gap-3 px-4 py-3 rounded-lg hover:bg-(--color-bg-card)/60 transition-colors ${
+                className={`group flex items-start gap-3 px-4 py-3 rounded-lg hover:bg-bg-card/60 transition-colors ${
                   editingId === task.id
-                    ? "bg-(--color-bg-card) border border-(--color-border)"
+                    ? "bg-bg-card border border-border"
                     : ""
                 }`}
               >
@@ -352,12 +352,12 @@ export default function Tasks() {
                   onClick={() => toggleDone(task)}
                   className={`w-[18px] h-[18px] rounded-full border shrink-0 mt-0.5 flex items-center justify-center transition-colors cursor-pointer ${
                     task.done
-                      ? "bg-(--color-success)/20 border-(--color-success)/30 hover:bg-(--color-success)/30"
-                      : "border-(--color-border) hover:border-(--color-primary)/60 hover:bg-(--color-primary)/10"
+                      ? "bg-success/20 border-success/30 hover:bg-success/30"
+                      : "border-border hover:border-primary/60 hover:bg-primary/10"
                   }`}
                 >
                   {task.done && (
-                    <span className="w-2 h-2 rounded-full bg-(--color-success)/60" />
+                    <span className="w-2 h-2 rounded-full bg-success/60" />
                   )}
                 </button>
 
@@ -370,11 +370,11 @@ export default function Tasks() {
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
                       onKeyDown={handleEditKeyDown}
-                      className="w-full bg-transparent border border-(--color-border) rounded-lg px-3 py-1.5 text-sm text-(--color-text) outline-none focus:border-(--color-text-muted)/30"
+                      className="w-full bg-transparent border border-border rounded-lg px-3 py-1.5 text-sm text-text outline-none focus:border-text-muted/30"
                     />
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-(--color-text-muted)/40">
+                        <span className="text-[10px] text-text-muted/40">
                           Priority:
                         </span>
                         {[0, 1, 2].map((p) => (
@@ -388,8 +388,8 @@ export default function Tasks() {
                                   ? "bg-red-500/20 text-red-400"
                                   : p === 1
                                     ? "bg-amber-400/20 text-amber-400"
-                                    : "bg-(--color-bg-input) text-(--color-text)"
-                                : "text-(--color-text-muted)/30 hover:text-(--color-text-muted)/60"
+                                    : "bg-bg-input text-text"
+                                : "text-text-muted/30 hover:text-text-muted/60"
                             }`}
                           >
                             {PRIORITY_LABELS[p]}
@@ -397,7 +397,7 @@ export default function Tasks() {
                         ))}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-(--color-text-muted)/40">
+                        <span className="text-[10px] text-text-muted/40">
                           Due:
                         </span>
                         <input
@@ -406,27 +406,27 @@ export default function Tasks() {
                           onChange={(e) => setEditDueDate(e.target.value)}
                           onKeyDown={handleEditKeyDown}
                           placeholder="e.g. tomorrow at 3pm"
-                          className="bg-transparent border border-(--color-border) rounded px-2 py-0.5 text-[11px] text-(--color-text) placeholder:text-(--color-text-muted)/25 outline-none w-44 focus:border-(--color-text-muted)/30"
+                          className="bg-transparent border border-border rounded px-2 py-0.5 text-[11px] text-text placeholder:text-text-muted/25 outline-none w-44 focus:border-text-muted/30"
                         />
                       </div>
                     </div>
                     <div className="flex gap-2 pt-1">
                       <button
                         onClick={saveEdit}
-                        className="px-3 py-1 rounded text-[11px] bg-(--color-primary)/10 text-(--color-primary) hover:bg-(--color-primary)/20 transition-colors"
+                        className="px-3 py-1 rounded text-[11px] bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                       >
                         Save
                       </button>
                       <button
                         onClick={cancelEdit}
-                        className="px-3 py-1 rounded text-[11px] text-(--color-text-muted)/50 hover:text-(--color-text-muted) transition-colors"
+                        className="px-3 py-1 rounded text-[11px] text-text-muted/50 hover:text-text-muted transition-colors"
                       >
                         Cancel
                       </button>
                       {editDueDate && (
                         <button
                           onClick={() => setEditDueDate("")}
-                          className="px-2 py-1 rounded text-[10px] text-(--color-text-muted)/30 hover:text-red-400 transition-colors"
+                          className="px-2 py-1 rounded text-[10px] text-text-muted/30 hover:text-red-400 transition-colors"
                         >
                           Clear due date
                         </button>
@@ -443,7 +443,7 @@ export default function Tasks() {
                         />
                       )}
                       <span
-                        className={`text-sm ${task.done ? "line-through text-(--color-text-muted)/40" : "text-(--color-text)/80"}`}
+                        className={`text-sm ${task.done ? "line-through text-text-muted/40" : "text-text/80"}`}
                       >
                         {task.text}
                       </span>
@@ -452,10 +452,10 @@ export default function Tasks() {
                       <p
                         className={`text-[11px] mt-0.5 ${
                           task.done
-                            ? "text-(--color-text-muted)/30"
+                            ? "text-text-muted/30"
                             : isOverdue(task.dueDate)
                               ? "text-red-400/80"
-                              : "text-(--color-text-muted)/40"
+                              : "text-text-muted/40"
                         }`}
                       >
                         {task.done
@@ -469,7 +469,7 @@ export default function Tasks() {
                       </p>
                     )}
                     {task.done && task.completedAt && (
-                      <p className="text-[10px] text-(--color-text-muted)/25 mt-0.5">
+                      <p className="text-[10px] text-text-muted/25 mt-0.5">
                         Completed{" "}
                         {new Date(task.completedAt).toLocaleDateString(
                           "en-US",
@@ -486,7 +486,7 @@ export default function Tasks() {
                     {!task.done && (
                       <button
                         onClick={() => startEdit(task)}
-                        className="px-1.5 py-0.5 rounded text-[10px] text-(--color-text-muted)/40 hover:text-(--color-text-muted) hover:bg-(--color-bg-card) transition-colors"
+                        className="px-1.5 py-0.5 rounded text-[10px] text-text-muted/40 hover:text-text-muted hover:bg-bg-card transition-colors"
                         title="Edit"
                       >
                         ✎
@@ -494,7 +494,7 @@ export default function Tasks() {
                     )}
                     <button
                       onClick={() => handleDelete(task.id)}
-                      className="px-1.5 py-0.5 rounded text-[10px] text-(--color-text-muted)/40 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                      className="px-1.5 py-0.5 rounded text-[10px] text-text-muted/40 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                       title="Delete"
                     >
                       ×

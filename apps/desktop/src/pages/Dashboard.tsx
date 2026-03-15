@@ -141,19 +141,19 @@ export default function Dashboard() {
         {/* Stats */}
         {home && (
           <div className="grid grid-cols-3 gap-3">
-            <div className="bg-(--color-bg-card) border border-(--color-border) rounded-xl px-4 py-3 text-center">
-              <p className="text-lg text-(--color-text) font-medium">{home.messageCount}</p>
-              <p className="text-[10px] text-(--color-text-muted)/50 uppercase tracking-wider mt-0.5">Messages</p>
+            <div className="bg-bg-card border border-border rounded-xl px-4 py-3 text-center">
+              <p className="text-lg text-text font-medium">{home.messageCount}</p>
+              <p className="text-[10px] text-text-muted/50 uppercase tracking-wider mt-0.5">Messages</p>
             </div>
-            <div className="bg-(--color-bg-card) border border-(--color-border) rounded-xl px-4 py-3 text-center">
-              <p className="text-lg text-(--color-text) font-medium">{home.memoryCount}</p>
-              <p className="text-[10px] text-(--color-text-muted)/50 uppercase tracking-wider mt-0.5">Memories</p>
+            <div className="bg-bg-card border border-border rounded-xl px-4 py-3 text-center">
+              <p className="text-lg text-text font-medium">{home.memoryCount}</p>
+              <p className="text-[10px] text-text-muted/50 uppercase tracking-wider mt-0.5">Memories</p>
             </div>
-            <div className="bg-(--color-bg-card) border border-(--color-border) rounded-xl px-4 py-3 text-center">
-              <p className="text-lg text-(--color-text) font-medium">
+            <div className="bg-bg-card border border-border rounded-xl px-4 py-3 text-center">
+              <p className="text-lg text-text font-medium">
                 {home.journalStreak > 0 ? home.journalStreak : home.journalTotal}
               </p>
-              <p className="text-[10px] text-(--color-text-muted)/50 uppercase tracking-wider mt-0.5">
+              <p className="text-[10px] text-text-muted/50 uppercase tracking-wider mt-0.5">
                 {home.journalStreak > 0 ? `Day streak` : "Journal days"}
               </p>
             </div>

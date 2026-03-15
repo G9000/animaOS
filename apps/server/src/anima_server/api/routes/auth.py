@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.db import get_db
+from anima_server.db.user_store import authenticate_account, register_account
 from anima_server.schemas.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
@@ -19,11 +19,8 @@ from anima_server.schemas.auth import (
     UserResponse,
 )
 from anima_server.services.auth import (
-    authenticate_user,
     change_user_password,
-    create_user,
     get_user_by_id,
-    get_user_by_username,
     normalize_username,
     serialize_user,
 )
@@ -67,7 +64,6 @@ async def create_ai_chat(payload: CreateAIChatRequest) -> dict[str, object]:
 )
 def register(
     payload: RegisterRequest,
-    db: Session = Depends(get_db),
 ) -> dict[str, object]:
     username = normalize_username(payload.username)
     display_name = payload.name.strip()
@@ -76,48 +72,41 @@ def register(
     if not display_name:
         raise HTTPException(status_code=422, detail="Name is required")
 
-    existing_user = get_user_by_username(db, username)
-    if existing_user is not None:
-        raise HTTPException(status_code=409, detail="Username already taken")
-
     try:
-        user, dek = create_user(
-            db,
+        response, dek = register_account(
             username=username,
             password=payload.password,
             display_name=display_name,
             agent_name=payload.agentName,
             user_directive=payload.userDirective,
         )
-    except IntegrityError:
-        db.rollback()
+    except ValueError as exc:
+        detail = str(exc)
+        if detail == "Username already taken":
+            raise HTTPException(status_code=409, detail=detail) from None
         raise HTTPException(
-            status_code=409, detail="Username already taken") from None
+            status_code=422, detail=detail) from None
 
-    response = serialize_user(user)
-    response["unlockToken"] = unlock_session_store.create(user.id, dek)
+    response["unlockToken"] = unlock_session_store.create(int(response["id"]), dek)
     return response
 
 
 @router.post("/login", response_model=LoginResponse)
 def login(
     payload: LoginRequest,
-    db: Session = Depends(get_db),
 ) -> dict[str, object]:
     username = normalize_username(payload.username)
     if not username:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     try:
-        user, dek = authenticate_user(db, username, payload.password)
+        response, dek = authenticate_account(username, payload.password)
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     return {
-        "id": user.id,
-        "username": user.username,
-        "name": user.display_name,
-        "unlockToken": unlock_session_store.create(user.id, dek),
+        **response,
+        "unlockToken": unlock_session_store.create(int(response["id"]), dek),
         "message": "Login successful",
     }
 
