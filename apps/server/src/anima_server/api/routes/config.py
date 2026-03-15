@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.config import settings
 from anima_server.db import get_db
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
@@ -75,6 +76,7 @@ async def update_config(
     user_id: int,
     payload: AgentConfigUpdateRequest,
     request: Request,
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Update the active agent config (process-global — see GET docstring)."""

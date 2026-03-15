@@ -19,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:3031 http://localhost:3031 https://translate.googleapis.com; font-src 'self' data:"
     }
   },
   "bundle": {

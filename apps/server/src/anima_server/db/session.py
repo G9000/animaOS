@@ -135,15 +135,19 @@ def get_user_database_path(user_id: int):
     return get_user_data_dir(user_id) / "anima.db"
 
 
+def is_sqlite_mode() -> bool:
+    """Return True when the server is configured for per-user SQLite databases."""
+    return make_url(settings.database_url).drivername.startswith("sqlite")
+
+
 def get_user_database_url(user_id: int) -> str:
-    base_url = make_url(settings.database_url)
-    if not base_url.drivername.startswith("sqlite"):
-        logger.warning(
-            "Per-user database routing is only implemented for SQLite. "
-            "User %s is falling back to the shared database URL.",
-            user_id,
+    if not is_sqlite_mode():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Per-user database routing requires SQLite mode. "
+            "Shared-database deployments must not silently fall back to "
+            "the shared URL — that would break tenant isolation.",
         )
-        return settings.database_url
 
     path = get_user_database_path(user_id).resolve()
     return f"sqlite:///{path.as_posix()}"

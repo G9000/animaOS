@@ -8,6 +8,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.db import get_db
 
 router = APIRouter(prefix="/api/db", tags=["db"])
@@ -39,6 +40,7 @@ def _pk_columns(insp: Any, table_name: str) -> list[str]:
 @router.get("/tables")
 def list_tables(
     request: Request,
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> list[dict[str, object]]:
     require_unlocked_session(request)
@@ -54,6 +56,7 @@ def list_tables(
 def get_table_rows(
     table_name: str,
     request: Request,
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
     limit: int = Query(default=100, ge=1, le=MAX_ROWS),
     offset: int = Query(default=0, ge=0),
@@ -84,6 +87,7 @@ def get_table_rows(
 def run_query(
     request: Request,
     body: dict[str, str],
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     require_unlocked_session(request)
@@ -123,6 +127,7 @@ def delete_row(
     table_name: str,
     body: RowConditions,
     request: Request,
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     require_unlocked_session(request)
@@ -154,6 +159,7 @@ def update_row(
     table_name: str,
     body: RowUpdate,
     request: Request,
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     require_unlocked_session(request)

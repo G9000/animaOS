@@ -1,6 +1,7 @@
 export interface ApiClientOptions {
   baseUrl: string;
   getUnlockToken?: () => string | null;
+  getNonce?: () => string | null;
   fetchImpl?: typeof fetch;
   credentials?: RequestCredentials;
 }
@@ -225,6 +226,7 @@ export function createApiClient(options: ApiClientOptions) {
   const {
     baseUrl,
     getUnlockToken,
+    getNonce,
     fetchImpl = fetch,
     credentials = "include",
   } = options;
@@ -242,6 +244,11 @@ export function createApiClient(options: ApiClientOptions) {
 
     if (token) {
       headers["x-anima-unlock"] = token;
+    }
+
+    const nonce = getNonce?.() || null;
+    if (nonce) {
+      headers["x-anima-nonce"] = nonce;
     }
 
     const response = await fetchImpl(`${normalizedBaseUrl}${endpoint}`, {
@@ -269,12 +276,14 @@ export function createApiClient(options: ApiClientOptions) {
     userId: number,
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
+    const streamNonce = getNonce?.() || null;
     const response = await fetchImpl(`${normalizedBaseUrl}/chat`, {
       method: "POST",
       credentials,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { "x-anima-unlock": token } : {}),
+        ...(streamNonce ? { "x-anima-nonce": streamNonce } : {}),
       },
       body: JSON.stringify({ message, userId, stream: true }),
     });

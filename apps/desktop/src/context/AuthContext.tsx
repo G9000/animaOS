@@ -5,7 +5,8 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
-import { api, clearUnlockToken, getUnlockToken, type User } from "../lib/api";
+import { api, clearUnlockToken, getUnlockToken, setSidecarNonce, type User } from "../lib/api";
+import { discoverSidecarNonce } from "../lib/runtime";
 
 interface AuthContextType {
   user: User | null;
@@ -38,6 +39,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
+        // Discover sidecar nonce before making any API calls.
+        const nonce = await discoverSidecarNonce();
+        if (nonce) setSidecarNonce(nonce);
+
         const token = getUnlockToken();
         if (!token) {
           if (!cancelled) setUser(null);

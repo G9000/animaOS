@@ -14,9 +14,30 @@ use tauri::{
     Manager, State,
 };
 
+/// Generate a cryptographically secure 32-byte hex nonce using the OS CSPRNG.
+fn generate_nonce() -> String {
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).expect("OS random source unavailable");
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+/// Tauri IPC command that returns the sidecar nonce to the frontend.
+///
+/// The nonce is delivered via this trusted channel rather than over HTTP
+/// so that other local processes cannot obtain it.
+#[tauri::command]
+fn get_sidecar_nonce(state: State<'_, SidecarNonceState>) -> String {
+    state.nonce.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Holds the nonce generated at boot time.
+struct SidecarNonceState {
+    nonce: Mutex<String>,
 }
 
 #[derive(Default)]
@@ -61,7 +82,20 @@ fn api_healthcheck() -> bool {
         return false;
     }
 
-    response.contains("\"healthy\"")
+    // Parse the HTTP response: find the JSON body after the blank line.
+    let body = match response.split_once("\r\n\r\n") {
+        Some((_, body)) => body.trim(),
+        None => return false,
+    };
+
+    // Parse the JSON body and verify the "status" field.
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(json) => {
+            let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            status == "ok" || status == "healthy"
+        }
+        Err(_) => false,
+    }
 }
 
 fn wait_for_api_ready(timeout: Duration) -> Result<(), String> {
@@ -75,7 +109,7 @@ fn wait_for_api_ready(timeout: Duration) -> Result<(), String> {
     Err("timed out waiting for local API health check".to_string())
 }
 
-fn start_api_sidecar(app: &tauri::AppHandle) -> Result<Child, String> {
+fn start_api_sidecar(app: &tauri::AppHandle, nonce: &str) -> Result<Child, String> {
     let resource_dir = app
         .path()
         .resource_dir()
@@ -111,6 +145,7 @@ fn start_api_sidecar(app: &tauri::AppHandle) -> Result<Child, String> {
         .env("ANIMA_DATA_DIR", &data_dir)
         .env("ANIMA_PROMPTS_DIR", &prompts_dir)
         .env("ANIMA_MIGRATIONS_DIR", &migrations_dir)
+        .env("ANIMA_SIDECAR_NONCE", nonce)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -135,11 +170,15 @@ fn stop_api_sidecar(state: &ApiProcessState) {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(ApiProcessState::default())
+        .manage(SidecarNonceState {
+            nonce: Mutex::new(String::new()),
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             if !cfg!(debug_assertions) {
-                let mut child = start_api_sidecar(&app.handle())
+                let nonce = generate_nonce();
+                let mut child = start_api_sidecar(&app.handle(), &nonce)
                     .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
                 if let Err(err) = wait_for_api_ready(Duration::from_secs(10)) {
@@ -148,12 +187,16 @@ pub fn run() {
                     return Err(err.into());
                 }
 
-                let state: State<ApiProcessState> = app.state();
-                let mut guard = state
+                let api_state: State<ApiProcessState> = app.state();
+                let mut guard = api_state
                     .child
                     .lock()
                     .map_err(|_| "failed to lock API process state".to_string())?;
                 *guard = Some(child);
+
+                // Store the nonce so the frontend can retrieve it via IPC.
+                let nonce_state: State<SidecarNonceState> = app.state();
+                *nonce_state.nonce.lock().unwrap_or_else(|e| e.into_inner()) = nonce;
             }
 
             // System tray
@@ -190,7 +233,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, get_sidecar_nonce])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
