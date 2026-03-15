@@ -21,12 +21,12 @@ export function DashboardPromptForm({
         value={input}
         onChange={(e) => onInputChange(e.target.value)}
         placeholder="Talk to ANIMA..."
-        className="w-full bg-(--color-bg-card) border border-(--color-border) rounded-xl px-5 py-3.5 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/25 outline-none focus:border-(--color-text-muted)/30 transition-all"
+        className="w-full bg-bg-card border border-border rounded-xl px-5 py-3.5 text-sm text-text placeholder:text-text-muted/25 outline-none focus:border-text-muted/30 transition-all"
       />
       {input.trim() && (
         <button
           type="submit"
-          className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-(--color-primary) hover:text-(--color-text) transition-colors"
+          className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-primary hover:text-text transition-colors"
         >
           &rarr;
         </button>

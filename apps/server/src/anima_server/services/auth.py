@@ -73,12 +73,22 @@ def build_user_key(user_id: int, wrapped_dek: WrappedDekRecord) -> UserKey:
     )
 
 
-def create_user(db: Session, username: str, password: str, display_name: str, agent_name: str = "Anima", user_directive: str = "") -> tuple[User, bytes]:
+def create_user(
+    db: Session,
+    username: str,
+    password: str,
+    display_name: str,
+    agent_name: str = "Anima",
+    user_directive: str = "",
+    *,
+    user_id: int | None = None,
+) -> tuple[User, bytes]:
     from anima_server.models import SelfModelBlock
     from anima_server.services.agent.system_prompt import render_soul_biography
 
     dek, wrapped_dek = create_wrapped_dek(password)
     user = User(
+        id=user_id,
         username=username,
         password_hash=hash_password(password),
         display_name=display_name,

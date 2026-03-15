@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, getUnlockToken, setUnlockToken } from "../../lib/api";
 
 const INPUT_CLASS =
-  "w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/50 outline-none focus:border-(--color-primary) transition-colors";
+  "w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-sm text-text placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors";
 
 export default function SecuritySettings() {
   const [oldPassword, setOldPassword] = useState("");
@@ -63,12 +63,12 @@ export default function SecuritySettings() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-sm border border-(--color-border) bg-(--color-bg-card) p-5 space-y-5">
+      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-5">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
             Master Password
           </h2>
-          <p className="text-xs text-(--color-text-muted)">
+          <p className="text-xs text-text-muted">
             This password rewraps the vault DEK and controls future unlock sessions.
           </p>
         </header>
@@ -106,17 +106,17 @@ export default function SecuritySettings() {
             <button
               type="submit"
               disabled={changing}
-              className="px-5 py-2 bg-(--color-bg-input) border border-(--color-primary) text-(--color-text) text-xs uppercase tracking-wider rounded-sm hover:bg-(--color-bg) disabled:opacity-50 transition-colors"
+              className="px-5 py-2 bg-bg-input border border-primary text-text text-xs uppercase tracking-wider rounded-sm hover:bg-bg disabled:opacity-50 transition-colors"
             >
               {changing ? "Updating..." : "Change Password"}
             </button>
             {changeStatus && (
-              <span className="text-xs text-(--color-primary) tracking-wider">
+              <span className="text-xs text-primary tracking-wider">
                 {changeStatus}
               </span>
             )}
             {changeError && (
-              <span className="text-xs text-(--color-danger) tracking-wider">
+              <span className="text-xs text-danger tracking-wider">
                 {changeError}
               </span>
             )}
@@ -124,12 +124,12 @@ export default function SecuritySettings() {
         </form>
       </section>
 
-      <section className="rounded-sm border border-(--color-border) bg-(--color-bg-card) p-5 space-y-4">
+      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-4">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
             Session Unlock Key
           </h2>
-          <p className="text-xs text-(--color-text-muted)">
+          <p className="text-xs text-text-muted">
             Hidden by default. This token unlocks decrypted local data for the current
             session only.
           </p>
@@ -144,13 +144,13 @@ export default function SecuritySettings() {
               }
               revealUnlockKey();
             }}
-            className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary)"
+            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary"
           >
             {showUnlockKey ? "Hide Key" : "Reveal Key"}
           </button>
           <button
             onClick={() => setUnlockKey(getUnlockToken() || "")}
-            className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary)"
+            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary"
           >
             Refresh
           </button>
@@ -158,7 +158,7 @@ export default function SecuritySettings() {
             <button
               onClick={() => void handleCopyUnlockKey()}
               disabled={!unlockKey}
-              className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) disabled:opacity-50"
+              className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary disabled:opacity-50"
             >
               {unlockCopied ? "Copied" : "Copy"}
             </button>
@@ -170,7 +170,7 @@ export default function SecuritySettings() {
             readOnly
             value={unlockKey || "No active unlock key. Sign in again to create one."}
             rows={3}
-            className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-xs text-(--color-text-muted) outline-none resize-none"
+            className="w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-xs text-text-muted outline-none resize-none"
           />
         )}
       </section>
@@ -181,7 +181,7 @@ export default function SecuritySettings() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="space-y-2">
-      <h3 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+      <h3 className="text-[11px] text-text-muted uppercase tracking-wider">
         {label}
       </h3>
       {children}

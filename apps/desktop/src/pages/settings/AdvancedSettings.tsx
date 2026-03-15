@@ -17,12 +17,12 @@ export default function AdvancedSettings() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-sm border border-(--color-border) bg-(--color-bg-card) p-5 space-y-5">
+      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-5">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
             Debug
           </h2>
-          <p className="text-xs text-(--color-text-muted)">
+          <p className="text-xs text-text-muted">
             Advanced tools for inspecting application internals. Use with
             caution.
           </p>
@@ -30,10 +30,10 @@ export default function AdvancedSettings() {
 
         <label className="flex items-center justify-between gap-4 cursor-pointer group">
           <div>
-            <p className="text-sm text-(--color-text) group-hover:text-(--color-primary) transition-colors">
+            <p className="text-sm text-text group-hover:text-primary transition-colors">
               Database Viewer
             </p>
-            <p className="text-xs text-(--color-text-muted)">
+            <p className="text-xs text-text-muted">
               Show the DB inspector in the sidebar. Lets you browse tables, run
               queries, and edit or delete rows.
             </p>
@@ -42,7 +42,7 @@ export default function AdvancedSettings() {
             type="checkbox"
             checked={dbViewer}
             onChange={(e) => setDbViewer(e.target.checked)}
-            className="w-4 h-4 accent-(--color-primary) cursor-pointer shrink-0"
+            className="w-4 h-4 accent-primary cursor-pointer shrink-0"
           />
         </label>
       </section>

@@ -29,7 +29,7 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/server",
-        "command": "uv run --project . pytest"
+        "command": "node ../../scripts/run-uv.cjs run --project . pytest tests"
       }
     },
     "db-heads": {

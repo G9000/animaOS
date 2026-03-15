@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import shutil
 from datetime import datetime, UTC
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -9,12 +7,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
-from anima_server.models import UserKey
+from anima_server.db.user_store import delete_account_storage, username_exists
 from anima_server.schemas.auth import UserResponse
 from anima_server.schemas.users import DeleteUserResponse, UserUpdateRequest
 from anima_server.services.auth import get_user_by_id, normalize_username, serialize_user
 from anima_server.services.sessions import unlock_session_store
-from anima_server.services.storage import get_user_data_dir
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -49,6 +46,8 @@ def update_user(
         username = normalize_username(str(updates["username"]))
         if not username:
             raise HTTPException(status_code=422, detail="Username is required")
+        if username_exists(username, exclude_user_id=user_id):
+            raise HTTPException(status_code=409, detail="Username already taken")
         user.username = username
     if "name" in updates:
         display_name = str(updates["name"]).strip()
@@ -85,9 +84,7 @@ def delete_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    db.query(UserKey).filter(UserKey.user_id == user_id).delete()
-    db.delete(user)
-    db.commit()
     unlock_session_store.revoke_user(user_id)
-    shutil.rmtree(get_user_data_dir(user_id), ignore_errors=True)
+    db.close()
+    delete_account_storage(user_id)
     return {"message": "User deleted"}

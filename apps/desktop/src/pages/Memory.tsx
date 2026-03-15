@@ -155,22 +155,22 @@ export default function Memory() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-5 py-3 border-b border-(--color-border)">
+      <div className="px-5 py-3 border-b border-border">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <span className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+            <span className="text-[11px] text-text-muted uppercase tracking-wider">
               Memory
             </span>
             {overview && (
-              <span className="text-[10px] text-(--color-text-muted)/50">
+              <span className="text-[10px] text-text-muted/50">
                 {overview.totalItems} items
               </span>
             )}
           </div>
           <div className="flex items-center gap-3">
             {overview?.currentFocus && (
-              <div className="text-[10px] text-(--color-text-muted)">
-                <span className="text-(--color-text-muted)/50 uppercase tracking-wider mr-1.5">Focus:</span>
+              <div className="text-[10px] text-text-muted">
+                <span className="text-text-muted/50 uppercase tracking-wider mr-1.5">Focus:</span>
                 {overview.currentFocus}
               </div>
             )}
@@ -186,13 +186,13 @@ export default function Memory() {
                   if (!e.target.value.trim()) clearSearch();
                 }}
                 placeholder="Search memories..."
-                className="w-36 bg-(--color-bg-input) border border-(--color-border) rounded-sm px-2 py-0.5 text-[11px] text-(--color-text) placeholder:text-(--color-text-muted)/30 outline-none focus:border-(--color-primary) focus:w-48 transition-all"
+                className="w-36 bg-bg-input border border-border rounded-sm px-2 py-0.5 text-[11px] text-text placeholder:text-text-muted/30 outline-none focus:border-primary focus:w-48 transition-all"
               />
               {searchResults !== null && (
                 <button
                   type="button"
                   onClick={clearSearch}
-                  className="text-[10px] text-(--color-text-muted)/40 hover:text-(--color-text-muted)"
+                  className="text-[10px] text-text-muted/40 hover:text-text-muted"
                 >
                   ×
                 </button>
@@ -203,19 +203,19 @@ export default function Memory() {
       </div>
 
       {/* Tabs */}
-      <div className="px-5 py-2 border-b border-(--color-border) flex gap-1">
+      <div className="px-5 py-2 border-b border-border flex gap-1">
         {TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => { setTab(t.key); setShowCreate(false); setEditingId(null); }}
             className={`text-[10px] px-2 py-1 rounded uppercase tracking-wider transition-colors ${
               tab === t.key
-                ? "bg-(--color-primary) text-(--color-bg)"
-                : "text-(--color-text-muted) hover:text-(--color-text) bg-(--color-bg-card)"
+                ? "bg-primary text-bg"
+                : "text-text-muted hover:text-text bg-bg-card"
             }`}
           >
             {t.label}
-            <span className="ml-1 text-(--color-text-muted)/40">
+            <span className="ml-1 text-text-muted/40">
               {countForTab(t.key)}
             </span>
           </button>
@@ -228,12 +228,12 @@ export default function Memory() {
         {searchResults !== null && (
           <div className="space-y-2 max-w-2xl mb-6">
             <div className="flex items-center justify-between mb-3">
-              <span className="text-[10px] text-(--color-text-muted) uppercase tracking-wider">
+              <span className="text-[10px] text-text-muted uppercase tracking-wider">
                 {searching ? "Searching..." : `${searchResults.length} result${searchResults.length !== 1 ? "s" : ""} for "${searchQuery}"`}
               </span>
               <button
                 onClick={clearSearch}
-                className="text-[10px] text-(--color-text-muted)/50 hover:text-(--color-text-muted) uppercase tracking-wider"
+                className="text-[10px] text-text-muted/50 hover:text-text-muted uppercase tracking-wider"
               >
                 Clear
               </button>
@@ -241,14 +241,14 @@ export default function Memory() {
             {searchResults.map((r) => (
               <div
                 key={`${r.type}-${r.id}`}
-                className="bg-(--color-bg-card) border border-(--color-border) rounded-md px-4 py-2.5"
+                className="bg-bg-card border border-border rounded-md px-4 py-2.5"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <p className="text-sm text-(--color-text) leading-relaxed flex-1">
+                  <p className="text-sm text-text leading-relaxed flex-1">
                     {r.content}
                   </p>
                   <div className="shrink-0 flex items-center gap-2">
-                    <span className="text-[9px] px-1.5 py-0.5 bg-(--color-bg-input) border border-(--color-border) rounded uppercase tracking-wider text-(--color-text-muted)">
+                    <span className="text-[9px] px-1.5 py-0.5 bg-bg-input border border-border rounded uppercase tracking-wider text-text-muted">
                       {r.type === "episode" ? "episode" : r.category}
                     </span>
                   </div>
@@ -256,49 +256,49 @@ export default function Memory() {
               </div>
             ))}
             {searchResults.length === 0 && !searching && (
-              <p className="text-xs text-(--color-text-muted)/60">No matches found.</p>
+              <p className="text-xs text-text-muted/60">No matches found.</p>
             )}
           </div>
         )}
 
         {loading && (
-          <div className="text-xs text-(--color-text-muted) animate-pulse">Loading...</div>
+          <div className="text-xs text-text-muted animate-pulse">Loading...</div>
         )}
 
         {/* Episodes tab */}
         {!loading && tab === "episodes" && (
           <div className="space-y-3 max-w-2xl">
             {episodes.length === 0 && (
-              <div className="text-xs text-(--color-text-muted)">
+              <div className="text-xs text-text-muted">
                 No episodes yet. Episodes are generated after 3+ conversation turns.
               </div>
             )}
             {episodes.map((ep) => (
               <div
                 key={ep.id}
-                className="bg-(--color-bg-card) border border-(--color-border) rounded-md px-4 py-3"
+                className="bg-bg-card border border-border rounded-md px-4 py-3"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm text-(--color-text) leading-relaxed">
+                    <p className="text-sm text-text leading-relaxed">
                       {ep.summary}
                     </p>
                     <div className="flex items-center gap-3 mt-2">
-                      <span className="text-[10px] text-(--color-text-muted)/60">
+                      <span className="text-[10px] text-text-muted/60">
                         {ep.date}{ep.time ? ` ${ep.time}` : ""}
                       </span>
                       {ep.emotionalArc && (
                         <>
-                          <span className="text-(--color-border)">·</span>
-                          <span className="text-[10px] text-(--color-text-muted)/60 italic">
+                          <span className="text-border">·</span>
+                          <span className="text-[10px] text-text-muted/60 italic">
                             {ep.emotionalArc}
                           </span>
                         </>
                       )}
                       {ep.turnCount != null && (
                         <>
-                          <span className="text-(--color-border)">·</span>
-                          <span className="text-[10px] text-(--color-text-muted)/60">
+                          <span className="text-border">·</span>
+                          <span className="text-[10px] text-text-muted/60">
                             {ep.turnCount} turns
                           </span>
                         </>
@@ -309,7 +309,7 @@ export default function Memory() {
                         {ep.topics.map((topic) => (
                           <span
                             key={topic}
-                            className="text-[9px] px-1.5 py-0.5 bg-(--color-bg-input) border border-(--color-border) rounded uppercase tracking-wider text-(--color-text-muted)"
+                            className="text-[9px] px-1.5 py-0.5 bg-bg-input border border-border rounded uppercase tracking-wider text-text-muted"
                           >
                             {topic}
                           </span>
@@ -324,8 +324,8 @@ export default function Memory() {
                           key={n}
                           className={`w-1.5 h-1.5 rounded-full ${
                             n <= ep.significanceScore
-                              ? "bg-(--color-primary)"
-                              : "bg-(--color-border)"
+                              ? "bg-primary"
+                              : "bg-border"
                           }`}
                         />
                       ))}
@@ -341,7 +341,7 @@ export default function Memory() {
         {!loading && tab !== "episodes" && (
           <div className="space-y-2 max-w-2xl">
             {items.length === 0 && !showCreate && (
-              <div className="text-xs text-(--color-text-muted)">
+              <div className="text-xs text-text-muted">
                 No {tab} yet. They're extracted automatically from conversations, or you can add them manually.
               </div>
             )}
@@ -349,7 +349,7 @@ export default function Memory() {
             {items.map((item) => (
               <div
                 key={item.id}
-                className="group bg-(--color-bg-card) border border-(--color-border) rounded-md px-4 py-2.5 flex items-start gap-3"
+                className="group bg-bg-card border border-border rounded-md px-4 py-2.5 flex items-start gap-3"
               >
                 {editingId === item.id ? (
                   <div className="flex-1 flex flex-col gap-2">
@@ -361,19 +361,19 @@ export default function Memory() {
                         if (e.key === "Enter") saveEdit(item);
                         if (e.key === "Escape") cancelEdit();
                       }}
-                      className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-2 py-1 text-sm text-(--color-text) outline-none focus:border-(--color-primary)"
+                      className="w-full bg-bg-input border border-border rounded-sm px-2 py-1 text-sm text-text outline-none focus:border-primary"
                       autoFocus
                     />
                     <div className="flex gap-2">
                       <button
                         onClick={() => saveEdit(item)}
-                        className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider"
+                        className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider"
                       >
                         Save
                       </button>
                       <button
                         onClick={cancelEdit}
-                        className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider"
+                        className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider"
                       >
                         Cancel
                       </button>
@@ -382,21 +382,21 @@ export default function Memory() {
                 ) : (
                   <>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-(--color-text) leading-relaxed">
+                      <p className="text-sm text-text leading-relaxed">
                         {item.content}
                       </p>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[9px] text-(--color-text-muted)/40 uppercase tracking-wider">
+                        <span className="text-[9px] text-text-muted/40 uppercase tracking-wider">
                           {IMPORTANCE_LABELS[item.importance] || ""}
                         </span>
-                        <span className="text-(--color-border)">·</span>
-                        <span className="text-[9px] text-(--color-text-muted)/40 uppercase tracking-wider">
+                        <span className="text-border">·</span>
+                        <span className="text-[9px] text-text-muted/40 uppercase tracking-wider">
                           {item.source}
                         </span>
                         {item.createdAt && (
                           <>
-                            <span className="text-(--color-border)">·</span>
-                            <span className="text-[9px] text-(--color-text-muted)/40">
+                            <span className="text-border">·</span>
+                            <span className="text-[9px] text-text-muted/40">
                               {new Date(item.createdAt).toLocaleDateString()}
                             </span>
                           </>
@@ -406,13 +406,13 @@ export default function Memory() {
                     <div className="shrink-0 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => startEdit(item)}
-                        className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider"
+                        className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider"
                       >
                         Edit
                       </button>
                       <button
                         onClick={() => deleteItem(item.id)}
-                        className="text-[10px] text-(--color-text-muted) hover:text-(--color-danger) uppercase tracking-wider"
+                        className="text-[10px] text-text-muted hover:text-danger uppercase tracking-wider"
                       >
                         Del
                       </button>
@@ -424,7 +424,7 @@ export default function Memory() {
 
             {/* Create new item */}
             {showCreate ? (
-              <div className="bg-(--color-bg-card) border border-(--color-primary)/30 rounded-md px-4 py-3 space-y-2.5">
+              <div className="bg-bg-card border border-primary/30 rounded-md px-4 py-3 space-y-2.5">
                 <input
                   type="text"
                   value={newContent}
@@ -434,11 +434,11 @@ export default function Memory() {
                     if (e.key === "Escape") { setShowCreate(false); setNewContent(""); }
                   }}
                   placeholder={`e.g. "${tab === "facts" ? "Works as a designer" : tab === "preferences" ? "Prefers dark mode" : tab === "goals" ? "Learn Rust this year" : "Has a cat named Luna"}"`}
-                  className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-2 py-1.5 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/40 outline-none focus:border-(--color-primary)"
+                  className="w-full bg-bg-input border border-border rounded-sm px-2 py-1.5 text-sm text-text placeholder:text-text-muted/40 outline-none focus:border-primary"
                   autoFocus
                 />
                 <div className="flex items-center gap-3">
-                  <label className="text-[10px] text-(--color-text-muted) uppercase tracking-wider">
+                  <label className="text-[10px] text-text-muted uppercase tracking-wider">
                     Importance
                   </label>
                   <div className="flex gap-1">
@@ -448,28 +448,28 @@ export default function Memory() {
                         onClick={() => setNewImportance(n)}
                         className={`w-5 h-5 rounded text-[10px] border transition-colors ${
                           n === newImportance
-                            ? "bg-(--color-primary) text-(--color-bg) border-(--color-primary)"
-                            : "bg-(--color-bg-input) text-(--color-text-muted) border-(--color-border) hover:border-(--color-text-muted)"
+                            ? "bg-primary text-bg border-primary"
+                            : "bg-bg-input text-text-muted border-border hover:border-text-muted"
                         }`}
                       >
                         {n}
                       </button>
                     ))}
                   </div>
-                  <span className="text-[9px] text-(--color-text-muted)/50">
+                  <span className="text-[9px] text-text-muted/50">
                     {IMPORTANCE_LABELS[newImportance]}
                   </span>
                   <div className="ml-auto flex gap-2">
                     <button
                       onClick={() => { setShowCreate(false); setNewContent(""); }}
-                      className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider"
+                      className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider"
                     >
                       Cancel
                     </button>
                     <button
                       onClick={handleCreate}
                       disabled={!newContent.trim()}
-                      className="text-[10px] text-(--color-text-muted) hover:text-(--color-text) uppercase tracking-wider disabled:opacity-30"
+                      className="text-[10px] text-text-muted hover:text-text uppercase tracking-wider disabled:opacity-30"
                     >
                       Add
                     </button>
@@ -479,7 +479,7 @@ export default function Memory() {
             ) : (
               <button
                 onClick={() => setShowCreate(true)}
-                className="w-full text-left text-[10px] text-(--color-text-muted)/50 hover:text-(--color-text-muted) uppercase tracking-wider py-2 px-4 border border-dashed border-(--color-border) rounded-md hover:border-(--color-text-muted)/30 transition-colors"
+                className="w-full text-left text-[10px] text-text-muted/50 hover:text-text-muted uppercase tracking-wider py-2 px-4 border border-dashed border-border rounded-md hover:border-text-muted/30 transition-colors"
               >
                 + Add {categoryForTab(tab)}
               </button>

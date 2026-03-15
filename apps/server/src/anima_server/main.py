@@ -18,6 +18,7 @@ from .api.routes.db import router as db_router
 from .api.routes.vault import router as vault_router
 from .config import settings
 from .services.core import ensure_core_manifest
+from .db.user_store import ensure_per_user_databases_ready
 
 CORS_ORIGINS = [
     "http://localhost:1420",
@@ -30,6 +31,7 @@ CORS_ORIGINS = [
 
 def create_app() -> FastAPI:
     ensure_core_manifest()
+    ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name)
     app.add_middleware(
         CORSMiddleware,

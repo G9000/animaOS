@@ -62,16 +62,7 @@ def export_vault(db: Session, passphrase: str, *, user_id: int | None = None) ->
 
 
 def import_vault(db: Session, vault: str, passphrase: str, *, user_id: int | None = None) -> dict[str, Any]:
-    """Import an encrypted vault, performing a full local restore.
-
-    NOTE: This is a whole-app restore — ``restore_database_snapshot`` clears
-    ALL tables before inserting the vault's data, regardless of ``user_id``.
-    The ``user_id`` param is accepted for API symmetry with ``export_vault``
-    but is not used to scope the restore.  This is intentional for the
-    single-user local deployment model: import replaces the entire local
-    state with the vault contents.  A true per-user merge would require
-    conflict resolution logic across every table.
-    """
+    """Import an encrypted vault into the current database context."""
     try:
         envelope = json.loads(vault)
     except json.JSONDecodeError as exc:
@@ -101,7 +92,7 @@ def import_vault(db: Session, vault: str, passphrase: str, *, user_id: int | Non
         raise ValueError("Vault payload user files are invalid.")
 
     restore_database_snapshot(db, database)
-    write_data_snapshot(user_files)
+    write_data_snapshot(user_files, user_id=user_id)
 
     # Rebuild ChromaDB vector index from imported embeddings
     _rebuild_vector_indices(db, database)
@@ -627,6 +618,8 @@ def read_data_snapshot(*, user_id: int | None = None) -> dict[str, str]:
         if not path.is_file():
             continue
         relative_path = path.relative_to(root)
+        if relative_path.name in {"anima.db", "anima.db-shm", "anima.db-wal"}:
+            continue
         if relative_path.parts and relative_path.parts[0] == "chroma":
             continue
         # Scope to user directory if user_id is set (files are stored under users/{id}/)
@@ -640,32 +633,62 @@ def read_data_snapshot(*, user_id: int | None = None) -> dict[str, str]:
     return snapshot
 
 
-def write_data_snapshot(user_files: dict[str, Any]) -> None:
+def write_data_snapshot(user_files: dict[str, Any], *, user_id: int | None = None) -> None:
     root = settings.data_dir
-    root.parent.mkdir(parents=True, exist_ok=True)
-    staging_root = root.parent / f"{root.name}.import-{uuid4().hex}"
-    backup_root = root.parent / f"{root.name}.backup-{uuid4().hex}"
-    staging_root.mkdir(parents=True, exist_ok=True)
+    if user_id is None:
+        root.parent.mkdir(parents=True, exist_ok=True)
+        staging_root = root.parent / f"{root.name}.import-{uuid4().hex}"
+        backup_root = root.parent / f"{root.name}.backup-{uuid4().hex}"
+        staging_root.mkdir(parents=True, exist_ok=True)
+
+        try:
+            for relative_path, content in user_files.items():
+                safe_path = sanitize_relative_path(relative_path)
+                if safe_path.parts and safe_path.parts[0] == "chroma":
+                    continue
+                target = staging_root / safe_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(str(content), encoding="utf-8")
+
+            if backup_root.exists():
+                shutil.rmtree(backup_root, ignore_errors=True)
+            if root.exists():
+                root.rename(backup_root)
+            staging_root.rename(root)
+            shutil.rmtree(backup_root, ignore_errors=True)
+        except Exception:
+            shutil.rmtree(staging_root, ignore_errors=True)
+            if backup_root.exists() and not root.exists():
+                backup_root.rename(root)
+            raise
+        return
+
+    user_root = root / "users" / str(user_id)
+    user_root.parent.mkdir(parents=True, exist_ok=True)
+    user_root.mkdir(parents=True, exist_ok=True)
 
     try:
+        for existing in list(user_root.iterdir()):
+            if existing.name in {"anima.db", "anima.db-shm", "anima.db-wal"}:
+                continue
+            if existing.is_dir():
+                shutil.rmtree(existing, ignore_errors=True)
+            else:
+                existing.unlink(missing_ok=True)
+
         for relative_path, content in user_files.items():
             safe_path = sanitize_relative_path(relative_path)
             if safe_path.parts and safe_path.parts[0] == "chroma":
                 continue
-            target = staging_root / safe_path
+            if safe_path.parts[:2] != ("users", str(user_id)):
+                continue
+            local_relative = Path(*safe_path.parts[2:]) if len(safe_path.parts) > 2 else Path()
+            if not local_relative.parts:
+                continue
+            target = user_root / local_relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(str(content), encoding="utf-8")
-
-        if backup_root.exists():
-            shutil.rmtree(backup_root, ignore_errors=True)
-        if root.exists():
-            root.rename(backup_root)
-        staging_root.rename(root)
-        shutil.rmtree(backup_root, ignore_errors=True)
     except Exception:
-        shutil.rmtree(staging_root, ignore_errors=True)
-        if backup_root.exists() and not root.exists():
-            backup_root.rename(root)
         raise
 
 

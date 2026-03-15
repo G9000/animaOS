@@ -1,45 +1,19 @@
 from __future__ import annotations
 
-import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
-from tempfile import mkdtemp
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from anima_server.config import settings
-from anima_server.db.base import Base
-from anima_server.db.session import get_db
-from anima_server.main import create_app
+from anima_server.db.session import get_user_session_factory
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleResponse,
     OpenAICompatibleStreamChunk,
 )
-from anima_server.services.agent.vector_store import reset_vector_store
-from anima_server.services.sessions import unlock_session_store
-
-
-def _build_session_factory() -> tuple[Engine, sessionmaker]:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    factory = sessionmaker(
-        bind=engine,
-        autoflush=False,
-        autocommit=False,
-        expire_on_commit=False,
-        class_=Session,
-    )
-    return engine, factory
+from conftest import managed_test_client
 
 
 def _register_user(client: TestClient, username: str = "alice") -> dict[str, object]:
@@ -79,38 +53,8 @@ def _scaffold_agent_settings() -> Generator[None, None, None]:
 
 @contextmanager
 def _client() -> Generator[TestClient, None, None]:
-    engine, factory = _build_session_factory()
-    Base.metadata.create_all(bind=engine)
-
-    app = create_app()
-    original_data_dir = settings.data_dir
-    temp_root = Path(mkdtemp(prefix="anima-chat-test-"))
-
-    def override_get_db() -> Generator[Session, None, None]:
-        db = factory()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.state.test_session_factory = factory
-    unlock_session_store.clear()
-    invalidate_agent_runtime_cache()
-    settings.data_dir = temp_root / "anima-data"
-
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        reset_vector_store()
-        settings.data_dir = original_data_dir
-        invalidate_agent_runtime_cache()
-        unlock_session_store.clear()
-        app.dependency_overrides.clear()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
-        shutil.rmtree(temp_root, ignore_errors=True)
+    with managed_test_client("anima-chat-test-") as test_client:
+        yield test_client
 
 
 def test_chat_requires_unlocked_session() -> None:
@@ -178,7 +122,7 @@ def test_chat_reset_clears_scaffold_thread_state() -> None:
                 headers=headers,
                 json={"message": "again", "userId": user_id},
             )
-            session = client.app.state.test_session_factory()
+            session = get_user_session_factory(user_id)()
             try:
                 assert session.query(AgentThread).count() == 1
                 assert session.query(AgentMessage).count() == 3
@@ -273,7 +217,7 @@ def test_chat_persists_runtime_rows() -> None:
                 json={"message": "hello", "userId": user_id},
             )
 
-            session = client.app.state.test_session_factory()
+            session = get_user_session_factory(user_id)()
             try:
                 thread = session.query(AgentThread).one()
                 run = session.query(AgentRun).one()
@@ -591,7 +535,7 @@ def test_chat_compacts_thread_context_into_summary() -> None:
                 },
             )
 
-            session = client.app.state.test_session_factory()
+            session = get_user_session_factory(user_id)()
             try:
                 all_messages = (
                     session.query(AgentMessage)

@@ -34,7 +34,7 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
 ];
 
 const INPUT_CLASS =
-  "w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/50 outline-none focus:border-(--color-primary) transition-colors";
+  "w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-sm text-text placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors";
 
 export default function AiSettings() {
   const { user } = useAuth();
@@ -132,12 +132,12 @@ export default function AiSettings() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-sm border border-(--color-border) bg-(--color-bg-card) p-5 space-y-5">
+      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-5">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
             Inference Provider
           </h2>
-          <p className="text-xs text-(--color-text-muted)">
+          <p className="text-xs text-text-muted">
             Choose the runtime that powers chat, summarization, and agent orchestration.
           </p>
         </header>
@@ -149,8 +149,8 @@ export default function AiSettings() {
               onClick={() => handleProviderChange(item.name)}
               className={`px-3 py-2 text-xs uppercase tracking-wider rounded-sm border transition-colors ${
                 provider === item.name
-                  ? "border-(--color-primary) text-(--color-text) bg-(--color-bg-input)"
-                  : "border-(--color-border) text-(--color-text-muted) hover:border-(--color-text-muted)"
+                  ? "border-primary text-text bg-bg-input"
+                  : "border-border text-text-muted hover:border-text-muted"
               }`}
             >
               {item.name}
@@ -174,8 +174,8 @@ export default function AiSettings() {
                   onClick={() => setModel(suggestion)}
                   className={`text-[10px] px-2 py-0.5 rounded-sm border transition-colors ${
                     model === suggestion
-                      ? "border-(--color-primary) text-(--color-text)"
-                      : "border-(--color-border) text-(--color-text-muted) hover:text-(--color-text)"
+                      ? "border-primary text-text"
+                      : "border-border text-text-muted hover:text-text"
                   }`}
                 >
                   {suggestion}
@@ -197,7 +197,7 @@ export default function AiSettings() {
               }
             />
             {config?.hasApiKey && !apiKey && (
-              <p className="mt-1 text-[10px] text-(--color-text-muted)">Key stored</p>
+              <p className="mt-1 text-[10px] text-text-muted">Key stored</p>
             )}
           </Field>
         )}
@@ -227,12 +227,12 @@ export default function AiSettings() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-(--color-bg-input) border border-(--color-primary) text-(--color-text) text-xs uppercase tracking-wider rounded-sm hover:bg-(--color-bg) disabled:opacity-50 transition-colors"
+            className="px-5 py-2 bg-bg-input border border-primary text-text text-xs uppercase tracking-wider rounded-sm hover:bg-bg disabled:opacity-50 transition-colors"
           >
             {saving ? "Saving..." : "Save AI Settings"}
           </button>
-          {saved && <span className="text-xs text-(--color-primary) tracking-wider">Saved</span>}
-          {error && <span className="text-xs text-(--color-danger) tracking-wider">{error}</span>}
+          {saved && <span className="text-xs text-primary tracking-wider">Saved</span>}
+          {error && <span className="text-xs text-danger tracking-wider">{error}</span>}
         </div>
       </section>
     </div>
@@ -242,7 +242,7 @@ export default function AiSettings() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="space-y-2">
-      <h3 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+      <h3 className="text-[11px] text-text-muted uppercase tracking-wider">
         {label}
       </h3>
       {children}

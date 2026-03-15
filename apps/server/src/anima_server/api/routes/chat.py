@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
+from anima_server.db.session import build_session_factory_for_db
 from anima_server.models import AgentMessage, AgentThread, MemoryDailyLog, MemoryItem, Task
 from anima_server.schemas.chat import (
     ChatHistoryClearResponse,
@@ -316,6 +317,7 @@ async def consolidate(
                 user_id=payload.userId,
                 user_message=log.user_message,
                 assistant_response=log.assistant_response,
+                db_factory=build_session_factory_for_db(db),
             )
             items_added += len(result.llm_items_added)
         except Exception as exc:  # noqa: BLE001
@@ -335,7 +337,10 @@ async def trigger_sleep_tasks(
 
     from anima_server.services.agent.sleep_tasks import run_sleep_tasks
 
-    result = await run_sleep_tasks(user_id=payload.userId)
+    result = await run_sleep_tasks(
+        user_id=payload.userId,
+        db_factory=build_session_factory_for_db(db),
+    )
     return {
         "contradictionsFound": result.contradictions_found,
         "contradictionsResolved": result.contradictions_resolved,
@@ -357,7 +362,10 @@ async def trigger_deep_monologue(
 
     from anima_server.services.agent.inner_monologue import run_deep_monologue
 
-    result = await run_deep_monologue(user_id=payload.userId)
+    result = await run_deep_monologue(
+        user_id=payload.userId,
+        db_factory=build_session_factory_for_db(db),
+    )
     return {
         "identityUpdated": result.identity_updated,
         "innerStateUpdated": result.inner_state_updated,

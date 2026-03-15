@@ -39,6 +39,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@anima/api-client": "workspace:*",
+        "@anima/ui": "workspace:*",
         "@tailwindcss/typography": "^0.5.19",
         "@tailwindcss/vite": "^4.1.18",
         "@tauri-apps/api": "^2",
@@ -66,9 +67,24 @@
       "name": "@anima/api-client",
       "version": "0.1.0",
     },
+    "packages/ui": {
+      "name": "@anima/ui",
+      "version": "0.1.0",
+      "dependencies": {
+        "tailwind-merge": "^3.5.0",
+      },
+      "devDependencies": {
+        "@types/react": "^19.0.0",
+      },
+      "peerDependencies": {
+        "react": "^19.0.0",
+      },
+    },
   },
   "packages": {
     "@anima/api-client": ["@anima/api-client@workspace:packages/api-client"],
+
+    "@anima/ui": ["@anima/ui@workspace:packages/ui"],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.74.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-srbJV7JKsc5cQ6eVuFzjZO7UR3xEPJqPamHFIe29bs38Ij2IripoAhC0S5NslNbaFUYqBKypmmpzMTpqfHEUDw=="],
 
@@ -1015,6 +1031,8 @@
     "superjson": ["superjson@2.2.6", "", { "dependencies": { "copy-anything": "^4" } }, "sha512-H+ue8Zo4vJmV2nRjpx86P35lzwDT3nItnIsocgumgr0hHMQ+ZGq5vrERg9kJBo5AWGmxZDhzDo+WVIJqkB0cGA=="],
 
     "supports-color": ["supports-color@7.2.0", "", { "dependencies": { "has-flag": "^4.0.0" } }, "sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw=="],
+
+    "tailwind-merge": ["tailwind-merge@3.5.0", "", {}, "sha512-I8K9wewnVDkL1NTGoqWmVEIlUcB9gFriAEkXkfCjX5ib8ezGxtR3xD7iZIxrfArjEsH7F1CHD4RFUtxefdqV/A=="],
 
     "tailwindcss": ["tailwindcss@4.2.1", "", {}, "sha512-/tBrSQ36vCleJkAOsy9kbNTgaxvGbyOamC30PRePTQe/o1MFwEKHQk4Cn7BNGaPtjp+PuUrByJehM1hgxfq4sw=="],
 

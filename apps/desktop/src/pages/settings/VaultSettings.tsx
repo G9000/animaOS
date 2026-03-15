@@ -4,7 +4,7 @@ import { useAuth } from "../../context/AuthContext";
 import { api } from "../../lib/api";
 
 const INPUT_CLASS =
-  "w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-sm text-(--color-text) placeholder:text-(--color-text-muted)/50 outline-none focus:border-(--color-primary) transition-colors";
+  "w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-sm text-text placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors";
 
 export default function VaultSettings() {
   const { logout } = useAuth();
@@ -77,19 +77,19 @@ export default function VaultSettings() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-sm border border-(--color-border) bg-(--color-bg-card) p-5 space-y-5">
+      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-5">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
             Vault Backup
           </h2>
-          <p className="text-xs text-(--color-text-muted)">
+          <p className="text-xs text-text-muted">
             Export or restore the encrypted vault bundle independently from runtime AI
             configuration.
           </p>
         </header>
 
         <section className="space-y-2">
-          <h3 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h3 className="text-[11px] text-text-muted uppercase tracking-wider">
             Vault Passphrase
           </h3>
           <input
@@ -105,18 +105,18 @@ export default function VaultSettings() {
           <button
             onClick={handleVaultExport}
             disabled={vaultBusy}
-            className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) disabled:opacity-50"
+            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary disabled:opacity-50"
           >
             {vaultBusy ? "Working..." : "Export Vault"}
           </button>
           <button
             onClick={handleVaultImport}
             disabled={vaultBusy}
-            className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) disabled:opacity-50"
+            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary disabled:opacity-50"
           >
             {vaultBusy ? "Working..." : "Import Vault"}
           </button>
-          <label className="px-4 py-2 border border-(--color-border) rounded-sm text-xs uppercase tracking-wider hover:border-(--color-primary) cursor-pointer">
+          <label className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary cursor-pointer">
             Load File
             <input
               type="file"
@@ -130,19 +130,19 @@ export default function VaultSettings() {
         </div>
 
         <section className="space-y-2">
-          <h3 className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
+          <h3 className="text-[11px] text-text-muted uppercase tracking-wider">
             Vault Payload
           </h3>
           <textarea
             value={vaultPayload}
             onChange={(e) => setVaultPayload(e.target.value)}
             rows={8}
-            className="w-full bg-(--color-bg-input) border border-(--color-border) rounded-sm px-3 py-2 text-xs text-(--color-text) placeholder:text-(--color-text-muted)/50 outline-none focus:border-(--color-primary) transition-colors resize-y"
+            className="w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-xs text-text placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors resize-y"
             placeholder="Vault JSON payload (for import)..."
           />
         </section>
 
-        {vaultStatus && <p className="text-xs text-(--color-text-muted)">{vaultStatus}</p>}
+        {vaultStatus && <p className="text-xs text-text-muted">{vaultStatus}</p>}
       </section>
     </div>
   );

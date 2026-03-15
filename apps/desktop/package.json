@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@anima/api-client": "workspace:*",
+    "@anima/ui": "workspace:*",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.1.18",
     "@tauri-apps/api": "^2",
