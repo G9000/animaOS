@@ -37,3 +37,14 @@ def ensure_core_manifest() -> dict[str, object]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
+
+
+def get_core_birth_date() -> str:
+    """Return the Core's creation date as an ISO date string (YYYY-MM-DD)."""
+    path = get_manifest_path()
+    if path.is_file():
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        created = manifest.get("created_at", "")
+        if created:
+            return created[:10]
+    return datetime.now(UTC).strftime("%Y-%m-%d")

@@ -9,6 +9,8 @@ from anima_server.db import get_db
 from anima_server.schemas.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
+    CreateAIChatRequest,
+    CreateAIChatResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
@@ -28,6 +30,34 @@ from anima_server.services.auth import (
 from anima_server.services.sessions import unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+@router.post("/create-ai/chat", response_model=CreateAIChatResponse)
+async def create_ai_chat(payload: CreateAIChatRequest) -> dict[str, object]:
+    """Handle one turn of the AI creation ceremony."""
+    from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
+    from anima_server.services.creation_agent import handle_creation_turn
+
+    llm_messages = [
+        {"role": m.role, "content": m.content} for m in payload.messages
+    ]
+
+    try:
+        result = await handle_creation_turn(llm_messages, payload.ownerName)
+    except LLMConfigError:
+        raise HTTPException(
+            status_code=503, detail="AI provider is not configured."
+        ) from None
+    except LLMInvocationError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"AI provider error: {exc}"
+        ) from None
+
+    return {
+        "message": result.message,
+        "done": result.done,
+        "soulData": result.soul_data,
+    }
 
 
 @router.post(
@@ -56,10 +86,13 @@ def register(
             username=username,
             password=payload.password,
             display_name=display_name,
+            agent_name=payload.agentName,
+            user_directive=payload.userDirective,
         )
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Username already taken") from None
+        raise HTTPException(
+            status_code=409, detail="Username already taken") from None
 
     response = serialize_user(user)
     response["unlockToken"] = unlock_session_store.create(user.id, dek)
@@ -119,7 +152,8 @@ def change_password(
 ) -> dict[str, object]:
     session = unlock_session_store.resolve(read_unlock_token(request))
     if session is None:
-        raise HTTPException(status_code=401, detail="Session locked. Please sign in again.")
+        raise HTTPException(
+            status_code=401, detail="Session locked. Please sign in again.")
 
     user = get_user_by_id(db, session.user_id)
     if user is None:

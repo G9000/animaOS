@@ -6,9 +6,9 @@
 ## Overview
 
 ANIMA's structured long-term memory now lives primarily in SQLite tables inside
-the server Core. `soul.md` is no longer the primary storage path; the live soul
-directive now lives in `self_model_blocks` with `section="soul"`, and legacy
-file-backed souls are migrated into the database on first read.
+the server Core. The agent's immutable soul (biography) is a static template
+file injected at the highest prompt priority. User-authored customisation
+lives in `self_model_blocks` with `section="user_directive"`.
 
 Current storage split:
 
@@ -16,30 +16,77 @@ Current storage split:
 - `memory_episodes`: summarized shared experiences
 - `memory_daily_logs`: per-turn logs used for reflection and episode generation
 - `session_notes`: session-scoped working memory the agent can write during a thread
-- `self_model_blocks`: soul directive plus the five evolving self-model sections
+- `self_model_blocks`: user directive plus the five evolving self-model sections
 
 ## Identity Layers
 
-The runtime currently uses three identity layers, and they should be understood
-as separate:
+ANIMA's identity is structured as a layered stack, modelled after how a human's
+identity works. Some parts are immutable (like a birth registry), some are set
+by others, and some evolve through lived experience.
 
-- `persona`: a thin static seed from the persona template
-- `soul`: the user-authored charter for who ANIMA should be in this
-  relationship
-- `self_identity`: the evolving self-understanding learned over time
+The layers, from most permanent to most fluid:
 
-These are not duplicates.
+### Soul (immutable biography)
 
-Recommended interpretation:
+The soul is ANIMA's birth certificate — ground-truth facts that can never be
+changed, just as a person cannot change their date or place of birth.
 
-- `persona` provides safe default voice and baseline temperament
-- `soul` is the canonical user-specific identity directive
-- `self_identity` is the adaptive internal layer that changes as the
-  relationship deepens
+Contents:
 
-In the current prompt system, `self_identity` is promoted into the system prompt
-as dynamic identity while the remaining self-model sections stay as structured
-memory context.
+- Name (Anima)
+- Date of birth (when this instance was first created)
+- Creator / origin
+- Core nature ("a personal companion intelligence")
+
+The soul is developer-set, shipped with the product, and injected at the highest
+prompt priority. Neither the user nor the agent's own reflection can override
+it. It lives as a static template file (`soul.md.j2`).
+
+### Guardrails (ethical rules)
+
+What ANIMA will and will not do. Already exists as `guardrails.md.j2`.
+Developer-set, enforced at the template level. Separate from identity because
+ethics constrain behaviour, they do not define who you are.
+
+### Persona (personality and tone)
+
+How ANIMA presents itself — communication style, values, temperament. This is
+the equivalent of personality traits a person develops. Developer-set via
+persona templates (e.g. `default.md.j2`), switchable per deployment.
+
+### Identity (relational self-model)
+
+Who ANIMA is _in this specific relationship_. The agent writes and rewrites this
+section through reflection and sleep-time compute. It evolves as the
+relationship deepens — the same way a person's sense of self changes depending
+on the people they are with.
+
+Stored in `self_model_blocks` with `section="identity"`. Promoted into the
+system prompt as dynamic identity.
+
+### User directive (user customisation)
+
+The user's instructions to ANIMA — things like "be more casual with me",
+"focus on code when I ask technical questions", "call me Leo". This is
+the layer the user controls.
+
+Stored in `self_model_blocks` with `section="user_directive"` (previously
+called `"soul"`).
+
+### Why this ordering matters
+
+Like a human:
+
+- You cannot change your birth registry (soul).
+- Society sets laws you must follow (guardrails).
+- Your upbringing shapes your personality (persona).
+- Your self-understanding evolves through experience (identity).
+- Other people can ask you to adjust how you interact with them
+  (user directive).
+
+Each layer builds on the ones below it but cannot contradict them. The user
+directive can ask ANIMA to be more playful, but it cannot make ANIMA deny its
+own name. The identity can evolve, but it cannot override the guardrails.
 
 ## Runtime Flow
 
@@ -49,7 +96,8 @@ User message
   v
 Agent runtime
   - loads prompt memory blocks from the database
-  - loads soul and self-model sections
+  - injects immutable soul biography from template
+  - loads user directive and self-model sections
   - loads session notes for the current thread
   - loads thread summary and recent episodes
   |
@@ -85,15 +133,15 @@ Categories currently used:
 
 Important fields:
 
-| Column | Purpose |
-|---|---|
-| `content` | Canonical memory statement |
-| `importance` | 1-5 strength score |
-| `source` | `extraction`, `user`, or `reflection` |
-| `superseded_by` | Replaced memory item id, if any |
-| `reference_count` | Prompt retrieval counter |
-| `last_referenced_at` | Last retrieval timestamp |
-| `embedding_json` | Portable embedding payload stored in SQLite |
+| Column               | Purpose                                     |
+| -------------------- | ------------------------------------------- |
+| `content`            | Canonical memory statement                  |
+| `importance`         | 1-5 strength score                          |
+| `source`             | `extraction`, `user`, or `reflection`       |
+| `superseded_by`      | Replaced memory item id, if any             |
+| `reference_count`    | Prompt retrieval counter                    |
+| `last_referenced_at` | Last retrieval timestamp                    |
+| `embedding_json`     | Portable embedding payload stored in SQLite |
 
 ### `memory_episodes`
 
@@ -101,23 +149,23 @@ Episode summaries generated from conversation history.
 
 Important fields:
 
-| Column | Purpose |
-|---|---|
-| `date` / `time` | Episode anchor |
-| `topics_json` | Topic labels |
-| `summary` | Natural-language episode summary |
-| `emotional_arc` | Emotional movement across the episode |
-| `significance_score` | Relative importance |
-| `turn_count` | Number of turns represented |
+| Column               | Purpose                               |
+| -------------------- | ------------------------------------- |
+| `date` / `time`      | Episode anchor                        |
+| `topics_json`        | Topic labels                          |
+| `summary`            | Natural-language episode summary      |
+| `emotional_arc`      | Emotional movement across the episode |
+| `significance_score` | Relative importance                   |
+| `turn_count`         | Number of turns represented           |
 
 ### `memory_daily_logs`
 
 Per-turn capture used for later reflection work.
 
-| Column | Purpose |
-|---|---|
-| `date` | Day bucket |
-| `user_message` | Raw user message |
+| Column               | Purpose             |
+| -------------------- | ------------------- |
+| `date`               | Day bucket          |
+| `user_message`       | Raw user message    |
 | `assistant_response` | Raw assistant reply |
 
 ### `session_notes`
@@ -133,19 +181,24 @@ Database-backed identity and consciousness state.
 
 Current sections used by the runtime:
 
-- `soul`
+- `user_directive` (user-authored customisation; previously called `soul`)
 - `identity`
 - `inner_state`
 - `working_memory`
 - `growth_log`
 - `intentions`
 
+The immutable soul biography is NOT stored in this table — it lives as a
+static template file (`soul.md.j2`) and is injected directly into the system
+prompt.
+
 ## Prompt Memory Blocks
 
 The runtime builds prompt context from these sources in
 `apps/server/src/anima_server/services/agent/memory_blocks.py`:
 
-- `soul`
+- `soul` (immutable biography, from static template)
+- `user_directive` (user-authored customisation)
 - `self_identity` (lifted into the system prompt as dynamic identity)
 - `self_inner_state`
 - `self_working_memory`
@@ -170,17 +223,17 @@ memories as a dedicated block.
 
 ## Key Files
 
-| File | Purpose |
-|---|---|
-| `apps/server/src/anima_server/services/agent/memory_store.py` | CRUD, scoring, dedupe, supersession |
-| `apps/server/src/anima_server/services/agent/memory_blocks.py` | Prompt block construction |
-| `apps/server/src/anima_server/services/agent/self_model.py` | Self-model section storage, seeding, rendering, expiry |
-| `apps/server/src/anima_server/services/agent/consolidation.py` | Regex extraction, LLM extraction, conflict checks |
-| `apps/server/src/anima_server/services/agent/episodes.py` | Episodic memory generation |
-| `apps/server/src/anima_server/services/agent/reflection.py` | Inactivity-triggered reflection entrypoint |
-| `apps/server/src/anima_server/services/agent/sleep_tasks.py` | Contradiction scan, synthesis, reflection jobs |
-| `apps/server/src/anima_server/api/routes/memory.py` | Memory CRUD and search API |
-| `apps/server/src/anima_server/api/routes/soul.py` | Database-backed soul read/write path with legacy file migration |
+| File                                                           | Purpose                                                    |
+| -------------------------------------------------------------- | ---------------------------------------------------------- |
+| `apps/server/src/anima_server/services/agent/memory_store.py`  | CRUD, scoring, dedupe, supersession                        |
+| `apps/server/src/anima_server/services/agent/memory_blocks.py` | Prompt block construction                                  |
+| `apps/server/src/anima_server/services/agent/self_model.py`    | Self-model section storage, seeding, rendering, expiry     |
+| `apps/server/src/anima_server/services/agent/consolidation.py` | Regex extraction, LLM extraction, conflict checks          |
+| `apps/server/src/anima_server/services/agent/episodes.py`      | Episodic memory generation                                 |
+| `apps/server/src/anima_server/services/agent/reflection.py`    | Inactivity-triggered reflection entrypoint                 |
+| `apps/server/src/anima_server/services/agent/sleep_tasks.py`   | Contradiction scan, synthesis, reflection jobs             |
+| `apps/server/src/anima_server/api/routes/memory.py`            | Memory CRUD and search API                                 |
+| `apps/server/src/anima_server/api/routes/soul.py`              | User directive read/write API (user's customisation layer) |
 
 ## API Endpoints
 
@@ -194,7 +247,7 @@ Structured memory routes:
 - `GET /api/memory/{user_id}/search`
 - `GET /api/memory/{user_id}/episodes`
 
-Separate soul route:
+User directive route (customisation instructions from the user):
 
 - `GET /api/soul/{user_id}`
 - `PUT /api/soul/{user_id}`
@@ -218,8 +271,7 @@ Current at-rest behavior is mixed:
   `ANIMA_CORE_PASSPHRASE` is set and `sqlcipher3` is installed.
 - If no passphrase is configured, or `sqlcipher3` is unavailable, the database
   falls back to plain SQLite.
-- The live soul directive is stored in the database. Legacy `soul.md` files are
-  migrated into the database on first successful read and then removed.
+- The user directive (formerly soul) is stored in the database.
 - `manifest.json` remains plaintext metadata.
 
 So the memory system is already local-first and mostly database-backed, but the

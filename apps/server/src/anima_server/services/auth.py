@@ -73,7 +73,10 @@ def build_user_key(user_id: int, wrapped_dek: WrappedDekRecord) -> UserKey:
     )
 
 
-def create_user(db: Session, username: str, password: str, display_name: str) -> tuple[User, bytes]:
+def create_user(db: Session, username: str, password: str, display_name: str, agent_name: str = "Anima", user_directive: str = "") -> tuple[User, bytes]:
+    from anima_server.models import SelfModelBlock
+    from anima_server.services.agent.system_prompt import render_soul_biography
+
     dek, wrapped_dek = create_wrapped_dek(password)
     user = User(
         username=username,
@@ -83,6 +86,27 @@ def create_user(db: Session, username: str, password: str, display_name: str) ->
     db.add(user)
     db.flush()
     db.add(build_user_key(user.id, wrapped_dek))
+
+    # Seed immutable soul biography
+    soul_content = render_soul_biography(agent_name=agent_name)
+    db.add(SelfModelBlock(
+        user_id=user.id,
+        section="soul",
+        content=soul_content,
+        version=1,
+        updated_by="system",
+    ))
+
+    # Seed user directive if provided
+    if user_directive.strip():
+        db.add(SelfModelBlock(
+            user_id=user.id,
+            section="user_directive",
+            content=user_directive.strip(),
+            version=1,
+            updated_by="system",
+        ))
+
     db.commit()
     db.refresh(user)
     return user, dek

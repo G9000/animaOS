@@ -32,10 +32,15 @@ def build_runtime_memory_blocks(
 ) -> tuple[MemoryBlock, ...]:
     blocks: list[MemoryBlock] = []
 
-    # Soul block (Priority 0 — user-authored personality directive)
-    soul_block = build_soul_memory_block(db, user_id=user_id)
-    if soul_block is not None:
-        blocks.append(soul_block)
+    # Soul block (Priority 0 — immutable biography from DB)
+    soul_block = build_soul_biography_block(db, user_id=user_id)
+    blocks.append(soul_block)
+
+    # User directive (Priority 0 — user-authored customisation)
+    user_directive_block = build_user_directive_memory_block(
+        db, user_id=user_id)
+    if user_directive_block is not None:
+        blocks.append(user_directive_block)
 
     # Self-model blocks (Priority 1 — always present, never truncated)
     for sm_block in build_self_model_memory_blocks(db, user_id=user_id):
@@ -386,13 +391,18 @@ def build_session_memory_block(
     )
 
 
-def build_soul_memory_block(
+def build_soul_biography_block(
     db: Session,
     *,
     user_id: int,
-) -> MemoryBlock | None:
-    """Build a memory block from the user's soul directive."""
+) -> MemoryBlock:
+    """Build the immutable soul biography block.
+
+    Reads from the DB (seeded at user creation). Falls back to rendering
+    the template for legacy users who don't have a stored soul row.
+    """
     from anima_server.models import SelfModelBlock
+    from anima_server.services.agent.system_prompt import render_soul_biography
 
     block = db.scalar(
         select(SelfModelBlock).where(
@@ -400,12 +410,38 @@ def build_soul_memory_block(
             SelfModelBlock.section == "soul",
         )
     )
+    if block is not None and block.content.strip():
+        value = block.content.strip()
+    else:
+        value = render_soul_biography()
+
+    return MemoryBlock(
+        label="soul",
+        description="My origin — immutable biographical truth. This is who I am.",
+        value=value,
+    )
+
+
+def build_user_directive_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    """Build a memory block from the user's directive."""
+    from anima_server.models import SelfModelBlock
+
+    block = db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == user_id,
+            SelfModelBlock.section == "user_directive",
+        )
+    )
     if block is None or not block.content.strip():
         return None
 
     return MemoryBlock(
-        label="soul",
-        description="The user's personality directive — who they want me to be. This is their vision for our relationship.",
+        label="user_directive",
+        description="The user's customisation instructions — how they want me to behave with them.",
         value=block.content.strip(),
     )
 

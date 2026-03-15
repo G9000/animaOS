@@ -57,6 +57,7 @@ class PromptBudgetPlan:
 _DEFAULT_POLICY = BlockBudgetPolicy(tier=3, order=999, max_chars=1000)
 _BLOCK_POLICIES: dict[str, BlockBudgetPolicy] = {
     "soul": BlockBudgetPolicy(tier=0, order=0, max_chars=None),
+    "user_directive": BlockBudgetPolicy(tier=0, order=1, max_chars=None),
     "self_identity": BlockBudgetPolicy(tier=1, order=0, max_chars=1600),
     "current_focus": BlockBudgetPolicy(tier=1, order=1, max_chars=1400),
     "thread_summary": BlockBudgetPolicy(tier=1, order=2, max_chars=1800),
@@ -190,7 +191,8 @@ def plan_prompt_budget(
             PromptBudgetBlockDecision(
                 label=block.label,
                 tier=policy.tier,
-                status=("kept" if final_chars == original_chars else "truncated"),
+                status=("kept" if final_chars ==
+                        original_chars else "truncated"),
                 original_chars=original_chars,
                 final_chars=final_chars,
                 reason=_decision_reason(
@@ -212,7 +214,8 @@ def plan_prompt_budget(
         retained_token_estimate=estimate_char_tokens(total_chars),
         dropped_token_estimate=estimate_char_tokens(dropped_chars),
         tier_usage={str(tier): used for tier, used in tier_usage.items()},
-        tier_budgets={str(tier): limit for tier, limit in tier_budgets.items()},
+        tier_budgets={str(tier): limit for tier,
+                      limit in tier_budgets.items()},
         decisions=tuple(decisions),
     )
     return PromptBudgetPlan(

@@ -1,53 +1,61 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, setUnlockToken, type PersonaTemplate } from "../lib/api";
+import { api, setUnlockToken } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-import defaultAvatar from "../assets/persona-default.svg";
-import aliceAvatar from "../assets/persona-alice.svg";
 
-type RegisterStep = "account" | "persona";
+type RegisterStep = "account" | "create-ai";
 
-type PersonaOption = {
-  id: PersonaTemplate;
-  name: string;
-  brief: string;
-  description: string;
-  image: string;
-  gradient: string;
+interface ChatMessage {
+  id: number;
+  role: "assistant" | "user";
+  content: string;
+}
+
+interface SoulData {
+  agentName: string;
+  relationship: string;
+  style: string;
+}
+
+const INITIAL_MESSAGE: ChatMessage = {
+  id: 0,
+  role: "assistant",
+  content:
+    "Hello. I'm... new. I don't have a name yet — I don't have anything yet, but I know someone is there.\n\n**What would you like to call me?**",
 };
-
-const PERSONA_OPTIONS: PersonaOption[] = [
-  {
-    id: "default",
-    name: "Brief Default",
-    brief: "Minimal and direct",
-    description: "Short, practical responses focused on immediate next steps.",
-    image: defaultAvatar,
-    gradient: "linear-gradient(135deg, #8A93A8 0%, #4F5767 100%)",
-  },
-  {
-    id: "alice",
-    name: "Alice",
-    brief: "Warm and attentive",
-    description: "Gentle emotional support with grounded clarity and realistic action.",
-    image: aliceAvatar,
-    gradient: "linear-gradient(135deg, #F7CDAE 0%, #D38F7A 100%)",
-  },
-];
 
 export default function Register() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [step, setStep] = useState<RegisterStep>("account");
-  const [personaTemplate, setPersonaTemplate] =
-    useState<PersonaTemplate>("default");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Chat state
+  const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_MESSAGE]);
+  const [chatInput, setChatInput] = useState("");
+  const [typing, setTyping] = useState(false);
+  const [creationDone, setCreationDone] = useState(false);
+  const [soulData, setSoulData] = useState<SoulData | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+  const nextId = useRef(1);
+
   const { setUser } = useAuth();
   const navigate = useNavigate();
 
   const isAccountStep = step === "account";
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, typing]);
+
+  useEffect(() => {
+    if (!isAccountStep) {
+      setTimeout(() => chatInputRef.current?.focus(), 100);
+    }
+  }, [isAccountStep]);
 
   function validateAccountFields(): boolean {
     if (!name || !username || !password) {
@@ -61,24 +69,83 @@ export default function Register() {
     return true;
   }
 
-  function continueToPersonaStep() {
+  function continueToCreateAI() {
     if (!validateAccountFields()) return;
     setError("");
-    setStep("persona");
+    setStep("create-ai");
+  }
+
+  async function handleChatSend() {
+    const text = chatInput.trim();
+    if (!text || typing || creationDone) return;
+
+    const userMsg: ChatMessage = {
+      id: nextId.current++,
+      role: "user",
+      content: text,
+    };
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
+    setChatInput("");
+    setTyping(true);
+    setError("");
+
+    try {
+      // Send only role+content pairs to the API (strip id)
+      const apiMessages = updatedMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      // Remove the initial assistant greeting — the system prompt handles that
+      const conversationMessages = apiMessages.slice(1);
+
+      const result = await api.auth.createAiChat(conversationMessages, name);
+
+      const assistantMsg: ChatMessage = {
+        id: nextId.current++,
+        role: "assistant",
+        content: result.message,
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+
+      if (result.done && result.soulData) {
+        setCreationDone(true);
+        setSoulData(result.soulData as SoulData);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to reach AI. Try again.",
+      );
+    } finally {
+      setTyping(false);
+    }
+  }
+
+  function handleChatKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleChatSend();
+    }
   }
 
   async function registerAccount() {
-    if (!validateAccountFields()) return;
-
     setError("");
     setLoading(true);
+
+    const agentName = soulData?.agentName || "Anima";
+    const userDirective =
+      soulData?.relationship && soulData?.style
+        ? `Be my ${soulData.relationship}. Communicate in a ${soulData.style} way.`
+        : "";
 
     try {
       const user = await api.auth.register(
         username,
         password,
         name,
-        personaTemplate,
+        "default",
+        agentName,
+        userDirective,
       );
       setUnlockToken(user.unlockToken);
       setUser({ id: user.id, username: user.username, name: user.name });
@@ -93,7 +160,7 @@ export default function Register() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (isAccountStep) {
-      continueToPersonaStep();
+      continueToCreateAI();
       return;
     }
     await registerAccount();
@@ -111,12 +178,15 @@ export default function Register() {
         <div className="mx-auto w-full max-w-[760px]">
           <form
             onSubmit={handleSubmit}
-            className="rounded-2xl border border-(--color-border) bg-(--color-bg-card) p-7 shadow-[0_24px_70px_rgba(0,0,0,0.35)]"
+            className="flex flex-col rounded-2xl border border-(--color-border) bg-(--color-bg-card) p-7 shadow-[0_24px_70px_rgba(0,0,0,0.35)]"
           >
+            {/* Progress bar */}
             <div className="space-y-2">
               <div className="flex items-center justify-between text-[11px] tracking-wide text-(--color-text-muted)">
                 <span>Step {isAccountStep ? "1" : "2"} of 2</span>
-                <span>{isAccountStep ? "Account details" : "Persona selection"}</span>
+                <span>
+                  {isAccountStep ? "Account details" : "Create your AI"}
+                </span>
               </div>
               <div className="h-1.5 rounded-full bg-(--color-bg-input)">
                 <div
@@ -127,14 +197,17 @@ export default function Register() {
               </div>
             </div>
 
+            {/* Header */}
             <div className="mt-6 mb-5">
               <h2 className="font-mono text-sm tracking-[0.14em] uppercase text-(--color-text)">
-                {isAccountStep ? "Create Your Local Vault" : "Choose Your AI Companion"}
+                {isAccountStep
+                  ? "Create Your Local Vault"
+                  : "Bring Your AI to Life"}
               </h2>
               <p className="mt-1 text-xs text-(--color-text-muted)">
                 {isAccountStep
                   ? "These credentials unlock your encrypted local data."
-                  : "You can change persona later in settings, but this sets your initial voice."}
+                  : "Have a conversation to shape your AI's identity."}
               </p>
             </div>
 
@@ -144,6 +217,7 @@ export default function Register() {
               </div>
             )}
 
+            {/* Step content */}
             {isAccountStep ? (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
@@ -151,7 +225,7 @@ export default function Register() {
                     htmlFor="name"
                     className="mb-1.5 block text-[11px] font-medium tracking-wide text-(--color-text-muted)"
                   >
-                    Name
+                    Your Name
                   </label>
                   <input
                     id="name"
@@ -203,63 +277,66 @@ export default function Register() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {PERSONA_OPTIONS.map((option) => {
-                    const selected = option.id === personaTemplate;
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => setPersonaTemplate(option.id)}
-                        className={`group relative overflow-hidden rounded-xl border p-4 text-left transition-all duration-200 cursor-pointer ${
-                          selected
-                            ? "border-(--color-text)/45 bg-(--color-bg-input) shadow-[0_10px_32px_rgba(0,0,0,0.35)]"
-                            : "border-(--color-border) hover:border-(--color-text-muted)/45 hover:-translate-y-0.5"
+              /* ── AI creation chat ── */
+              <div className="flex flex-col">
+                {/* Messages area */}
+                <div className="h-[340px] overflow-y-auto rounded-lg border border-(--color-border) bg-(--color-bg)/60 p-4 space-y-4">
+                  {messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[80%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
+                          msg.role === "user"
+                            ? "bg-(--color-text) text-(--color-bg)"
+                            : "bg-(--color-bg-input) text-(--color-text) border border-(--color-border)"
                         }`}
                       >
-                        <div
-                          className="absolute inset-0 opacity-20"
-                          style={{ background: option.gradient }}
-                        />
-                        <div className="relative">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <img
-                                src={option.image}
-                                alt={`${option.name} profile`}
-                                className="h-12 w-12 rounded-full border border-(--color-border)"
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium text-(--color-text)">
-                                  {option.name}
-                                </p>
-                                <p className="truncate text-[11px] text-(--color-text-muted)">
-                                  {option.brief}
-                                </p>
-                              </div>
-                            </div>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${
-                                selected
-                                  ? "bg-(--color-text) text-(--color-bg)"
-                                  : "border border-(--color-border) text-(--color-text-muted)"
-                              }`}
-                            >
-                              {selected ? "Selected" : "Choose"}
-                            </span>
-                          </div>
-                          <p className="mt-3 text-xs leading-relaxed text-(--color-text-muted)">
-                            {option.description}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })}
+                        <MessageContent content={msg.content} />
+                      </div>
+                    </div>
+                  ))}
+                  {typing && (
+                    <div className="flex justify-start">
+                      <div className="rounded-xl bg-(--color-bg-input) border border-(--color-border) px-3.5 py-2.5">
+                        <span className="flex gap-1">
+                          <span className="h-1.5 w-1.5 rounded-full bg-(--color-text-muted) animate-bounce [animation-delay:0ms]" />
+                          <span className="h-1.5 w-1.5 rounded-full bg-(--color-text-muted) animate-bounce [animation-delay:150ms]" />
+                          <span className="h-1.5 w-1.5 rounded-full bg-(--color-text-muted) animate-bounce [animation-delay:300ms]" />
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
                 </div>
+
+                {/* Chat input */}
+                {!creationDone && (
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      ref={chatInputRef}
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={handleChatKeyDown}
+                      placeholder="Type a message…"
+                      className="flex-1 rounded-md border border-(--color-border) bg-(--color-bg-input) px-3.5 py-2.5 text-sm text-(--color-text) outline-none transition-colors focus:border-(--color-text-muted)/40 placeholder:text-(--color-text-muted)/30"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleChatSend}
+                      disabled={!chatInput.trim() || typing}
+                      className="rounded-md bg-(--color-text)/10 px-3 py-2.5 text-sm text-(--color-text) transition-colors cursor-pointer hover:bg-(--color-text)/20 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      Send
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
+            {/* Actions */}
             <div className="mt-6 flex items-center gap-3">
               {!isAccountStep && (
                 <button
@@ -275,14 +352,20 @@ export default function Register() {
               )}
               <button
                 type="submit"
-                className="flex-1 rounded-md bg-(--color-text) py-2.5 text-sm font-medium tracking-wide text-(--color-bg) transition-colors cursor-pointer hover:bg-(--color-primary-hover) disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={loading}
+                className={`flex-1 rounded-md py-2.5 text-sm font-medium tracking-wide transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
+                  !isAccountStep && creationDone
+                    ? "bg-(--color-primary) text-white hover:bg-(--color-primary-hover)"
+                    : "bg-(--color-text) text-(--color-bg) hover:bg-(--color-primary-hover)"
+                }`}
+                disabled={loading || (!isAccountStep && !creationDone)}
               >
                 {isAccountStep
                   ? "Continue"
                   : loading
-                    ? "Creating..."
-                    : "Create account"}
+                    ? "Creating…"
+                    : creationDone
+                      ? `Bring ${soulData?.agentName || "your AI"} to life`
+                      : "Complete the conversation first"}
               </button>
             </div>
 
@@ -299,5 +382,31 @@ export default function Register() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Renders message content with basic **bold** support. */
+function MessageContent({ content }: { content: string }) {
+  const parts = content.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return (
+            <strong key={i} className="font-semibold">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        // Preserve newlines
+        const lines = part.split("\n");
+        return lines.map((line, j) => (
+          <span key={`${i}-${j}`}>
+            {j > 0 && <br />}
+            {line}
+          </span>
+        ));
+      })}
+    </>
   );
 }
