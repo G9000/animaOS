@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.config import settings
 from anima_server.db import get_db
+from anima_server.db.session import is_sqlite_mode
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -79,6 +80,13 @@ async def update_config(
 ) -> dict[str, str]:
     """Update the active agent config (process-global — see GET docstring)."""
     require_unlocked_user(request, user_id)
+
+    if not is_sqlite_mode():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Config mutation is disabled in shared-database mode.  "
+            "Process-global config cannot safely be changed per-user.",
+        )
 
     if payload.provider not in VALID_PROVIDERS:
         raise HTTPException(

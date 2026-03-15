@@ -4,7 +4,6 @@ import { useAuth } from "../context/AuthContext";
 import { api, type ChatMessage } from "../lib/api";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
-import rehypeRaw from "rehype-raw";
 import "highlight.js/styles/github-dark.css";
 
 const LANGUAGES = [
@@ -308,7 +307,7 @@ export default function Chat() {
               </div>
               <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-bg-card border border-border rounded-md px-3 py-2.5 md:px-4 md:py-3">
                 <div className="prose prose-invert prose-sm md:prose-base max-w-none">
-                  <ReactMarkdown rehypePlugins={[rehypeHighlight, rehypeRaw]}>
+                  <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
                     {streamBuffer}
                   </ReactMarkdown>
                   <span className="inline-block w-1.5 h-4 bg-primary ml-0.5 animate-pulse" />
@@ -448,7 +447,7 @@ function MessageBubble({
             </p>
           ) : (
             <div className="prose prose-invert prose-sm md:prose-base max-w-none">
-              <ReactMarkdown rehypePlugins={[rehypeHighlight, rehypeRaw]}>
+              <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
                 {message.content}
               </ReactMarkdown>
             </div>

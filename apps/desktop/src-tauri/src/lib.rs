@@ -14,6 +14,24 @@ use tauri::{
     Manager, State,
 };
 
+/// Generate a random 32-byte hex nonce for sidecar authentication.
+fn generate_nonce() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let s = RandomState::new();
+    let mut h = s.build_hasher();
+    h.write_u128(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos());
+    let a = h.finish();
+    let mut h2 = s.build_hasher();
+    h2.write_u64(a);
+    h2.write_usize(std::process::id() as usize);
+    let b = h2.finish();
+    format!("{:016x}{:016x}", a, b)
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -41,7 +59,7 @@ fn ensure_customer_data_layout(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn api_healthcheck() -> bool {
+fn api_healthcheck(expected_nonce: &str) -> bool {
     let addr: SocketAddr = "127.0.0.1:3031".parse().expect("valid API socket address");
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
         Ok(stream) => stream,
@@ -61,13 +79,21 @@ fn api_healthcheck() -> bool {
         return false;
     }
 
-    response.contains("\"healthy\"")
+    // Verify the response contains the expected nonce to confirm this is our
+    // sidecar, not a rogue process on the same port.
+    if !expected_nonce.is_empty() {
+        if !response.contains(expected_nonce) {
+            return false;
+        }
+    }
+
+    response.contains("\"healthy\"") || response.contains("\"ok\"")
 }
 
-fn wait_for_api_ready(timeout: Duration) -> Result<(), String> {
+fn wait_for_api_ready(timeout: Duration, expected_nonce: &str) -> Result<(), String> {
     let started_at = Instant::now();
     while started_at.elapsed() < timeout {
-        if api_healthcheck() {
+        if api_healthcheck(expected_nonce) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -75,7 +101,7 @@ fn wait_for_api_ready(timeout: Duration) -> Result<(), String> {
     Err("timed out waiting for local API health check".to_string())
 }
 
-fn start_api_sidecar(app: &tauri::AppHandle) -> Result<Child, String> {
+fn start_api_sidecar(app: &tauri::AppHandle, nonce: &str) -> Result<Child, String> {
     let resource_dir = app
         .path()
         .resource_dir()
@@ -111,6 +137,7 @@ fn start_api_sidecar(app: &tauri::AppHandle) -> Result<Child, String> {
         .env("ANIMA_DATA_DIR", &data_dir)
         .env("ANIMA_PROMPTS_DIR", &prompts_dir)
         .env("ANIMA_MIGRATIONS_DIR", &migrations_dir)
+        .env("ANIMA_SIDECAR_NONCE", nonce)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -139,10 +166,11 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             if !cfg!(debug_assertions) {
-                let mut child = start_api_sidecar(&app.handle())
+                let nonce = generate_nonce();
+                let mut child = start_api_sidecar(&app.handle(), &nonce)
                     .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
-                if let Err(err) = wait_for_api_ready(Duration::from_secs(10)) {
+                if let Err(err) = wait_for_api_ready(Duration::from_secs(10), &nonce) {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(err.into());

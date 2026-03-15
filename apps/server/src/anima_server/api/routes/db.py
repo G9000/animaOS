@@ -9,8 +9,18 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.db import get_db
+from anima_server.db.session import is_sqlite_mode
 
 router = APIRouter(prefix="/api/db", tags=["db"])
+
+
+def _require_sqlite_mode() -> None:
+    """Block the entire DB-viewer surface in shared-database deployments."""
+    if not is_sqlite_mode():
+        raise HTTPException(
+            status_code=403,
+            detail="Database viewer is disabled in shared-database mode.",
+        )
 
 MAX_ROWS = 500
 
@@ -41,6 +51,7 @@ def list_tables(
     request: Request,
     db: Session = Depends(get_db),
 ) -> list[dict[str, object]]:
+    _require_sqlite_mode()
     require_unlocked_session(request)
     insp = inspect(db.get_bind())
     tables = []
@@ -58,6 +69,7 @@ def get_table_rows(
     limit: int = Query(default=100, ge=1, le=MAX_ROWS),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, object]:
+    _require_sqlite_mode()
     require_unlocked_session(request)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
@@ -86,6 +98,7 @@ def run_query(
     body: dict[str, str],
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    _require_sqlite_mode()
     require_unlocked_session(request)
     sql = (body.get("sql") or "").strip()
     if not sql:
@@ -125,6 +138,7 @@ def delete_row(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    _require_sqlite_mode()
     require_unlocked_session(request)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
@@ -156,6 +170,7 @@ def update_row(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    _require_sqlite_mode()
     require_unlocked_session(request)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)

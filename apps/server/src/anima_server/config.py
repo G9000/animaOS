@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     agent_emotional_context_budget: int = 500
     agent_emotional_signal_buffer_size: int = 20
     agent_emotional_confidence_threshold: float = 0.4
+    sidecar_nonce: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",

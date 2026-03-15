@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, getUnlockToken, setUnlockToken } from "../../lib/api";
+import { api, setUnlockToken } from "../../lib/api";
 
 const INPUT_CLASS =
   "w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-sm text-text placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors";
@@ -11,20 +11,6 @@ export default function SecuritySettings() {
   const [changing, setChanging] = useState(false);
   const [changeStatus, setChangeStatus] = useState("");
   const [changeError, setChangeError] = useState("");
-  const [showUnlockKey, setShowUnlockKey] = useState(false);
-  const [unlockKey, setUnlockKey] = useState("");
-  const [unlockCopied, setUnlockCopied] = useState(false);
-
-  const handleCopyUnlockKey = async () => {
-    if (!unlockKey) return;
-    try {
-      await navigator.clipboard.writeText(unlockKey);
-      setUnlockCopied(true);
-      setTimeout(() => setUnlockCopied(false), 1500);
-    } catch {
-      // Ignore clipboard failures.
-    }
-  };
 
   const handleChangePassword = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -44,7 +30,6 @@ export default function SecuritySettings() {
     try {
       const result = await api.auth.changePassword(oldPassword, newPassword);
       setUnlockToken(result.unlockToken);
-      setUnlockKey(result.unlockToken);
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -54,11 +39,6 @@ export default function SecuritySettings() {
     } finally {
       setChanging(false);
     }
-  };
-
-  const revealUnlockKey = () => {
-    setUnlockKey(getUnlockToken() || "");
-    setShowUnlockKey(true);
   };
 
   return (
@@ -122,57 +102,6 @@ export default function SecuritySettings() {
             )}
           </div>
         </form>
-      </section>
-
-      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-4">
-        <header className="space-y-1">
-          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
-            Session Unlock Key
-          </h2>
-          <p className="text-xs text-text-muted">
-            Hidden by default. This token unlocks decrypted local data for the current
-            session only.
-          </p>
-        </header>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => {
-              if (showUnlockKey) {
-                setShowUnlockKey(false);
-                return;
-              }
-              revealUnlockKey();
-            }}
-            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary"
-          >
-            {showUnlockKey ? "Hide Key" : "Reveal Key"}
-          </button>
-          <button
-            onClick={() => setUnlockKey(getUnlockToken() || "")}
-            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary"
-          >
-            Refresh
-          </button>
-          {showUnlockKey && (
-            <button
-              onClick={() => void handleCopyUnlockKey()}
-              disabled={!unlockKey}
-              className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary disabled:opacity-50"
-            >
-              {unlockCopied ? "Copied" : "Copy"}
-            </button>
-          )}
-        </div>
-
-        {showUnlockKey && (
-          <textarea
-            readOnly
-            value={unlockKey || "No active unlock key. Sign in again to create one."}
-            rows={3}
-            className="w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-xs text-text-muted outline-none resize-none"
-          />
-        )}
       </section>
     </div>
   );
