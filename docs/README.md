@@ -11,7 +11,8 @@
 | [Whitepaper](thesis/whitepaper.md)                   | The canonical thesis — what ANIMA is, why it exists, theoretical foundations, the five streams, and design principles |
 | [Roadmap](thesis/roadmap.md)                         | Project roadmap organized by phases — building depth of personal connection before breadth of features                |
 | [Succession Protocol](thesis/succession-protocol.md) | Dead man switch, ownership transfer, and AI self-succession — detailed design                                         |
-| [Portable Core](thesis/portable-core.md)             | Thesis on extracting, encapsulating, and distributing the cognitive runtime as a portable, injectable artifact        |
+| [Portable Core](thesis/portable-core.md)             | Thesis on packaging the Core — the encrypted memory and identity data — as a portable, injectable artifact            |
+| [The Inner Life](thesis/inner-life.md)               | Thesis on what happens between conversations — reflection, emotional awareness, self-model evolution, and growth      |
 
 ---
 
