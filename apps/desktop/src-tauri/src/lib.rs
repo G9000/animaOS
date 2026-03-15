@@ -16,6 +16,20 @@ use tauri::{
 
 /// Generate a random 32-byte hex nonce for sidecar authentication.
 fn generate_nonce() -> String {
+    // Read from the OS random source for cryptographic strength.
+    // Works on Linux, macOS, and other Unix-like systems.
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::io::Read;
+        if let Ok(mut f) = File::open("/dev/urandom") {
+            let mut buf = [0u8; 32];
+            if f.read_exact(&mut buf).is_ok() {
+                return buf.iter().map(|b| format!("{:02x}", b)).collect();
+            }
+        }
+    }
+    // Fallback: hash-based nonce using multiple entropy sources.
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let s = RandomState::new();
