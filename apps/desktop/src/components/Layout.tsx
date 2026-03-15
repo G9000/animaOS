@@ -8,7 +8,7 @@ const STATIC_NAV_ITEMS = [
   { to: "/tasks", label: "Tasks" },
   { to: "/chat", label: "Chat" },
   { to: "/memory", label: "Memory" },
-  { to: "/soul", label: "Soul" },
+  { to: "/soul", label: "Directive" },
   { to: "/consciousness", label: "Mind" },
   { to: "/settings", label: "Settings" },
 ];

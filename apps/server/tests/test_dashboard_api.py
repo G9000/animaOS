@@ -18,7 +18,6 @@ from anima_server.main import create_app
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
 from anima_server.services.sessions import unlock_session_store
-from anima_server.services.storage import get_user_data_dir
 from conftest import create_managed_temp_dir
 
 
@@ -103,7 +102,8 @@ def test_greeting_endpoint() -> None:
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        resp = client.get(f"/api/chat/greeting?userId={user_id}", headers=headers)
+        resp = client.get(
+            f"/api/chat/greeting?userId={user_id}", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "message" in data
@@ -122,7 +122,8 @@ def test_nudges_endpoint() -> None:
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        resp = client.get(f"/api/chat/nudges?userId={user_id}", headers=headers)
+        resp = client.get(
+            f"/api/chat/nudges?userId={user_id}", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "nudges" in data
@@ -180,7 +181,8 @@ def test_home_journal_streak() -> None:
         client.post(
             f"/api/memory/{user_id}/items",
             headers=headers,
-            json={"content": "Loves hiking in mountains", "category": "preference"},
+            json={"content": "Loves hiking in mountains",
+                  "category": "preference"},
         )
 
         resp = client.get(f"/api/chat/home?userId={user_id}", headers=headers)
@@ -208,36 +210,39 @@ def test_memory_search() -> None:
         )
 
         # Search for "designer"
-        resp = client.get(f"/api/memory/{user_id}/search?q=designer", headers=headers)
+        resp = client.get(
+            f"/api/memory/{user_id}/search?q=designer", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] == 1
         assert data["results"][0]["content"] == "Works as a designer"
 
         # Search for "dark"
-        resp = client.get(f"/api/memory/{user_id}/search?q=dark", headers=headers)
+        resp = client.get(
+            f"/api/memory/{user_id}/search?q=dark", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["count"] == 1
 
         # Search for nonexistent
-        resp = client.get(f"/api/memory/{user_id}/search?q=zzzzz", headers=headers)
+        resp = client.get(
+            f"/api/memory/{user_id}/search?q=zzzzz", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["count"] == 0
 
 
-def test_soul_get_put() -> None:
+def test_user_directive_get_put() -> None:
     with _client() as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        # Get empty soul
+        # Get empty user directive
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["content"] == ""
         assert resp.json()["source"] == "database"
 
-        # Update soul
+        # Update user directive
         resp = client.put(
             f"/api/soul/{user_id}",
             headers=headers,
@@ -250,21 +255,3 @@ def test_soul_get_put() -> None:
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.json()["content"] == "I am a helpful companion."
         assert resp.json()["source"] == "database"
-
-
-def test_soul_get_migrates_legacy_plaintext_file() -> None:
-    with _client() as client:
-        reg = _register_user(client)
-        user_id = reg["id"]
-        headers = {"x-anima-unlock": reg["unlockToken"]}
-        soul_path = get_user_data_dir(user_id) / "soul.md"
-        soul_path.parent.mkdir(parents=True, exist_ok=True)
-        soul_path.write_text("Legacy plaintext soul", encoding="utf-8")
-
-        resp = client.get(f"/api/soul/{user_id}", headers=headers)
-
-        assert resp.status_code == 200
-        assert resp.json()["content"] == "Legacy plaintext soul"
-        assert resp.json()["source"] == "migrated"
-        # File should be removed after migration
-        assert not soul_path.exists()

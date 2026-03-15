@@ -22,7 +22,9 @@ export default function Soul() {
         setContent(data.content || "");
         setOriginal(data.content || "");
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load soul"))
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : "Failed to load soul"),
+      )
       .finally(() => setLoading(false));
   }, [user]);
 
@@ -63,7 +65,7 @@ export default function Soul() {
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-(--color-border)">
         <div className="flex items-center gap-3">
           <span className="text-[11px] text-(--color-text-muted) uppercase tracking-wider">
-            Soul Definition
+            User Directive
           </span>
           {hasChanges && (
             <span className="text-[10px] text-(--color-text-muted)/60 uppercase tracking-wider">
@@ -92,7 +94,8 @@ export default function Soul() {
       {/* Description */}
       <div className="px-5 py-3 border-b border-(--color-border)/50">
         <p className="text-xs text-(--color-text-muted) leading-relaxed max-w-lg">
-          This shapes ANIMA's personality, voice, and behavior. Changes take effect on the next conversation.
+          Your instructions to ANIMA — how you want it to behave with you.
+          Changes take effect on the next conversation.
         </p>
         <p className="text-[10px] text-(--color-text-muted)/40 mt-0.5">
           Cmd+S to save

@@ -366,10 +366,31 @@ export function createApiClient(options: ApiClientOptions) {
         password: string,
         name: string,
         personaTemplate: PersonaTemplate = "default",
+        agentName: string = "Anima",
+        userDirective: string = "",
       ) =>
         request<AuthResponse>("/auth/register", {
           method: "POST",
-          body: { username, password, name, personaTemplate },
+          body: {
+            username,
+            password,
+            name,
+            personaTemplate,
+            agentName,
+            userDirective,
+          },
+        }),
+      createAiChat: (
+        messages: { role: string; content: string }[],
+        ownerName: string,
+      ) =>
+        request<{
+          message: string;
+          done: boolean;
+          soulData?: Record<string, string>;
+        }>("/auth/create-ai/chat", {
+          method: "POST",
+          body: { messages, ownerName },
         }),
       me: () => request<User>("/auth/me"),
       logout: () =>
