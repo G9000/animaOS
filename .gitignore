@@ -16,3 +16,4 @@ __pycache__/
 *.pyc
 .local-docs/
 .claude/settings.local.json
+.anima-cli-session
