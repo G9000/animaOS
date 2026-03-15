@@ -49,10 +49,7 @@ export async function runAgent(
   userMessage: string,
   userId: number,
 ): Promise<AgentResult> {
-  const { config, runnableConfig, agent } = await resolveAgentRuntime(
-    userId,
-    userMessage,
-  );
+  const { config, runnableConfig, agent } = await resolveAgentRuntime(userId);
   await saveMessage(userId, "user", userMessage);
 
   const result = await agent.invoke(

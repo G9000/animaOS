@@ -43,15 +43,11 @@ export async function sendMessage(c: Context) {
       async start(controller) {
         const encoder = new TextEncoder();
         const send = (event: string, data: unknown) => {
-          try {
-            controller.enqueue(
-              encoder.encode(
-                `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
-              ),
-            );
-          } catch {
-            // Controller closed — client disconnected
-          }
+          controller.enqueue(
+            encoder.encode(
+              `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
         };
 
         try {
@@ -66,11 +62,7 @@ export async function sendMessage(c: Context) {
         } catch (err: any) {
           send("error", { error: err.message });
         } finally {
-          try {
-            controller.close();
-          } catch {
-            // Already closed
-          }
+          controller.close();
         }
       },
     }),

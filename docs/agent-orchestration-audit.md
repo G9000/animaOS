@@ -391,51 +391,9 @@ Background tasks run after each turn via the service layer:
 
 ---
 
-## 4. Bugs Found & Fixed
+## 4. Bugs Found & Fixed (Python/FastAPI Server)
 
-### 4.1 Weak Agent Cache Key (TypeScript)
-
-**File:** `apps/api/src/agent/cache.ts`
-**Severity:** Medium
-**Impact:** Two different system prompts with the same character length would produce identical cache keys, causing the wrong cached agent to be served.
-
-**Root cause:** The cache key used `fullSystemPrompt.length` instead of a hash of the prompt content.
-
-**Fix:** Replaced length-based key with a fast DJB-style hash of the prompt content.
-
-### 4.2 Missing `conversationHint` in Non-Streaming Path (TypeScript)
-
-**File:** `apps/api/src/agent/graph.ts`
-**Severity:** Medium
-**Impact:** Non-streaming `runAgent()` called `resolveAgentRuntime(userId)` without passing the user message as `conversationHint`, while `streamAgent()` did pass it. This meant non-streaming requests missed conversation-aware semantic retrieval from memory, resulting in less relevant context.
-
-**Fix:** Added `userMessage` as `conversationHint` parameter to `resolveAgentRuntime` in `runAgent`.
-
-### 4.3 Unhandled Promise from Fire-and-Forget Memory Extraction (TypeScript)
-
-**File:** `apps/api/src/agent/messages.ts`
-**Severity:** Low
-**Impact:** `extractMemories()` was called without `.catch()`. Although the function has internal try-catch, if it throws synchronously before the first await (e.g., bad model constructor), the unhandled promise rejection could crash the process.
-
-**Fix:** Added `.catch()` handler to log errors gracefully.
-
-### 4.4 SSE Stream Doesn't Handle Client Disconnection (TypeScript)
-
-**File:** `apps/api/src/routes/chat/handlers.ts`
-**Severity:** Medium
-**Impact:** The `ReadableStream` SSE handler didn't wrap `controller.enqueue()` or `controller.close()` in try-catch. When a client disconnects mid-stream, these calls throw, and the error could propagate unexpectedly.
-
-**Fix:** Wrapped both `controller.enqueue()` and `controller.close()` in try-catch blocks to gracefully handle disconnected clients.
-
-### 4.5 Checkpoint `list()` Fetches All Rows Before Filtering (TypeScript)
-
-**File:** `apps/api/src/agent/checkpointer.ts`
-**Severity:** Medium
-**Impact:** The `list()` method loaded every checkpoint row into memory, then filtered in JavaScript. With many users/threads, this could cause significant memory pressure and latency.
-
-**Fix:** Pushed `threadId`, `checkpointNs`, and `checkpointId` filters into the SQL WHERE clause, so the database handles filtering before results are loaded into memory.
-
-### 4.6 Unbounded Per-User Lock Cache (Python)
+### 4.1 Unbounded Per-User Lock Cache
 
 **File:** `apps/server/src/anima_server/services/agent/turn_coordinator.py`
 **Severity:** Low
@@ -443,7 +401,7 @@ Background tasks run after each turn via the service layer:
 
 **Fix:** Replaced with an `OrderedDict` with LRU eviction at 256 entries. Eviction skips locks that are currently held to avoid breaking in-progress turns.
 
-### 4.7 Sensitive Error Leakage in SSE Stream (Python)
+### 4.2 Sensitive Error Leakage in SSE Stream
 
 **File:** `apps/server/src/anima_server/api/routes/chat.py`
 **Severity:** High
@@ -455,7 +413,51 @@ Background tasks run after each turn via the service layer:
 
 ## 5. Remaining Known Issues & Recommendations
 
-### 5.1 Unbounded In-Memory Caches (TypeScript)
+### TypeScript Legacy API (`apps/api`) — Observed Issues
+
+> These issues were identified during the audit but are **not fixed** in this PR since the legacy API is not the primary target.
+
+#### 5.1 Weak Agent Cache Key
+
+**File:** `apps/api/src/agent/cache.ts` · **Severity:** Medium
+
+The cache key uses `fullSystemPrompt.length` instead of a content hash. Two different prompts of equal length produce the same cache key, returning the wrong cached agent.
+
+**Recommendation:** Replace `fullSystemPrompt.length` with a fast hash of the content (e.g., DJB2).
+
+#### 5.2 Missing `conversationHint` in Non-Streaming Path
+
+**File:** `apps/api/src/agent/graph.ts` · **Severity:** Medium
+
+`runAgent()` calls `resolveAgentRuntime(userId)` without a `conversationHint`, while `streamAgent()` passes the user message. Non-streaming requests miss semantic memory retrieval.
+
+**Recommendation:** Pass `userMessage` as `conversationHint` in `runAgent`.
+
+#### 5.3 Unhandled Promise from Fire-and-Forget Memory Extraction
+
+**File:** `apps/api/src/agent/messages.ts` · **Severity:** Low
+
+`extractMemories()` is called without `.catch()`. If it throws synchronously, the unhandled rejection could crash the process.
+
+**Recommendation:** Add `.catch()` to the fire-and-forget call.
+
+#### 5.4 SSE Stream Doesn't Handle Client Disconnection
+
+**File:** `apps/api/src/routes/chat/handlers.ts` · **Severity:** Medium
+
+The `ReadableStream` SSE handler doesn't wrap `controller.enqueue()` or `controller.close()` in try-catch. Client disconnect causes uncaught exceptions.
+
+**Recommendation:** Wrap stream controller operations in try-catch.
+
+#### 5.5 Checkpoint `list()` Full Table Scan
+
+**File:** `apps/api/src/agent/checkpointer.ts` · **Severity:** Medium
+
+`list()` loads all checkpoint rows into memory, then filters in JS. This could cause significant memory pressure with many users/threads.
+
+**Recommendation:** Push `threadId`, `checkpointNs`, `checkpointId` filters into the SQL WHERE clause.
+
+#### 5.6 Unbounded In-Memory Caches
 
 **Files:** `cache.ts`, `prompt.ts`, `brief.ts`
 **Risk:** Low (single-user desktop app), Medium (if deployed as multi-user service)
@@ -476,7 +478,9 @@ The following caches grow without bound:
 
 **Recommendation:** Consider using message IDs or timestamps instead of content matching for more reliable turn boundary detection.
 
-### 5.3 Background DB Session Lifecycle (Python)
+### General / Cross-Backend Issues
+
+#### 5.7 Background DB Session Lifecycle (Python)
 
 **File:** `apps/server/src/anima_server/services/agent/service.py`
 **Risk:** Low
@@ -485,7 +489,7 @@ The following caches grow without bound:
 
 **Recommendation:** Ensure all background tasks use context managers (`with db_factory() as session:`) for guaranteed cleanup.
 
-### 5.4 No Request Timeout for Non-Streaming Chat (TypeScript)
+#### 5.8 No Request Timeout for Non-Streaming Chat (TypeScript)
 
 **File:** `apps/api/src/routes/chat/handlers.ts`
 **Risk:** Medium
@@ -494,7 +498,7 @@ The non-streaming `handleChannelMessage()` call has no timeout. If the LLM provi
 
 **Recommendation:** Add a timeout wrapper (e.g., `Promise.race` with `setTimeout`) around the non-streaming agent invocation.
 
-### 5.5 Thread-Per-User Assumption
+#### 5.9 Thread-Per-User Assumption
 
 **Both backends**
 **Risk:** Low
@@ -506,7 +510,7 @@ Both backends assume one thread per user. This simplifies the architecture but m
 
 **Recommendation:** This is fine for the current single-user desktop app. If multi-conversation support is needed, the thread model would need to support multiple threads per user.
 
-### 5.6 Memory Extraction Quality Control (TypeScript)
+#### 5.10 Memory Extraction Quality Control (TypeScript)
 
 **File:** `apps/api/src/agent/extract.ts`
 **Risk:** Low
