@@ -50,7 +50,7 @@ export default function AiSettings() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
 
     let cancelled = false;
     setError("");
@@ -75,7 +75,7 @@ export default function AiSettings() {
     };
   }, [user?.id]);
 
-  if (!user?.id) {
+  if (user?.id == null) {
     return null;
   }
 
@@ -99,7 +99,7 @@ export default function AiSettings() {
   };
 
   const handleSave = async () => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
 
     setSaving(true);
     setSaved(false);

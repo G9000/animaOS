@@ -89,7 +89,7 @@ export default function Tasks() {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     setLoading(true);
     api.tasks
       .list(user.id)
@@ -104,7 +104,7 @@ export default function Tasks() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newText.trim() || !user?.id) return;
+    if (!newText.trim() || user?.id == null) return;
     const created = await api.tasks.create(
       user.id,
       newText.trim(),

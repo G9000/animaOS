@@ -43,7 +43,7 @@ export default function Consciousness() {
   const [actionMessage, setActionMessage] = useState("");
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     setLoading(true);
     setError("");
 
@@ -75,7 +75,7 @@ export default function Consciousness() {
   };
 
   const handleSave = async () => {
-    if (!user?.id || !editing) return;
+    if (user?.id == null || !editing) return;
     setSaving(true);
     setError("");
     try {
@@ -108,7 +108,7 @@ export default function Consciousness() {
   };
 
   const reload = useCallback(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     Promise.all([
       api.consciousness.getSelfModel(user.id),
       api.consciousness.getEmotions(user.id),
@@ -119,7 +119,7 @@ export default function Consciousness() {
   }, [user?.id]);
 
   const handleReflect = async () => {
-    if (!user?.id || reflecting) return;
+    if (user?.id == null || reflecting) return;
     setReflecting(true);
     setActionMessage("");
     try {
@@ -140,7 +140,7 @@ export default function Consciousness() {
   };
 
   const handleSleep = async () => {
-    if (!user?.id || sleeping) return;
+    if (user?.id == null || sleeping) return;
     setSleeping(true);
     setActionMessage("");
     try {

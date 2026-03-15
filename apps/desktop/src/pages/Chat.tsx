@@ -56,7 +56,7 @@ export default function Chat() {
 
   // Load history on mount, then auto-send pending message from dashboard
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     api.chat
       .history(user.id)
       .then((hist) => {
@@ -74,7 +74,7 @@ export default function Chat() {
 
   // Poll for new messages (e.g. from task reminders) every 30s
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     const interval = setInterval(async () => {
       if (streaming) return;
       try {
@@ -147,7 +147,7 @@ export default function Chat() {
   }, []);
 
   const sendMessage = async (text: string) => {
-    if (!text.trim() || !user?.id || streaming) return;
+    if (!text.trim() || user?.id == null || streaming) return;
 
     const userMsg = text.trim();
     setInput("");
@@ -213,7 +213,7 @@ export default function Chat() {
   };
 
   const clearHistory = async () => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     await api.chat.clearHistory(user.id);
     setMessages([]);
     setStreamBuffer("");

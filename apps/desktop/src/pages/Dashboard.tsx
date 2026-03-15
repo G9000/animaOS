@@ -22,7 +22,7 @@ export default function Dashboard() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     let active = true;
 
     setBriefLoading(true);
@@ -74,7 +74,7 @@ export default function Dashboard() {
 
   const handleAddTask = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newTask.trim() || !user?.id) return;
+    if (!newTask.trim() || user?.id == null) return;
     // Send the full input as both text and dueDateRaw — server extracts the date.
     const created = await api.tasks.create(
       user.id,

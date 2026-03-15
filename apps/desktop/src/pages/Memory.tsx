@@ -37,17 +37,17 @@ export default function Memory() {
   const [searching, setSearching] = useState(false);
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     api.memory.overview(user.id).then(setOverview).catch(console.error);
   }, [user?.id]);
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     loadTab();
   }, [user?.id, tab]);
 
   const loadTab = async () => {
-    if (!user?.id) return;
+    if (user?.id == null) return;
     setLoading(true);
     try {
       if (tab === "episodes") {
@@ -65,7 +65,7 @@ export default function Memory() {
   };
 
   const handleCreate = async () => {
-    if (!user?.id || !newContent.trim()) return;
+    if (user?.id == null || !newContent.trim()) return;
     const category =
       tab === "facts" ? "fact" :
       tab === "preferences" ? "preference" :
@@ -97,7 +97,7 @@ export default function Memory() {
   };
 
   const saveEdit = async (item: MemoryItemData) => {
-    if (!user?.id || !editContent.trim()) return;
+    if (user?.id == null || !editContent.trim()) return;
     try {
       await api.memory.updateItem(user.id, item.id, {
         content: editContent.trim(),
@@ -110,7 +110,7 @@ export default function Memory() {
   };
 
   const deleteItem = async (itemId: number) => {
-    if (!user?.id || !confirm("Delete this memory?")) return;
+    if (user?.id == null || !confirm("Delete this memory?")) return;
     try {
       await api.memory.deleteItem(user.id, itemId);
       loadTab();
@@ -121,7 +121,7 @@ export default function Memory() {
   };
 
   const handleSearch = async () => {
-    if (!user?.id || !searchQuery.trim()) return;
+    if (user?.id == null || !searchQuery.trim()) return;
     setSearching(true);
     try {
       const res = await api.memory.search(user.id, searchQuery.trim());
