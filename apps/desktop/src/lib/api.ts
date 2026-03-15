@@ -30,27 +30,33 @@ import { API_BASE } from "./runtime";
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
 let unlockTokenCache: string | null = null;
 
-function purgeLegacyUnlockToken(): void {
+export function getUnlockToken(): string | null {
+  if (unlockTokenCache) return unlockTokenCache;
   try {
-    localStorage.removeItem(UNLOCK_TOKEN_KEY);
+    const stored = localStorage.getItem(UNLOCK_TOKEN_KEY);
+    if (stored) unlockTokenCache = stored;
+    return unlockTokenCache;
+  } catch {
+    return null;
+  }
+}
+
+export function setUnlockToken(token: string): void {
+  unlockTokenCache = token;
+  try {
+    localStorage.setItem(UNLOCK_TOKEN_KEY, token);
   } catch {
     // Ignore storage failures.
   }
 }
 
-export function getUnlockToken(): string | null {
-  purgeLegacyUnlockToken();
-  return unlockTokenCache;
-}
-
-export function setUnlockToken(token: string): void {
-  unlockTokenCache = token;
-  purgeLegacyUnlockToken();
-}
-
 export function clearUnlockToken(): void {
   unlockTokenCache = null;
-  purgeLegacyUnlockToken();
+  try {
+    localStorage.removeItem(UNLOCK_TOKEN_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
 }
 
 const baseApi = createApiClient({
