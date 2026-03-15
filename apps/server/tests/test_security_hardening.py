@@ -53,6 +53,34 @@ def test_is_sqlite_mode_false_for_postgres_url() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# require_sqlite_mode dependency
+# --------------------------------------------------------------------------- #
+
+
+def test_require_sqlite_mode_raises_in_shared_mode() -> None:
+    """The dependency must raise HTTPException(403) when not in SQLite mode."""
+    from fastapi import HTTPException
+
+    from anima_server.api.deps.db_mode import require_sqlite_mode
+
+    with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
+        try:
+            require_sqlite_mode()
+            raise AssertionError("Expected HTTPException")  # noqa: TRY301
+        except HTTPException as exc:
+            assert exc.status_code == 403
+            assert "shared-database" in str(exc.detail).lower()
+
+
+def test_require_sqlite_mode_passes_in_sqlite_mode() -> None:
+    """The dependency must not raise when in SQLite mode."""
+    from anima_server.api.deps.db_mode import require_sqlite_mode
+
+    with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=True):
+        require_sqlite_mode()  # should not raise
+
+
+# --------------------------------------------------------------------------- #
 # get_user_database_url – fail-closed for non-SQLite
 # --------------------------------------------------------------------------- #
 
