@@ -14,41 +14,30 @@ use tauri::{
     Manager, State,
 };
 
-/// Generate a random 32-byte hex nonce for sidecar authentication.
+/// Generate a cryptographically secure 32-byte hex nonce using the OS CSPRNG.
 fn generate_nonce() -> String {
-    // Read from the OS random source for cryptographic strength.
-    // Works on Linux, macOS, and other Unix-like systems.
-    #[cfg(unix)]
-    {
-        use std::fs::File;
-        use std::io::Read;
-        if let Ok(mut f) = File::open("/dev/urandom") {
-            let mut buf = [0u8; 32];
-            if f.read_exact(&mut buf).is_ok() {
-                return buf.iter().map(|b| format!("{:02x}", b)).collect();
-            }
-        }
-    }
-    // Fallback: hash-based nonce using multiple entropy sources.
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let s = RandomState::new();
-    let mut h = s.build_hasher();
-    h.write_u128(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos());
-    let a = h.finish();
-    let mut h2 = s.build_hasher();
-    h2.write_u64(a);
-    h2.write_usize(std::process::id() as usize);
-    let b = h2.finish();
-    format!("{:016x}{:016x}", a, b)
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).expect("OS random source unavailable");
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+/// Tauri IPC command that returns the sidecar nonce to the frontend.
+///
+/// The nonce is delivered via this trusted channel rather than over HTTP
+/// so that other local processes cannot obtain it.
+#[tauri::command]
+fn get_sidecar_nonce(state: State<'_, SidecarNonceState>) -> String {
+    state.nonce.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Holds the nonce generated at boot time.
+struct SidecarNonceState {
+    nonce: Mutex<String>,
 }
 
 #[derive(Default)]
@@ -73,7 +62,7 @@ fn ensure_customer_data_layout(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn api_healthcheck(expected_nonce: &str) -> bool {
+fn api_healthcheck() -> bool {
     let addr: SocketAddr = "127.0.0.1:3031".parse().expect("valid API socket address");
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
         Ok(stream) => stream,
@@ -93,21 +82,26 @@ fn api_healthcheck(expected_nonce: &str) -> bool {
         return false;
     }
 
-    // Verify the response contains the expected nonce to confirm this is our
-    // sidecar, not a rogue process on the same port.
-    if !expected_nonce.is_empty() {
-        if !response.contains(expected_nonce) {
-            return false;
-        }
-    }
+    // Parse the HTTP response: find the JSON body after the blank line.
+    let body = match response.split_once("\r\n\r\n") {
+        Some((_, body)) => body.trim(),
+        None => return false,
+    };
 
-    response.contains("\"healthy\"") || response.contains("\"ok\"")
+    // Parse the JSON body and verify the "status" field.
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(json) => {
+            let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            status == "ok" || status == "healthy"
+        }
+        Err(_) => false,
+    }
 }
 
-fn wait_for_api_ready(timeout: Duration, expected_nonce: &str) -> Result<(), String> {
+fn wait_for_api_ready(timeout: Duration) -> Result<(), String> {
     let started_at = Instant::now();
     while started_at.elapsed() < timeout {
-        if api_healthcheck(expected_nonce) {
+        if api_healthcheck() {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -176,6 +170,9 @@ fn stop_api_sidecar(state: &ApiProcessState) {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(ApiProcessState::default())
+        .manage(SidecarNonceState {
+            nonce: Mutex::new(String::new()),
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
@@ -184,18 +181,22 @@ pub fn run() {
                 let mut child = start_api_sidecar(&app.handle(), &nonce)
                     .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
-                if let Err(err) = wait_for_api_ready(Duration::from_secs(10), &nonce) {
+                if let Err(err) = wait_for_api_ready(Duration::from_secs(10)) {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(err.into());
                 }
 
-                let state: State<ApiProcessState> = app.state();
-                let mut guard = state
+                let api_state: State<ApiProcessState> = app.state();
+                let mut guard = api_state
                     .child
                     .lock()
                     .map_err(|_| "failed to lock API process state".to_string())?;
                 *guard = Some(child);
+
+                // Store the nonce so the frontend can retrieve it via IPC.
+                let nonce_state: State<SidecarNonceState> = app.state();
+                *nonce_state.nonce.lock().unwrap_or_else(|e| e.into_inner()) = nonce;
             }
 
             // System tray
@@ -232,7 +233,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, get_sidecar_nonce])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

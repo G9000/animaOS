@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.db import get_db
-from anima_server.db.session import is_sqlite_mode
 from anima_server.schemas.vault import (
     VaultExportRequest,
     VaultExportResponse,
@@ -32,13 +32,9 @@ def export_encrypted_vault(
 def import_encrypted_vault(
     payload: VaultImportRequest,
     request: Request,
+    _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    if not is_sqlite_mode():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Vault import is disabled in shared-database mode to protect tenant isolation.",
-        )
     session = require_unlocked_session(request)
     try:
         result = import_vault(db, payload.vault, payload.passphrase, user_id=session.user_id)

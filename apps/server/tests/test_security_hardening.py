@@ -7,7 +7,7 @@ Covers:
 - ``/api/vault/import`` is blocked in shared-database mode
 - ``PUT /api/config/{user_id}`` is blocked in shared-database mode
 - Sidecar nonce middleware enforcement
-- Health endpoint exposes nonce when configured
+- Health endpoint does not expose nonce
 """
 from __future__ import annotations
 
@@ -58,15 +58,18 @@ def test_is_sqlite_mode_false_for_postgres_url() -> None:
 
 
 def test_get_user_database_url_raises_for_postgres() -> None:
-    """Per-user routing must raise instead of silently falling back."""
+    """Per-user routing must raise HTTPException instead of silently falling back."""
+    from fastapi import HTTPException
+
     from anima_server.db.session import get_user_database_url
 
     with patch.object(settings, "database_url", "postgresql://localhost/anima"):
         try:
             get_user_database_url(1)
-            raise AssertionError("Expected RuntimeError")  # noqa: TRY301
-        except RuntimeError as exc:
-            assert "tenant isolation" in str(exc).lower()
+            raise AssertionError("Expected HTTPException")  # noqa: TRY301
+        except HTTPException as exc:
+            assert exc.status_code == 403
+            assert "tenant isolation" in str(exc.detail).lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -80,7 +83,7 @@ def test_db_tables_blocked_in_shared_mode() -> None:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.routes.db.is_sqlite_mode", return_value=False):
+        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
             resp = client.get("/api/db/tables", headers=headers)
             assert resp.status_code == 403
             assert "shared-database" in resp.json()["error"].lower()
@@ -91,7 +94,7 @@ def test_db_query_blocked_in_shared_mode() -> None:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.routes.db.is_sqlite_mode", return_value=False):
+        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
             resp = client.post(
                 "/api/db/query",
                 headers=headers,
@@ -105,7 +108,7 @@ def test_db_delete_blocked_in_shared_mode() -> None:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.routes.db.is_sqlite_mode", return_value=False):
+        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
             resp = client.request(
                 "DELETE",
                 "/api/db/tables/users/rows",
@@ -120,7 +123,7 @@ def test_db_update_blocked_in_shared_mode() -> None:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.routes.db.is_sqlite_mode", return_value=False):
+        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
             resp = client.put(
                 "/api/db/tables/users/rows",
                 headers=headers,
@@ -153,14 +156,14 @@ def test_vault_import_blocked_in_shared_mode() -> None:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.routes.vault.is_sqlite_mode", return_value=False):
+        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
             resp = client.post(
                 "/api/vault/import",
                 headers=headers,
                 json={"passphrase": "testpassphrase", "vault": "{\"version\":2}"},
             )
             assert resp.status_code == 403
-            assert "tenant isolation" in resp.json()["error"].lower()
+            assert "shared-database" in resp.json()["error"].lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -174,7 +177,7 @@ def test_config_update_blocked_in_shared_mode() -> None:
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.routes.config.is_sqlite_mode", return_value=False):
+        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
             resp = client.put(
                 f"/api/config/{user_id}",
                 headers=headers,
@@ -200,12 +203,80 @@ def test_config_update_allowed_in_sqlite_mode() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Sidecar nonce middleware
+# Sidecar nonce middleware enforcement
 # --------------------------------------------------------------------------- #
 
 
-def test_health_endpoint_returns_nonce_when_configured() -> None:
-    """Health endpoint should include the nonce if ANIMA_SIDECAR_NONCE is set."""
+def test_nonce_middleware_rejects_missing_header() -> None:
+    """When sidecar_nonce is set, a non-exempt endpoint must return 403 without the header."""
+    original = settings.sidecar_nonce
+    try:
+        settings.sidecar_nonce = "test-nonce-enforce"
+        from anima_server.main import create_app
+
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.get("/api/config/providers")
+            assert resp.status_code == 403
+            assert "nonce" in resp.json()["error"].lower()
+    finally:
+        settings.sidecar_nonce = original
+
+
+def test_nonce_middleware_accepts_correct_header() -> None:
+    """When the correct x-anima-nonce is provided, the request should pass through."""
+    original = settings.sidecar_nonce
+    try:
+        settings.sidecar_nonce = "test-nonce-enforce"
+        from anima_server.main import create_app
+
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.get(
+                "/api/config/providers",
+                headers={"x-anima-nonce": "test-nonce-enforce"},
+            )
+            assert resp.status_code == 200
+    finally:
+        settings.sidecar_nonce = original
+
+
+def test_nonce_middleware_rejects_wrong_header() -> None:
+    """When a wrong x-anima-nonce is provided, the request must be rejected."""
+    original = settings.sidecar_nonce
+    try:
+        settings.sidecar_nonce = "test-nonce-enforce"
+        from anima_server.main import create_app
+
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.get(
+                "/api/config/providers",
+                headers={"x-anima-nonce": "wrong-nonce"},
+            )
+            assert resp.status_code == 403
+    finally:
+        settings.sidecar_nonce = original
+
+
+def test_health_exempt_from_nonce() -> None:
+    """Health endpoints must be accessible without the nonce header."""
+    original = settings.sidecar_nonce
+    try:
+        settings.sidecar_nonce = "test-nonce-enforce"
+        from anima_server.main import create_app
+
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.get("/health")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "ok"
+    finally:
+        settings.sidecar_nonce = original
+
+
+def test_health_endpoint_does_not_expose_nonce() -> None:
+    """Health endpoint must NOT include the nonce — it is only delivered via Tauri IPC."""
     original = settings.sidecar_nonce
     try:
         settings.sidecar_nonce = "test-nonce-abc123"
@@ -216,7 +287,7 @@ def test_health_endpoint_returns_nonce_when_configured() -> None:
             resp = client.get("/health")
             assert resp.status_code == 200
             data = resp.json()
-            assert data["nonce"] == "test-nonce-abc123"
+            assert "nonce" not in data
     finally:
         settings.sidecar_nonce = original
 

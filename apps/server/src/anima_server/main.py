@@ -29,8 +29,7 @@ CORS_ORIGINS = [
     "tauri://localhost",
 ]
 
-# Paths exempt from sidecar-nonce validation (health check itself must be
-# reachable so the desktop can discover the nonce).
+# Paths exempt from sidecar-nonce validation.
 _NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health"})
 
 
@@ -41,6 +40,10 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     endpoints) must include the header ``x-anima-nonce`` with the matching
     value.  This binds the desktop client to the exact sidecar process it
     launched, preventing rogue localhost processes from being trusted.
+
+    The nonce is **not** exposed over HTTP — it is delivered to the
+    desktop frontend via a trusted Tauri IPC command so that other
+    local processes cannot obtain it.
     """
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
@@ -61,8 +64,9 @@ def create_app() -> FastAPI:
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name)
 
-    # Sidecar nonce enforcement — must be added before CORS so the
-    # nonce check runs on every incoming request.
+    # Sidecar nonce enforcement — added before CORSMiddleware so that
+    # Starlette's reverse-add ordering makes CORS the outermost layer,
+    # allowing OPTIONS preflights to succeed before the nonce check runs.
     if settings.sidecar_nonce:
         app.add_middleware(SidecarNonceMiddleware)
 
@@ -111,14 +115,11 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["system"])
     @app.get("/api/health", tags=["system"])
     async def health() -> dict[str, str]:
-        resp: dict[str, str] = {
+        return {
             "status": "ok",
             "service": "server",
             "environment": settings.app_env,
         }
-        if settings.sidecar_nonce:
-            resp["nonce"] = settings.sidecar_nonce
-        return resp
 
     app.include_router(auth_router)
     app.include_router(chat_router)

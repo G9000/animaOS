@@ -142,10 +142,11 @@ def is_sqlite_mode() -> bool:
 
 def get_user_database_url(user_id: int) -> str:
     if not is_sqlite_mode():
-        raise RuntimeError(
-            "Per-user database routing requires SQLite mode.  "
-            "Shared-database (e.g. PostgreSQL) deployments must not silently "
-            "fall back to the shared URL — that would break tenant isolation."
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Per-user database routing requires SQLite mode. "
+            "Shared-database deployments must not silently fall back to "
+            "the shared URL — that would break tenant isolation.",
         )
 
     path = get_user_database_path(user_id).resolve()
