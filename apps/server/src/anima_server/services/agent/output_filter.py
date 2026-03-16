@@ -19,17 +19,26 @@ _OPEN_MARKERS = tuple(f"<{name}" for name in _TAG_NAMES)
 _CLOSE_MARKERS = tuple(f"</{name}>" for name in _TAG_NAMES)
 
 
-def strip_reasoning_traces(text: str) -> str:
+def strip_reasoning_traces(text: str) -> tuple[str, str | None]:
+    """Strip reasoning tags and return ``(visible_text, reasoning_text)``."""
     if not text:
+        return "", None
+
+    reasoning_parts: list[str] = []
+
+    def _capture(m: re.Match[str]) -> str:
+        reasoning_parts.append(m.group(0))
         return ""
 
     sanitized = text
     previous = None
     while sanitized != previous:
         previous = sanitized
-        sanitized = _BLOCK_RE.sub("", sanitized)
+        sanitized = _BLOCK_RE.sub(_capture, sanitized)
 
-    return sanitized.strip()
+    visible = sanitized.strip()
+    reasoning = "".join(reasoning_parts).strip() or None
+    return visible, reasoning
 
 
 class ReasoningTraceFilter:
@@ -37,6 +46,13 @@ class ReasoningTraceFilter:
         self._buffer = ""
         self._inside_reasoning = False
         self._emitted_visible_text = False
+        self._reasoning_parts: list[str] = []
+
+    @property
+    def captured_reasoning(self) -> str | None:
+        """Return accumulated reasoning content, or ``None`` if empty."""
+        text = "".join(self._reasoning_parts).strip()
+        return text or None
 
     def feed(self, text: str) -> str:
         if not text:
@@ -55,6 +71,8 @@ class ReasoningTraceFilter:
                 close_match = _CLOSE_RE.search(self._buffer)
                 if close_match is None:
                     if final:
+                        # Unclosed reasoning block — capture what we have.
+                        self._reasoning_parts.append(self._buffer)
                         self._buffer = ""
                     else:
                         self._buffer = _longest_partial_suffix(
@@ -63,14 +81,18 @@ class ReasoningTraceFilter:
                         )
                     break
 
-                self._buffer = self._buffer[close_match.end() :]
+                # Capture the reasoning content before the close tag.
+                self._reasoning_parts.append(
+                    self._buffer[: close_match.start()])
+                self._buffer = self._buffer[close_match.end():]
                 self._inside_reasoning = False
                 continue
 
             open_match = _OPEN_RE.search(self._buffer)
             if open_match is not None:
-                visible_parts.append(self._consume_visible(self._buffer[: open_match.start()]))
-                self._buffer = self._buffer[open_match.end() :]
+                visible_parts.append(self._consume_visible(
+                    self._buffer[: open_match.start()]))
+                self._buffer = self._buffer[open_match.end():]
                 self._inside_reasoning = True
                 continue
 

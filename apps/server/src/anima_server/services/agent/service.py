@@ -31,6 +31,7 @@ from anima_server.services.agent.persistence import (
     reset_thread,
 )
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
+from anima_server.services.agent.runtime_types import StepFailedError, StepProgression
 from anima_server.services.agent.sequencing import (
     count_persisted_result_messages,
     reserve_message_sequences,
@@ -274,6 +275,9 @@ async def _invoke_turn_runtime(
             memory_blocks=turn_ctx.memory_blocks,
             event_callback=event_callback,
         )
+    except StepFailedError as exc:
+        _handle_step_failure(db, run=run, user_msg=user_msg, err=exc)
+        raise exc.cause from exc
     except Exception as exc:
         # Remove orphaned user message from active context so it doesn't
         # replay as valid history on the next turn.
@@ -284,6 +288,36 @@ async def _invoke_turn_runtime(
         raise
     finally:
         clear_tool_context()
+
+
+def _handle_step_failure(
+    db: Session,
+    *,
+    run: AgentRun,
+    user_msg: AgentMessage,
+    err: StepFailedError,
+) -> None:
+    """Progression-aware cleanup after a step failure.
+
+    Early stages (before the LLM responded) only need to remove the
+    orphaned user message.  Later stages mean an assistant message may
+    already be buffered in the runtime, so the run is marked failed
+    with extra detail.
+    """
+    stage = err.progression
+
+    if stage <= StepProgression.LLM_REQUESTED:
+        # LLM never responded — only the user message is orphaned.
+        user_msg.is_in_context = False
+        db.add(user_msg)
+    else:
+        # A partial response or tool execution was in progress.
+        user_msg.is_in_context = False
+        db.add(user_msg)
+
+    detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
+    mark_run_failed(db, run, detail)
+    db.commit()
 
 
 def _persist_turn_result(

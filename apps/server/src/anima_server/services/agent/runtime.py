@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from typing import Any
@@ -21,7 +22,11 @@ from anima_server.services.agent.rules import ToolRule, ToolRulesSolver
 from anima_server.services.agent.runtime_types import (
     LLMRequest,
     MessageSnapshot,
+    StepContext,
     StepExecutionResult,
+    StepFailedError,
+    StepProgression,
+    StepTiming,
     StepTrace,
     StopReason,
     ToolCall,
@@ -31,6 +36,8 @@ from anima_server.services.agent.state import AgentResult, StoredMessage
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
     build_chunk_event,
+    build_reasoning_event,
+    build_timing_event,
     build_tool_call_event,
     build_tool_return_event,
 )
@@ -152,7 +159,7 @@ class AgentRuntime:
                 rules_solver.should_force_tool_call()
                 or "send_message" in allowed_tool_names
             )
-            step_result, streamed_assistant_text = await self._run_step(
+            step_result, streamed_assistant_text, step_ctx = await self._run_step(
                 messages=messages,
                 user_id=user_id,
                 conversation_turn_count=conversation_turn_count,
@@ -179,18 +186,18 @@ class AgentRuntime:
                     if synthetic_tool_call.name not in tools_used:
                         tools_used.append(synthetic_tool_call.name)
                     response = synthetic_tool_result.output or response
+                    step_ctx.progression = StepProgression.TOOLS_COMPLETED
                     step_traces.append(
-                        StepTrace(
-                            step_index=step_index,
-                            request_messages=request_messages,
-                            allowed_tools=allowed_tool_names,
-                            force_tool_call=force_tool_call,
-                            assistant_text=step_result.assistant_text,
+                        _build_step_trace(
+                            step_ctx, step_result, request_messages,
+                            allowed_tool_names, force_tool_call,
                             tool_calls=(synthetic_tool_call,),
                             tool_results=(synthetic_tool_result,),
-                            usage=step_result.usage,
                         )
                     )
+                    if event_callback is not None:
+                        await event_callback(
+                            build_timing_event(step_index, _compute_timing(step_ctx)))
                     stop_reason = StopReason.TERMINAL_TOOL
                     break
 
@@ -202,16 +209,14 @@ class AgentRuntime:
                 ):
                     await event_callback(build_chunk_event(step_result.assistant_text))
                 step_traces.append(
-                    StepTrace(
-                        step_index=step_index,
-                        request_messages=request_messages,
-                        allowed_tools=allowed_tool_names,
-                        force_tool_call=force_tool_call,
-                        assistant_text=step_result.assistant_text,
-                        tool_calls=step_result.tool_calls,
-                        usage=step_result.usage,
+                    _build_step_trace(
+                        step_ctx, step_result, request_messages,
+                        allowed_tool_names, force_tool_call,
                     )
                 )
+                if event_callback is not None:
+                    await event_callback(
+                        build_timing_event(step_index, _compute_timing(step_ctx)))
                 stop_reason = StopReason.END_TURN
                 break
 
@@ -219,7 +224,7 @@ class AgentRuntime:
                 for tool_call in step_result.tool_calls:
                     await event_callback(build_tool_call_event(step_index, tool_call))
 
-            for tool_call in step_result.tool_calls:
+            for tc_index, tool_call in enumerate(step_result.tool_calls):
                 violation = rules_solver.validate_tool_call(
                     tool_call.name,
                     self._tool_names,
@@ -269,6 +274,8 @@ class AgentRuntime:
                     awaiting_approval = True
                     break
 
+                if tc_index == 0:
+                    step_ctx.progression = StepProgression.TOOLS_STARTED
                 tool_result = await self._tool_executor.execute(
                     tool_call,
                     is_terminal=rules_solver.is_terminal(tool_call.name),
@@ -292,18 +299,18 @@ class AgentRuntime:
                     terminal_tool_hit = True
                     break
 
+            if tool_results:
+                step_ctx.progression = StepProgression.TOOLS_COMPLETED
             step_traces.append(
-                StepTrace(
-                    step_index=step_index,
-                    request_messages=request_messages,
-                    allowed_tools=allowed_tool_names,
-                    force_tool_call=force_tool_call,
-                    assistant_text=step_result.assistant_text,
-                    tool_calls=step_result.tool_calls,
+                _build_step_trace(
+                    step_ctx, step_result, request_messages,
+                    allowed_tool_names, force_tool_call,
                     tool_results=tuple(tool_results),
-                    usage=step_result.usage,
                 )
             )
+            if event_callback is not None:
+                await event_callback(
+                    build_timing_event(step_index, _compute_timing(step_ctx)))
 
             if rule_violation_hit:
                 continue
@@ -339,7 +346,12 @@ class AgentRuntime:
         allowed_tool_names: Sequence[str],
         force_tool_call: bool,
         event_callback: StreamEventCallback | None = None,
-    ) -> tuple[StepExecutionResult, bool]:
+    ) -> tuple[StepExecutionResult, bool, StepContext]:
+        ctx = StepContext(
+            step_index=step_index,
+            progression=StepProgression.START,
+            start_time=time.monotonic(),
+        )
         request = LLMRequest(
             messages=tuple(messages),
             user_id=user_id,
@@ -356,36 +368,57 @@ class AgentRuntime:
         )
         streamed_assistant_text = False
 
-        timeout = settings.agent_llm_timeout
-        if event_callback is None:
-            step_result = await asyncio.wait_for(
-                self._adapter.invoke(request), timeout=timeout,
-            )
-        else:
-            step_result = None
-            try:
-                async for stream_event in self._adapter.stream(request):
-                    if stream_event.content_delta:
-                        streamed_assistant_text = True
-                        await event_callback(build_chunk_event(stream_event.content_delta))
-                    if stream_event.result is not None:
-                        step_result = stream_event.result
-            except asyncio.TimeoutError:
-                raise
-
-            if step_result is None:
-                raise RuntimeError(
-                    "Adapter stream ended without a final step result.")
-
-        if step_result.assistant_text or step_result.tool_calls:
-            messages.append(
-                make_assistant_message(
-                    step_result.assistant_text,
-                    tool_calls=step_result.tool_calls,
+        try:
+            timeout = settings.agent_llm_timeout
+            if event_callback is None:
+                step_result = await asyncio.wait_for(
+                    self._adapter.invoke(request), timeout=timeout,
                 )
-            )
+                ctx.llm_end_time = time.monotonic()
+                ctx.progression = StepProgression.RESPONSE_RECEIVED
+            else:
+                step_result = None
+                try:
+                    async for stream_event in self._adapter.stream(request):
+                        if stream_event.content_delta:
+                            if ctx.ttft_time is None:
+                                ctx.ttft_time = time.monotonic()
+                            streamed_assistant_text = True
+                            await event_callback(build_chunk_event(stream_event.content_delta))
+                        if stream_event.result is not None:
+                            step_result = stream_event.result
+                except asyncio.TimeoutError:
+                    raise
 
-        return step_result, streamed_assistant_text
+                ctx.llm_end_time = time.monotonic()
+
+                if step_result is None:
+                    raise RuntimeError(
+                        "Adapter stream ended without a final step result.")
+
+                ctx.progression = StepProgression.RESPONSE_RECEIVED
+
+            # Emit reasoning event before any chunk/tool events for this step.
+            if event_callback is not None and step_result.reasoning_content:
+                await event_callback(
+                    build_reasoning_event(
+                        step_index,
+                        step_result.reasoning_content,
+                        step_result.reasoning_signature,
+                    )
+                )
+
+            if step_result.assistant_text or step_result.tool_calls:
+                messages.append(
+                    make_assistant_message(
+                        step_result.assistant_text,
+                        tool_calls=step_result.tool_calls,
+                    )
+                )
+        except Exception as exc:
+            raise StepFailedError(exc, ctx) from exc
+
+        return step_result, streamed_assistant_text, ctx
 
     async def _coerce_terminal_send_message(
         self,
@@ -435,6 +468,43 @@ def _default_response(stop_reason: StopReason) -> str:
     if stop_reason == StopReason.AWAITING_APPROVAL:
         return "Agent runtime is waiting for approval before running a tool."
     return ""
+
+
+def _compute_timing(ctx: StepContext) -> StepTiming:
+    now = time.monotonic()
+    return StepTiming(
+        step_duration_ms=round((now - ctx.start_time) * 1000, 2)
+        if ctx.start_time else None,
+        llm_duration_ms=round((ctx.llm_end_time - ctx.start_time) * 1000, 2)
+        if ctx.llm_end_time and ctx.start_time else None,
+        ttft_ms=round((ctx.ttft_time - ctx.start_time) * 1000, 2)
+        if ctx.ttft_time and ctx.start_time else None,
+    )
+
+
+def _build_step_trace(
+    ctx: StepContext,
+    step_result: StepExecutionResult,
+    request_messages: tuple[MessageSnapshot, ...],
+    allowed_tool_names: tuple[str, ...],
+    force_tool_call: bool,
+    *,
+    tool_calls: tuple[ToolCall, ...] | None = None,
+    tool_results: tuple[ToolExecutionResult, ...] = (),
+) -> StepTrace:
+    return StepTrace(
+        step_index=ctx.step_index,
+        request_messages=request_messages,
+        allowed_tools=allowed_tool_names,
+        force_tool_call=force_tool_call,
+        assistant_text=step_result.assistant_text,
+        tool_calls=tool_calls if tool_calls is not None else step_result.tool_calls,
+        tool_results=tool_results,
+        usage=step_result.usage,
+        timing=_compute_timing(ctx),
+        reasoning_content=step_result.reasoning_content,
+        reasoning_signature=step_result.reasoning_signature,
+    )
 
 
 def _snapshot_messages(messages: list[object]) -> tuple[MessageSnapshot, ...]:

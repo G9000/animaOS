@@ -71,11 +71,21 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 provider=self.provider,
                 base_url=self._base_url,
             ) from exc
+
+        visible_text, tag_reasoning = strip_reasoning_traces(
+            message_content(response))
+        native_reasoning, native_signature = _extract_native_reasoning(
+            response)
+        reasoning_content = native_reasoning or tag_reasoning
+        reasoning_signature = native_signature
+
         return StepExecutionResult(
-            assistant_text=strip_reasoning_traces(message_content(response)),
+            assistant_text=visible_text,
             tool_calls=_normalize_tool_calls(message_tool_calls(response)),
             usage=_normalize_usage(response),
             raw_response=response,
+            reasoning_content=reasoning_content,
+            reasoning_signature=reasoning_signature,
         )
 
     async def stream(self, request: LLMRequest) -> AsyncGenerator[StepStreamEvent, None]:
@@ -133,11 +143,15 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             content_parts.append(remaining_visible_text)
             yield StepStreamEvent(content_delta=remaining_visible_text)
 
+        tag_reasoning = reasoning_filter.captured_reasoning
+        # Native fields not available during streaming (no final response
+        # object), so we rely on tag-based capture only.
         yield StepStreamEvent(
             result=StepExecutionResult(
                 assistant_text="".join(content_parts),
                 tool_calls=_finalize_stream_tool_calls(tool_call_state),
                 usage=usage,
+                reasoning_content=tag_reasoning,
             )
         )
 
@@ -154,7 +168,8 @@ def _normalize_tool_calls(raw_tool_calls: Sequence[Any]) -> tuple[ToolCall, ...]
             raw_arguments = raw_tool_call.get("raw_arguments")
         else:
             name = str(getattr(raw_tool_call, "name", "")).strip()
-            call_id = str(getattr(raw_tool_call, "id", None) or f"tool-call-{index}")
+            call_id = str(getattr(raw_tool_call, "id", None)
+                          or f"tool-call-{index}")
             arguments = getattr(raw_tool_call, "args", {})
             parse_error = getattr(raw_tool_call, "parse_error", None)
             raw_arguments = getattr(raw_tool_call, "raw_arguments", None)
@@ -162,9 +177,11 @@ def _normalize_tool_calls(raw_tool_calls: Sequence[Any]) -> tuple[ToolCall, ...]
         if not name:
             continue
 
-        normalized_arguments: dict[str, object] = arguments if isinstance(arguments, dict) else {}
+        normalized_arguments: dict[str, object] = arguments if isinstance(
+            arguments, dict) else {}
         normalized_parse_error = (
-            str(parse_error).strip() if isinstance(parse_error, str) and parse_error.strip() else None
+            str(parse_error).strip() if isinstance(
+                parse_error, str) and parse_error.strip() else None
         )
         normalized_raw_arguments = (
             str(raw_arguments)[:500]
@@ -193,19 +210,65 @@ def _normalize_usage(message: Any) -> UsageStats | None:
     if not isinstance(raw_usage, dict):
         return None
 
+    # Reasoning tokens — provider-specific extraction.
+    reasoning_tokens: int | None = None
+    completion_details = raw_usage.get("completion_tokens_details")
+    if isinstance(completion_details, dict):
+        reasoning_tokens = _coerce_optional_int(
+            completion_details.get("reasoning_tokens"))
+    if reasoning_tokens is None:
+        reasoning_tokens = _coerce_optional_int(
+            raw_usage.get("thoughts_token_count"))
+
+    cached_input_tokens: int | None = None
+    prompt_details = raw_usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        cached_input_tokens = _coerce_optional_int(
+            prompt_details.get("cached_tokens"))
+    if cached_input_tokens is None:
+        cached_input_tokens = _coerce_optional_int(
+            raw_usage.get("cache_read_input_tokens"))
+
     return UsageStats(
         prompt_tokens=_coerce_optional_int(
             raw_usage.get("input_tokens") or raw_usage.get("prompt_tokens")
         ),
         completion_tokens=_coerce_optional_int(
-            raw_usage.get("output_tokens") or raw_usage.get("completion_tokens")
+            raw_usage.get("output_tokens") or raw_usage.get(
+                "completion_tokens")
         ),
         total_tokens=_coerce_optional_int(raw_usage.get("total_tokens")),
+        reasoning_tokens=reasoning_tokens,
+        cached_input_tokens=cached_input_tokens,
     )
 
 
 def _coerce_optional_int(value: object) -> int | None:
     return value if isinstance(value, int) else None
+
+
+def _extract_native_reasoning(response: Any) -> tuple[str | None, str | None]:
+    """Extract reasoning from native provider fields on the response object.
+
+    Returns ``(reasoning_content, reasoning_signature)``.
+    """
+    # DeepSeek / Anthropic: reasoning_content
+    reasoning = getattr(response, "reasoning_content", None)
+    if isinstance(reasoning, str) and reasoning.strip():
+        signature = getattr(response, "reasoning_content_signature", None)
+        return reasoning.strip(), (
+            signature if isinstance(
+                signature, str) and signature.strip() else None
+        )
+    # Anthropic: redacted reasoning
+    redacted = getattr(response, "redacted_reasoning_content", None)
+    if isinstance(redacted, str) and redacted.strip():
+        return redacted.strip(), None
+    # OpenAI o1/o3: omitted flag (no content, just a signal)
+    omitted = getattr(response, "omitted_reasoning_content", None)
+    if omitted is True:
+        return "[reasoning omitted by provider]", None
+    return None, None
 
 
 def _stream_tool_call_deltas(message: Any) -> Sequence[dict[str, object]]:
@@ -238,7 +301,8 @@ def _finalize_stream_tool_calls(
             arguments = {}
         normalized.append(
             ToolCall(
-                id=call_id if isinstance(call_id, str) and call_id else f"tool-call-{index}",
+                id=call_id if isinstance(
+                    call_id, str) and call_id else f"tool-call-{index}",
                 name=name.strip(),
                 arguments=arguments,
                 parse_error=parse_error,

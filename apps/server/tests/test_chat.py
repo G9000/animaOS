@@ -347,7 +347,13 @@ def test_chat_stream_ollama_emits_live_chunks(monkeypatch) -> None:
     assert "hello " in body
     assert "world" in body
     assert "<think>" not in body
-    assert "private plan" not in body
+    # Reasoning content is stripped from chunk events but now exposed in a
+    # dedicated reasoning SSE event.  Verify chunk data lines are clean.
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "event: chunk" and i + 1 < len(lines):
+            assert "private plan" not in lines[i + 1]
+    assert "event: reasoning" in body
     assert "event: usage" in body
     assert "event: done" in body
 

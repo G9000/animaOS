@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 
@@ -11,6 +11,16 @@ class StopReason(StrEnum):
     TERMINAL_TOOL = "terminal_tool"
     MAX_STEPS = "max_steps"
     AWAITING_APPROVAL = "awaiting_approval"
+
+
+class StepProgression(IntEnum):
+    START = 0
+    LLM_REQUESTED = 1
+    RESPONSE_RECEIVED = 2
+    TOOLS_STARTED = 3
+    TOOLS_COMPLETED = 4
+    PERSISTED = 5
+    FINISHED = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +46,8 @@ class UsageStats:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cached_input_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,12 +77,21 @@ class StepExecutionResult:
     tool_calls: tuple[ToolCall, ...] = ()
     usage: UsageStats | None = None
     raw_response: Any | None = None
+    reasoning_content: str | None = None
+    reasoning_signature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class StepStreamEvent:
     content_delta: str = ""
     result: StepExecutionResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StepTiming:
+    step_duration_ms: float | None = None
+    llm_duration_ms: float | None = None
+    ttft_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,3 +104,27 @@ class StepTrace:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_results: tuple[ToolExecutionResult, ...] = ()
     usage: UsageStats | None = None
+    timing: StepTiming | None = None
+    reasoning_content: str | None = None
+    reasoning_signature: str | None = None
+
+
+@dataclass
+class StepContext:
+    """Mutable step-level state bundling progression and timing."""
+
+    step_index: int = 0
+    progression: StepProgression = StepProgression.START
+    start_time: float = 0.0
+    ttft_time: float | None = None
+    llm_end_time: float | None = None
+
+
+class StepFailedError(Exception):
+    """Raised by the runtime when a step fails at a known progression stage."""
+
+    def __init__(self, cause: Exception, context: StepContext) -> None:
+        self.cause = cause
+        self.progression = context.progression
+        self.context = context
+        super().__init__(str(cause))
