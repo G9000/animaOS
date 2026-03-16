@@ -546,10 +546,113 @@ def update_human_memory(content: str) -> str:
     return "Human memory updated."
 
 
+@tool
+def core_memory_append(label: str, content: str) -> str:
+    """Append new information to one of your in-context memory blocks. The change
+    takes effect in the CURRENT conversation — you will see the updated block
+    in your next reasoning step. Use this for incremental additions.
+    Valid labels: human (your understanding of the user), persona (your own identity/style).
+    Examples:
+    - core_memory_append("human", "Mentioned they recently adopted a rescue dog named Biscuit.")
+    - core_memory_append("persona", "I've noticed I tend to be more playful in evening chats.")
+    """
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.models import SelfModelBlock
+    from sqlalchemy import select
+
+    if label not in ("human", "persona"):
+        return f"Invalid label '{label}'. Use 'human' or 'persona'."
+
+    ctx = get_tool_context()
+    block = ctx.db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == ctx.user_id,
+            SelfModelBlock.section == label,
+        )
+    )
+    if block is None:
+        ctx.db.add(SelfModelBlock(
+            user_id=ctx.user_id,
+            section=label,
+            content=content.strip(),
+            version=1,
+            updated_by="core_memory_tool",
+        ))
+    else:
+        block.content = (block.content.rstrip() + "\n" + content.strip()).strip()
+        block.version += 1
+        block.updated_by = "core_memory_tool"
+    ctx.db.flush()
+
+    ctx.memory_modified = True
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
+    return f"Appended to {label} memory. It will be visible in your next step."
+
+
+@tool
+def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
+    """Replace specific text in one of your in-context memory blocks. The change
+    takes effect in the CURRENT conversation. Use this to correct outdated
+    information or refine your understanding.
+    Valid labels: human (your understanding of the user), persona (your own identity/style).
+    The old_text must match exactly (case-sensitive) to be replaced.
+    Examples:
+    - core_memory_replace("human", "Works at Google", "Works at Apple (switched jobs March 2026)")
+    - core_memory_replace("persona", "I prefer formal language", "I adapt my formality to match the user's style")
+    """
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.models import SelfModelBlock
+    from sqlalchemy import select
+
+    if label not in ("human", "persona"):
+        return f"Invalid label '{label}'. Use 'human' or 'persona'."
+
+    ctx = get_tool_context()
+    block = ctx.db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == ctx.user_id,
+            SelfModelBlock.section == label,
+        )
+    )
+    if block is None:
+        return f"No {label} memory block exists yet. Use core_memory_append to create one."
+
+    if old_text not in block.content:
+        return f"Could not find the exact text to replace in {label} memory."
+
+    block.content = block.content.replace(old_text, new_text, 1)
+    block.version += 1
+    block.updated_by = "core_memory_tool"
+    ctx.db.flush()
+
+    ctx.memory_modified = True
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
+    return f"Replaced text in {label} memory. It will be visible in your next step."
+
+
+@tool
+def continue_reasoning() -> str:
+    """Continue your reasoning chain without sending a message to the user.
+    Use this when you need to take multiple steps (e.g., search memory,
+    then decide, then respond). Calling this tool gives you another
+    reasoning step before you must send_message.
+    """
+    return "Continuing reasoning. Use your tools or send_message when ready."
+
+
 def get_tools() -> list[Any]:
     """Return all tools available to the agent."""
     return [
-        current_datetime, send_message,
+        current_datetime, send_message, continue_reasoning,
+        core_memory_append, core_memory_replace,
         note_to_self, dismiss_note, save_to_memory,
         set_intention, complete_goal,
         create_task, list_tasks, complete_task,

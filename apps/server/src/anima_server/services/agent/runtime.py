@@ -76,6 +76,7 @@ def _is_retryable_error(exc: Exception) -> bool:
 
 
 StreamEventCallback = Callable[[AgentStreamEvent], Awaitable[None]]
+MemoryRefresher = Callable[[], Awaitable[tuple[MemoryBlock, ...] | None]]
 
 
 class _CancelledDuringStream(Exception):
@@ -170,6 +171,7 @@ class AgentRuntime:
         event_callback: StreamEventCallback | None = None,
         dry_run: bool = False,
         cancel_event: asyncio.Event | None = None,
+        memory_refresher: MemoryRefresher | None = None,
     ) -> AgentResult | DryRunResult:
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
             memory_blocks=memory_blocks,
@@ -394,6 +396,26 @@ class AgentRuntime:
 
             if rule_violation_hit:
                 continue
+
+            # Refresh memory blocks between steps if a tool modified memory.
+            if (
+                memory_refresher is not None
+                and not terminal_tool_hit
+                and not awaiting_approval
+                and any(tr.memory_modified for tr in tool_results)
+            ):
+                try:
+                    fresh_blocks = await memory_refresher()
+                    if fresh_blocks is not None:
+                        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
+                            memory_blocks=fresh_blocks,
+                        )
+                        # Replace the system message (always first in the list).
+                        if messages and hasattr(messages[0], "type") and getattr(messages[0], "type", "") == "system":
+                            from anima_server.services.agent.messages import make_system_message
+                            messages[0] = make_system_message(system_prompt)
+                except Exception:  # noqa: BLE001
+                    logger.debug("Memory refresh between steps failed", exc_info=True)
 
             if not terminal_tool_hit and not awaiting_approval:
                 continue
@@ -691,6 +713,7 @@ class AgentRuntime:
         server errors) are retried up to *retry_limit* times.
         """
         last_exc: Exception | None = None
+        content_streamed = False
 
         for attempt in range(1, retry_limit + 2):  # attempt 1 .. retry_limit+1
             try:
@@ -709,6 +732,7 @@ class AgentRuntime:
                         if stream_event.content_delta:
                             if ctx.ttft_time is None:
                                 ctx.ttft_time = time.monotonic()
+                            content_streamed = True
                             await event_callback(build_chunk_event(stream_event.content_delta))
                         if stream_event.result is not None:
                             step_result = stream_event.result
@@ -728,6 +752,10 @@ class AgentRuntime:
             except Exception as exc:
                 last_exc = exc
                 is_last_attempt = attempt > retry_limit
+                # Don't retry if content was already streamed to the client
+                # — retrying would cause duplicate/garbled output.
+                if content_streamed:
+                    raise
                 if is_last_attempt or not _is_retryable_error(exc):
                     raise
                 delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)

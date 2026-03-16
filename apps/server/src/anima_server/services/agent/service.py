@@ -365,6 +365,12 @@ async def _execute_agent_turn_locked(
         user_message, user_id, db, event_callback=event_callback,
     )
 
+    # Stage 1b: Proactive context management — compact before the LLM call
+    # if estimated context usage already exceeds the threshold.
+    turn_ctx = await _proactive_compact_if_needed(
+        db, thread=thread, run=run, turn_ctx=turn_ctx, user_id=user_id,
+    )
+
     # Stage 2: Invoke the runtime
     companion = _get_companion(user_id)
     cancel_event = companion.create_cancel_event(run.id)
@@ -615,6 +621,21 @@ async def _invoke_turn_runtime(
 ) -> AgentResult:
     """Stage 2: Set tool context and invoke the agent runtime."""
     set_tool_context(ToolContext(db=db, user_id=user_id, thread_id=thread.id))
+
+    async def _refresh_memory() -> tuple[MemoryBlock, ...] | None:
+        """Memory refresher callback for in-context memory editing.
+
+        Called by the runtime between steps when a tool signals
+        memory_modified.  Returns fresh blocks if memory changed,
+        None otherwise.
+        """
+        companion = _get_companion(user_id)
+        if not companion.memory_stale:
+            return None
+        return build_runtime_memory_blocks(
+            db, user_id=user_id, thread_id=thread.id,
+        )
+
     try:
         runner = get_or_build_runner()
         try:
@@ -626,6 +647,7 @@ async def _invoke_turn_runtime(
                 memory_blocks=turn_ctx.memory_blocks,
                 event_callback=event_callback,
                 cancel_event=cancel_event,
+                memory_refresher=_refresh_memory,
             )
         except StepFailedError as exc:
             if not _should_retry_after_compaction(exc):
@@ -650,6 +672,7 @@ async def _invoke_turn_runtime(
                 memory_blocks=turn_ctx.memory_blocks,
                 event_callback=event_callback,
                 cancel_event=cancel_event,
+                memory_refresher=_refresh_memory,
             )
     except StepFailedError as exc:
         _handle_step_failure(db, run=run, user_msg=user_msg, err=exc)
@@ -664,6 +687,56 @@ async def _invoke_turn_runtime(
         raise
     finally:
         clear_tool_context()
+
+
+async def _proactive_compact_if_needed(
+    db: Session,
+    *,
+    thread: AgentThread,
+    run: AgentRun,
+    turn_ctx: _TurnContext,
+    user_id: int,
+) -> _TurnContext:
+    """Pre-flight check: estimate total context tokens and compact if over limit.
+
+    This prevents sending an oversized prompt to the LLM by compacting
+    conversation history *before* the first LLM call.
+    """
+    block_chars = sum(len(b.value) for b in turn_ctx.memory_blocks)
+    history_chars = sum(len(m.content or "") for m in turn_ctx.history)
+    estimated_tokens = (block_chars + history_chars) // 4
+
+    threshold = int(settings.agent_max_tokens * settings.agent_compaction_trigger_ratio)
+    if estimated_tokens <= threshold:
+        return turn_ctx
+
+    logger.info(
+        "Proactive compaction: estimated %d tokens > threshold %d",
+        estimated_tokens, threshold,
+    )
+    result = compact_thread_context(
+        db,
+        thread=thread,
+        run_id=run.id,
+        trigger_token_limit=threshold,
+        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
+        reserved_prompt_tokens=block_chars // 4,
+    )
+    if result is None:
+        return turn_ctx
+
+    db.flush()
+    logger.info(
+        "Proactive compaction: %d messages compacted (%d -> %d estimated tokens)",
+        result.compacted_message_count,
+        result.estimated_tokens_before,
+        result.estimated_tokens_after,
+    )
+
+    return _rebuild_turn_context_after_compaction(
+        db, user_id=user_id, thread=thread,
+        user_message="", turn_ctx=turn_ctx,
+    )
 
 
 def _should_retry_after_compaction(exc: StepFailedError) -> bool:

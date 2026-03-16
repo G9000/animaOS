@@ -40,6 +40,7 @@ class ToolExecutionResult:
     output: str
     is_error: bool = False
     is_terminal: bool = False
+    memory_modified: bool = False
 
 
 @dataclass(frozen=True, slots=True)

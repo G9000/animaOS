@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     agent_llm_retry_backoff_factor: float = 0.5
     agent_llm_retry_max_delay: float = 10.0
     agent_context_overflow_retry: bool = True
+    agent_tool_timeout: float = 30.0
     agent_stream_queue_max_size: int = 256
     agent_background_memory_enabled: bool = True
     core_passphrase: str = ""

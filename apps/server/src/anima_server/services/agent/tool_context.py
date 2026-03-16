@@ -19,6 +19,7 @@ class ToolContext:
     db: Session
     user_id: int
     thread_id: int
+    memory_modified: bool = False
 
 
 _current_context: ContextVar[ToolContext | None] = ContextVar(

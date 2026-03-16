@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
+import logging
 from typing import Any
 
+from anima_server.config import settings
 from anima_server.services.agent.runtime_types import ToolCall, ToolExecutionResult
+
+logger = logging.getLogger(__name__)
 
 
 class ToolExecutor:
@@ -40,8 +46,23 @@ class ToolExecutor:
                 is_error=True,
             )
 
+        # Shared flag container — the tool (running in a thread) writes to
+        # this dict, and we read it back in the async context.
+        flags: dict[str, bool] = {"memory_modified": False}
+
         try:
-            output = await _invoke_tool(tool, tool_call.arguments)
+            timeout = settings.agent_tool_timeout
+            output = await asyncio.wait_for(
+                _invoke_tool(tool, tool_call.arguments, flags),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return ToolExecutionResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                output=f"Tool {tool_call.name} timed out after {settings.agent_tool_timeout}s",
+                is_error=True,
+            )
         except Exception as exc:
             return ToolExecutionResult(
                 call_id=tool_call.id,
@@ -55,22 +76,89 @@ class ToolExecutor:
             name=tool_call.name,
             output=_stringify_output(output),
             is_terminal=is_terminal,
+            memory_modified=flags["memory_modified"],
         )
 
+    async def execute_parallel(
+        self,
+        tool_calls: list[tuple[ToolCall, bool]],
+    ) -> list[ToolExecutionResult]:
+        """Execute multiple independent tool calls concurrently.
 
-async def _invoke_tool(tool: Any, arguments: dict[str, Any]) -> Any:
+        Each entry is (tool_call, is_terminal).  Returns results in the
+        same order as the input.
+        """
+        if len(tool_calls) <= 1:
+            results = []
+            for tc, terminal in tool_calls:
+                results.append(await self.execute(tc, is_terminal=terminal))
+            return results
+
+        tasks = [
+            self.execute(tc, is_terminal=terminal)
+            for tc, terminal in tool_calls
+        ]
+        return list(await asyncio.gather(*tasks))
+
+
+async def _invoke_tool(
+    tool: Any,
+    arguments: dict[str, Any],
+    flags: dict[str, bool],
+) -> Any:
     payload: Any = arguments or {}
 
     if hasattr(tool, "ainvoke"):
-        return await tool.ainvoke(payload)
+        result = await tool.ainvoke(payload)
+        _check_memory_modified(flags)
+        return result
 
     if hasattr(tool, "invoke"):
-        return tool.invoke(payload)
+        result = tool.invoke(payload)
+        _check_memory_modified(flags)
+        return result
 
-    if arguments:
-        return tool(**arguments)
+    # Run synchronous tools in a thread, copying the current context
+    # so ContextVar-based state (like ToolContext) is accessible.
+    ctx = contextvars.copy_context()
 
-    return tool()
+    def _run() -> Any:
+        if arguments:
+            return tool(**arguments)
+        return tool()
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, ctx.run, _run)
+
+    # After the thread completes, check both the copied context and the
+    # main context for memory_modified.
+    _check_memory_modified(flags)
+    # Also check the copied context's ToolContext (thread may have set it there).
+    try:
+        from anima_server.services.agent.tool_context import _current_context
+        thread_ctx = ctx.get(_current_context)
+        if thread_ctx is not None and thread_ctx.memory_modified:
+            flags["memory_modified"] = True
+            # Propagate back to the main context's ToolContext.
+            main_ctx = _current_context.get()
+            if main_ctx is not None:
+                main_ctx.memory_modified = True
+    except (RuntimeError, LookupError):
+        pass
+
+    return result
+
+
+def _check_memory_modified(flags: dict[str, bool]) -> None:
+    """Check if the current ToolContext has memory_modified set."""
+    try:
+        from anima_server.services.agent.tool_context import get_tool_context
+        ctx = get_tool_context()
+        if ctx.memory_modified:
+            flags["memory_modified"] = True
+            ctx.memory_modified = False  # reset for next tool
+    except RuntimeError:
+        pass
 
 
 def _stringify_output(value: Any) -> str:
