@@ -126,6 +126,23 @@ def build_cancelled_event(run_id: int) -> AgentStreamEvent:
     )
 
 
+def build_approval_pending_event(
+    run_id: int,
+    tool_name: str,
+    tool_call_id: str,
+    tool_arguments: dict[str, object],
+) -> AgentStreamEvent:
+    return AgentStreamEvent(
+        event="approval_pending",
+        data={
+            "runId": run_id,
+            "toolName": tool_name,
+            "toolCallId": tool_call_id,
+            "arguments": tool_arguments,
+        },
+    )
+
+
 def build_stream_events(
     result: AgentResult,
     *,

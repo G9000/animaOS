@@ -22,17 +22,19 @@ from anima_server.services.agent.llm import invalidate_llm_cache
 from anima_server.services.agent.persistence import (
     append_user_message,
     cancel_run,
+    clear_approval_checkpoint,
     count_messages_by_role,
     create_run,
     get_or_create_thread,
     list_transcript_messages,
-    load_thread_history,
+    load_approval_checkpoint,
     mark_run_failed,
     persist_agent_result,
     reset_thread,
+    save_approval_checkpoint,
 )
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
-from anima_server.services.agent.runtime_types import DryRunResult, StepFailedError, StepProgression, StopReason
+from anima_server.services.agent.runtime_types import DryRunResult, StepFailedError, StepProgression, StopReason, ToolCall
 from anima_server.services.agent.sequencing import (
     count_persisted_result_messages,
     reserve_message_sequences,
@@ -40,6 +42,7 @@ from anima_server.services.agent.sequencing import (
 from anima_server.services.agent.state import AgentResult, StoredMessage
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
+    build_approval_pending_event,
     build_cancelled_event,
     build_done_event,
     build_error_event,
@@ -133,6 +136,203 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session) -> DryRunR
     return result
 
 
+async def approve_or_deny_turn(
+    run_id: int,
+    user_id: int,
+    approved: bool,
+    db: Session,
+    *,
+    denial_reason: str | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
+) -> AgentResult:
+    """Resume a turn after an approval decision.
+
+    On approve: execute the pending tool directly, then optionally one LLM
+    follow-up.  On deny: inject denial as a tool error and make one LLM
+    follow-up so the companion can respond.
+    """
+    checkpoint = load_approval_checkpoint(db, run_id)
+    if checkpoint is None:
+        raise ValueError(f"Run {run_id} is not awaiting approval")
+
+    run, approval_msg = checkpoint
+    if run.user_id != user_id:
+        raise PermissionError("Not authorized for this run")
+
+    # Reconstruct the ToolCall from the persisted approval message.
+    tool_call = ToolCall(
+        id=approval_msg.tool_call_id or "tool-call-0",
+        name=approval_msg.tool_name or "",
+        arguments=approval_msg.tool_args_json
+        if isinstance(approval_msg.tool_args_json, dict) else {},
+    )
+
+    # Resolve the checkpoint now — the re-entry takes over.
+    clear_approval_checkpoint(db, run, approval_msg)
+    db.flush()
+
+    companion = _get_companion(user_id)
+    thread = db.get(AgentThread, run.thread_id)
+    if thread is None:
+        raise ValueError("Thread not found")
+    companion.thread_id = thread.id
+
+    history = companion.ensure_history_loaded(db)
+    memory_blocks = companion.ensure_memory_loaded(db)
+    conversation_turn_count = count_messages_by_role(db, thread.id, "user")
+
+    cancel_event = companion.create_cancel_event(run.id)
+    set_tool_context(ToolContext(db=db, user_id=user_id, thread_id=thread.id))
+    try:
+        runner = get_or_build_runner()
+        result = await runner.resume_after_approval(
+            approved=approved,
+            tool_call=tool_call,
+            user_id=user_id,
+            history=history,
+            denial_reason=denial_reason,
+            memory_blocks=memory_blocks,
+            conversation_turn_count=conversation_turn_count,
+            event_callback=event_callback,
+            cancel_event=cancel_event,
+        )
+    except StepFailedError as exc:
+        mark_run_failed(db, run, str(exc.cause))
+        db.commit()
+        raise exc.cause from exc
+    except Exception as exc:
+        mark_run_failed(db, run, str(exc))
+        db.commit()
+        raise
+    finally:
+        companion.clear_cancel_event(run.id)
+        clear_tool_context()
+
+    # Handle cancellation during resume
+    if result.stop_reason == StopReason.CANCELLED.value:
+        cancel_run(db, run.id)
+        db.commit()
+        if event_callback is not None:
+            await event_callback(build_cancelled_event(run.id))
+        return result
+
+    # Persist result
+    result_message_count = count_persisted_result_messages(result)
+    persist_agent_result(
+        db,
+        thread=thread,
+        run=run,
+        result=result,
+        initial_sequence_id=(
+            reserve_message_sequences(
+                db, thread_id=thread.id, count=result_message_count,
+            )
+            if result_message_count > 0
+            else None
+        ),
+    )
+    compact_thread_context(
+        db,
+        thread=thread,
+        run_id=run.id,
+        trigger_token_limit=max(
+            1,
+            int(settings.agent_max_tokens *
+                settings.agent_compaction_trigger_ratio),
+        ),
+        keep_last_messages=max(
+            1, settings.agent_compaction_keep_last_messages),
+        reserved_prompt_tokens=(
+            result.prompt_budget.system_prompt_token_estimate
+            if result.prompt_budget is not None
+            else 0
+        ),
+    )
+    db.commit()
+
+    # Update companion window
+    from anima_server.services.agent.state import StoredMessage
+    result_messages = []
+    for trace in result.step_traces:
+        if trace.assistant_text:
+            result_messages.append(
+                StoredMessage(role="assistant", content=trace.assistant_text))
+        for tr in trace.tool_results:
+            result_messages.append(
+                StoredMessage(role="tool", content=tr.output,
+                              tool_name=tr.name, tool_call_id=tr.call_id))
+    if result_messages:
+        companion.append_to_window(result_messages)
+
+    # Post-turn hooks
+    _run_post_turn_hooks(
+        user_id=user_id, thread_id=thread.id,
+        user_message="",  # no new user message on resume
+        result=result,
+        db_factory=_build_db_factory(db),
+    )
+
+    if event_callback is not None:
+        usage = summarize_usage(result)
+        if usage is not None:
+            await event_callback(build_usage_event(usage))
+        await event_callback(build_done_event(result))
+    return result
+
+
+async def stream_approve_or_deny(
+    run_id: int,
+    user_id: int,
+    approved: bool,
+    db: Session,
+    *,
+    denial_reason: str | None = None,
+) -> AsyncGenerator[AgentStreamEvent, None]:
+    """Streaming wrapper for approve_or_deny_turn."""
+    queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
+        maxsize=settings.agent_stream_queue_max_size,
+    )
+
+    async def emit(event: AgentStreamEvent) -> None:
+        await queue.put(event)
+
+    async def worker() -> None:
+        try:
+            await approve_or_deny_turn(
+                run_id, user_id, approved, db,
+                denial_reason=denial_reason,
+                event_callback=emit,
+            )
+        except Exception as exc:
+            await queue.put(build_error_event(str(exc)))
+        finally:
+            await queue.put(None)
+
+    worker_task = asyncio.create_task(worker())
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await asyncio.sleep(0)
+            yield event
+    except (asyncio.CancelledError, GeneratorExit):
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+        raise
+    finally:
+        if not worker_task.done():
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+
+
 async def _execute_agent_turn(
     user_message: str,
     user_id: int,
@@ -181,6 +381,28 @@ async def _execute_agent_turn_locked(
         db.commit()
         if event_callback is not None:
             await event_callback(build_cancelled_event(run.id))
+        return result
+
+    # Handle approval: persist checkpoint and emit event
+    if result.stop_reason == StopReason.AWAITING_APPROVAL.value:
+        pending_tc = _persist_approval_checkpoint(
+            db, thread=thread, run=run, result=result,
+            initial_sequence_id=initial_sequence_id,
+        )
+        if event_callback is not None:
+            if pending_tc is not None:
+                await event_callback(build_approval_pending_event(
+                    run_id=run.id,
+                    tool_name=pending_tc.name,
+                    tool_call_id=pending_tc.id,
+                    tool_arguments=dict(pending_tc.arguments)
+                    if isinstance(pending_tc.arguments, dict)
+                    else {},
+                ))
+            usage = summarize_usage(result)
+            if usage is not None:
+                await event_callback(build_usage_event(usage))
+            await event_callback(build_done_event(result))
         return result
 
     # Stage 3: Persist result
@@ -380,6 +602,94 @@ def _handle_step_failure(
     detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
     mark_run_failed(db, run, detail)
     db.commit()
+
+
+def _persist_approval_checkpoint(
+    db: Session,
+    *,
+    thread: AgentThread,
+    run: AgentRun,
+    result: AgentResult,
+    initial_sequence_id: int,
+) -> ToolCall | None:
+    """Persist the agent result plus a role='approval' checkpoint message.
+
+    Called when the runtime stops with ``AWAITING_APPROVAL``.  Persists
+    the step traces (assistant message + tool-error result) and then
+    adds the approval checkpoint message referencing the pending tool call.
+
+    Returns the pending ``ToolCall`` so the caller can emit the
+    ``approval_pending`` streaming event, or ``None`` if the tool call
+    could not be reconstructed (run is marked failed in that case).
+    """
+    # First persist the normal step traces (assistant msg + tool error).
+    result_message_count = count_persisted_result_messages(result)
+    persist_agent_result(
+        db,
+        thread=thread,
+        run=run,
+        result=result,
+        initial_sequence_id=(
+            reserve_message_sequences(
+                db, thread_id=thread.id, count=result_message_count,
+            )
+            if result_message_count > 0
+            else None
+        ),
+    )
+
+    # Find the pending tool call from the last step trace.
+    pending_tool_call = None
+    for trace in reversed(result.step_traces):
+        for tr in trace.tool_results:
+            if tr.is_error and "Approval required" in tr.output:
+                for tc in trace.tool_calls:
+                    if tc.id == tr.call_id and tc.name == tr.name:
+                        pending_tool_call = tc
+                        break
+                # Fallback: match by call_id only (name may differ if aliased)
+                if pending_tool_call is None:
+                    for tc in trace.tool_calls:
+                        if tc.id == tr.call_id:
+                            pending_tool_call = tc
+                            break
+                break
+        if pending_tool_call is not None:
+            break
+
+    if pending_tool_call is None:
+        mark_run_failed(
+            db, run, "Could not reconstruct pending tool call for approval checkpoint")
+        db.commit()
+        return None
+
+    seq_id = reserve_message_sequences(db, thread_id=thread.id, count=1)
+    save_approval_checkpoint(
+        db,
+        thread=thread,
+        run=run,
+        tool_call=pending_tool_call,
+        step_id=None,
+        sequence_id=seq_id,
+    )
+
+    # Update companion window
+    companion = get_companion()
+    if companion is not None and companion.user_id == run.user_id:
+        result_messages = []
+        for trace in result.step_traces:
+            if trace.assistant_text:
+                result_messages.append(
+                    StoredMessage(role="assistant", content=trace.assistant_text))
+            for tr in trace.tool_results:
+                result_messages.append(
+                    StoredMessage(role="tool", content=tr.output,
+                                  tool_name=tr.name, tool_call_id=tr.call_id))
+        if result_messages:
+            companion.append_to_window(result_messages)
+
+    db.commit()
+    return pending_tool_call
 
 
 def _persist_turn_result(

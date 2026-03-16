@@ -203,18 +203,101 @@ def cancel_run(db: Session, run_id: int) -> AgentRun | None:
 
     Idempotent: if the run is already terminal (completed, failed,
     cancelled) the existing row is returned without modification.
+
+    If the run was awaiting approval, the pending approval message is
+    marked out of context and the FK is cleared.
     """
     run = db.get(AgentRun, run_id)
     if run is None:
         return None
     if run.status in ("completed", "failed", "cancelled"):
         return run
+
+    # Clean up pending approval if present.
+    if run.pending_approval_message_id is not None:
+        approval_msg = db.get(AgentMessage, run.pending_approval_message_id)
+        if approval_msg is not None:
+            approval_msg.is_in_context = False
+            db.add(approval_msg)
+        run.pending_approval_message_id = None
+
     run.status = "cancelled"
     run.stop_reason = "cancelled"
     run.completed_at = datetime.now(UTC)
     db.add(run)
     db.flush()
     return run
+
+
+def save_approval_checkpoint(
+    db: Session,
+    *,
+    thread: AgentThread,
+    run: AgentRun,
+    tool_call: "ToolCall",
+    step_id: int | None,
+    sequence_id: int,
+) -> AgentMessage:
+    """Persist an approval-pending checkpoint as an ``approval`` role message.
+
+    The run is updated to ``awaiting_approval`` status with a FK back to
+    the approval message for fast lookup on resume.
+    """
+    from dataclasses import asdict
+
+    approval_msg = append_message(
+        db,
+        thread=thread,
+        run_id=run.id,
+        step_id=step_id,
+        sequence_id=sequence_id,
+        role="approval",
+        content_text=f"Approval required for tool: {tool_call.name}",
+        content_json={"tool_calls": [asdict(tool_call)]},
+        tool_name=tool_call.name,
+        tool_call_id=tool_call.id,
+        tool_args_json=tool_call.arguments if isinstance(
+            tool_call.arguments, dict) else {},
+    )
+
+    run.status = "awaiting_approval"
+    run.stop_reason = "awaiting_approval"
+    run.pending_approval_message_id = approval_msg.id
+    db.add(run)
+    db.flush()
+    return approval_msg
+
+
+def load_approval_checkpoint(
+    db: Session,
+    run_id: int,
+) -> tuple[AgentRun, AgentMessage] | None:
+    """Load the run and its pending approval message.
+
+    Returns ``None`` if the run doesn't exist or is not awaiting approval.
+    """
+    run = db.get(AgentRun, run_id)
+    if run is None or run.status != "awaiting_approval":
+        return None
+    if run.pending_approval_message_id is None:
+        return None
+    approval_msg = db.get(AgentMessage, run.pending_approval_message_id)
+    if approval_msg is None:
+        return None
+    return run, approval_msg
+
+
+def clear_approval_checkpoint(
+    db: Session,
+    run: AgentRun,
+    approval_msg: AgentMessage,
+) -> None:
+    """Mark approval resolved: message out of context, FK cleared."""
+    approval_msg.is_in_context = False
+    db.add(approval_msg)
+    run.pending_approval_message_id = None
+    db.add(run)
+    db.flush()
 
 
 def reset_thread(db: Session, user_id: int) -> None:

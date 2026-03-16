@@ -393,6 +393,187 @@ class AgentRuntime:
             prompt_budget=prompt_budget,
         )
 
+    # ------------------------------------------------------------------
+    # Approval re-entry
+    # ------------------------------------------------------------------
+
+    async def resume_after_approval(
+        self,
+        *,
+        approved: bool,
+        tool_call: ToolCall,
+        user_id: int,
+        history: list[StoredMessage],
+        denial_reason: str | None = None,
+        memory_blocks: Sequence[MemoryBlock] = (),
+        conversation_turn_count: int | None = None,
+        event_callback: StreamEventCallback | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AgentResult:
+        """Resume a turn after an approval decision.
+
+        On approve: execute the tool directly (no LLM call).  If the tool
+        is terminal, return immediately.  Otherwise make one follow-up LLM
+        call so the companion can respond.
+
+        On deny: inject a tool-error result with the denial reason and make
+        one LLM call so the companion can acknowledge the denial.
+        """
+        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
+            memory_blocks=memory_blocks,
+        )
+        messages = build_conversation_messages(
+            history,
+            user_message=None,
+            system_prompt=system_prompt,
+        )
+        rules_solver = ToolRulesSolver(self._tool_rules)
+
+        step_traces: list[StepTrace] = []
+        tools_used: list[str] = []
+        response = ""
+
+        # Step 0: execute (or deny) the pending tool call
+        step_ctx = StepContext(
+            step_index=0,
+            progression=StepProgression.TOOLS_STARTED,
+            start_time=time.monotonic(),
+        )
+
+        if approved:
+            tool_result = await self._tool_executor.execute(
+                tool_call,
+                is_terminal=rules_solver.is_terminal(tool_call.name),
+            )
+        else:
+            reason = denial_reason or "No reason provided"
+            tool_result = ToolExecutionResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                output=f"Tool {tool_call.name} was denied by user. Reason: {reason}",
+                is_error=True,
+            )
+
+        if tool_call.name not in tools_used:
+            tools_used.append(tool_call.name)
+        messages.append(
+            make_tool_message(
+                tool_result.output,
+                tool_call_id=tool_result.call_id,
+                name=tool_result.name,
+            )
+        )
+        if event_callback is not None:
+            await event_callback(build_tool_call_event(0, tool_call))
+            await event_callback(build_tool_return_event(0, tool_result))
+
+        step_ctx.progression = StepProgression.TOOLS_COMPLETED
+        request_messages = _snapshot_messages(messages)
+        allowed_tool_names = tuple(
+            sorted(rules_solver.get_allowed_tools(self._tool_names))
+        )
+        step_traces.append(
+            _build_step_trace(
+                step_ctx,
+                StepExecutionResult(),  # no LLM result for this step
+                request_messages,
+                allowed_tool_names,
+                False,
+                tool_calls=(tool_call,),
+                tool_results=(tool_result,),
+            )
+        )
+        if event_callback is not None:
+            await event_callback(
+                build_timing_event(0, _compute_timing(step_ctx)))
+
+        # If the tool is terminal and was approved, return immediately.
+        if approved and tool_result.is_terminal:
+            response = tool_result.output or response
+            return AgentResult(
+                response=response,
+                model=self._adapter.model,
+                provider=self._adapter.provider,
+                stop_reason=StopReason.TERMINAL_TOOL.value,
+                tools_used=tools_used,
+                step_traces=step_traces,
+                prompt_budget=prompt_budget,
+            )
+
+        # Step 1: one LLM follow-up so the companion can respond
+        if cancel_event is not None and cancel_event.is_set():
+            return AgentResult(
+                response="",
+                model=self._adapter.model,
+                provider=self._adapter.provider,
+                stop_reason=StopReason.CANCELLED.value,
+                tools_used=tools_used,
+                step_traces=step_traces,
+                prompt_budget=prompt_budget,
+            )
+
+        allowed_tool_names = tuple(
+            sorted(rules_solver.get_allowed_tools(self._tool_names))
+        )
+        force_tool_call = bool(allowed_tool_names) and (
+            rules_solver.should_force_tool_call()
+            or "send_message" in allowed_tool_names
+        )
+        try:
+            step_result, streamed_assistant_text, follow_ctx = await self._run_step(
+                messages=messages,
+                user_id=user_id,
+                conversation_turn_count=conversation_turn_count,
+                step_index=1,
+                system_prompt=system_prompt,
+                allowed_tool_names=allowed_tool_names,
+                force_tool_call=force_tool_call,
+                event_callback=event_callback,
+                cancel_event=cancel_event,
+            )
+        except _CancelledDuringStream:
+            return AgentResult(
+                response="",
+                model=self._adapter.model,
+                provider=self._adapter.provider,
+                stop_reason=StopReason.CANCELLED.value,
+                tools_used=tools_used,
+                step_traces=step_traces,
+                prompt_budget=prompt_budget,
+            )
+
+        response = step_result.assistant_text or response
+        if (
+            event_callback is not None
+            and step_result.assistant_text
+            and not streamed_assistant_text
+        ):
+            await event_callback(build_chunk_event(step_result.assistant_text))
+
+        follow_request_messages = _snapshot_messages(messages)
+        step_traces.append(
+            _build_step_trace(
+                follow_ctx, step_result, follow_request_messages,
+                allowed_tool_names, force_tool_call,
+            )
+        )
+        if event_callback is not None:
+            await event_callback(
+                build_timing_event(1, _compute_timing(follow_ctx)))
+
+        if not response:
+            response = _default_response(StopReason.END_TURN)
+
+        return AgentResult(
+            response=response,
+            model=self._adapter.model,
+            provider=self._adapter.provider,
+            stop_reason=StopReason.END_TURN.value,
+            tools_used=tools_used,
+            step_traces=step_traces,
+            prompt_budget=prompt_budget,
+        )
+
     async def _run_step(
         self,
         *,

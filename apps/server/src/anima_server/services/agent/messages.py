@@ -39,13 +39,14 @@ class ToolMessage:
 
 def build_conversation_messages(
     history: list[StoredMessage],
-    user_message: str,
+    user_message: str | None,
     *,
     system_prompt: str,
 ) -> list[Any]:
     messages: list[Any] = [make_system_message(system_prompt)]
     messages.extend(to_runtime_message(message) for message in history)
-    messages.append(make_user_message(user_message))
+    if user_message is not None:
+        messages.append(make_user_message(user_message))
     return messages
 
 
@@ -85,7 +86,8 @@ def make_assistant_message(
 ) -> Any:
     return AIMessage(
         content=content,
-        tool_calls=[to_tool_call_payload(tool_call) for tool_call in tool_calls],
+        tool_calls=[to_tool_call_payload(tool_call)
+                    for tool_call in tool_calls],
     )
 
 
@@ -152,7 +154,8 @@ def message_usage_payload(message: Any) -> dict[str, object] | None:
     if not isinstance(response_metadata, dict):
         return None
 
-    usage_payload = response_metadata.get("token_usage") or response_metadata.get("usage")
+    usage_payload = response_metadata.get(
+        "token_usage") or response_metadata.get("usage")
     return usage_payload if isinstance(usage_payload, dict) else None
 
 

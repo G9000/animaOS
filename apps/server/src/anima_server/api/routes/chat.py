@@ -15,6 +15,8 @@ from anima_server.db import get_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models import AgentMessage, AgentThread, MemoryDailyLog, MemoryItem, Task
 from anima_server.schemas.chat import (
+    ApprovalRequest,
+    ApprovalResponse,
     CancelRunRequest,
     CancelRunResponse,
     ChatHistoryClearResponse,
@@ -27,6 +29,7 @@ from anima_server.schemas.chat import (
     DryRunResponse,
 )
 from anima_server.services.agent import (
+    approve_or_deny_turn,
     cancel_agent_run,
     dry_run_agent,
     ensure_agent_ready,
@@ -34,6 +37,7 @@ from anima_server.services.agent import (
     reset_agent_thread,
     run_agent,
     stream_agent,
+    stream_approve_or_deny,
 )
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
@@ -440,4 +444,72 @@ async def dry_run(
         estimatedPromptTokens=result.estimated_prompt_tokens,
         toolSchemas=list(result.tool_schemas),
         memoryBlockCount=len(result.memory_blocks),
+    )
+
+
+@router.post("/runs/{run_id}/approval", response_model=ApprovalResponse)
+async def handle_approval(
+    run_id: int,
+    payload: ApprovalRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApprovalResponse | StreamingResponse:
+    """Approve or deny a pending tool call for an awaiting-approval run."""
+    require_unlocked_user(request, payload.userId)
+
+    from anima_server.models import AgentRun as AgentRunModel
+    run = db.get(AgentRunModel, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.user_id != payload.userId:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized for this run")
+    if run.status != "awaiting_approval":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Run is not awaiting approval (status: {run.status})")
+
+    if payload.stream:
+        async def _generate() -> AsyncGenerator[str, None]:
+            async for event in stream_approve_or_deny(
+                run_id, payload.userId, payload.approved, db,
+                denial_reason=payload.reason,
+            ):
+                yield _format_sse_event(event.event, event.data)
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    try:
+        result = await approve_or_deny_turn(
+            run_id, payload.userId, payload.approved, db,
+            denial_reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+    return ApprovalResponse(
+        runId=run_id,
+        status="completed",
+        response=result.response,
+        model=result.model,
+        provider=result.provider,
+        toolsUsed=list(result.tools_used),
     )

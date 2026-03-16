@@ -61,3 +61,19 @@ class DryRunResponse(BaseModel):
     estimatedPromptTokens: int
     toolSchemas: list[dict]
     memoryBlockCount: int
+
+
+class ApprovalRequest(BaseModel):
+    userId: int = Field(ge=0)
+    approved: bool
+    reason: str | None = None
+    stream: bool = False
+
+
+class ApprovalResponse(BaseModel):
+    runId: int
+    status: str
+    response: str = ""
+    model: str = ""
+    provider: str = ""
+    toolsUsed: list[str] = Field(default_factory=list)
