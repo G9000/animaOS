@@ -277,7 +277,7 @@ class AgentRuntime:
                             make_tool_message(
                                 tr.output,
                                 tool_call_id=tc.id,
-                                tool_name=tc.name,
+                                name=tc.name,
                             )
                         )
                     step_ctx.progression = StepProgression.TOOLS_COMPLETED
