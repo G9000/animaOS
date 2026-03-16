@@ -75,9 +75,11 @@ def send_message(message: str) -> str:
 
 @tool
 def note_to_self(key: str, value: str, note_type: str = "observation") -> str:
-    """Save a working note for this conversation session. Use this to remember context,
-    observations about the user's mood, plans for the conversation, or anything you want
-    to track within this session. Notes persist across turns but are not permanent memories.
+    """Save a working note for THIS conversation session only. Notes do NOT survive
+    after the session ends — they are scratch-pad context, not permanent memory.
+    Use this for: session-level observations, mood reads, plans for this conversation,
+    temporary context you want across turns.
+    Do NOT use for lasting user facts — use update_human_memory or save_to_memory instead.
     Types: observation, plan, context, emotion. Examples:
     - key="user_mood", value="seems stressed about work deadline", note_type="emotion"
     - key="conversation_goal", value="help user plan weekend trip", note_type="plan"
@@ -113,9 +115,17 @@ def dismiss_note(key: str) -> str:
 
 @tool
 def save_to_memory(key: str, category: str = "fact", importance: str = "3") -> str:
-    """Promote a session note to permanent long-term memory. Use this when you learn
-    something important about the user that should be remembered across all future sessions.
-    Categories: fact, preference, goal, relationship. Importance: 1-5 (5 = identity-defining).
+    """Promote a session note to permanent long-term memory (discrete items, searchable).
+    Use this for specific, categorical user facts that benefit from structured recall.
+    Categories and when to use each:
+    - fact: concrete details ("works at Google", "has two cats", "lactose intolerant")
+    - preference: stated likes/dislikes ("prefers dark mode", "hates small talk")
+    - goal: user aspirations ("wants to learn piano", "saving for a house")
+    - relationship: people in the user's life ("sister Emma, lives in Seattle")
+    Importance: 1-5 (5 = identity-defining).
+    IMPORTANT: If you already wrote something to update_human_memory, do NOT also
+    save the same information here. The human block is for your holistic understanding;
+    save_to_memory is for discrete searchable facts.
     """
     from anima_server.services.agent.tool_context import get_tool_context
     from anima_server.services.agent.session_memory import promote_session_note
@@ -374,6 +384,47 @@ def recall_memory(query: str, category: str = "") -> str:
     return f"Found {len(scored)} matching memories:\n" + "\n".join(lines)
 
 
+@tool
+def update_human_memory(content: str) -> str:
+    """Update your holistic mental model of the user. This is your high-level
+    understanding — a living summary of who this person is. The content should be
+    the COMPLETE updated model (include existing knowledge plus new information).
+    Write in concise key-value or bullet style.
+    USE THIS FOR: big-picture understanding (job, life situation, personality,
+    communication style, key relationships, major life events).
+    DO NOT USE FOR: discrete searchable facts — use save_to_memory instead.
+    Rule of thumb: if it's a standalone detail you'd want to search later
+    ("allergic to peanuts"), use save_to_memory(category="fact"). If it changes
+    your overall picture of who this person is, update this block.
+    Do NOT duplicate the same information in both this tool and save_to_memory.
+    """
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.models import SelfModelBlock
+    from sqlalchemy import select
+
+    ctx = get_tool_context()
+    block = ctx.db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == ctx.user_id,
+            SelfModelBlock.section == "human",
+        )
+    )
+    if block is None:
+        ctx.db.add(SelfModelBlock(
+            user_id=ctx.user_id,
+            section="human",
+            content=content.strip(),
+            version=1,
+            updated_by="agent_tool",
+        ))
+    else:
+        block.content = content.strip()
+        block.version += 1
+        block.updated_by = "agent_tool"
+    ctx.db.flush()
+    return "Human memory updated."
+
+
 def get_tools() -> list[Any]:
     """Return all tools available to the agent."""
     return [
@@ -381,7 +432,7 @@ def get_tools() -> list[Any]:
         note_to_self, dismiss_note, save_to_memory,
         set_intention, complete_goal,
         create_task, list_tasks, complete_task,
-        recall_memory,
+        recall_memory, update_human_memory,
     ]
 
 

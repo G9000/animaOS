@@ -128,6 +128,20 @@ def create_user(
         updated_by="system",
     ))
 
+    # Seed human block — the agent's living understanding of the user.
+    # Starts with basic facts; the agent enriches this through conversation
+    # via the update_human_memory tool.
+    human_lines = [f"Name: {display_name}"]
+    if relationship.strip():
+        human_lines.append(f"Relationship: {relationship}")
+    db.add(SelfModelBlock(
+        user_id=user.id,
+        section="human",
+        content="\n".join(human_lines),
+        version=1,
+        updated_by="system",
+    ))
+
     # Seed user directive if provided
     if user_directive.strip():
         db.add(SelfModelBlock(

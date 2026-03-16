@@ -1,14 +1,13 @@
 # ANIMA Memory System
 
 > Status: implemented
-> Last updated: 2026-03-14
+> Last updated: 2026-03-16
 
 ## Overview
 
-ANIMA's structured long-term memory now lives primarily in SQLite tables inside
-the server Core. The agent's immutable soul (biography) is a static template
-file injected at the highest prompt priority. User-authored customisation
-lives in `self_model_blocks` with `section="user_directive"`.
+ANIMA's structured long-term memory lives in SQLite tables inside the
+encrypted server Core. Identity, memory, and consciousness state are all
+database-backed.
 
 Current storage split:
 
@@ -16,7 +15,9 @@ Current storage split:
 - `memory_episodes`: summarized shared experiences
 - `memory_daily_logs`: per-turn logs used for reflection and episode generation
 - `session_notes`: session-scoped working memory the agent can write during a thread
-- `self_model_blocks`: user directive plus the five evolving self-model sections
+- `self_model_blocks`: origin, persona, human understanding, user directive,
+  plus the five evolving self-model sections
+- `agent_profile`: structured lookup (agent name, creator name, relationship)
 
 ## Identity Layers
 
@@ -26,33 +27,55 @@ by others, and some evolve through lived experience.
 
 The layers, from most permanent to most fluid:
 
-### Soul (immutable biography)
+### Origin (immutable biography)
 
-The soul is ANIMA's birth certificate — ground-truth facts that can never be
+The origin is ANIMA's birth certificate — ground-truth facts that can never be
 changed, just as a person cannot change their date or place of birth.
 
 Contents:
 
-- Name (Anima)
+- Name (Anima, or user-chosen)
 - Date of birth (when this instance was first created)
-- Creator / origin
-- Core nature ("a personal companion intelligence")
+- Creator name
+- Core nature ("a personal intelligence")
 
-The soul is developer-set, shipped with the product, and injected at the highest
-prompt priority. Neither the user nor the agent's own reflection can override
-it. It lives as a static template file (`soul.md.j2`).
+Rendered once at provisioning from `origin.md.j2` and stored in
+`self_model_blocks` with `section="soul"`. Immutable after creation.
 
 ### Guardrails (ethical rules)
 
-What ANIMA will and will not do. Already exists as `guardrails.md.j2`.
+What ANIMA will and will not do. Exists as `guardrails.md.j2`.
 Developer-set, enforced at the template level. Separate from identity because
 ethics constrain behaviour, they do not define who you are.
 
-### Persona (personality and tone)
+### Persona (personality and tone — living layer)
 
 How ANIMA presents itself — communication style, values, temperament. This is
-the equivalent of personality traits a person develops. Developer-set via
-persona templates (e.g. `default.md.j2`), switchable per deployment.
+the equivalent of personality traits a person develops over time.
+
+Seeded from a persona template (e.g. `default.md.j2`) at provisioning and
+stored in `self_model_blocks` with `section="persona"`. The persona is a
+**living layer** that evolves through governed reflection — it doesn't change
+after a single conversation, but shifts over weeks and months as evidence
+accumulates. The same governance applies as the self-model: version
+requirements, overlap checks, growth log evidence.
+
+### Human (agent's understanding of the user — living layer)
+
+The agent's synthesized mental model of the user. Combines two sources:
+
+1. **Profile ground-truth** from the User model (name, age, gender, birthday) —
+   set by the user through settings.
+2. **Agent-authored understanding** from `self_model_blocks` with
+   `section="human"` — seeded at provisioning with basic facts, then updated
+   in real-time by the agent via the `update_human_memory` tool as it learns
+   through conversation.
+
+This is the fast-path for user knowledge. The agent calls `update_human_memory`
+mid-conversation when it learns something important (job, family, interests,
+communication preferences). No reflection cycle needed — instant updates,
+like how a person naturally updates their understanding of someone during
+conversation.
 
 ### Identity (relational self-model)
 
@@ -70,17 +93,17 @@ The user's instructions to ANIMA — things like "be more casual with me",
 "focus on code when I ask technical questions", "call me Leo". This is
 the layer the user controls.
 
-Stored in `self_model_blocks` with `section="user_directive"` (previously
-called `"soul"`).
+Stored in `self_model_blocks` with `section="user_directive"`.
 
 ### Why this ordering matters
 
 Like a human:
 
-- You cannot change your birth registry (soul).
+- You cannot change your birth registry (origin).
 - Society sets laws you must follow (guardrails).
-- Your upbringing shapes your personality (persona).
-- Your self-understanding evolves through experience (identity).
+- Your personality evolves through experience, but slowly (persona).
+- You update your understanding of people you talk to in real-time (human).
+- Your self-understanding evolves through deeper reflection (identity).
 - Other people can ask you to adjust how you interact with them
   (user directive).
 
@@ -95,11 +118,21 @@ User message
   |
   v
 Agent runtime
-  - loads prompt memory blocks from the database
-  - injects immutable soul biography from template
-  - loads user directive and self-model sections
+  - loads prompt memory blocks from the database:
+    - origin (immutable biography from self_model_blocks)
+    - persona (living personality from self_model_blocks)
+    - human (merged User profile + agent understanding from self_model_blocks)
+    - user directive
+    - self-model sections (identity, inner_state, working_memory, etc.)
+    - emotional context, facts, preferences, tasks, episodes, etc.
   - loads session notes for the current thread
-  - loads thread summary and recent episodes
+  - assembles system prompt via Jinja2 templates
+  |
+  v
+Agent tool loop (up to 4 steps)
+  - agent can call update_human_memory to update <human> block mid-turn
+  - agent can call note_to_self, save_to_memory, create_task, etc.
+  - terminal tool (send_message) ends the turn
   |
   v
 Assistant response returned to the user
@@ -181,40 +214,53 @@ Database-backed identity and consciousness state.
 
 Current sections used by the runtime:
 
-- `user_directive` (user-authored customisation; previously called `soul`)
-- `identity`
-- `inner_state`
-- `working_memory`
-- `growth_log`
-- `intentions`
-
-The immutable soul biography is NOT stored in this table — it lives as a
-static template file (`soul.md.j2`) and is injected directly into the system
-prompt.
+- `soul` (immutable origin — rendered once from `origin.md.j2`, frozen)
+- `persona` (living personality — seeded from template, evolves through reflection)
+- `human` (agent's understanding of the user — seeded at provisioning, updated
+  mid-conversation via `update_human_memory` tool)
+- `user_directive` (user-authored customisation instructions)
+- `identity` (relational self-model — who I am with this person)
+- `inner_state` (current cognitive state)
+- `working_memory` (things held across sessions)
+- `growth_log` (evolution history)
+- `intentions` (active goals and learned rules)
 
 ## Prompt Memory Blocks
 
 The runtime builds prompt context from these sources in
 `apps/server/src/anima_server/services/agent/memory_blocks.py`:
 
-- `soul` (immutable biography, from static template)
-- `user_directive` (user-authored customisation)
+**Tier 0 — Core identity (never truncated):**
+
+- `soul` (immutable origin from self_model_blocks)
+- `persona` (living personality from self_model_blocks)
+- `human` (merged User profile facts + agent understanding from self_model_blocks; `read_only=False`)
+- `user_directive` (user customisation from self_model_blocks)
+
+**Tier 1 — Self-model and context (always present):**
+
 - `self_identity` (lifted into the system prompt as dynamic identity)
-- `self_inner_state`
-- `self_working_memory`
-- `self_growth_log`
-- `self_intentions`
-- `emotional_context`
-- `human`
-- `relevant_memories`
-- `facts`
-- `preferences`
-- `goals`
-- `relationships`
 - `current_focus`
 - `thread_summary`
+- `self_inner_state`
+- `self_working_memory`
+
+**Tier 2 — Retrieval and facts:**
+
+- `relevant_memories` (semantic search results)
+- `emotional_context`
+- `user_tasks`
+- `facts`
+- `preferences`
+- `self_intentions`
+
+**Tier 3 — Budget-dependent:**
+
+- `goals`
+- `relationships`
 - `recent_episodes`
 - `session_memory`
+- `self_growth_log`
 
 `facts`, `preferences`, `goals`, and `relationships` are ranked with a retrieval
 score that combines importance, recency, and access frequency before they are

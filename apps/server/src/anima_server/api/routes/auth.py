@@ -89,6 +89,9 @@ def register(
             raise HTTPException(status_code=409, detail=detail) from None
         raise HTTPException(
             status_code=422, detail=detail) from None
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503, detail=str(exc)) from None
 
     response["unlockToken"] = unlock_session_store.create(
         int(response["id"]), dek)

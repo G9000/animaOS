@@ -57,13 +57,13 @@ class PromptBudgetPlan:
 _DEFAULT_POLICY = BlockBudgetPolicy(tier=3, order=999, max_chars=1000)
 _BLOCK_POLICIES: dict[str, BlockBudgetPolicy] = {
     "soul": BlockBudgetPolicy(tier=0, order=0, max_chars=None),
-    "user_directive": BlockBudgetPolicy(tier=0, order=1, max_chars=None),
+    "human": BlockBudgetPolicy(tier=0, order=1, max_chars=None),
+    "user_directive": BlockBudgetPolicy(tier=0, order=2, max_chars=None),
     "self_identity": BlockBudgetPolicy(tier=1, order=0, max_chars=1600),
     "current_focus": BlockBudgetPolicy(tier=1, order=1, max_chars=1400),
     "thread_summary": BlockBudgetPolicy(tier=1, order=2, max_chars=1800),
     "self_inner_state": BlockBudgetPolicy(tier=1, order=3, max_chars=900),
     "self_working_memory": BlockBudgetPolicy(tier=1, order=4, max_chars=700),
-    "human": BlockBudgetPolicy(tier=1, order=5, max_chars=700),
     "relevant_memories": BlockBudgetPolicy(tier=2, order=0, max_chars=2200),
     "emotional_context": BlockBudgetPolicy(tier=2, order=1, max_chars=700),
     "user_tasks": BlockBudgetPolicy(tier=2, order=2, max_chars=1400),

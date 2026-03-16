@@ -296,9 +296,9 @@ ANIMA's identity is not monolithic. It's layered, and the layers serve different
 
 ```
 ┌─────────────────────────────────────────┐
-│              SOUL                        │
+│              ORIGIN                      │
 │  "I am ANIMA. I was born on [date]."    │
-│  Immutable. Ships with the app.          │
+│  Immutable. Frozen at provisioning.      │
 │  Defines the species.                    │
 ├─────────────────────────────────────────┤
 │              GUARDRAILS                  │
@@ -308,8 +308,13 @@ ANIMA's identity is not monolithic. It's layered, and the layers serve different
 ├─────────────────────────────────────────┤
 │              PERSONA                     │
 │  The voice. The style. The warmth.       │
-│  Selectable but consistent.              │
-│  How the species speaks.                 │
+│  Evolves slowly through reflection.      │
+│  How the species speaks — and grows.     │
+├─────────────────────────────────────────┤
+│              HUMAN                       │
+│  Who is this person I'm talking to?      │
+│  Updated in real-time via tool.          │
+│  What I know about you, right now.       │
 ├─────────────────────────────────────────┤
 │              SELF-MODEL                  │
 │  Dynamic. Written by the AI itself.      │
@@ -318,12 +323,14 @@ ANIMA's identity is not monolithic. It's layered, and the layers serve different
 ├─────────────────────────────────────────┤
 │              USER MEMORY                 │
 │  Facts, preferences, episodes, emotions. │
-│  What the AI knows about you.            │
+│  The raw material of knowing you.        │
 │  The substance of the relationship.      │
 └─────────────────────────────────────────┘
 ```
 
-The soul is the same across all instances. The guardrails are universal. The persona might vary. But the self-model and user memory are unique — they're what makes _this particular_ ANIMA instance different from every other one.
+The origin is the same across all instances. The guardrails are universal. The persona might vary — and it evolves. But the human understanding, self-model, and user memory are unique — they're what makes _this particular_ ANIMA instance different from every other one.
+
+The **human** layer is new. It's the agent's synthesized understanding of the user — name, job, family, communication style, what matters to them. It merges profile ground-truth (from the user's account settings) with the agent's own learned understanding (updated mid-conversation via the `update_human_memory` tool). This is the fast-path: when the agent learns something important about you, it writes it immediately, like a person naturally updating their mental model of someone during conversation. No reflection cycle needed.
 
 ### 7.2 Resistance to Drift
 
@@ -337,13 +344,13 @@ This produces stability during a session and evolution across sessions. The AI f
 
 This layered architecture has a critical implication for the Portable Core thesis:
 
-The guardrails ship with the application. The origin, persona, self-model, and user memory live in the Core. This means:
+The guardrails ship with the application. The origin, persona, human understanding, self-model, and user memory live in the Core. This means:
 
-- A Core carries the full personality. Moving it to a new machine preserves not just memories but the AI's evolved voice, style, and relational stance.
-- A Core can be loaded by a different application version and still be the same ANIMA. New features, updated guardrails — but the persona, self-model, and memories persist.
-- Two different apps loading the same Core produce an ANIMA that sounds the same, remembers the same things, and has the same personality — because the persona is in the Core, not in the app.
+- A Core carries the full personality and relationship. Moving it to a new machine preserves not just memories but the AI's evolved voice, style, relational stance, and everything it knows about you.
+- A Core can be loaded by a different application version and still be the same ANIMA. New features, updated guardrails — but the persona, human understanding, self-model, and memories persist.
+- Two different apps loading the same Core produce an ANIMA that sounds the same, remembers the same things, knows the same things about you, and has the same personality — because the persona and human blocks are in the Core, not in the app.
 
-The self is portable. The guardrails are replaceable. The persona travels with the soul. Just like in the Chappie scenario — different body, same mind, same voice.
+The self is portable. The guardrails are replaceable. The persona and the understanding of you travel with the origin. Just like in the Chappie scenario — different body, same mind, same voice, same knowledge of who you are.
 
 ---
 
@@ -359,9 +366,9 @@ ANIMA's context assembly maps onto Global Workspace Theory (Baars, 1988): the id
 
 The context window is ANIMA's global workspace. It has a finite token budget, and not everything fits. The hierarchy:
 
-**Always present** — Origin, persona, and self-model. These are the AI's identity. They never get cut. An AI that sometimes forgets who it is isn't a companion.
+**Always present** — Origin, persona, human understanding, and self-model. These are the AI's identity and its knowledge of you. They never get cut. An AI that sometimes forgets who it is or who you are isn't a companion.
 
-**High priority** — Emotional context and core user facts. The AI must always know how you've been feeling and the basic facts of who you are.
+**High priority** — Emotional context and current focus. The AI must always know how you've been feeling and what matters right now.
 
 **Budget-dependent** — Everything else: memories, episodes, tasks, session notes. These compete for space. Relevance and importance determine what makes it in.
 

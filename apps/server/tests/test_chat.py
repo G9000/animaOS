@@ -472,14 +472,15 @@ def test_chat_invalid_persona_template_returns_error() -> None:
         invalidate_agent_runtime_cache()
 
         with _client() as client:
-            user = _register_user(client, username="bad-persona")
-            headers = {"x-anima-unlock": str(user["unlockToken"])}
-            user_id = int(user["id"])
-
+            # Persona template is validated at registration time now
+            # (persona is seeded into the DB during create_user)
             response = client.post(
-                "/api/chat",
-                headers=headers,
-                json={"message": "hello", "userId": user_id},
+                "/api/auth/register",
+                json={
+                    "username": "bad-persona",
+                    "password": "pw1234",
+                    "name": "BadPersona",
+                },
             )
     finally:
         settings.agent_provider = original_provider

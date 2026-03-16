@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, MemoryEpisode, User
+from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, User
 from anima_server.models.task import Task
 from anima_server.services.agent.memory_store import (
     get_current_focus,
@@ -41,6 +41,11 @@ def build_runtime_memory_blocks(
     if persona_block is not None:
         blocks.append(persona_block)
 
+    # Human core block (Priority 0 — agent's living understanding of the user)
+    human_core_block = build_human_core_block(db, user_id=user_id)
+    if human_core_block is not None:
+        blocks.append(human_core_block)
+
     # User directive (Priority 0 — user-authored customisation)
     user_directive_block = build_user_directive_memory_block(
         db, user_id=user_id)
@@ -55,10 +60,6 @@ def build_runtime_memory_blocks(
     emotional_block = build_emotional_context_block(db, user_id=user_id)
     if emotional_block is not None:
         blocks.append(emotional_block)
-
-    human_block = build_human_memory_block(db, user_id=user_id)
-    if human_block is not None:
-        blocks.append(human_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     if semantic_results:
@@ -126,37 +127,6 @@ def _build_semantic_block(
     return MemoryBlock(
         label="relevant_memories",
         description="Memories semantically relevant to what the user just said. Use these naturally — don't list them back.",
-        value="\n".join(lines),
-    )
-
-
-def build_human_memory_block(
-    db: Session,
-    *,
-    user_id: int,
-) -> MemoryBlock | None:
-    user = db.get(User, user_id)
-    if user is None:
-        return None
-
-    lines: list[str] = []
-    if user.display_name.strip():
-        lines.append(f"Display name: {user.display_name.strip()}")
-    if user.username.strip():
-        lines.append(f"Username: {user.username.strip()}")
-    if user.gender:
-        lines.append(f"Gender: {user.gender}")
-    if user.age is not None:
-        lines.append(f"Age: {user.age}")
-    if user.birthday:
-        lines.append(f"Birthday: {user.birthday}")
-
-    if not lines:
-        return None
-
-    return MemoryBlock(
-        label="human",
-        description="Stable facts about the user for this thread.",
         value="\n".join(lines),
     )
 
@@ -441,8 +411,62 @@ def build_persona_block(
 
     return MemoryBlock(
         label="persona",
-        description="My personality, voice, and relational style — this evolves as I grow.",
+        description="My core personality, voice, and communication style — seeded at birth and evolved slowly through reflection. This is HOW I express myself.",
         value=block.content.strip(),
+    )
+
+
+def build_human_core_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    """Build the agent's living understanding of the user.
+
+    Combines two sources into a single block:
+    1. Ground-truth profile fields from the User model (name, age, birthday, etc.)
+    2. Agent-authored understanding from SelfModelBlock(section="human"),
+       seeded at provisioning and updated mid-conversation via the
+       update_human_memory tool.
+    """
+    from anima_server.models import SelfModelBlock
+
+    # User model profile fields (ground truth set through the UI)
+    user = db.get(User, user_id)
+    profile_lines: list[str] = []
+    if user is not None:
+        if user.display_name.strip():
+            profile_lines.append(f"Name: {user.display_name.strip()}")
+        if user.gender:
+            profile_lines.append(f"Gender: {user.gender}")
+        if user.age is not None:
+            profile_lines.append(f"Age: {user.age}")
+        if user.birthday:
+            profile_lines.append(f"Birthday: {user.birthday}")
+
+    # Agent-authored understanding (mutable via update_human_memory tool)
+    block = db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == user_id,
+            SelfModelBlock.section == "human",
+        )
+    )
+    agent_understanding = block.content.strip() if block is not None else ""
+
+    parts: list[str] = []
+    if profile_lines:
+        parts.append("\n".join(profile_lines))
+    if agent_understanding:
+        parts.append(agent_understanding)
+
+    if not parts:
+        return None
+
+    return MemoryBlock(
+        label="human",
+        description="What I know about this person — profile facts and my evolving understanding. Use the update_human_memory tool to update the understanding section.",
+        value="\n".join(parts),
+        read_only=False,
     )
 
 
@@ -488,7 +512,7 @@ def build_self_model_memory_blocks(
 
     section_config = [
         ("identity", "self_identity",
-         "Who I am in this relationship — my self-understanding."),
+         "Who I am to THIS specific user — my role, relational dynamics, and rapport. Distinct from persona (which is my general personality)."),
         ("inner_state", "self_inner_state",
          "My current cognitive state — what I'm thinking about, what's unresolved."),
         ("working_memory", "self_working_memory",

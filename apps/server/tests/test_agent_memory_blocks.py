@@ -76,7 +76,7 @@ def test_build_runtime_memory_blocks_includes_human_and_thread_summary() -> None
     assert "thread_summary" in labels
     human_block = next(b for b in blocks if b.label == "human")
     summary_block = next(b for b in blocks if b.label == "thread_summary")
-    assert "Display name: Alice" in human_block.value
+    assert "Alice" in human_block.value
     assert "Age: 30" in human_block.value
     assert "User likes green tea." in summary_block.value
 
