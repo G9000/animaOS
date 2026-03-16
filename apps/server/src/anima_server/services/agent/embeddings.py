@@ -1,7 +1,7 @@
 """Vector embedding support for semantic memory search.
 
 Generates embeddings via LLM providers and stores them in both:
-- ChromaDB (for fast HNSW-indexed similarity search)
+- Persistent vector store (for fast indexed similarity search)
 - MemoryItem.embedding_json (for vault export/import portability)
 
 All supported providers (ollama, openrouter, vllm) expose an
@@ -12,10 +12,14 @@ httpx-based implementation for all of them.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 from sqlalchemy import select
@@ -60,12 +64,77 @@ def _resolve_embedding_base_url() -> str:
     return resolve_base_url(provider)
 
 
+# ---------------------------------------------------------------------------
+# 3.2 — Embedding cache (LRU with TTL)
+# ---------------------------------------------------------------------------
+
+_CACHE_MAX_SIZE = 2048
+_CACHE_TTL_S = 3600  # 1 hour
+
+_embedding_cache: OrderedDict[str, tuple[list[float], float]] = OrderedDict()
+_cache_lock = Lock()
+_cache_hits = 0
+_cache_misses = 0
+
+
+def _cache_key(text: str) -> str:
+    provider = settings.agent_provider
+    model = _resolve_embedding_model()
+    raw = f"{provider}:{model}:{text}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _cache_get(key: str) -> list[float] | None:
+    global _cache_hits, _cache_misses
+    with _cache_lock:
+        entry = _embedding_cache.get(key)
+        if entry is None:
+            _cache_misses += 1
+            return None
+        embedding, ts = entry
+        if time.monotonic() - ts > _CACHE_TTL_S:
+            _embedding_cache.pop(key, None)
+            _cache_misses += 1
+            return None
+        _embedding_cache.move_to_end(key)
+        _cache_hits += 1
+        return embedding
+
+
+def _cache_put(key: str, embedding: list[float]) -> None:
+    with _cache_lock:
+        _embedding_cache[key] = (embedding, time.monotonic())
+        _embedding_cache.move_to_end(key)
+        while len(_embedding_cache) > _CACHE_MAX_SIZE:
+            _embedding_cache.popitem(last=False)
+
+
+def clear_embedding_cache() -> None:
+    """Clear the embedding cache. Called on model config change or in tests."""
+    global _cache_hits, _cache_misses
+    with _cache_lock:
+        _embedding_cache.clear()
+        _cache_hits = 0
+        _cache_misses = 0
+
+
+def get_embedding_cache_stats() -> dict[str, int]:
+    """Return cache hit/miss counters for monitoring."""
+    return {"hits": _cache_hits, "misses": _cache_misses, "size": len(_embedding_cache)}
+
+
 async def generate_embedding(text: str) -> list[float] | None:
     """Generate an embedding vector for the given text using the configured provider."""
     provider = settings.agent_provider
 
     if provider == "scaffold":
         return None
+
+    # Check cache first
+    key = _cache_key(text)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
 
     try:
         validate_provider_configuration(provider)
@@ -76,9 +145,10 @@ async def generate_embedding(text: str) -> list[float] | None:
 
     try:
         if provider == "ollama":
-            return await _embed_ollama(text)
-        # openrouter, vllm — all OpenAI-compatible
-        return await _embed_openai_compatible(text)
+            result = await _embed_ollama(text)
+        else:
+            # openrouter, vllm — all OpenAI-compatible
+            result = await _embed_openai_compatible(text)
     except LLMConfigError as exc:
         logger.debug(
             "Skipping embedding generation for provider %s: %s", provider, exc)
@@ -87,6 +157,10 @@ async def generate_embedding(text: str) -> list[float] | None:
         logger.exception(
             "Embedding generation failed for provider %s", provider)
         return None
+
+    if result is not None:
+        _cache_put(key, result)
+    return result
 
 
 async def _embed_openai_compatible(text: str) -> list[float] | None:
@@ -398,13 +472,30 @@ async def hybrid_search(
     similarity_threshold: float = 0.25,
     semantic_weight: float = 0.5,
     keyword_weight: float = 0.5,
+    tags: list[str] | None = None,
+    tag_match_mode: str = "any",
 ) -> HybridSearchResult:
     """Combined semantic + keyword search over memory items using RRF merge.
+
+    When *tags* is provided, post-filters results to only include items
+    that match the given tags (using "any" or "all" match mode).
 
     Returns a HybridSearchResult containing:
     - items: list of (MemoryItem, rrf_score) sorted by relevance
     - query_embedding: the embedding vector for reuse in query-aware blocks
     """
+    # If tags are given, pre-fetch the allowed item IDs
+    allowed_ids: set[int] | None = None
+    if tags:
+        from anima_server.services.agent.memory_store import get_items_by_tags
+        tag_items = get_items_by_tags(
+            db, user_id=user_id, tags=tags,
+            match_mode=tag_match_mode, limit=500,
+        )
+        allowed_ids = {item.id for item in tag_items}
+        if not allowed_ids:
+            return HybridSearchResult(items=[], query_embedding=None)
+
     query_embedding = await generate_embedding(query)
 
     from anima_server.services.agent.vector_store import search_by_text, search_similar
@@ -481,6 +572,8 @@ async def hybrid_search(
     results: list[tuple[MemoryItem, float]] = []
     for item_id, rrf_score in merged[:limit]:
         if item_id in items_by_id:
+            if allowed_ids is not None and item_id not in allowed_ids:
+                continue
             results.append((items_by_id[item_id], rrf_score))
 
     return HybridSearchResult(items=results, query_embedding=query_embedding)

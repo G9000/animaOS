@@ -124,7 +124,7 @@ def dismiss_note(key: str) -> str:
 
 
 @tool
-def save_to_memory(key: str, category: str = "fact", importance: str = "3") -> str:
+def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags: str = "") -> str:
     """Promote a session note to permanent long-term memory (discrete items, searchable).
     Use this for specific, categorical user facts that benefit from structured recall.
     Categories and when to use each:
@@ -133,6 +133,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3") -> s
     - goal: user aspirations ("wants to learn piano", "saving for a house")
     - relationship: people in the user's life ("sister Emma, lives in Seattle")
     Importance: 1-5 (5 = identity-defining).
+    Tags: optional comma-separated labels for retrieval filtering (e.g. "work,career").
     IMPORTANT: If you already wrote something to update_human_memory, do NOT also
     save the same information here. The human block is for your holistic understanding;
     save_to_memory is for discrete searchable facts.
@@ -150,6 +151,9 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3") -> s
     if category not in ("fact", "preference", "goal", "relationship"):
         category = "fact"
 
+    parsed_tags = [t.strip().lower()
+                   for t in tags.split(",") if t.strip()] if tags else None
+
     item = promote_session_note(
         ctx.db,
         thread_id=ctx.thread_id,
@@ -157,6 +161,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3") -> s
         key=key,
         category=category,
         importance=imp,
+        tags=parsed_tags,
     )
     if item is not None:
         from anima_server.services.agent.companion import get_companion
@@ -344,14 +349,16 @@ def complete_task(text: str) -> str:
 
 
 @tool
-def recall_memory(query: str, category: str = "") -> str:
+def recall_memory(query: str, category: str = "", tags: str = "") -> str:
     """Search your memory for information about the user. Use this when the user asks
     what you remember, or when you need to look up something specific about them.
     Returns matching memories ranked by relevance (semantic + keyword hybrid search).
     Optional category filter: fact, preference, goal, relationship (or empty for all).
+    Optional tags filter: comma-separated labels to narrow results (e.g. "work,career").
     Examples:
     - "what do you remember about my sister?" -> query="sister"
     - "what are my goals?" -> query="goals", category="goal"
+    - "work-related facts" -> query="work", tags="work,career"
     """
     import asyncio
     from anima_server.services.agent.tool_context import get_tool_context
@@ -367,6 +374,9 @@ def recall_memory(query: str, category: str = "") -> str:
     if cat and cat not in ("fact", "preference", "goal", "relationship"):
         cat = None
 
+    parsed_tags = [t.strip().lower()
+                   for t in tags.split(",") if t.strip()] if tags else None
+
     # Use hybrid search (semantic + keyword) via Phase 1 infrastructure
     scored: list[tuple[float, str, str]] = []
     hybrid_succeeded = False
@@ -376,6 +386,7 @@ def recall_memory(query: str, category: str = "") -> str:
         result = loop.run_until_complete(hybrid_search(
             ctx.db, user_id=ctx.user_id, query=query_stripped,
             limit=20, similarity_threshold=0.2,
+            tags=parsed_tags,
         ))
         for item, score in result.items:
             if cat and item.category != cat:

@@ -115,6 +115,7 @@ def promote_session_note(
     key: str,
     category: str = "fact",
     importance: int = 3,
+    tags: list[str] | None = None,
 ) -> MemoryItem | None:
     """Promote a session note to a long-term memory item."""
     from anima_server.services.agent.memory_store import add_memory_item
@@ -136,6 +137,7 @@ def promote_session_note(
         category=category,
         importance=importance,
         source="session",
+        tags=tags,
     )
     if item is not None:
         note.promoted_to_item_id = item.id

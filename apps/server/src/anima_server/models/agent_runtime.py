@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -216,6 +217,9 @@ class MemoryItem(Base):
     embedding_json: Mapped[list[float] | None] = mapped_column(
         JSON, nullable=True,
     )
+    tags_json: Mapped[list[str] | None] = mapped_column(
+        JSON, nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -225,6 +229,11 @@ class MemoryItem(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+    tag_entries: Mapped[list["MemoryItemTag"]] = relationship(
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -297,6 +306,136 @@ class SessionNote(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class MemoryItemTag(Base):
+    """Junction table for tag-based memory filtering.
+
+    Tags are stored both here (for efficient queries) and in
+    MemoryItem.tags_json (for easy reads). Mirrors Letta's PassageTag pattern.
+    """
+
+    __tablename__ = "memory_item_tags"
+    __table_args__ = (
+        UniqueConstraint("item_id", "tag",
+                         name="uq_memory_item_tags_item_tag"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tag: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class MemoryClaim(Base):
+    """Canonical structured claim extracted from user memory.
+
+    Replaces freeform text dedup with slot-based storage, confidence
+    scores, and provenance tracking.
+    """
+
+    __tablename__ = "memory_claims"
+    __table_args__ = (
+        Index("ix_memory_claims_user_canonical", "user_id", "canonical_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subject_type: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="user",
+    )  # user, other_person, entity
+    namespace: Mapped[str] = mapped_column(
+        String(24), nullable=False,
+    )  # fact, preference, goal, relationship
+    slot: Mapped[str] = mapped_column(
+        String(64), nullable=False,
+    )  # age, occupation, location, etc.
+    value_text: Mapped[str] = mapped_column(Text, nullable=False)
+    value_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True,
+    )
+    polarity: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="positive",
+    )  # positive, negative, neutral
+    confidence: Mapped[float] = mapped_column(
+        nullable=False, default=0.8,
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active",
+    )  # active, superseded, retracted
+    canonical_key: Mapped[str] = mapped_column(
+        String(255), nullable=False,
+    )  # e.g. "user:fact:occupation"
+    source_kind: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="extraction",
+    )  # extraction, user, reflection
+    extractor: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="regex",
+    )  # regex, llm, manual
+    memory_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    superseded_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_claims.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    evidence: Mapped[list["MemoryClaimEvidence"]] = relationship(
+        back_populates="claim",
+        cascade="all, delete-orphan",
+    )
+
+
+class MemoryClaimEvidence(Base):
+    """Source evidence for a structured memory claim."""
+
+    __tablename__ = "memory_claim_evidence"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    claim_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_claims.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(
+        String(24), nullable=False,
+    )  # user_message, extraction, reflection
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    claim: Mapped[MemoryClaim] = relationship(back_populates="evidence")
 
 
 class MemoryDailyLog(Base):

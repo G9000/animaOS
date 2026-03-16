@@ -1,8 +1,14 @@
-"""In-memory vector store for semantic memory search.
+"""Persistent and in-memory vector stores for semantic memory search.
 
-Embeddings already persist in SQLite via ``MemoryItem.embedding_json``. This
-module keeps a process-local index for faster similarity search without
-writing raw memory content back to disk under ``settings.data_dir``.
+Provides an abstract ``VectorStore`` interface with two implementations:
+
+- ``SqliteVecStore``: Persistent SQLite-backed store using raw SQL with cosine
+  similarity. Embeddings survive server restarts.
+- ``InMemoryVectorStore``: Process-local fallback (the original implementation).
+
+The active store is selected via ``get_vector_store()`` which returns a module-
+level singleton.  All public helper functions (``upsert_memory``,
+``search_similar``, etc.) delegate through it.
 """
 
 from __future__ import annotations
@@ -10,6 +16,9 @@ from __future__ import annotations
 import logging
 import math
 import shutil
+import sqlite3
+import struct
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -20,340 +29,86 @@ from anima_server.config import settings
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Abstract interface
+# ---------------------------------------------------------------------------
+
+
 @dataclass(slots=True)
-class _VectorRecord:
+class VectorSearchResult:
     item_id: int
     content: str
-    embedding: list[float]
     category: str
     importance: int
+    similarity: float
 
 
-class _InMemoryCollection:
-    def __init__(self) -> None:
-        self._records: dict[str, _VectorRecord] = {}
+class VectorStore(ABC):
+    """Abstract vector store that all backends must implement."""
 
-    def count(self) -> int:
-        return len(self._records)
-
+    @abstractmethod
     def upsert(
         self,
+        user_id: int,
         *,
-        ids: list[str],
-        embeddings: list[list[float]],
-        documents: list[str],
-        metadatas: list[dict[str, Any]],
-    ) -> None:
-        for idx, doc_id in enumerate(ids):
-            metadata = metadatas[idx] if idx < len(metadatas) else {}
-            self._records[str(doc_id)] = _VectorRecord(
-                item_id=int(metadata.get("item_id", int(doc_id))),
-                content=documents[idx],
-                embedding=embeddings[idx],
-                category=str(metadata.get("category", "fact")),
-                importance=int(metadata.get("importance", 3)),
-            )
+        item_id: int,
+        content: str,
+        embedding: list[float],
+        category: str,
+        importance: int,
+    ) -> None: ...
 
-    def delete(self, *, ids: list[str]) -> None:
-        for doc_id in ids:
-            self._records.pop(str(doc_id), None)
+    @abstractmethod
+    def delete(self, user_id: int, *, item_id: int) -> None: ...
 
-    def query(
+    @abstractmethod
+    def search_by_vector(
         self,
+        user_id: int,
         *,
-        query_embeddings: list[list[float]] | None = None,
-        query_texts: list[str] | None = None,
-        n_results: int = 10,
-        where: dict[str, Any] | None = None,
-        include: list[str] | None = None,
-    ) -> dict[str, list[list[Any]]]:
-        del include  # The in-memory store always returns the same response shape.
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[VectorSearchResult]: ...
 
-        filtered = [
-            (doc_id, record)
-            for doc_id, record in self._records.items()
-            if _matches_where(record, where)
-        ]
-
-        if not filtered:
-            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-        scored: list[tuple[str, _VectorRecord, float]] = []
-        if query_embeddings:
-            query_embedding = query_embeddings[0]
-            for doc_id, record in filtered:
-                similarity = _cosine_similarity(query_embedding, record.embedding)
-                scored.append((doc_id, record, 1.0 - similarity))
-        elif query_texts:
-            query_text = query_texts[0]
-            for doc_id, record in filtered:
-                similarity = _text_similarity(query_text, record.content)
-                scored.append((doc_id, record, 1.0 - similarity))
-        else:
-            scored = [(doc_id, record, 1.0) for doc_id, record in filtered]
-
-        scored.sort(key=lambda item: item[2])
-        top = scored[: min(n_results, len(scored))]
-        return {
-            "ids": [[doc_id for doc_id, _, _ in top]],
-            "documents": [[record.content for _, record, _ in top]],
-            "metadatas": [[
-                {
-                    "category": record.category,
-                    "importance": record.importance,
-                    "item_id": record.item_id,
-                }
-                for _, record, _ in top
-            ]],
-            "distances": [[distance for _, _, distance in top]],
-        }
-
-
-class _InMemoryVectorClient:
-    def __init__(self) -> None:
-        self._collections: dict[str, _InMemoryCollection] = {}
-
-    def get_or_create_collection(
+    @abstractmethod
+    def search_by_text(
         self,
+        user_id: int,
         *,
-        name: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> _InMemoryCollection:
-        del metadata
-        collection = self._collections.get(name)
-        if collection is None:
-            collection = _InMemoryCollection()
-            self._collections[name] = collection
-        return collection
+        query_text: str,
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[VectorSearchResult]: ...
 
-    def delete_collection(self, name: str) -> None:
-        self._collections.pop(name, None)
+    @abstractmethod
+    def rebuild(
+        self,
+        user_id: int,
+        items: list[tuple[int, str, list[float], str, int]],
+    ) -> int: ...
 
-    def reset(self) -> None:
-        self._collections.clear()
+    @abstractmethod
+    def count(self, user_id: int) -> int: ...
 
-    def clear_system_cache(self) -> None:
-        self.reset()
-
-
-_client: _InMemoryVectorClient | None = None
-_client_lock = Lock()
-_legacy_cleanup_done = False
-_legacy_cleanup_lock = Lock()
+    @abstractmethod
+    def reset(self) -> None: ...
 
 
-def _cleanup_legacy_persist_dir() -> None:
-    global _legacy_cleanup_done
-    if _legacy_cleanup_done:
-        return
-
-    with _legacy_cleanup_lock:
-        if _legacy_cleanup_done:
-            return
-
-        legacy_dir = Path(settings.data_dir) / "chroma"
-        if legacy_dir.exists():
-            shutil.rmtree(legacy_dir, ignore_errors=True)
-            logger.info("Removed legacy plaintext vector store at %s", legacy_dir)
-        _legacy_cleanup_done = True
+# ---------------------------------------------------------------------------
+# SQLite persistent store
+# ---------------------------------------------------------------------------
 
 
-def _get_vector_client() -> _InMemoryVectorClient:
-    """Lazy-initialize an in-memory vector client."""
-    global _client
-    if _client is not None:
-        return _client
-
-    with _client_lock:
-        if _client is not None:
-            return _client
-
-        _cleanup_legacy_persist_dir()
-        _client = _InMemoryVectorClient()
-        logger.info("Vector store initialized in process memory")
-        return _client
+def _serialize_f32(vec: list[float]) -> bytes:
+    """Pack a float list into little-endian float32 bytes."""
+    return struct.pack(f"<{len(vec)}f", *vec)
 
 
-def _collection_name(user_id: int) -> str:
-    return f"user_{user_id}_memories"
-
-
-def get_collection(user_id: int) -> _InMemoryCollection:
-    """Get or create the per-user collection."""
-    client = _get_vector_client()
-    return client.get_or_create_collection(
-        name=_collection_name(user_id),
-        metadata={"space": "cosine"},
-    )
-
-
-def upsert_memory(
-    user_id: int,
-    *,
-    item_id: int,
-    content: str,
-    embedding: list[float],
-    category: str = "fact",
-    importance: int = 3,
-) -> None:
-    """Insert or update a memory item in the vector store."""
-    collection = get_collection(user_id)
-    collection.upsert(
-        ids=[str(item_id)],
-        embeddings=[embedding],
-        documents=[content],
-        metadatas=[{
-            "category": category,
-            "importance": importance,
-            "item_id": item_id,
-        }],
-    )
-
-
-def delete_memory(user_id: int, *, item_id: int) -> None:
-    """Remove a memory item from the vector store."""
-    try:
-        collection = get_collection(user_id)
-        collection.delete(ids=[str(item_id)])
-    except Exception:  # noqa: BLE001
-        logger.debug("Failed to delete item %d from vector store", item_id)
-
-
-def search_similar(
-    user_id: int,
-    *,
-    query_embedding: list[float],
-    limit: int = 10,
-    category: str | None = None,
-) -> list[dict[str, Any]]:
-    """Search for similar memories. Returns list of {id, content, category, importance, similarity}."""
-    collection = get_collection(user_id)
-
-    if collection.count() == 0:
-        return []
-
-    where_filter = {"category": category} if category is not None else None
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(limit, collection.count()),
-        where=where_filter,
-        include=["documents", "metadatas", "distances"],
-    )
-
-    items: list[dict[str, Any]] = []
-    if not results["ids"] or not results["ids"][0]:
-        return items
-
-    for idx, doc_id in enumerate(results["ids"][0]):
-        metadata = results["metadatas"][0][idx] if results["metadatas"] else {}
-        distance = results["distances"][0][idx] if results["distances"] else 1.0
-        document = results["documents"][0][idx] if results["documents"] else ""
-        similarity = 1.0 - distance
-        items.append(
-            {
-                "id": int(doc_id),
-                "content": document,
-                "category": metadata.get("category", "fact"),
-                "importance": metadata.get("importance", 3),
-                "similarity": round(similarity, 4),
-            }
-        )
-
-    return items
-
-
-def search_by_text(
-    user_id: int,
-    *,
-    query_text: str,
-    limit: int = 10,
-    category: str | None = None,
-) -> list[dict[str, Any]]:
-    """Search using naive text overlap over the in-memory collection."""
-    collection = get_collection(user_id)
-
-    if collection.count() == 0:
-        return []
-
-    where_filter = {"category": category} if category is not None else None
-    results = collection.query(
-        query_texts=[query_text],
-        n_results=min(limit, collection.count()),
-        where=where_filter,
-        include=["documents", "metadatas", "distances"],
-    )
-
-    items: list[dict[str, Any]] = []
-    if not results["ids"] or not results["ids"][0]:
-        return items
-
-    for idx, doc_id in enumerate(results["ids"][0]):
-        metadata = results["metadatas"][0][idx] if results["metadatas"] else {}
-        distance = results["distances"][0][idx] if results["distances"] else 1.0
-        document = results["documents"][0][idx] if results["documents"] else ""
-        items.append(
-            {
-                "id": int(doc_id),
-                "content": document,
-                "category": metadata.get("category", "fact"),
-                "importance": metadata.get("importance", 3),
-                "similarity": round(1.0 - distance, 4),
-            }
-        )
-
-    return items
-
-
-def rebuild_user_index(
-    user_id: int,
-    items: list[tuple[int, str, list[float], str, int]],
-) -> int:
-    """Rebuild the entire in-memory index for a user."""
-    client = _get_vector_client()
-    client.delete_collection(_collection_name(user_id))
-
-    if not items:
-        return 0
-
-    collection = get_collection(user_id)
-    ids = [str(item[0]) for item in items]
-    documents = [item[1] for item in items]
-    embeddings = [item[2] for item in items]
-    metadatas = [
-        {"category": item[3], "importance": item[4], "item_id": item[0]}
-        for item in items
-    ]
-
-    batch_size = 500
-    for start in range(0, len(ids), batch_size):
-        end = start + batch_size
-        collection.upsert(
-            ids=ids[start:end],
-            embeddings=embeddings[start:end],
-            documents=documents[start:end],
-            metadatas=metadatas[start:end],
-        )
-
-    return len(ids)
-
-
-def reset_vector_store() -> None:
-    """Reset the in-memory vector store. Used in tests."""
-    global _client, _legacy_cleanup_done
-    with _client_lock:
-        if _client is not None:
-            _client.reset()
-            _client = None
-    _legacy_cleanup_done = False
-
-
-def _matches_where(record: _VectorRecord, where: dict[str, Any] | None) -> bool:
-    if where is None:
-        return True
-    category = where.get("category")
-    if category is not None and record.category != category:
-        return False
-    return True
+def _deserialize_f32(data: bytes) -> list[float]:
+    """Unpack little-endian float32 bytes back to a float list."""
+    n = len(data) // 4
+    return list(struct.unpack(f"<{n}f", data))
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -375,3 +130,431 @@ def _text_similarity(query_text: str, content: str) -> float:
     intersection = query_terms & content_terms
     union = query_terms | content_terms
     return len(intersection) / len(union)
+
+
+class SqliteVecStore(VectorStore):
+    """Persistent vector store backed by a dedicated SQLite database.
+
+    Stores embeddings as packed float32 blobs and computes cosine
+    similarity in Python after fetching candidate rows.
+    """
+
+    def __init__(self, db_path: str | Path) -> None:
+        self._db_path = str(db_path)
+        self._lock = Lock()
+        self._conn: sqlite3.Connection | None = None
+        self._ensure_schema()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(
+                self._db_path, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+        return self._conn
+
+    def _ensure_schema(self) -> None:
+        conn = self._get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_vectors (
+                item_id    INTEGER NOT NULL,
+                user_id    INTEGER NOT NULL,
+                content    TEXT    NOT NULL,
+                category   TEXT    NOT NULL DEFAULT 'fact',
+                importance INTEGER NOT NULL DEFAULT 3,
+                embedding  BLOB    NOT NULL,
+                PRIMARY KEY (item_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_mv_user "
+            "ON memory_vectors (user_id)"
+        )
+        conn.commit()
+
+    def upsert(
+        self,
+        user_id: int,
+        *,
+        item_id: int,
+        content: str,
+        embedding: list[float],
+        category: str = "fact",
+        importance: int = 3,
+    ) -> None:
+        blob = _serialize_f32(embedding)
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO memory_vectors "
+                "(item_id, user_id, content, category, importance, embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(item_id) DO UPDATE SET "
+                "content=excluded.content, category=excluded.category, "
+                "importance=excluded.importance, embedding=excluded.embedding",
+                (item_id, user_id, content, category, importance, blob),
+            )
+            conn.commit()
+
+    def delete(self, user_id: int, *, item_id: int) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "DELETE FROM memory_vectors WHERE item_id = ? AND user_id = ?",
+                (item_id, user_id),
+            )
+            conn.commit()
+
+    def search_by_vector(
+        self,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[VectorSearchResult]:
+        with self._lock:
+            conn = self._get_conn()
+            if category is not None:
+                rows = conn.execute(
+                    "SELECT item_id, content, category, importance, embedding "
+                    "FROM memory_vectors WHERE user_id = ? AND category = ?",
+                    (user_id, category),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT item_id, content, category, importance, embedding "
+                    "FROM memory_vectors WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+
+        scored: list[tuple[float, VectorSearchResult]] = []
+        for row in rows:
+            emb = _deserialize_f32(row[4])
+            sim = _cosine_similarity(query_embedding, emb)
+            scored.append((sim, VectorSearchResult(
+                item_id=row[0], content=row[1], category=row[2],
+                importance=row[3], similarity=round(sim, 4),
+            )))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:limit]]
+
+    def search_by_text(
+        self,
+        user_id: int,
+        *,
+        query_text: str,
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[VectorSearchResult]:
+        with self._lock:
+            conn = self._get_conn()
+            if category is not None:
+                rows = conn.execute(
+                    "SELECT item_id, content, category, importance "
+                    "FROM memory_vectors WHERE user_id = ? AND category = ?",
+                    (user_id, category),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT item_id, content, category, importance "
+                    "FROM memory_vectors WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+
+        scored: list[tuple[float, VectorSearchResult]] = []
+        for row in rows:
+            sim = _text_similarity(query_text, row[1])
+            if sim > 0.0:
+                scored.append((sim, VectorSearchResult(
+                    item_id=row[0], content=row[1], category=row[2],
+                    importance=row[3], similarity=round(sim, 4),
+                )))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:limit]]
+
+    def rebuild(
+        self,
+        user_id: int,
+        items: list[tuple[int, str, list[float], str, int]],
+    ) -> int:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "DELETE FROM memory_vectors WHERE user_id = ?", (user_id,))
+            for item_id, content, embedding, category, importance in items:
+                blob = _serialize_f32(embedding)
+                conn.execute(
+                    "INSERT INTO memory_vectors "
+                    "(item_id, user_id, content, category, importance, embedding) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (item_id, user_id, content, category, importance, blob),
+                )
+            conn.commit()
+        return len(items)
+
+    def count(self, user_id: int) -> int:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memory_vectors WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return row[0] if row else 0
+
+    def reset(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+            try:
+                Path(self._db_path).unlink(missing_ok=True)
+                Path(self._db_path + "-wal").unlink(missing_ok=True)
+                Path(self._db_path + "-shm").unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._ensure_schema()
+
+
+# ---------------------------------------------------------------------------
+# In-memory fallback store
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _VectorRecord:
+    item_id: int
+    content: str
+    embedding: list[float]
+    category: str
+    importance: int
+
+
+class InMemoryVectorStore(VectorStore):
+    """Process-local dict-based vector store. No persistence."""
+
+    def __init__(self) -> None:
+        self._data: dict[int, dict[int, _VectorRecord]] = {}
+
+    def upsert(
+        self,
+        user_id: int,
+        *,
+        item_id: int,
+        content: str,
+        embedding: list[float],
+        category: str = "fact",
+        importance: int = 3,
+    ) -> None:
+        self._data.setdefault(user_id, {})[item_id] = _VectorRecord(
+            item_id=item_id, content=content, embedding=embedding,
+            category=category, importance=importance,
+        )
+
+    def delete(self, user_id: int, *, item_id: int) -> None:
+        user_store = self._data.get(user_id)
+        if user_store:
+            user_store.pop(item_id, None)
+
+    def search_by_vector(
+        self,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[VectorSearchResult]:
+        user_store = self._data.get(user_id, {})
+        scored: list[tuple[float, VectorSearchResult]] = []
+        for record in user_store.values():
+            if category is not None and record.category != category:
+                continue
+            sim = _cosine_similarity(query_embedding, record.embedding)
+            scored.append((sim, VectorSearchResult(
+                item_id=record.item_id, content=record.content,
+                category=record.category, importance=record.importance,
+                similarity=round(sim, 4),
+            )))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:limit]]
+
+    def search_by_text(
+        self,
+        user_id: int,
+        *,
+        query_text: str,
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[VectorSearchResult]:
+        user_store = self._data.get(user_id, {})
+        scored: list[tuple[float, VectorSearchResult]] = []
+        for record in user_store.values():
+            if category is not None and record.category != category:
+                continue
+            sim = _text_similarity(query_text, record.content)
+            if sim > 0.0:
+                scored.append((sim, VectorSearchResult(
+                    item_id=record.item_id, content=record.content,
+                    category=record.category, importance=record.importance,
+                    similarity=round(sim, 4),
+                )))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:limit]]
+
+    def rebuild(
+        self,
+        user_id: int,
+        items: list[tuple[int, str, list[float], str, int]],
+    ) -> int:
+        self._data[user_id] = {}
+        for item_id, content, embedding, category, importance in items:
+            self._data[user_id][item_id] = _VectorRecord(
+                item_id=item_id, content=content, embedding=embedding,
+                category=category, importance=importance,
+            )
+        return len(items)
+
+    def count(self, user_id: int) -> int:
+        return len(self._data.get(user_id, {}))
+
+    def reset(self) -> None:
+        self._data.clear()
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton and backward-compatible public API
+# ---------------------------------------------------------------------------
+
+_store: VectorStore | None = None
+_store_lock = Lock()
+_legacy_cleanup_done = False
+_legacy_cleanup_lock = Lock()
+
+
+def _cleanup_legacy_persist_dir() -> None:
+    global _legacy_cleanup_done
+    if _legacy_cleanup_done:
+        return
+    with _legacy_cleanup_lock:
+        if _legacy_cleanup_done:
+            return
+        legacy_dir = Path(settings.data_dir) / "chroma"
+        if legacy_dir.exists():
+            shutil.rmtree(legacy_dir, ignore_errors=True)
+            logger.info(
+                "Removed legacy plaintext vector store at %s", legacy_dir)
+        _legacy_cleanup_done = True
+
+
+def get_vector_store() -> VectorStore:
+    """Return the singleton vector store, lazy-initializing on first call."""
+    global _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is not None:
+            return _store
+        _cleanup_legacy_persist_dir()
+        vec_db_path = Path(settings.data_dir) / "vectors.db"
+        vec_db_path.parent.mkdir(parents=True, exist_ok=True)
+        _store = SqliteVecStore(vec_db_path)
+        logger.info("Persistent vector store initialized at %s", vec_db_path)
+        return _store
+
+
+def upsert_memory(
+    user_id: int,
+    *,
+    item_id: int,
+    content: str,
+    embedding: list[float],
+    category: str = "fact",
+    importance: int = 3,
+) -> None:
+    get_vector_store().upsert(
+        user_id, item_id=item_id, content=content,
+        embedding=embedding, category=category, importance=importance,
+    )
+
+
+def delete_memory(user_id: int, *, item_id: int) -> None:
+    try:
+        get_vector_store().delete(user_id, item_id=item_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to delete item %d from vector store", item_id)
+
+
+def search_similar(
+    user_id: int,
+    *,
+    query_embedding: list[float],
+    limit: int = 10,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    results = get_vector_store().search_by_vector(
+        user_id, query_embedding=query_embedding, limit=limit, category=category,
+    )
+    return [
+        {
+            "id": r.item_id,
+            "content": r.content,
+            "category": r.category,
+            "importance": r.importance,
+            "similarity": r.similarity,
+        }
+        for r in results
+    ]
+
+
+def search_by_text(
+    user_id: int,
+    *,
+    query_text: str,
+    limit: int = 10,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    results = get_vector_store().search_by_text(
+        user_id, query_text=query_text, limit=limit, category=category,
+    )
+    return [
+        {
+            "id": r.item_id,
+            "content": r.content,
+            "category": r.category,
+            "importance": r.importance,
+            "similarity": r.similarity,
+        }
+        for r in results
+    ]
+
+
+def rebuild_user_index(
+    user_id: int,
+    items: list[tuple[int, str, list[float], str, int]],
+) -> int:
+    return get_vector_store().rebuild(user_id, items)
+
+
+def get_collection(user_id: int) -> Any:
+    """Legacy shim for code that calls get_collection(uid).count()."""
+    class _CollectionProxy:
+        def count(self) -> int:
+            return get_vector_store().count(user_id)
+    return _CollectionProxy()
+
+
+def reset_vector_store() -> None:
+    """Reset the vector store. Used in tests."""
+    global _store, _legacy_cleanup_done
+    with _store_lock:
+        if _store is not None:
+            _store.reset()
+            _store = None
+    _legacy_cleanup_done = False
+
+
+def use_in_memory_store() -> None:
+    """Force the in-memory backend (for tests that don't want disk IO)."""
+    global _store
+    with _store_lock:
+        _store = InMemoryVectorStore()

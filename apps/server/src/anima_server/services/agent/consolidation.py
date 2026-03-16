@@ -17,6 +17,7 @@ from anima_server.services.agent.memory_store import (
     store_memory_item,
     supersede_memory_item,
 )
+from anima_server.services.agent.claims import upsert_claim
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,21 @@ async def consolidate_turn_memory_with_llm(
 
             if write_result.action == "added":
                 result.llm_items_added.append(content)
+                # Dual-write: create structured claim for the new item
+                try:
+                    upsert_claim(
+                        db,
+                        user_id=user_id,
+                        content=content,
+                        category=category,
+                        importance=importance,
+                        source_kind="extraction",
+                        extractor="llm",
+                        memory_item_id=write_result.item.id if write_result.item else None,
+                        evidence_text=user_message,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Claim dual-write failed for: %s", content)
                 continue
 
             if write_result.action == "superseded":
@@ -295,6 +311,22 @@ async def consolidate_turn_memory_with_llm(
                     f"{write_result.matched_item.content} -> {content}"
                 )
                 result.llm_items_added.append(content)
+                # Dual-write: supersede the structured claim too
+                try:
+                    upsert_claim(
+                        db,
+                        user_id=user_id,
+                        content=content,
+                        category=category,
+                        importance=importance,
+                        source_kind="extraction",
+                        extractor="llm",
+                        memory_item_id=write_result.item.id if write_result.item else None,
+                        evidence_text=user_message,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Claim dual-write (supersede) failed for: %s", content)
                 continue
 
             if write_result.action == "duplicate":
@@ -317,6 +349,21 @@ async def consolidate_turn_memory_with_llm(
                             f"{write_result.similar_items[0].content} -> {content}"
                         )
                         result.llm_items_added.append(content)
+                        try:
+                            upsert_claim(
+                                db,
+                                user_id=user_id,
+                                content=content,
+                                category=category,
+                                importance=importance,
+                                source_kind="extraction",
+                                extractor="llm",
+                                memory_item_id=updated_item.id,
+                                evidence_text=user_message,
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "Claim dual-write (update) failed for: %s", content)
                 elif resolution == "DIFFERENT":
                     create_result = store_memory_item(
                         db,
@@ -328,6 +375,21 @@ async def consolidate_turn_memory_with_llm(
                     )
                     if create_result.action == "added":
                         result.llm_items_added.append(content)
+                        try:
+                            upsert_claim(
+                                db,
+                                user_id=user_id,
+                                content=content,
+                                category=category,
+                                importance=importance,
+                                source_kind="extraction",
+                                extractor="llm",
+                                memory_item_id=create_result.item.id if create_result.item else None,
+                                evidence_text=user_message,
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "Claim dual-write (different) failed for: %s", content)
 
         db.commit()
 

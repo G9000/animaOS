@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import re
 from datetime import UTC, datetime
@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import MemoryDailyLog, MemoryItem
+from anima_server.models import MemoryDailyLog, MemoryItem, MemoryItemTag
 
 # Decay half-life in days — after this many days, recency score halves
 _DECAY_HALF_LIFE_DAYS = 14.0
@@ -74,6 +74,7 @@ def add_memory_item(
     category: str,
     importance: int = 3,
     source: str = "extraction",
+    tags: list[str] | None = None,
 ) -> MemoryItem | None:
     content = _clean_memory_text(content)
     if not content:
@@ -91,8 +92,14 @@ def add_memory_item(
         importance=importance,
         source=source,
     )
+    if tags:
+        memory_item.tags_json = [t.strip().lower() for t in tags if t.strip()]
     db.add(memory_item)
     db.flush()
+
+    if tags:
+        _sync_tags(db, item=memory_item, user_id=user_id, tags=tags)
+
     return memory_item
 
 
@@ -148,6 +155,7 @@ def store_memory_item(
     source: str = "extraction",
     allow_update: bool = False,
     defer_on_similar: bool = False,
+    tags: list[str] | None = None,
 ) -> MemoryWriteResult:
     cleaned_content = _clean_memory_text(content)
     analysis = analyze_memory_item(
@@ -177,6 +185,8 @@ def store_memory_item(
             new_content=cleaned_content,
             importance=importance,
         )
+        if tags:
+            _sync_tags(db, item=item, user_id=user_id, tags=tags)
         return MemoryWriteResult(
             action="superseded",
             item=item,
@@ -201,8 +211,14 @@ def store_memory_item(
         importance=importance,
         source=source,
     )
+    if tags:
+        item.tags_json = [t.strip().lower() for t in tags if t.strip()]
     db.add(item)
     db.flush()
+
+    if tags:
+        _sync_tags(db, item=item, user_id=user_id, tags=tags)
+
     return MemoryWriteResult(
         action="added",
         item=item,
@@ -544,3 +560,121 @@ def _extract_preference_signal(value: str) -> tuple[str, str] | None:
         if normalized:
             return normalized, polarity
     return None
+
+
+# ---------------------------------------------------------------------------
+# Tag helpers (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def _sync_tags(
+    db: Session,
+    *,
+    item: MemoryItem,
+    user_id: int,
+    tags: list[str],
+) -> None:
+    """Synchronize junction-table tags with the provided list.
+
+    Also updates item.tags_json for dual-storage consistency.
+    """
+    clean_tags = sorted({t.strip().lower() for t in tags if t.strip()})
+    item.tags_json = clean_tags if clean_tags else None
+    for tag_value in clean_tags:
+        existing = db.scalar(
+            select(MemoryItemTag).where(
+                MemoryItemTag.item_id == item.id,
+                MemoryItemTag.tag == tag_value,
+            )
+        )
+        if existing is None:
+            db.add(MemoryItemTag(
+                tag=tag_value,
+                item_id=item.id,
+                user_id=user_id,
+            ))
+    db.flush()
+
+
+def add_tags_to_item(
+    db: Session,
+    *,
+    item_id: int,
+    user_id: int,
+    tags: list[str],
+) -> list[str]:
+    """Add tags to an existing memory item. Returns the new full tag list."""
+    item = db.get(MemoryItem, item_id)
+    if item is None or item.user_id != user_id:
+        return []
+
+    existing_tags = set(item.tags_json or [])
+    new_tags = {t.strip().lower() for t in tags if t.strip()}
+    merged = sorted(existing_tags | new_tags)
+
+    _sync_tags(db, item=item, user_id=user_id, tags=merged)
+    return merged
+
+
+def get_items_by_tags(
+    db: Session,
+    *,
+    user_id: int,
+    tags: list[str],
+    match_mode: str = "any",
+    limit: int = 50,
+) -> list[MemoryItem]:
+    """Retrieve memory items filtered by tags.
+
+    match_mode:
+        "any" — items matching at least one tag
+        "all" — items matching every tag
+    """
+    clean_tags = [t.strip().lower() for t in tags if t.strip()]
+    if not clean_tags:
+        return []
+
+    # Query junction table for item IDs matching the tags
+    tag_query = (
+        select(MemoryItemTag.item_id)
+        .where(
+            MemoryItemTag.user_id == user_id,
+            MemoryItemTag.tag.in_(clean_tags),
+        )
+    )
+
+    if match_mode == "all":
+        from sqlalchemy import func as sa_func
+        tag_query = (
+            tag_query
+            .group_by(MemoryItemTag.item_id)
+            .having(sa_func.count(MemoryItemTag.tag.distinct()) >= len(clean_tags))
+        )
+
+    item_ids = [row[0] for row in db.execute(tag_query.distinct()).all()]
+    if not item_ids:
+        return []
+
+    items = list(
+        db.scalars(
+            select(MemoryItem)
+            .where(
+                MemoryItem.id.in_(item_ids),
+                MemoryItem.superseded_by.is_(None),
+            )
+            .order_by(MemoryItem.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+    return items
+
+
+def get_all_tags(db: Session, *, user_id: int) -> list[str]:
+    """Return all distinct tags for a user."""
+    rows = db.execute(
+        select(MemoryItemTag.tag)
+        .where(MemoryItemTag.user_id == user_id)
+        .distinct()
+        .order_by(MemoryItemTag.tag)
+    ).all()
+    return [row[0] for row in rows]
