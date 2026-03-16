@@ -10,6 +10,7 @@ from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
 from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.data_crypto import ef, df
 
 
 def get_or_create_thread(db: Session, user_id: int) -> AgentThread:
@@ -38,9 +39,15 @@ def load_thread_history(db: Session, thread_id: int, *, user_id: int | None = No
         .order_by(AgentMessage.sequence_id)
     ).all()
 
+    # Resolve user_id for field decryption
+    uid = user_id
+    if uid is None:
+        thread = db.get(AgentThread, thread_id)
+        uid = thread.user_id if thread else 0
+
     history: list[StoredMessage] = []
     for row in rows:
-        content = row.content_text or ""
+        content = df(uid, row.content_text or "")
         history.append(
             StoredMessage(
                 role=row.role,
@@ -353,13 +360,14 @@ def append_message(
     tool_args_json: dict[str, object] | None = None,
 ) -> AgentMessage:
     timestamp = datetime.now(UTC)
+    uid = thread.user_id
     message = AgentMessage(
         thread_id=thread.id,
         run_id=run_id,
         step_id=step_id,
         sequence_id=sequence_id,
         role=role,
-        content_text=content_text,
+        content_text=ef(uid, content_text),
         content_json=content_json,
         tool_name=tool_name,
         tool_call_id=tool_call_id,

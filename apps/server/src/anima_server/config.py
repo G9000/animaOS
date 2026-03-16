@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     agent_stream_queue_max_size: int = 256
     agent_background_memory_enabled: bool = True
     core_passphrase: str = ""
-    core_require_encryption: bool = False
+    core_require_encryption: bool = True
     agent_extraction_model: str = ""
     agent_extraction_provider: str = ""
     agent_session_memory_max_notes: int = 20

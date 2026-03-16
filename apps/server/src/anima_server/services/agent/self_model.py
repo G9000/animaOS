@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import SelfModelBlock
+from anima_server.services.data_crypto import ef, df
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +152,10 @@ def set_self_model_block(
         and existing is not None
         and existing.version < _IDENTITY_STABILITY_THRESHOLD
         and updated_by not in _TRUSTED_WRITERS
-        and existing.content.strip()
+        and df(user_id, existing.content).strip()
     ):
         # Check if the proposed content is substantially different
-        existing_plaintext = existing.content
+        existing_plaintext = df(user_id, existing.content)
         existing_words = set(existing_plaintext.lower().split())
         new_words = set(content.lower().split())
         if existing_words and new_words:
@@ -174,7 +175,7 @@ def set_self_model_block(
                 return existing
 
     if existing is not None:
-        existing.content = content
+        existing.content = ef(user_id, content)
         existing.version += 1
         existing.updated_by = updated_by
         existing.updated_at = datetime.now(UTC)
@@ -186,7 +187,7 @@ def set_self_model_block(
     block = SelfModelBlock(
         user_id=user_id,
         section=section,
-        content=content,
+        content=ef(user_id, content),
         version=1,
         updated_by=updated_by,
         metadata_json=metadata,
@@ -217,7 +218,7 @@ def append_growth_log_entry(
 
     # Dedup: skip if a substantially similar entry already exists
     if block is not None:
-        block_content = block.content
+        block_content = df(user_id, block.content)
         if _is_duplicate_growth_entry(block_content, entry):
             return None
 
@@ -225,7 +226,7 @@ def append_growth_log_entry(
         block = SelfModelBlock(
             user_id=user_id,
             section="growth_log",
-            content=formatted.strip(),
+            content=ef(user_id, formatted.strip()),
             version=1,
             updated_by="sleep_time",
         )
@@ -234,12 +235,12 @@ def append_growth_log_entry(
         return block
 
     # Append and trim
-    content = block.content + formatted
+    content = df(user_id, block.content) + formatted
     entries = [e.strip() for e in content.split("### ") if e.strip()]
     if len(entries) > max_entries:
         entries = entries[-max_entries:]
     new_content = "\n\n".join(f"### {e}" for e in entries) if entries else ""
-    block.content = new_content
+    block.content = ef(user_id, new_content)
     block.version += 1
     block.updated_by = "sleep_time"
     block.updated_at = now
@@ -286,7 +287,7 @@ def seed_self_model(
         block = SelfModelBlock(
             user_id=user_id,
             section=section,
-            content=_SEEDS.get(section, ""),
+            content=ef(user_id, _SEEDS.get(section, "")),
             version=1,
             updated_by="system",
         )
@@ -320,11 +321,14 @@ def expire_working_memory_items(
     import re
 
     block = get_self_model_block(db, user_id=user_id, section="working_memory")
-    if block is None or not block.content.strip():
+    if block is None:
+        return 0
+    plaintext = df(user_id, block.content)
+    if not plaintext.strip():
         return 0
 
     today = datetime.now(UTC).date()
-    content = block.content
+    content = plaintext
     lines = content.split("\n")
     kept: list[str] = []
     removed = 0
@@ -358,11 +362,14 @@ def render_self_model_section(
     block: SelfModelBlock | None,
     *,
     budget: int | None = None,
+    user_id: int = 0,
 ) -> str:
     """Render a self-model section, respecting character budget."""
-    if block is None or not block.content.strip():
+    if block is None:
         return ""
-    content = block.content.strip()
+    content = df(user_id, block.content).strip()
+    if not content:
+        return ""
     max_chars = budget or _BUDGET.get(block.section, 1000)
     if len(content) > max_chars:
         content = content[:max_chars]

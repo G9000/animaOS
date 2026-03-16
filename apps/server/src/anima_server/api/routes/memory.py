@@ -19,14 +19,15 @@ from anima_server.services.agent.memory_store import (
     get_memory_items,
     supersede_memory_item,
 )
+from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 
-def _item_to_response(item: MemoryItem) -> MemoryItemResponse:
+def _item_to_response(item: MemoryItem, user_id: int = 0) -> MemoryItemResponse:
     return MemoryItemResponse(
         id=item.id,
-        content=item.content,
+        content=df(user_id, item.content),
         category=item.category,
         importance=item.importance,
         source=item.source,
@@ -89,7 +90,7 @@ async def list_memory_items(
         category=category,
         limit=limit,
     )
-    return [_item_to_response(item) for item in items]
+    return [_item_to_response(item, user_id) for item in items]
 
 
 @router.post(
@@ -127,7 +128,7 @@ async def create_memory_item(
             detail="Duplicate memory item",
         )
     db.commit()
-    return _item_to_response(item)
+    return _item_to_response(item, user_id)
 
 
 @router.put("/{user_id}/items/{item_id}", response_model=MemoryItemResponse)
@@ -160,14 +161,14 @@ async def update_memory_item(
             importance=payload.importance if payload.importance is not None else existing.importance,
         )
         db.commit()
-        return _item_to_response(new_item)
+        return _item_to_response(new_item, user_id)
 
     if payload.importance is not None:
         existing.importance = payload.importance
     if payload.category is not None:
         existing.category = payload.category
     db.commit()
-    return _item_to_response(existing)
+    return _item_to_response(existing, user_id)
 
 
 @router.delete(
@@ -228,7 +229,7 @@ async def search_memory(
                 {
                     "type": "item",
                     "id": item.id,
-                    "content": item.content,
+                    "content": df(user_id, item.content),
                     "category": item.category,
                     "importance": item.importance,
                     "similarity": round(score, 3),
@@ -238,36 +239,41 @@ async def search_memory(
         except Exception:  # noqa: BLE001
             pass
 
-    # Always run keyword search as fallback/supplement
-    items = list(
+    # Keyword search — decrypt content in Python since encrypted fields
+    # cannot be matched with SQL ILIKE.
+    q_lower = q.lower()
+    all_items = list(
         db.scalars(
             select(MemoryItem)
             .where(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
-                MemoryItem.content.ilike(f"%{q}%"),
             )
             .order_by(MemoryItem.importance.desc(), MemoryItem.created_at.desc())
-            .limit(20)
         ).all()
     )
-    episodes = list(
+    items = [
+        item for item in all_items
+        if q_lower in df(user_id, item.content).lower()
+    ][:20]
+
+    all_episodes = list(
         db.scalars(
             select(MemoryEpisode)
-            .where(
-                MemoryEpisode.user_id == user_id,
-                MemoryEpisode.summary.ilike(f"%{q}%"),
-            )
+            .where(MemoryEpisode.user_id == user_id)
             .order_by(MemoryEpisode.created_at.desc())
-            .limit(10)
         ).all()
     )
+    episodes = [
+        ep for ep in all_episodes
+        if q_lower in df(user_id, ep.summary).lower()
+    ][:10]
 
     keyword_results: list[dict[str, object]] = [
         {
             "type": "item",
             "id": item.id,
-            "content": item.content,
+            "content": df(user_id, item.content),
             "category": item.category,
             "importance": item.importance,
         }
@@ -276,7 +282,7 @@ async def search_memory(
         {
             "type": "episode",
             "id": ep.id,
-            "content": ep.summary,
+            "content": df(user_id, ep.summary),
             "category": "episode",
             "importance": ep.significance_score,
         }
@@ -318,9 +324,9 @@ async def list_episodes(
             id=ep.id,
             date=ep.date,
             time=ep.time,
-            summary=ep.summary,
+            summary=df(user_id, ep.summary),
             topics=ep.topics_json or [],
-            emotionalArc=ep.emotional_arc,
+            emotionalArc=df(user_id, ep.emotional_arc) if ep.emotional_arc else None,
             significanceScore=ep.significance_score,
             turnCount=ep.turn_count,
             createdAt=ep.created_at,

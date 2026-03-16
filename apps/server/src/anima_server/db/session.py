@@ -40,8 +40,14 @@ def _make_engine(database_url: str | None = None) -> Engine:
 
     if require_encryption and not passphrase:
         raise RuntimeError(
-            "ANIMA_CORE_REQUIRE_ENCRYPTION is enabled but ANIMA_CORE_PASSPHRASE is not set. "
-            "Provide a passphrase or disable encryption enforcement."
+            "Encryption is required by default but no passphrase is configured.\n"
+            "\n"
+            "  Option 1: Set ANIMA_CORE_PASSPHRASE=<your-passphrase> to enable encryption.\n"
+            "  Option 2: Set ANIMA_CORE_REQUIRE_ENCRYPTION=false to run without encryption\n"
+            "            (development only — data will be stored in plaintext).\n"
+            "\n"
+            "The Core stores all memories, conversations, and identity data. Encryption\n"
+            "protects this data at rest — it is strongly recommended for any non-dev use."
         )
 
     if passphrase:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+
+# Disable encryption requirement for tests (must be set before settings import).
+os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
+
 import shutil
 import tempfile
 from collections.abc import Generator

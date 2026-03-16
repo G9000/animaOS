@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
+from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/consciousness", tags=["consciousness"])
 
@@ -60,7 +61,7 @@ async def get_full_self_model(
     sections = {}
     for section_name, block in blocks.items():
         sections[section_name] = {
-            "content": block.content,
+            "content": df(user_id, block.content),
             "version": block.version,
             "updatedBy": block.updated_by,
             "updatedAt": block.updated_at.isoformat() if block.updated_at else None,
@@ -95,7 +96,7 @@ async def get_self_model_section(
 
     return SelfModelSectionResponse(
         section=block.section,
-        content=block.content,
+        content=df(user_id, block.content),
         version=block.version,
         updatedBy=block.updated_by,
         updatedAt=block.updated_at.isoformat() if block.updated_at else None,
@@ -147,7 +148,7 @@ async def update_self_model_section(
 
     return SelfModelSectionResponse(
         section=block.section,
-        content=block.content,
+        content=df(user_id, block.content),
         version=block.version,
         updatedBy=block.updated_by,
         updatedAt=block.updated_at.isoformat() if block.updated_at else None,
@@ -193,8 +194,8 @@ async def get_emotional_state(
                 confidence=s.confidence,
                 trajectory=s.trajectory,
                 evidenceType=s.evidence_type,
-                evidence=s.evidence,
-                topic=s.topic,
+                evidence=df(user_id, s.evidence),
+                topic=df(user_id, s.topic),
                 createdAt=s.created_at.isoformat() if s.created_at else None,
             )
             for s in signals

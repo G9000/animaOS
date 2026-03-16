@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryDailyLog, MemoryEpisode
+from anima_server.services.data_crypto import ef, df
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def _create_fallback_episode(
 ) -> MemoryEpisode:
     summaries = []
     for log in logs:
-        text = log.user_message[:80]
+        text = df(user_id, log.user_message)[:80]
         summaries.append(text)
     summary = "Conversation covering: " + "; ".join(summaries)
     if len(summary) > 500:
@@ -116,7 +117,7 @@ def _create_fallback_episode(
         thread_id=thread_id,
         date=today,
         time=datetime.now(UTC).strftime("%H:%M:%S"),
-        summary=summary,
+        summary=ef(user_id, summary),
         topics_json=["conversation"],
         significance_score=2,
         turn_count=len(logs),
@@ -135,7 +136,7 @@ async def _generate_episode_via_llm(
     today: str,
 ) -> MemoryEpisode:
     try:
-        parsed = await _call_llm_for_episode(logs)
+        parsed = await _call_llm_for_episode(logs, user_id=user_id)
     except Exception:  # noqa: BLE001
         logger.exception("LLM episode generation failed, using fallback")
         return _create_fallback_episode(
@@ -165,9 +166,9 @@ async def _generate_episode_via_llm(
         thread_id=thread_id,
         date=today,
         time=datetime.now(UTC).strftime("%H:%M:%S"),
-        summary=summary,
+        summary=ef(user_id, summary),
         topics_json=topics if topics else None,
-        emotional_arc=emotional_arc,
+        emotional_arc=ef(user_id, emotional_arc),
         significance_score=significance,
         turn_count=len(logs),
     )
@@ -176,12 +177,12 @@ async def _generate_episode_via_llm(
     return episode
 
 
-async def _call_llm_for_episode(logs: list[MemoryDailyLog]) -> dict[str, Any]:
+async def _call_llm_for_episode(logs: list[MemoryDailyLog], *, user_id: int = 0) -> dict[str, Any]:
     from anima_server.services.agent.llm import create_llm
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
 
     turns_text = "\n".join(
-        f"User: {log.user_message}\nAssistant: {log.assistant_response}"
+        f"User: {df(user_id, log.user_message)}\nAssistant: {df(user_id, log.assistant_response)}"
         for log in logs
     )
     prompt = EPISODE_GENERATION_PROMPT.format(turns=turns_text)

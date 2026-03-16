@@ -779,8 +779,6 @@ class AgentRuntime:
     ) -> tuple[ToolCall, ToolExecutionResult] | None:
         if not step_result.assistant_text.strip():
             return None
-        if "send_message" not in allowed_tool_names:
-            return None
         if "send_message" not in self._tool_registry:
             return None
 

@@ -42,6 +42,7 @@ from anima_server.services.agent import (
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
 from anima_server.services.agent.system_prompt import PromptTemplateError
+from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ async def get_chat_history(
             id=row.id,
             userId=userId,
             role="assistant" if row.role == "tool" else row.role,
-            content=row.content_text,
+            content=df(userId, row.content_text),
             createdAt=row.created_at,
         )
         for row in rows

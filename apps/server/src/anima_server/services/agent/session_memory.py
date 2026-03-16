@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryItem, SessionNote
+from anima_server.services.data_crypto import ef, df
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def write_session_note(
     )
 
     if existing is not None:
-        existing.value = value
+        existing.value = ef(user_id, value)
         existing.note_type = note_type
         existing.updated_at = datetime.now(UTC)
         db.flush()
@@ -77,7 +78,7 @@ def write_session_note(
         thread_id=thread_id,
         user_id=user_id,
         key=key,
-        value=value,
+        value=ef(user_id, value),
         note_type=note_type,
     )
     db.add(note)
@@ -133,7 +134,7 @@ def promote_session_note(
     item = add_memory_item(
         db,
         user_id=user_id,
-        content=note.value,
+        content=df(user_id, note.value),
         category=category,
         importance=importance,
         source="session",
@@ -162,7 +163,7 @@ def clear_session_notes(
     return len(notes)
 
 
-def render_session_memory_text(notes: list[SessionNote]) -> str:
+def render_session_memory_text(notes: list[SessionNote], *, user_id: int = 0) -> str:
     """Render session notes into a text block for the system prompt, respecting budget."""
     if not notes:
         return ""
@@ -171,7 +172,7 @@ def render_session_memory_text(notes: list[SessionNote]) -> str:
     total_len = 0
 
     for note in notes:
-        note_value = note.value
+        note_value = df(user_id, note.value)
         line = f"[{note.note_type}] {note.key}: {note_value}"
         if total_len + len(line) > settings.agent_session_memory_budget_chars:
             break

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryClaim, MemoryClaimEvidence, MemoryItem
+from anima_server.services.data_crypto import ef, df
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +94,11 @@ def upsert_claim(
 
     if existing is not None:
         # Same value — just add evidence if new
-        if existing.value_text.strip().lower() == content.strip().lower():
+        if df(user_id, existing.value_text).strip().lower() == content.strip().lower():
             if evidence_text:
                 db.add(MemoryClaimEvidence(
                     claim_id=existing.id,
-                    source_text=evidence_text,
+                    source_text=ef(user_id, evidence_text),
                     source_kind=source_kind,
                 ))
                 db.flush()
@@ -112,7 +113,7 @@ def upsert_claim(
         subject_type="user",
         namespace=namespace,
         slot=slot,
-        value_text=content.strip(),
+        value_text=ef(user_id, content.strip()),
         polarity=polarity,
         confidence=min(1.0, importance / 5.0),
         status="active",
@@ -133,7 +134,7 @@ def upsert_claim(
     if evidence_text:
         db.add(MemoryClaimEvidence(
             claim_id=new_claim.id,
-            source_text=evidence_text,
+            source_text=ef(user_id, evidence_text),
             source_kind=source_kind,
         ))
         db.flush()

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import secrets
 from threading import Lock
 
-SESSION_TTL = timedelta(days=7)
+SESSION_TTL = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,7 @@ class UnlockSessionStore:
             session = self._sessions.pop(token, None)
             if session is not None:
                 self._refresh_latest_dek_locked(session.user_id)
+                _zero_dek(session.dek)
 
     def revoke_user(self, user_id: int) -> None:
         with self._lock:
@@ -86,7 +88,9 @@ class UnlockSessionStore:
                 expired_tokens.append(token)
                 affected_users.add(session.user_id)
         for token in expired_tokens:
-            self._sessions.pop(token, None)
+            expired = self._sessions.pop(token, None)
+            if expired is not None:
+                _zero_dek(expired.dek)
         for user_id in affected_users:
             self._refresh_latest_dek_locked(user_id)
 
@@ -114,3 +118,17 @@ unlock_session_store = UnlockSessionStore()
 
 def get_active_dek(user_id: int) -> bytes | None:
     return unlock_session_store.get_active_dek(user_id)
+
+
+def _zero_dek(dek: bytes) -> None:
+    """Best-effort zeroing of DEK bytes in memory.
+
+    Python ``bytes`` objects are immutable, so we cannot guarantee the
+    original buffer is wiped.  ``ctypes.memset`` overwrites the buffer
+    backing the object — this is a defence-in-depth measure, not a
+    guarantee against all memory inspection techniques.
+    """
+    try:
+        ctypes.memset(id(dek) + bytes.__basicsize__ - 1, 0, len(dek))
+    except Exception:  # noqa: BLE001
+        pass

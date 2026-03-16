@@ -1249,7 +1249,7 @@ def test_encrypted_core_requires_passphrase() -> None:
 
         from anima_server.db.session import _make_engine
 
-        with pytest.raises(RuntimeError, match="ANIMA_CORE_PASSPHRASE is not set"):
+        with pytest.raises(RuntimeError, match="no passphrase is configured"):
             _make_engine()
 
 

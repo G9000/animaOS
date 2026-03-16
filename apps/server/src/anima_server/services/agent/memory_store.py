@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryDailyLog, MemoryItem, MemoryItemTag
+from anima_server.services.data_crypto import ef, df
 
 # Decay half-life in days — after this many days, recency score halves
 _DECAY_HALF_LIFE_DAYS = 14.0
@@ -82,12 +83,12 @@ def add_memory_item(
 
     existing = get_memory_items(db, user_id=user_id, category=category)
     for item in existing:
-        if _classify_memory_relation(item.content, content, category) == "duplicate":
+        if _classify_memory_relation(df(user_id, item.content), content, category) == "duplicate":
             return None
 
     memory_item = MemoryItem(
         user_id=user_id,
-        content=content,
+        content=ef(user_id, content),
         category=category,
         importance=importance,
         source=source,
@@ -119,7 +120,8 @@ def analyze_memory_item(
     similar_items: list[MemoryItem] = []
 
     for item in existing:
-        relation = _classify_memory_relation(item.content, content, category)
+        item_plaintext = df(user_id, item.content)
+        relation = _classify_memory_relation(item_plaintext, content, category)
         if relation == "duplicate":
             return MemoryWriteAnalysis(
                 action="duplicate",
@@ -132,7 +134,7 @@ def analyze_memory_item(
                 matched_item=item,
                 reason="same_slot_new_value",
             )
-        if _similarity(item.content, content) >= similarity_threshold:
+        if _similarity(item_plaintext, content) >= similarity_threshold:
             similar_items.append(item)
 
     if similar_items:
@@ -206,7 +208,7 @@ def store_memory_item(
 
     item = MemoryItem(
         user_id=user_id,
-        content=cleaned_content,
+        content=ef(user_id, cleaned_content),
         category=category,
         importance=importance,
         source=source,
@@ -360,7 +362,7 @@ def supersede_memory_item(
 
     new_item = MemoryItem(
         user_id=old_item.user_id,
-        content=new_content,
+        content=ef(old_item.user_id, new_content),
         category=old_item.category,
         importance=importance if importance is not None else old_item.importance,
         source=old_item.source,
@@ -395,8 +397,8 @@ def add_daily_log(
     log = MemoryDailyLog(
         user_id=user_id,
         date=datetime.now(UTC).date().isoformat(),
-        user_message=user_message,
-        assistant_response=assistant_response,
+        user_message=ef(user_id, user_message),
+        assistant_response=ef(user_id, assistant_response),
     )
     db.add(log)
     db.flush()
@@ -416,7 +418,7 @@ def get_current_focus(db: Session, *, user_id: int) -> str | None:
     )
     if item is None:
         return None
-    return item.content
+    return df(user_id, item.content)
 
 
 def set_current_focus(
@@ -437,7 +439,7 @@ def set_current_focus(
         .limit(1)
     )
     if existing is not None:
-        relation = _classify_memory_relation(existing.content, focus, "focus")
+        relation = _classify_memory_relation(df(user_id, existing.content), focus, "focus")
         if relation == "duplicate":
             return existing
         return supersede_memory_item(
@@ -448,7 +450,7 @@ def set_current_focus(
 
     item = MemoryItem(
         user_id=user_id,
-        content=focus,
+        content=ef(user_id, focus),
         category="focus",
         importance=4,
         source="user",
@@ -469,8 +471,8 @@ def find_similar_items(
     existing = get_memory_items(db, user_id=user_id, category=category)
     return [
         item for item in existing
-        if _similarity(item.content, content) > threshold
-        and _classify_memory_relation(item.content, content, category) != "duplicate"
+        if _similarity(df(user_id, item.content), content) > threshold
+        and _classify_memory_relation(df(user_id, item.content), content, category) != "duplicate"
     ]
 
 

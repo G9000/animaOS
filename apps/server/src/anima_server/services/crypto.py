@@ -15,6 +15,7 @@ SALT_LENGTH = 16
 IV_LENGTH = 12
 AUTH_TAG_LENGTH = 16
 ENCRYPTED_TEXT_PREFIX = "enc1"
+ENCRYPTED_TEXT_PREFIX_AAD = "enc2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,13 +90,14 @@ def unwrap_dek(passphrase: str, record: WrappedDekRecord) -> bytes:
     return AESGCM(kek).decrypt(iv, ciphertext + tag, None)
 
 
-def encrypt_text_with_dek(plaintext: str, dek: bytes) -> str:
+def encrypt_text_with_dek(plaintext: str, dek: bytes, *, aad: bytes | None = None) -> str:
     iv = os.urandom(IV_LENGTH)
-    encrypted = AESGCM(dek).encrypt(iv, plaintext.encode("utf-8"), None)
+    encrypted = AESGCM(dek).encrypt(iv, plaintext.encode("utf-8"), aad)
     ciphertext, tag = encrypted[:-AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
+    prefix = ENCRYPTED_TEXT_PREFIX_AAD if aad is not None else ENCRYPTED_TEXT_PREFIX
     return ":".join(
         [
-            ENCRYPTED_TEXT_PREFIX,
+            prefix,
             base64.b64encode(iv).decode("ascii"),
             base64.b64encode(tag).decode("ascii"),
             base64.b64encode(ciphertext).decode("ascii"),
@@ -103,14 +105,17 @@ def encrypt_text_with_dek(plaintext: str, dek: bytes) -> str:
     )
 
 
-def decrypt_text_with_dek(serialized: str, dek: bytes) -> str:
-    if not serialized.startswith(f"{ENCRYPTED_TEXT_PREFIX}:"):
+def decrypt_text_with_dek(serialized: str, dek: bytes, *, aad: bytes | None = None) -> str:
+    # Plaintext passthrough — not encrypted
+    if not serialized.startswith(f"{ENCRYPTED_TEXT_PREFIX}:") and not serialized.startswith(f"{ENCRYPTED_TEXT_PREFIX_AAD}:"):
         return serialized
     prefix, iv_b64, tag_b64, ciphertext_b64 = serialized.split(":", 3)
-    if prefix != ENCRYPTED_TEXT_PREFIX:
+    if prefix not in (ENCRYPTED_TEXT_PREFIX, ENCRYPTED_TEXT_PREFIX_AAD):
         raise ValueError("Invalid encrypted payload format.")
     iv = base64.b64decode(iv_b64)
     tag = base64.b64decode(tag_b64)
     ciphertext = base64.b64decode(ciphertext_b64)
-    plaintext = AESGCM(dek).decrypt(iv, ciphertext + tag, None)
+    # enc1 = legacy without AAD; enc2 = AAD-bound
+    effective_aad = aad if prefix == ENCRYPTED_TEXT_PREFIX_AAD else None
+    plaintext = AESGCM(dek).decrypt(iv, ciphertext + tag, effective_aad)
     return plaintext.decode("utf-8")

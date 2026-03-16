@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -7,6 +9,7 @@ from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.config import settings
 from anima_server.db import get_db
 from anima_server.schemas.core import CoreStatusResponse
+from anima_server.services.core import get_manifest_path
 
 router = APIRouter(prefix="/api/core", tags=["core"])
 
@@ -17,6 +20,18 @@ def _sqlcipher_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _read_encryption_mode() -> str:
+    """Read encryption_mode from the manifest file."""
+    path = get_manifest_path()
+    if path.is_file():
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            return str(manifest.get("encryption_mode", "none"))
+        except Exception:  # noqa: BLE001
+            pass
+    return "none"
 
 
 @router.get("/status", response_model=CoreStatusResponse)
@@ -32,4 +47,5 @@ def get_core_status(
         "encryption_active": has_passphrase and sqlcipher_installed,
         "sqlcipher_available": sqlcipher_installed,
         "passphrase_set": has_passphrase,
+        "encryption_mode": _read_encryption_mode(),
     }

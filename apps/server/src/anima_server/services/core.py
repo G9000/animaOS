@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import json
+import logging
+import os
+import platform
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -8,6 +12,8 @@ from threading import Lock
 import uuid_utils as uuid
 
 from anima_server.config import settings
+
+logger = logging.getLogger(__name__)
 
 CORE_VERSION = 1
 SCHEMA_VERSION = "1.0.0"
@@ -31,8 +37,27 @@ def ensure_core_manifest() -> dict[str, object]:
             int(manifest.get("next_user_id", 0)),
             _detect_next_user_id(),
         )
+        manifest["encryption_mode"] = _detect_encryption_mode()
+        manifest["encryption_version"] = 1
         _write_manifest(manifest)
         return manifest
+
+
+def _detect_encryption_mode() -> str:
+    """Determine the current encryption mode based on settings."""
+    has_passphrase = bool(settings.core_passphrase.strip())
+    sqlcipher_available = False
+    try:
+        import sqlcipher3  # noqa: F401
+        sqlcipher_available = True
+    except ImportError:
+        pass
+
+    if has_passphrase and sqlcipher_available:
+        return "sqlcipher+field"
+    if has_passphrase:
+        return "field"
+    return "none"
 
 
 def get_core_birth_date() -> str:
@@ -163,3 +188,73 @@ def _detect_next_user_id() -> int:
             except ValueError:
                 continue
     return highest + 1
+
+
+# ---------------------------------------------------------------------------
+# Single-writer lock
+# ---------------------------------------------------------------------------
+
+_LOCK_FILE_NAME = "core.lock"
+
+
+def _get_lock_path() -> Path:
+    return get_core_dir() / _LOCK_FILE_NAME
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def acquire_core_lock() -> bool:
+    """Write an advisory lock file. Returns True if lock acquired.
+
+    If a stale lock exists (PID no longer running), it is removed.
+    If a live lock exists, logs a warning and returns False.
+    """
+    lock_path = _get_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if lock_path.is_file():
+        try:
+            existing = json.loads(lock_path.read_text(encoding="utf-8"))
+            existing_pid = int(existing.get("pid", 0))
+            if existing_pid and _is_process_alive(existing_pid):
+                logger.warning(
+                    "Core is locked by another process (PID %d, host %s, since %s). "
+                    "Running multiple writers against the same Core may cause corruption.",
+                    existing_pid,
+                    existing.get("hostname", "unknown"),
+                    existing.get("locked_at", "unknown"),
+                )
+                return False
+            # Stale lock — remove
+            logger.info("Removing stale core lock (PID %d no longer running)", existing_pid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    lock_data = {
+        "pid": os.getpid(),
+        "hostname": platform.node(),
+        "locked_at": datetime.now(UTC).isoformat(),
+    }
+    lock_path.write_text(json.dumps(lock_data, indent=2), encoding="utf-8")
+    atexit.register(release_core_lock)
+    return True
+
+
+def release_core_lock() -> None:
+    """Remove the advisory lock file if it belongs to this process."""
+    lock_path = _get_lock_path()
+    if not lock_path.is_file():
+        return
+    try:
+        existing = json.loads(lock_path.read_text(encoding="utf-8"))
+        if int(existing.get("pid", 0)) == os.getpid():
+            lock_path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass

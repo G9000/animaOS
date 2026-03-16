@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
+
+vault_logger = logging.getLogger(__name__)
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select, text
@@ -42,13 +46,71 @@ from anima_server.services.crypto import (
 
 VAULT_VERSION = 2
 
+# ---------------------------------------------------------------------------
+# Vault version migration
+# ---------------------------------------------------------------------------
+# Each migrator transforms a *decrypted* payload dict from version N to N+1.
+# Only the inner payload is migrated — the outer envelope is handled separately.
 
-def export_vault(db: Session, passphrase: str, *, user_id: int | None = None) -> dict[str, Any]:
+
+def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """v1 → v2: no structural changes to inner payload; version bump only."""
+    payload["version"] = 2
+    return payload
+
+
+VAULT_MIGRATORS: dict[int, Any] = {
+    1: _migrate_v1_to_v2,
+}
+
+
+def _migrate_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run migration chain from payload's version up to VAULT_VERSION."""
+    version = payload.get("version", 1)
+    if version > VAULT_VERSION:
+        raise ValueError(
+            f"Vault version {version} is newer than supported ({VAULT_VERSION}). "
+            "Upgrade your software to import this vault."
+        )
+    while version < VAULT_VERSION:
+        migrator = VAULT_MIGRATORS.get(version)
+        if migrator is None:
+            raise ValueError(
+                f"No migration path from vault version {version} to {version + 1}."
+            )
+        payload = migrator(payload)
+        version = payload.get("version", version + 1)
+    return payload
+
+
+_MEMORY_TABLES = frozenset({
+    "memoryItems", "memoryEpisodes", "memoryDailyLogs",
+    "selfModelBlocks", "emotionalSignals", "sessionNotes",
+})
+
+_IDENTITY_TABLES = frozenset({
+    "users", "userKeys",
+})
+
+
+def export_vault(db: Session, passphrase: str, *, user_id: int | None = None, scope: str = "full") -> dict[str, Any]:
+    full_snapshot = export_database_snapshot(db, user_id=user_id)
+
+    if scope == "memories":
+        # Only memory/identity tables — no conversation transcripts
+        snapshot = {
+            k: v for k, v in full_snapshot.items()
+            if k in _MEMORY_TABLES or k in _IDENTITY_TABLES
+        }
+    else:
+        snapshot = full_snapshot
+
     payload = {
         "version": VAULT_VERSION,
         "createdAt": datetime.now(UTC).isoformat(),
-        "database": export_database_snapshot(db, user_id=user_id),
-        "userFiles": read_data_snapshot(user_id=user_id),
+        "scope": scope,
+        "database": snapshot,
+        "userFiles": read_data_snapshot(user_id=user_id) if scope == "full" else {},
     }
     plaintext = json.dumps(payload)
     envelope = encrypt_string(plaintext, passphrase)
@@ -75,11 +137,7 @@ def import_vault(db: Session, vault: str, passphrase: str, *, user_id: int | Non
     except json.JSONDecodeError as exc:
         raise ValueError("Vault payload is not valid JSON.") from exc
 
-    version = payload.get("version")
-    if version != VAULT_VERSION:
-        raise ValueError(
-            f"Unsupported vault payload version: {version}. Supported version: {VAULT_VERSION}.",
-        )
+    payload = _migrate_payload(payload)
 
     database = payload.get("database")
     if not isinstance(database, dict):
@@ -118,6 +176,8 @@ def encrypt_string(plaintext: str, passphrase: str) -> dict[str, Any]:
     encrypted = AESGCM(key).encrypt(iv, plaintext.encode("utf-8"), None)
     ciphertext, tag = encrypted[:-
                                 AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
+    ciphertext_b64 = base64.b64encode(ciphertext).decode("ascii")
+    integrity_hash = hashlib.sha256(ciphertext_b64.encode("ascii")).hexdigest()
     return {
         "version": VAULT_VERSION,
         "createdAt": datetime.now(UTC).isoformat(),
@@ -135,20 +195,22 @@ def encrypt_string(plaintext: str, passphrase: str) -> dict[str, Any]:
             "iv": base64.b64encode(iv).decode("ascii"),
             "tag": base64.b64encode(tag).decode("ascii"),
         },
-        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        "ciphertext": ciphertext_b64,
+        "integrity": {
+            "algorithm": "sha256",
+            "hash": integrity_hash,
+        },
     }
 
 
 def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
     version = envelope.get("version")
-    payload_version = envelope.get("payloadVersion")
-    if version != VAULT_VERSION:
+    if not isinstance(version, int) or version < 1:
+        raise ValueError(f"Unsupported vault version: {version}.")
+    if version > VAULT_VERSION:
         raise ValueError(
-            f"Unsupported vault version: {version}. Supported version: {VAULT_VERSION}.",
-        )
-    if payload_version != VAULT_VERSION:
-        raise ValueError(
-            f"Unsupported vault payload version: {payload_version}. Supported version: {VAULT_VERSION}.",
+            f"Vault version {version} is newer than supported ({VAULT_VERSION}). "
+            "Upgrade your software to import this vault.",
         )
 
     kdf = envelope.get("kdf")
@@ -162,6 +224,16 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
         or cipher.get("name") != "aes-256-gcm"
     ):
         raise ValueError("Vault payload format is invalid.")
+
+    # Pre-decryption integrity check (v2+ envelopes include integrity hash)
+    integrity = envelope.get("integrity")
+    if isinstance(integrity, dict) and integrity.get("algorithm") == "sha256":
+        expected = integrity.get("hash", "")
+        actual = hashlib.sha256(ciphertext_b64.encode("ascii")).hexdigest()
+        if actual != expected:
+            raise ValueError(
+                "Vault integrity check failed — ciphertext may be corrupted."
+            )
 
     try:
         salt = base64.b64decode(str(kdf["salt"]))
@@ -177,6 +249,8 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
             key_length=int(kdf["keyLength"]),
         )
         plaintext = AESGCM(key).decrypt(iv, ciphertext + tag, None)
+    except ValueError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise ValueError(
             "Failed to decrypt vault. Check the passphrase and payload.") from exc

@@ -18,7 +18,7 @@ from .api.routes.users import router as users_router
 from .api.routes.db import router as db_router
 from .api.routes.vault import router as vault_router
 from .config import settings
-from .services.core import ensure_core_manifest, is_provisioned
+from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
 from .db.user_store import ensure_per_user_databases_ready
 
 CORS_ORIGINS = [
@@ -62,6 +62,7 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
 
 def create_app() -> FastAPI:
     ensure_core_manifest()
+    acquire_core_lock()
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name)
 

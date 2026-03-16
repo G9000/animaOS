@@ -25,7 +25,7 @@ def export_encrypted_vault(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     session = require_unlocked_session(request)
-    return export_vault(db, payload.passphrase, user_id=session.user_id)
+    return export_vault(db, payload.passphrase, user_id=session.user_id, scope=payload.scope)
 
 
 @router.post("/import", response_model=VaultImportResponse)

@@ -9,6 +9,7 @@ from anima_server.config import settings
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
 from anima_server.services.agent import invalidate_agent_runtime_cache
+from anima_server.services.data_crypto import df
 from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleResponse,
     OpenAICompatibleStreamChunk,
@@ -241,9 +242,9 @@ def test_chat_persists_runtime_rows() -> None:
             assert thread.next_message_sequence == 4
             assert [message.role for message in messages] == [
                 "user", "assistant", "tool"]
-            assert messages[0].content_text == "hello"
-            assert "turn 1" in (messages[1].content_text or "")
-            assert "turn 1" in (messages[2].content_text or "")
+            assert df(user_id, messages[0].content_text) == "hello"
+            assert "turn 1" in df(user_id, messages[1].content_text)
+            assert "turn 1" in df(user_id, messages[2].content_text)
 
 
 def test_chat_stream_returns_sse_events() -> None:
@@ -432,9 +433,8 @@ def test_chat_ollama_provider_uses_live_adapter_surface(monkeypatch) -> None:
     assert fake_client.tool_choice == "required"
     tool_names = [getattr(tool, "name", "")
                   for tool in fake_client.bound_tools]
-    assert "current_datetime" in tool_names
-    assert "send_message" in tool_names
-    assert "note_to_self" in tool_names
+    # InitToolRule restricts the first step to inner_thought only
+    assert "inner_thought" in tool_names
 
 
 def test_chat_openrouter_without_api_key_returns_error() -> None:
