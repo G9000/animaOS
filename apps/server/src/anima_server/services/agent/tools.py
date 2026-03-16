@@ -97,6 +97,12 @@ def note_to_self(key: str, value: str, note_type: str = "observation") -> str:
         value=value,
         note_type=note_type,
     )
+
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
     return f"Noted: {key}"
 
 
@@ -109,6 +115,10 @@ def dismiss_note(key: str) -> str:
     ctx = get_tool_context()
     removed = remove_session_note(ctx.db, thread_id=ctx.thread_id, key=key)
     if removed:
+        from anima_server.services.agent.companion import get_companion
+        companion = get_companion()
+        if companion is not None:
+            companion.invalidate_memory()
         return f"Dismissed note: {key}"
     return f"No active note found with key: {key}"
 
@@ -149,6 +159,10 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3") -> s
         importance=imp,
     )
     if item is not None:
+        from anima_server.services.agent.companion import get_companion
+        companion = get_companion()
+        if companion is not None:
+            companion.invalidate_memory()
         return f"Saved to long-term memory: {item.content}"
     return f"Could not promote note '{key}' — not found or duplicate"
 
@@ -176,6 +190,12 @@ def set_intention(title: str, evidence: str = "", priority: str = "background", 
         priority=priority,
         deadline=deadline or None,
     )
+
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
     return f"Tracking intention: {title}"
 
 
@@ -188,6 +208,10 @@ def complete_goal(title: str) -> str:
     ctx = get_tool_context()
     found = complete_intention(ctx.db, user_id=ctx.user_id, title=title)
     if found:
+        from anima_server.services.agent.companion import get_companion
+        companion = get_companion()
+        if companion is not None:
+            companion.invalidate_memory()
         return f"Marked as completed: {title}"
     return f"Could not find intention: {title}"
 
@@ -224,6 +248,12 @@ def create_task(text: str, due_date: str = "", priority: str = "2") -> str:
     )
     ctx.db.add(task)
     ctx.db.flush()
+
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
     result = f"Task created: {normalized_text}"
     if task.due_date:
         result += f" (due {task.due_date})"
@@ -304,6 +334,12 @@ def complete_task(text: str) -> str:
     best_task.completed_at = datetime.now(timezone.utc)
     best_task.updated_at = datetime.now(timezone.utc)
     ctx.db.flush()
+
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
     return f"Completed: {best_task.text}"
 
 
@@ -422,6 +458,12 @@ def update_human_memory(content: str) -> str:
         block.version += 1
         block.updated_by = "agent_tool"
     ctx.db.flush()
+
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None:
+        companion.invalidate_memory()
+
     return "Human memory updated."
 
 

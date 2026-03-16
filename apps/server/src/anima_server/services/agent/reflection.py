@@ -92,7 +92,8 @@ async def run_reflection(
             removed = expire_working_memory_items(db, user_id=user_id)
             if removed:
                 db.commit()
-                logger.info("Expired %d working memory items for user %s", removed, user_id)
+                logger.info(
+                    "Expired %d working memory items for user %s", removed, user_id)
     except Exception:  # noqa: BLE001
         logger.exception("Working memory expiry failed for user %s", user_id)
 
@@ -133,6 +134,13 @@ async def run_reflection(
             )
     except Exception:  # noqa: BLE001
         logger.exception("Reflection failed for user %s", user_id)
+
+    # Invalidate companion memory cache so the next turn picks up changes
+    # made by working-memory expiry, inner monologue, and sleep tasks.
+    from anima_server.services.agent.companion import get_companion
+    companion = get_companion()
+    if companion is not None and companion.user_id == user_id:
+        companion.invalidate_memory()
 
 
 async def cancel_pending_reflection(*, user_id: int | None = None) -> None:

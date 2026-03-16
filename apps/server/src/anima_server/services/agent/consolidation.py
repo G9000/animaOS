@@ -534,6 +534,13 @@ async def run_background_memory_consolidation(
                 assistant_response=assistant_response,
                 db_factory=db_factory,
             )
+
+        # Invalidate companion memory cache so the next turn sees fresh data.
+        from anima_server.services.agent.companion import get_companion
+        companion = get_companion()
+        if companion is not None and companion.user_id == user_id:
+            companion.invalidate_memory()
+
     except Exception:  # noqa: BLE001
         logger.exception(
             "Background memory consolidation failed for user %s", user_id)

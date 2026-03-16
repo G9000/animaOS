@@ -7,6 +7,12 @@ from threading import Lock
 
 from anima_server.config import settings
 from anima_server.services.agent.compaction import compact_thread_context
+from anima_server.services.agent.companion import (
+    AnimaCompanion,
+    get_companion,
+    get_or_build_companion,
+    invalidate_companion,
+)
 from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
 from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.tool_context import ToolContext, clear_tool_context, set_tool_context
@@ -56,6 +62,12 @@ def get_or_build_runner() -> AgentRuntime:
         return _cached_runner
 
 
+def _get_companion(user_id: int) -> AnimaCompanion:
+    """Return the AnimaCompanion singleton for *user_id*."""
+    runtime = get_or_build_runner()
+    return get_or_build_companion(runtime, user_id)
+
+
 def ensure_agent_ready() -> None:
     runner = get_or_build_runner()
     runner.prepare_system_prompt()
@@ -65,6 +77,7 @@ def invalidate_agent_runtime_cache() -> None:
     global _cached_runner
     with _runner_lock:
         _cached_runner = None
+    invalidate_companion()
     invalidate_llm_cache()
     invalidate_system_prompt_template_cache()
 
@@ -145,9 +158,19 @@ async def _prepare_turn_context(
     event_callback: Callable[[AgentStreamEvent],
                              Awaitable[None]] | None = None,
 ) -> tuple[AgentThread, AgentRun, AgentMessage, int, _TurnContext]:
-    """Stage 1: Load thread, persist user message, build memory context."""
+    """Stage 1: Load thread, persist user message, build memory context.
+
+    Uses the AnimaCompanion cache for static memory blocks and conversation
+    history.  Only semantic retrieval (query-dependent) is executed per-turn.
+    """
+    companion = _get_companion(user_id)
+
     thread = get_or_create_thread(db, user_id)
-    history = load_thread_history(db, thread.id, user_id=user_id)
+    companion.thread_id = thread.id
+
+    # Use cached conversation history when available, otherwise load from DB.
+    history = companion.ensure_history_loaded(db)
+
     run = create_run(
         db,
         thread_id=thread.id,
@@ -170,7 +193,7 @@ async def _prepare_turn_context(
     )
     conversation_turn_count = count_messages_by_role(db, thread.id, "user")
 
-    # Semantic retrieval (best-effort)
+    # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
     try:
         from anima_server.services.agent.embeddings import semantic_search
@@ -184,10 +207,23 @@ async def _prepare_turn_context(
     except Exception:  # noqa: BLE001
         pass
 
-    memory_blocks = build_runtime_memory_blocks(
-        db, user_id=user_id, thread_id=thread.id,
-        semantic_results=semantic_results,
-    )
+    # Use companion-cached static blocks, reload from DB only if stale.
+    static_blocks = companion.ensure_memory_loaded(db)
+
+    # If we have semantic results, build a full block set with the
+    # semantic block injected.  Otherwise use static blocks as-is.
+    if semantic_results:
+        memory_blocks = build_runtime_memory_blocks(
+            db, user_id=user_id, thread_id=thread.id,
+            semantic_results=semantic_results,
+        )
+        # Re-populate the cache with the freshly-built static subset so
+        # the next turn that has no semantic changes still benefits.
+        companion.set_memory_cache(tuple(
+            b for b in memory_blocks if b.label != "relevant_memories"
+        ))
+    else:
+        memory_blocks = static_blocks
 
     # Feedback signals (best-effort)
     try:
@@ -201,6 +237,10 @@ async def _prepare_turn_context(
             record_feedback_signals(db, user_id=user_id, signals=signals)
     except Exception:  # noqa: BLE001
         pass
+
+    # Append the user message to the companion's conversation window.
+    companion.append_to_window(
+        [StoredMessage(role="user", content=user_message)])
 
     turn_ctx = _TurnContext(
         history=history,
@@ -373,6 +413,9 @@ def list_agent_history(user_id: int, db: Session, *, limit: int = 50) -> list[Ag
 async def reset_agent_thread(user_id: int, db: Session) -> None:
     reset_thread(db, user_id)
     db.commit()
+    companion = get_companion()
+    if companion is not None and companion.user_id == user_id:
+        companion.reset()
 
 
 def _build_db_factory(db: Session) -> Callable[[], Session]:
