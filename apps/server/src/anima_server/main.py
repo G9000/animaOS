@@ -124,6 +124,14 @@ def create_app() -> FastAPI:
             "provisioned": is_provisioned(),
         }
 
+    @app.on_event("shutdown")
+    async def _drain_background_tasks() -> None:
+        from .services.agent.consolidation import drain_background_memory_tasks
+        from .services.agent.reflection import cancel_pending_reflection
+
+        await cancel_pending_reflection()
+        await drain_background_memory_tasks()
+
     app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(config_router)

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryEpisode
-from anima_server.services.data_crypto import df
+from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ async def run_quick_reflection(
             # Update working memory
             wm_updates = parsed.get("working_memory_updates", [])
             if wm_updates and isinstance(wm_updates, list):
-                current_wm = working_memory_block.content if working_memory_block else "# Things I'm Holding in Mind\n"
+                current_wm = df(user_id, working_memory_block.content) if working_memory_block else "# Things I'm Holding in Mind\n"
                 for update in wm_updates:
                     if not isinstance(update, dict):
                         continue
@@ -405,14 +405,14 @@ async def run_deep_monologue(
             if parsed.get("persona_update"):
                 # Evolve the persona block — the agent's living style/approach
                 if persona_block is not None:
-                    persona_block.content = parsed["persona_update"]
+                    persona_block.content = ef(user_id, parsed["persona_update"])
                     persona_block.version += 1
                     persona_block.updated_by = "sleep_time"
                 else:
                     db.add(SelfModelBlock(
                         user_id=user_id,
                         section="persona",
-                        content=parsed["persona_update"],
+                        content=ef(user_id, parsed["persona_update"]),
                         version=1,
                         updated_by="sleep_time",
                     ))

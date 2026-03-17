@@ -22,6 +22,7 @@ from anima_server.services.agent.tool_context import ToolContext, clear_tool_con
 from anima_server.services.agent.turn_coordinator import get_user_lock
 from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
 from anima_server.services.agent.llm import invalidate_llm_cache
+from anima_server.services.data_crypto import df
 from anima_server.services.agent.persistence import (
     append_user_message,
     cancel_run,
@@ -498,7 +499,7 @@ async def _prepare_turn_context(
         query_embedding = search_result.query_embedding
         if search_result.items:
             filtered = adaptive_filter(search_result.items)
-            semantic_results = [(item.id, item.content, score)
+            semantic_results = [(item.id, df(user_id, item.content), score)
                                 for item, score in filtered]
     except Exception:  # noqa: BLE001
         pass
@@ -807,14 +808,11 @@ def _handle_step_failure(
     """
     stage = err.progression
 
-    if stage <= StepProgression.LLM_REQUESTED:
-        # LLM never responded — only the user message is orphaned.
-        user_msg.is_in_context = False
-        db.add(user_msg)
-    else:
-        # A partial response or tool execution was in progress.
-        user_msg.is_in_context = False
-        db.add(user_msg)
+    # Remove orphaned user message from active context regardless of
+    # how far the step progressed — tool side-effects (if any) are
+    # committed atomically with the run-failure record below.
+    user_msg.is_in_context = False
+    db.add(user_msg)
 
     detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
     mark_run_failed(db, run, detail)

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import AgentThread, MemoryEpisode, Task
+from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ def gather_greeting_context(db: Session, *, user_id: int) -> GreetingContext:
         ).all()
         if episodes:
             recent_episode_summary = "\n".join(
-                f"- {ep.date}: {ep.summary}" for ep in reversed(episodes)
+                f"- {ep.date}: {df(user_id, ep.summary)}" for ep in reversed(episodes)
             )
     except Exception:  # noqa: BLE001
         pass

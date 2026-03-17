@@ -23,6 +23,7 @@ from anima_server.services.agent.memory_store import (
     supersede_memory_item,
     _similarity,
 )
+from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +101,17 @@ async def run_sleep_tasks(
         result.errors.append(f"episode_generation: {e}")
 
     # 4. Deep inner monologue (full self-model reflection)
+    # Only run once per 24 hours to avoid identity thrashing and LLM cost.
     try:
         from anima_server.services.agent.inner_monologue import run_deep_monologue
 
-        monologue = await run_deep_monologue(user_id=user_id, db_factory=db_factory)
-        result.deep_monologue_ran = True
-        if monologue.errors:
-            result.errors.extend(f"monologue: {e}" for e in monologue.errors)
+        if _should_run_deep_monologue(user_id, db_factory=db_factory):
+            monologue = await run_deep_monologue(user_id=user_id, db_factory=db_factory)
+            result.deep_monologue_ran = True
+            if monologue.errors:
+                result.errors.extend(f"monologue: {e}" for e in monologue.errors)
+        else:
+            logger.debug("Deep monologue skipped for user %s (ran recently)", user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("Deep monologue skipped: %s", e)
 
@@ -153,8 +158,8 @@ async def scan_contradictions(
             for i, newer_item in enumerate(items):
                 for older_item in items[i + 1:]:
                     sim = _similarity(
-                        older_item.content,
-                        newer_item.content,
+                        df(user_id, older_item.content),
+                        df(user_id, newer_item.content),
                     )
                     if 0.3 < sim < 0.95:  # Similar but not duplicate
                         pairs.append((older_item, newer_item))
@@ -162,8 +167,8 @@ async def scan_contradictions(
             for item_a, item_b in pairs[:10]:  # Cap per category
                 found += 1
                 resolution = await _check_contradiction(
-                    item_a.content,
-                    item_b.content,
+                    df(user_id, item_a.content),
+                    df(user_id, item_b.content),
                 )
                 if resolution is None:
                     continue
@@ -179,7 +184,7 @@ async def scan_contradictions(
                     supersede_memory_item(
                         db,
                         old_item_id=item_a.id,
-                        new_content=item_b.content,
+                        new_content=df(user_id, item_b.content),
                         importance=max(item_a.importance, item_b.importance),
                     )
                     resolved += 1
@@ -187,7 +192,7 @@ async def scan_contradictions(
                     supersede_memory_item(
                         db,
                         old_item_id=item_b.id,
-                        new_content=item_a.content,
+                        new_content=df(user_id, item_a.content),
                         importance=max(item_a.importance, item_b.importance),
                     )
                     resolved += 1
@@ -257,6 +262,26 @@ async def synthesize_profile(
     return merged_count
 
 
+_DEEP_MONOLOGUE_INTERVAL_HOURS = 24
+_last_deep_monologue: dict[int, datetime] = {}
+
+
+def _should_run_deep_monologue(
+    user_id: int,
+    *,
+    db_factory: Callable[..., object] | None = None,
+) -> bool:
+    """Return True if enough time has passed since the last deep monologue."""
+    last = _last_deep_monologue.get(user_id)
+    now = datetime.now(UTC)
+    if last is not None:
+        hours_since = (now - last).total_seconds() / 3600
+        if hours_since < _DEEP_MONOLOGUE_INTERVAL_HOURS:
+            return False
+    _last_deep_monologue[user_id] = now
+    return True
+
+
 async def _check_contradiction(
     content_a: str,
     content_b: str,
@@ -303,7 +328,7 @@ async def _call_profile_synthesis(facts: list[MemoryItem], *, user_id: int = 0) 
         from anima_server.services.agent.consolidation import _parse_json_array
 
         facts_text = "\n".join(
-            f"[id={f.id}] {f.content}" for f in facts)
+            f"[id={f.id}] {df(user_id, f.content)}" for f in facts)
         prompt = PROFILE_SYNTHESIS_PROMPT.format(facts=facts_text)
 
         llm = create_llm()

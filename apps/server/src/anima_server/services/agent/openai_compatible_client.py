@@ -44,6 +44,22 @@ class OpenAICompatibleChatClient:
         self._transport = transport
         self._tools = tuple(tools)
         self._tool_choice = tool_choice
+        self._shared_client: httpx.AsyncClient | None = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return a shared httpx client for connection reuse."""
+        if self._shared_client is None or self._shared_client.is_closed:
+            self._shared_client = httpx.AsyncClient(
+                timeout=self._timeout,
+                transport=self._transport,
+            )
+        return self._shared_client
+
+    async def aclose(self) -> None:
+        """Close the shared httpx client."""
+        if self._shared_client is not None and not self._shared_client.is_closed:
+            await self._shared_client.aclose()
+            self._shared_client = None
 
     def bind_tools(
         self,
@@ -53,7 +69,7 @@ class OpenAICompatibleChatClient:
         **_: Any,
     ) -> "OpenAICompatibleChatClient":
         resolved_tool_choice = _serialize_tool_choice(tool_choice, tools)
-        return OpenAICompatibleChatClient(
+        new_client = OpenAICompatibleChatClient(
             provider=self.provider,
             model=self.model,
             base_url=self.base_url,
@@ -63,23 +79,23 @@ class OpenAICompatibleChatClient:
             tools=tools,
             tool_choice=resolved_tool_choice,
         )
+        # Share the underlying httpx client for connection reuse
+        new_client._shared_client = self._shared_client
+        return new_client
 
     async def ainvoke(self, input: Sequence[Any]) -> OpenAICompatibleResponse:
         payload = self._build_payload(input, stream=False)
 
-        async with httpx.AsyncClient(
-            timeout=self._timeout,
-            transport=self._transport,
-        ) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Content-Type": "application/json",
-                    **self._headers,
-                },
-                json=payload,
-            )
-            response.raise_for_status()
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                **self._headers,
+            },
+            json=payload,
+        )
+        response.raise_for_status()
 
         body = response.json()
         choice = _first_choice(body)
@@ -100,51 +116,48 @@ class OpenAICompatibleChatClient:
     ) -> AsyncGenerator[OpenAICompatibleStreamChunk, None]:
         payload = self._build_payload(input, stream=True)
 
-        async with httpx.AsyncClient(
-            timeout=self._timeout,
-            transport=self._transport,
-        ) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Content-Type": "application/json",
-                    **self._headers,
-                },
-                json=payload,
-            ) as response:
-                response.raise_for_status()
+        client = await self._get_client()
+        async with client.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                **self._headers,
+            },
+            json=payload,
+        ) as response:
+            response.raise_for_status()
 
-                async for line in response.aiter_lines():
-                    trimmed = line.strip()
-                    if not trimmed or not trimmed.startswith("data:"):
-                        continue
+            async for line in response.aiter_lines():
+                trimmed = line.strip()
+                if not trimmed or not trimmed.startswith("data:"):
+                    continue
 
-                    payload_text = trimmed[5:].strip()
-                    if payload_text == "[DONE]":
-                        yield OpenAICompatibleStreamChunk(done=True)
-                        break
+                payload_text = trimmed[5:].strip()
+                if payload_text == "[DONE]":
+                    yield OpenAICompatibleStreamChunk(done=True)
+                    break
 
-                    try:
-                        body = json.loads(payload_text)
-                    except json.JSONDecodeError:
-                        continue
+                try:
+                    body = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    continue
 
-                    choice = _first_choice(body)
-                    delta = choice.get("delta")
-                    if not isinstance(delta, dict):
-                        delta = {}
+                choice = _first_choice(body)
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    delta = {}
 
-                    yield OpenAICompatibleStreamChunk(
-                        content_delta=_coerce_response_content(delta.get("content")),
-                        tool_call_deltas=_normalize_stream_tool_call_deltas(
-                            delta.get("tool_calls")
-                        ),
-                        usage_metadata=body.get("usage")
-                        if isinstance(body.get("usage"), dict)
-                        else None,
-                        done=choice.get("finish_reason") is not None,
-                    )
+                yield OpenAICompatibleStreamChunk(
+                    content_delta=_coerce_response_content(delta.get("content")),
+                    tool_call_deltas=_normalize_stream_tool_call_deltas(
+                        delta.get("tool_calls")
+                    ),
+                    usage_metadata=body.get("usage")
+                    if isinstance(body.get("usage"), dict)
+                    else None,
+                    done=choice.get("finish_reason") is not None,
+                )
 
     def _build_payload(
         self,

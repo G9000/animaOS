@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, get_type_hints
 
 from anima_server.services.agent.rules import ToolRule, build_default_tool_rules
+from anima_server.services.data_crypto import df, ef
 
 
 class _SimpleSchema:
@@ -184,7 +185,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         companion = get_companion(ctx.user_id)
         if companion is not None:
             companion.invalidate_memory()
-        return f"Saved to long-term memory: {item.content}"
+        return f"Saved to long-term memory: {df(ctx.user_id, item.content)}"
     return f"Could not promote note '{key}' — not found or duplicate"
 
 
@@ -415,7 +416,7 @@ def recall_memory(query: str, category: str = "", tags: str = "") -> str:
         for item, score in result.items:
             if cat and item.category != cat:
                 continue
-            scored.append((score, item.content, item.category))
+            scored.append((score, df(ctx.user_id, item.content), item.category))
         hybrid_succeeded = True
     except Exception:  # noqa: BLE001
         pass
@@ -428,16 +429,17 @@ def recall_memory(query: str, category: str = "", tags: str = "") -> str:
             ctx.db, user_id=ctx.user_id, category=cat, limit=100,
         )
         for item in items:
-            content_lower = item.content.lower()
+            plaintext = df(ctx.user_id, item.content)
+            content_lower = plaintext.lower()
             if query_lower in content_lower:
-                scored.append((1.0, item.content, item.category))
+                scored.append((1.0, plaintext, item.category))
                 continue
             query_words = set(query_lower.split())
             content_words = set(content_lower.split())
             if query_words and content_words:
                 overlap = len(query_words & content_words) / len(query_words)
                 if overlap >= 0.5:
-                    scored.append((overlap, item.content, item.category))
+                    scored.append((overlap, plaintext, item.category))
 
     # Also search episodes
     episodes = list(ctx.db.scalars(
@@ -448,10 +450,11 @@ def recall_memory(query: str, category: str = "", tags: str = "") -> str:
     ).all())
     query_lower = query_stripped.lower()
     for ep in episodes:
-        summary_lower = ep.summary.lower()
+        ep_plaintext = df(ctx.user_id, ep.summary)
+        summary_lower = ep_plaintext.lower()
         if query_lower in summary_lower:
             scored.append(
-                (0.9, f"[Episode {ep.date}] {ep.summary}", "episode"))
+                (0.9, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
             continue
         query_words = set(query_lower.split())
         summary_words = set(summary_lower.split())
@@ -459,7 +462,7 @@ def recall_memory(query: str, category: str = "", tags: str = "") -> str:
             overlap = len(query_words & summary_words) / len(query_words)
             if overlap >= 0.5:
                 scored.append(
-                    (overlap, f"[Episode {ep.date}] {ep.summary}", "episode"))
+                    (overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
 
     if not scored:
         return f"No memories found matching: {query}"
@@ -568,12 +571,12 @@ def update_human_memory(content: str) -> str:
         ctx.db.add(SelfModelBlock(
             user_id=ctx.user_id,
             section="human",
-            content=content.strip(),
+            content=ef(ctx.user_id, content.strip()),
             version=1,
             updated_by="agent_tool",
         ))
     else:
-        block.content = content.strip()
+        block.content = ef(ctx.user_id, content.strip())
         block.version += 1
         block.updated_by = "agent_tool"
     ctx.db.flush()
@@ -614,12 +617,13 @@ def core_memory_append(label: str, content: str) -> str:
         ctx.db.add(SelfModelBlock(
             user_id=ctx.user_id,
             section=label,
-            content=content.strip(),
+            content=ef(ctx.user_id, content.strip()),
             version=1,
             updated_by="core_memory_tool",
         ))
     else:
-        block.content = (block.content.rstrip() + "\n" + content.strip()).strip()
+        existing_text = df(ctx.user_id, block.content)
+        block.content = ef(ctx.user_id, (existing_text.rstrip() + "\n" + content.strip()).strip())
         block.version += 1
         block.updated_by = "core_memory_tool"
     ctx.db.flush()
@@ -661,10 +665,11 @@ def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
     if block is None:
         return f"No {label} memory block exists yet. Use core_memory_append to create one."
 
-    if old_text not in block.content:
+    existing_text = df(ctx.user_id, block.content)
+    if old_text not in existing_text:
         return f"Could not find the exact text to replace in {label} memory."
 
-    block.content = block.content.replace(old_text, new_text, 1)
+    block.content = ef(ctx.user_id, existing_text.replace(old_text, new_text, 1))
     block.version += 1
     block.updated_by = "core_memory_tool"
     ctx.db.flush()

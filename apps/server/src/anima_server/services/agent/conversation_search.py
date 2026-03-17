@@ -16,6 +16,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import AgentMessage, AgentThread, MemoryDailyLog
+from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -218,9 +219,9 @@ def _search_daily_logs(
         # Score user_message and assistant_response separately
         entries = []
         if role_filter != "assistant":
-            entries.append(("user", row.user_message))
+            entries.append(("user", df(user_id, row.user_message)))
         if role_filter != "user":
-            entries.append(("assistant", row.assistant_response))
+            entries.append(("assistant", df(user_id, row.assistant_response)))
 
         for role, text in entries:
             text_stripped = (text or "").strip()

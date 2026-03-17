@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from anima_server.db.base import Base
@@ -19,6 +19,10 @@ class SelfModelBlock(Base):
     """
 
     __tablename__ = "self_model_blocks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "section",
+                         name="uq_self_model_blocks_user_section"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -87,6 +91,10 @@ class EmotionalSignal(Base):
     """
 
     __tablename__ = "emotional_signals"
+    __table_args__ = (
+        Index("ix_emotional_signals_user_created",
+              "user_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(

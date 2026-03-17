@@ -18,6 +18,7 @@ from anima_server.services.agent.memory_store import (
     supersede_memory_item,
 )
 from anima_server.services.agent.claims import upsert_claim
+from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +340,7 @@ async def consolidate_turn_memory_with_llm(
 
             if write_result.action == "similar" and write_result.similar_items:
                 resolution = await resolve_conflict(
-                    existing_content=write_result.similar_items[0].content,
+                    existing_content=df(user_id, write_result.similar_items[0].content),
                     new_content=content,
                 )
                 if resolution == "UPDATE":
@@ -351,7 +352,7 @@ async def consolidate_turn_memory_with_llm(
                     )
                     if updated_item is not None:
                         result.conflicts_resolved.append(
-                            f"{write_result.similar_items[0].content} -> {content}"
+                            f"{df(user_id, write_result.similar_items[0].content)} -> {content}"
                         )
                         result.llm_items_added.append(content)
                         try:

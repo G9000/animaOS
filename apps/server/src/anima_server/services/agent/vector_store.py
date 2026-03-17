@@ -272,10 +272,13 @@ class OrmVecStore(VectorStore):
         return len(items)
 
     def count(self, user_id: int) -> int:
+        from sqlalchemy import func as sa_func
         from anima_server.models import MemoryVector
 
-        stmt = select(MemoryVector).where(MemoryVector.user_id == user_id)
-        return len(self._db.scalars(stmt).all())
+        return self._db.scalar(
+            select(sa_func.count()).select_from(MemoryVector).where(
+                MemoryVector.user_id == user_id)
+        ) or 0
 
     def reset(self) -> None:
         from anima_server.models import MemoryVector

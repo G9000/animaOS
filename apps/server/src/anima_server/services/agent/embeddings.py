@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryItem
+from anima_server.services.data_crypto import df
 from anima_server.services.agent.llm import (
     LLMConfigError,
     build_provider_headers,
@@ -303,7 +304,8 @@ async def embed_memory_item(
     and the MemoryVector table (for fast search).
     Returns True if successful.
     """
-    embedding = await generate_embedding(item.content)
+    plaintext = df(item.user_id, item.content)
+    embedding = await generate_embedding(plaintext)
     if embedding is None:
         return False
 
@@ -316,7 +318,7 @@ async def embed_memory_item(
         upsert_memory(
             item.user_id,
             item_id=item.id,
-            content=item.content,
+            content=plaintext,
             embedding=embedding,
             category=item.category,
             importance=item.importance,
@@ -349,11 +351,11 @@ async def backfill_embeddings(
     if not items:
         return 0
 
-    texts = [item.content for item in items]
-    embeddings = await generate_embeddings_batch(texts)
+    plaintexts = [df(user_id, item.content) for item in items]
+    embeddings = await generate_embeddings_batch(plaintexts)
 
     count = 0
-    for item, embedding in zip(items, embeddings):
+    for item, plaintext, embedding in zip(items, plaintexts, embeddings):
         if embedding is None:
             continue
         item.embedding_json = embedding
@@ -363,7 +365,7 @@ async def backfill_embeddings(
             upsert_memory(
                 item.user_id,
                 item_id=item.id,
-                content=item.content,
+                content=plaintext,
                 embedding=embedding,
                 category=item.category,
                 importance=item.importance,
@@ -401,7 +403,7 @@ def sync_to_vector_store(
         from anima_server.services.agent.vector_store import rebuild_user_index
 
         index_data = [
-            (item.id, item.content,
+            (item.id, df(user_id, item.content),
              item.embedding_json, item.category, item.importance)
             for item in items
             if isinstance(item.embedding_json, list) and item.embedding_json

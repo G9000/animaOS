@@ -189,6 +189,10 @@ class AgentMessage(Base):
 
 class MemoryItem(Base):
     __tablename__ = "memory_items"
+    __table_args__ = (
+        Index("ix_memory_items_user_category_active",
+              "user_id", "category", "superseded_by"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -441,6 +445,9 @@ class MemoryClaimEvidence(Base):
 
 class MemoryDailyLog(Base):
     __tablename__ = "memory_daily_logs"
+    __table_args__ = (
+        Index("ix_memory_daily_logs_user_date", "user_id", "date"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(

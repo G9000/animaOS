@@ -200,16 +200,29 @@ def _trim_signal_buffer(
     user_id: int,
 ) -> None:
     """Remove oldest signals beyond the buffer size limit."""
+    from sqlalchemy import func as sa_func, delete as sa_delete
+
     max_size = settings.agent_emotional_signal_buffer_size
-    signals = list(
-        db.scalars(
-            select(EmotionalSignal)
-            .where(EmotionalSignal.user_id == user_id)
-            .order_by(EmotionalSignal.created_at.desc())
-        ).all()
-    )
-    if len(signals) <= max_size:
+    total = db.scalar(
+        select(sa_func.count()).select_from(EmotionalSignal).where(
+            EmotionalSignal.user_id == user_id)
+    ) or 0
+    if total <= max_size:
         return
-    for old_signal in signals[max_size:]:
-        db.delete(old_signal)
-    db.flush()
+
+    # Find the cutoff: keep the newest max_size signals
+    cutoff_id = db.scalar(
+        select(EmotionalSignal.id)
+        .where(EmotionalSignal.user_id == user_id)
+        .order_by(EmotionalSignal.created_at.desc())
+        .offset(max_size)
+        .limit(1)
+    )
+    if cutoff_id is not None:
+        db.execute(
+            sa_delete(EmotionalSignal).where(
+                EmotionalSignal.user_id == user_id,
+                EmotionalSignal.id <= cutoff_id,
+            )
+        )
+        db.flush()
