@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-
 # Disable encryption requirement for tests (must be set before settings import).
 os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
 
@@ -19,7 +18,7 @@ from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
-from anima_server.services.sessions import unlock_session_store
+from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 
 
 def _resolve_test_temp_root() -> Path:
@@ -62,6 +61,7 @@ def managed_test_client(
     settings.data_dir = temp_root / "anima-data"
     dispose_cached_engines()
     unlock_session_store.clear()
+    clear_sqlcipher_key()
     reset_vector_store()
     if invalidate_agent:
         invalidate_agent_runtime_cache()
@@ -77,6 +77,7 @@ def managed_test_client(
             yield client
     finally:
         unlock_session_store.clear()
+        clear_sqlcipher_key()
         reset_vector_store()
         dispose_cached_engines()
         settings.data_dir = original_data_dir

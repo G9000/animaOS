@@ -1,12 +1,12 @@
 from __future__ import annotations
 from anima_server.services.crypto import (
-    ARGON2_MEMORY_COST_KIB,
-    ARGON2_PARALLELISM,
-    ARGON2_TIME_COST,
     AUTH_TAG_LENGTH,
     IV_LENGTH,
     KEY_LENGTH,
     SALT_LENGTH,
+    VAULT_ARGON2_MEMORY_COST_KIB,
+    VAULT_ARGON2_PARALLELISM,
+    VAULT_ARGON2_TIME_COST,
     decrypt_text_with_dek,
     derive_argon2id_key,
 )
@@ -235,7 +235,13 @@ def encrypt_string(
 ) -> dict[str, Any]:
     salt = random_bytes(SALT_LENGTH)
     iv = random_bytes(IV_LENGTH)
-    key = derive_argon2id_key(passphrase, salt)
+    key = derive_argon2id_key(
+        passphrase,
+        salt,
+        time_cost=VAULT_ARGON2_TIME_COST,
+        memory_cost_kib=VAULT_ARGON2_MEMORY_COST_KIB,
+        parallelism=VAULT_ARGON2_PARALLELISM,
+    )
     encrypted = AESGCM(key).encrypt(iv, plaintext.encode("utf-8"), aad)
     ciphertext, tag = encrypted[:-
                                 AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
@@ -247,9 +253,9 @@ def encrypt_string(
         "payloadVersion": VAULT_VERSION,
         "kdf": {
             "name": "argon2id",
-            "timeCost": ARGON2_TIME_COST,
-            "memoryCostKiB": ARGON2_MEMORY_COST_KIB,
-            "parallelism": ARGON2_PARALLELISM,
+            "timeCost": VAULT_ARGON2_TIME_COST,
+            "memoryCostKiB": VAULT_ARGON2_MEMORY_COST_KIB,
+            "parallelism": VAULT_ARGON2_PARALLELISM,
             "keyLength": KEY_LENGTH,
             "salt": base64.b64encode(salt).decode("ascii"),
         },

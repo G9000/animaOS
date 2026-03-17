@@ -64,9 +64,71 @@ def get_sqlcipher_kdf_salt() -> bytes:
         return salt
 
 
+# ---------------------------------------------------------------------------
+# Unified passphrase — wrapped SQLCipher key stored in manifest
+# ---------------------------------------------------------------------------
+
+
+def store_wrapped_sqlcipher_key(wrapped: dict[str, object]) -> None:
+    """Persist a wrapped SQLCipher raw key in the manifest.
+
+    Called once at registration when no ANIMA_CORE_PASSPHRASE is set.
+    The wrapped key can only be recovered with the user's password.
+    """
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        manifest["wrapped_sqlcipher_key"] = wrapped
+        _write_manifest(manifest)
+
+
+def get_wrapped_sqlcipher_key() -> dict[str, object] | None:
+    """Return the wrapped SQLCipher key from the manifest, or None."""
+    path = get_manifest_path()
+    if not path.is_file():
+        return None
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    key_data = manifest.get("wrapped_sqlcipher_key")
+    if not isinstance(key_data, dict):
+        return None
+    return key_data
+
+
+def has_wrapped_sqlcipher_key() -> bool:
+    """Return True if the manifest has a wrapped SQLCipher key (unified mode)."""
+    return get_wrapped_sqlcipher_key() is not None
+
+
+# ---------------------------------------------------------------------------
+# User index — lightweight username→user_id mapping outside encrypted DBs
+# ---------------------------------------------------------------------------
+
+
+def store_user_index_entry(username: str, user_id: int) -> None:
+    """Add a username→user_id mapping to the manifest index."""
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        index = manifest.setdefault("user_index", {})
+        index[username] = user_id
+        _write_manifest(manifest)
+
+
+def get_user_id_from_index(username: str) -> int | None:
+    """Look up user_id by username from the manifest index."""
+    path = get_manifest_path()
+    if not path.is_file():
+        return None
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    index = manifest.get("user_index")
+    if not isinstance(index, dict):
+        return None
+    user_id = index.get(username)
+    return int(user_id) if user_id is not None else None
+
+
 def _detect_encryption_mode() -> str:
     """Determine the current encryption mode based on settings."""
     has_passphrase = bool(settings.core_passphrase.strip())
+    has_unified = has_wrapped_sqlcipher_key()
     sqlcipher_available = False
     try:
         import sqlcipher3  # noqa: F401
@@ -74,9 +136,9 @@ def _detect_encryption_mode() -> str:
     except ImportError:
         pass
 
-    if has_passphrase and sqlcipher_available:
+    if (has_passphrase or has_unified) and sqlcipher_available:
         return "sqlcipher+field"
-    if has_passphrase:
+    if has_passphrase or has_unified:
         return "field"
     return "none"
 

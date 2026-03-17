@@ -43,9 +43,15 @@ def get_core_status(
     has_passphrase = bool(settings.core_passphrase)
     sqlcipher_installed = _sqlcipher_available()
 
+    # Unified mode: encryption is active if there's a wrapped SQLCipher key
+    from anima_server.services.core import has_wrapped_sqlcipher_key
+
+    unified_mode = has_wrapped_sqlcipher_key()
+    encryption_active = (has_passphrase or unified_mode) and sqlcipher_installed
+
     return {
-        "encryption_active": has_passphrase and sqlcipher_installed,
+        "encryption_active": encryption_active,
         "sqlcipher_available": sqlcipher_installed,
-        "passphrase_set": has_passphrase,
+        "passphrase_set": has_passphrase or unified_mode,
         "encryption_mode": _read_encryption_mode(),
     }

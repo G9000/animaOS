@@ -25,7 +25,17 @@ from anima_server.services.auth import (
     normalize_username,
     serialize_user,
 )
-from anima_server.services.core import allocate_user_id, ensure_core_manifest, is_provisioned, set_next_user_id, set_owner_user_id
+from anima_server.services.core import (
+    allocate_user_id,
+    ensure_core_manifest,
+    get_user_id_from_index,
+    get_wrapped_sqlcipher_key,
+    is_provisioned,
+    set_next_user_id,
+    set_owner_user_id,
+    store_user_index_entry,
+    store_wrapped_sqlcipher_key,
+)
 from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
 
@@ -112,13 +122,14 @@ def register_account(
     agent_name: str = "Anima",
     user_directive: str = "",
     relationship: str = "companion",
-) -> tuple[dict[str, object], bytes]:
+) -> tuple[dict[str, object], dict[str, bytes]]:
     if is_provisioned():
         raise ValueError("Core is already provisioned")
     normalized = normalize_username(username)
     if not normalized:
         raise ValueError("Username is required")
 
+    _maybe_generate_sqlcipher_key(password)
     user_id = allocate_user_id()
     factory = ensure_user_database(user_id)
     with factory() as db:
@@ -133,19 +144,31 @@ def register_account(
             user_id=user_id,
         )
     set_owner_user_id(user_id)
+    store_user_index_entry(normalized, user_id)
     return serialize_user(user), deks
 
 
-def authenticate_account(username: str, password: str) -> tuple[dict[str, object], bytes]:
+def authenticate_account(username: str, password: str) -> tuple[dict[str, object], dict[str, bytes]]:
     normalized = normalize_username(username)
     if not normalized:
         raise ValueError("Invalid credentials")
 
-    account = find_account_by_username(normalized)
-    if account is None:
-        raise ValueError("Invalid credentials")
+    # Unified passphrase: unwrap SQLCipher key before opening the database
+    _maybe_unwrap_sqlcipher_key(password)
 
-    with get_user_session_factory(account.user_id)() as db:
+    # Try fast path via manifest index first, fall back to DB scan
+    indexed_user_id = get_user_id_from_index(normalized)
+    if indexed_user_id is not None:
+        account_user_id = indexed_user_id
+    else:
+        account = find_account_by_username(normalized)
+        if account is None:
+            raise ValueError("Invalid credentials")
+        account_user_id = account.user_id
+        # Backfill the index for next time
+        store_user_index_entry(normalized, account_user_id)
+
+    with get_user_session_factory(account_user_id)() as db:
         user, deks = authenticate_user(db, normalized, password)
         return serialize_user(user), deks
 
@@ -239,3 +262,72 @@ def _legacy_backup_path(shared_db_path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+# ---------------------------------------------------------------------------
+# Unified passphrase helpers
+# ---------------------------------------------------------------------------
+
+
+def _maybe_generate_sqlcipher_key(password: str) -> None:
+    """Generate and store a wrapped SQLCipher key if unified mode is active.
+
+    Called during registration when no ANIMA_CORE_PASSPHRASE env var is set.
+    The SQLCipher key is random (high entropy), wrapped with the user's
+    password-derived KEK, and stored in the manifest.
+    """
+    if settings.core_passphrase.strip():
+        return  # env var mode — no need for wrapped key
+
+    from anima_server.services.crypto import KEY_LENGTH, wrap_dek
+    from anima_server.services.sessions import set_sqlcipher_key
+    import os
+
+    raw_key = os.urandom(KEY_LENGTH)
+    wrapped = wrap_dek(password, raw_key)
+    store_wrapped_sqlcipher_key({
+        "kdf_salt": wrapped.kdf_salt,
+        "kdf_time_cost": wrapped.kdf_time_cost,
+        "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
+        "kdf_parallelism": wrapped.kdf_parallelism,
+        "kdf_key_length": wrapped.kdf_key_length,
+        "wrap_iv": wrapped.wrap_iv,
+        "wrap_tag": wrapped.wrap_tag,
+        "wrapped_key": wrapped.wrapped_dek,
+    })
+    set_sqlcipher_key(raw_key)
+
+
+def _maybe_unwrap_sqlcipher_key(password: str) -> None:
+    """Unwrap the SQLCipher key from the manifest if unified mode is active.
+
+    Called during login. If the key is already cached (from a previous login
+    in this process), this is a no-op. If the password is wrong, the unwrap
+    will fail and the error propagates as an authentication failure.
+    """
+    if settings.core_passphrase.strip():
+        return  # env var mode
+
+    from anima_server.services.sessions import get_sqlcipher_key, set_sqlcipher_key
+
+    if get_sqlcipher_key() is not None:
+        return  # already cached
+
+    wrapped_data = get_wrapped_sqlcipher_key()
+    if wrapped_data is None:
+        return  # no wrapped key — plain SQLite mode
+
+    from anima_server.services.crypto import WrappedDekRecord, unwrap_dek
+
+    record = WrappedDekRecord(
+        kdf_salt=str(wrapped_data["kdf_salt"]),
+        kdf_time_cost=int(wrapped_data["kdf_time_cost"]),
+        kdf_memory_cost_kib=int(wrapped_data["kdf_memory_cost_kib"]),
+        kdf_parallelism=int(wrapped_data["kdf_parallelism"]),
+        kdf_key_length=int(wrapped_data["kdf_key_length"]),
+        wrap_iv=str(wrapped_data["wrap_iv"]),
+        wrap_tag=str(wrapped_data["wrap_tag"]),
+        wrapped_dek=str(wrapped_data["wrapped_key"]),
+    )
+    raw_key = unwrap_dek(password, record)
+    set_sqlcipher_key(raw_key)

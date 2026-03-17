@@ -134,6 +134,34 @@ def get_active_deks(user_id: int) -> dict[str, bytes] | None:
     return unlock_session_store.get_active_deks(user_id)
 
 
+# ---------------------------------------------------------------------------
+# SQLCipher key cache — set after authentication, read by engine creation.
+# In unified passphrase mode the SQLCipher raw key is unwrapped from the
+# manifest using the user's password. It lives here (not in config) because
+# it is a runtime secret that must not be persisted to disk in plaintext.
+# ---------------------------------------------------------------------------
+
+_sqlcipher_key_lock = Lock()
+_sqlcipher_key: bytes | None = None
+
+
+def set_sqlcipher_key(key: bytes) -> None:
+    global _sqlcipher_key  # noqa: PLW0603
+    with _sqlcipher_key_lock:
+        _sqlcipher_key = key
+
+
+def get_sqlcipher_key() -> bytes | None:
+    with _sqlcipher_key_lock:
+        return _sqlcipher_key
+
+
+def clear_sqlcipher_key() -> None:
+    global _sqlcipher_key  # noqa: PLW0603
+    with _sqlcipher_key_lock:
+        _sqlcipher_key = None
+
+
 def _zero_deks(deks: dict[str, bytes]) -> None:
     """Best-effort zeroing of all DEK bytes in memory."""
     for dek in deks.values():

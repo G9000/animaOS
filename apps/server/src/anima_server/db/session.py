@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 from collections.abc import Generator
 from threading import RLock
 
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.url import ensure_database_directory
-from anima_server.services.sessions import unlock_session_store
+from anima_server.services.sessions import get_sqlcipher_key, unlock_session_store
 from anima_server.services.storage import get_user_data_dir
 
 logger = logging.getLogger(__name__)
@@ -38,17 +39,11 @@ def _make_engine(database_url: str | None = None) -> Engine:
     passphrase = settings.core_passphrase.strip()
     require_encryption = settings.core_require_encryption
 
-    if require_encryption and not passphrase:
-        raise RuntimeError(
-            "Encryption is required by default but no passphrase is configured.\n"
-            "\n"
-            "  Option 1: Set ANIMA_CORE_PASSPHRASE=<your-passphrase> to enable encryption.\n"
-            "  Option 2: Set ANIMA_CORE_REQUIRE_ENCRYPTION=false to run without encryption\n"
-            "            (development only — data will be stored in plaintext).\n"
-            "\n"
-            "The Core stores all memories, conversations, and identity data. Encryption\n"
-            "protects this data at rest — it is strongly recommended for any non-dev use."
-        )
+    # Determine the SQLCipher raw key from one of three sources:
+    #   1. ANIMA_CORE_PASSPHRASE env var → Argon2id + HKDF derivation
+    #   2. Cached key from unified passphrase model (set after user login)
+    #   3. None → plain SQLite (dev mode)
+    raw_key: bytes | None = None
 
     if passphrase:
         try:
@@ -85,13 +80,33 @@ def _make_engine(database_url: str | None = None) -> Engine:
 
         sqlcipher_salt = get_sqlcipher_kdf_salt()
         raw_key = derive_sqlcipher_key(passphrase, sqlcipher_salt)
+    else:
+        # Unified passphrase mode: check if a pre-derived key was cached
+        # after user authentication (see db/user_store.py)
+        raw_key = get_sqlcipher_key()
+
+    if raw_key is not None:
+        try:
+            import sqlcipher3
+        except ImportError:
+            if require_encryption:
+                raise RuntimeError(
+                    "ANIMA_CORE_REQUIRE_ENCRYPTION is enabled but sqlcipher3 is not installed. "
+                    "Install sqlcipher3 to enable database encryption: pip install sqlcipher3"
+                )
+            logger.warning(
+                "sqlcipher3 not installed - falling back to unencrypted SQLite."
+            )
+            raw_key = None
+
+    if raw_key is not None:
         hex_key = raw_key.hex()
 
         eng = create_engine(
             url,
             echo=settings.database_echo,
             future=True,
-            module=sqlcipher3,
+            module=sqlcipher3,  # type: ignore[possibly-undefined]
             connect_args={"check_same_thread": False},
         )
 
@@ -101,16 +116,35 @@ def _make_engine(database_url: str | None = None) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute(f"""PRAGMA key = "x'{hex_key}'" """)
             cursor.execute("PRAGMA cipher_page_size = 4096")
-            cursor.execute("PRAGMA cipher_memory_security = ON")
+            # PRAGMA cipher_memory_security = ON causes
+            # STATUS_GUARD_PAGE_VIOLATION (0x80000001) on Windows
+            # threads.  SQLCipher still zeroes sensitive memory on
+            # deallocation without this pragma; enabling it adds
+            # mlock/guard-page hardening that conflicts with Windows
+            # thread stack management.
+            if platform.system() != "Windows":
+                cursor.execute("PRAGMA cipher_memory_security = ON")
             cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute("PRAGMA busy_timeout = 5000")
             cursor.close()
 
-        logger.info("Database encryption enabled (SQLCipher, Argon2id-derived raw key).")
+        logger.info("Database encryption enabled (SQLCipher).")
         return eng
 
-    if require_encryption:
-        raise RuntimeError("Encryption required but no passphrase provided.")
+    # No SQLCipher key available — check if encryption is required
+    from anima_server.services.core import has_wrapped_sqlcipher_key
+
+    if require_encryption and not has_wrapped_sqlcipher_key():
+        raise RuntimeError(
+            "Encryption is required by default but no passphrase is configured.\n"
+            "\n"
+            "  Option 1: Set ANIMA_CORE_PASSPHRASE=<your-passphrase> to enable encryption.\n"
+            "  Option 2: Set ANIMA_CORE_REQUIRE_ENCRYPTION=false to run without encryption\n"
+            "            (development only — data will be stored in plaintext).\n"
+            "\n"
+            "The Core stores all memories, conversations, and identity data. Encryption\n"
+            "protects this data at rest — it is strongly recommended for any non-dev use."
+        )
 
     logger.info("Database encryption not configured - using plain SQLite.")
     eng = create_engine(

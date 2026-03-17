@@ -166,6 +166,41 @@ def change_password(
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # Re-wrap SQLCipher key with new password (unified passphrase mode)
+    _rewrap_sqlcipher_key_if_unified(payload.newPassword)
+
     unlock_session_store.revoke_user(user.id)
     new_unlock_token = unlock_session_store.create(user.id, session.deks)
     return {"success": True, "unlockToken": new_unlock_token}
+
+
+def _rewrap_sqlcipher_key_if_unified(new_password: str) -> None:
+    """Re-wrap the SQLCipher key with a new password in unified mode."""
+    from anima_server.config import settings
+    if settings.core_passphrase.strip():
+        return
+
+    from anima_server.services.core import get_wrapped_sqlcipher_key, store_wrapped_sqlcipher_key
+    from anima_server.services.sessions import get_sqlcipher_key
+
+    raw_key = get_sqlcipher_key()
+    if raw_key is None:
+        return
+
+    wrapped_data = get_wrapped_sqlcipher_key()
+    if wrapped_data is None:
+        return
+
+    from anima_server.services.crypto import wrap_dek
+
+    wrapped = wrap_dek(new_password, raw_key)
+    store_wrapped_sqlcipher_key({
+        "kdf_salt": wrapped.kdf_salt,
+        "kdf_time_cost": wrapped.kdf_time_cost,
+        "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
+        "kdf_parallelism": wrapped.kdf_parallelism,
+        "kdf_key_length": wrapped.kdf_key_length,
+        "wrap_iv": wrapped.wrap_iv,
+        "wrap_tag": wrapped.wrap_tag,
+        "wrapped_key": wrapped.wrapped_dek,
+    })
