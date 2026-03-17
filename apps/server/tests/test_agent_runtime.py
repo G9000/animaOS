@@ -120,7 +120,7 @@ async def test_runtime_coerces_plain_assistant_text_into_terminal_send_message()
     assert len(result.step_traces) == 1
     assert result.step_traces[0].tool_calls == (
         ToolCall(
-            id="synthetic-send-message-0",
+            id="synthetic-send_message-0-0",
             name="send_message",
             arguments={"message": "Hello from coerced terminal output."},
         ),

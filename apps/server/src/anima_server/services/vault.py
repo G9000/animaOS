@@ -7,6 +7,7 @@ from anima_server.services.crypto import (
     IV_LENGTH,
     KEY_LENGTH,
     SALT_LENGTH,
+    decrypt_text_with_dek,
     derive_argon2id_key,
 )
 from anima_server.models import (
@@ -25,6 +26,8 @@ from anima_server.models import (
     UserKey,
 )
 from anima_server.config import settings
+from anima_server.services.data_crypto import ef as encrypt_field_for_user
+from anima_server.services.sessions import get_active_dek
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -91,9 +94,40 @@ _IDENTITY_TABLES = frozenset({
     "users", "userKeys",
 })
 
+_CONVERSATION_TABLES = frozenset({
+    "agentThreads", "agentRuns", "agentSteps", "agentMessages",
+    "tasks",
+})
+
+
+def _decrypt_field_value(value: str | None, dek: bytes | None) -> str | None:
+    """Decrypt a field-level encrypted value for vault export.
+
+    Returns plaintext so the vault envelope is the only encryption layer.
+    If no DEK is active or the value is not encrypted, returns as-is.
+    """
+    if value is None or dek is None:
+        return value
+    return decrypt_text_with_dek(value, dek)
+
+
+def _re_encrypt_field_value(
+    value: str | None, user_id: int,
+) -> str | None:
+    """Re-encrypt a plaintext value with the importing user's active DEK."""
+    if value is None:
+        return value
+    return encrypt_field_for_user(user_id, value)
+
 
 def export_vault(db: Session, passphrase: str, *, user_id: int | None = None, scope: str = "full") -> dict[str, Any]:
-    full_snapshot = export_database_snapshot(db, user_id=user_id)
+    # Resolve active DEK so we can decrypt field-level encryption before export.
+    # The vault envelope is the only encryption layer in the exported file.
+    dek: bytes | None = None
+    if user_id is not None:
+        dek = get_active_dek(user_id)
+
+    full_snapshot = export_database_snapshot(db, user_id=user_id, dek=dek)
 
     if scope == "memories":
         # Only memory/identity tables — no conversation transcripts
@@ -104,15 +138,20 @@ def export_vault(db: Session, passphrase: str, *, user_id: int | None = None, sc
     else:
         snapshot = full_snapshot
 
+    # Include manifest so the Core's identity survives transfer
+    manifest = _read_manifest_snapshot()
+
     payload = {
         "version": VAULT_VERSION,
         "createdAt": datetime.now(UTC).isoformat(),
         "scope": scope,
         "database": snapshot,
+        "manifest": manifest,
         "userFiles": read_data_snapshot(user_id=user_id) if scope == "full" else {},
     }
     plaintext = json.dumps(payload)
-    envelope = encrypt_string(plaintext, passphrase)
+    aad = f"anima-vault:v{VAULT_VERSION}:{scope}".encode("utf-8")
+    envelope = encrypt_string(plaintext, passphrase, aad=aad)
     vault = json.dumps(envelope)
     date_stamp = datetime.now().date().isoformat()
     return {
@@ -148,8 +187,19 @@ def import_vault(db: Session, vault: str, passphrase: str, *, user_id: int | Non
     if not isinstance(user_files, dict):
         raise ValueError("Vault payload user files are invalid.")
 
-    restore_database_snapshot(db, database)
+    vault_scope = payload.get("scope", "full")
+
+    # Re-encrypt plaintext fields with importing user's DEK before restoring
+    if user_id is not None:
+        _re_encrypt_snapshot_fields(database, user_id)
+
+    restore_database_snapshot(db, database, scope=vault_scope)
     write_data_snapshot(user_files, user_id=user_id)
+
+    # Restore manifest identity (core_id, created_at) from vault if present
+    vault_manifest = payload.get("manifest")
+    if isinstance(vault_manifest, dict):
+        _restore_manifest_identity(vault_manifest)
 
     # Rebuild vector index from imported embeddings
     _rebuild_vector_indices(db, database)
@@ -168,16 +218,21 @@ def import_vault(db: Session, vault: str, passphrase: str, *, user_id: int | Non
     }
 
 
-def encrypt_string(plaintext: str, passphrase: str) -> dict[str, Any]:
+def encrypt_string(
+    plaintext: str,
+    passphrase: str,
+    *,
+    aad: bytes | None = None,
+) -> dict[str, Any]:
     salt = random_bytes(SALT_LENGTH)
     iv = random_bytes(IV_LENGTH)
     key = derive_argon2id_key(passphrase, salt)
-    encrypted = AESGCM(key).encrypt(iv, plaintext.encode("utf-8"), None)
+    encrypted = AESGCM(key).encrypt(iv, plaintext.encode("utf-8"), aad)
     ciphertext, tag = encrypted[:-
                                 AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
     ciphertext_b64 = base64.b64encode(ciphertext).decode("ascii")
     integrity_hash = hashlib.sha256(ciphertext_b64.encode("ascii")).hexdigest()
-    return {
+    envelope: dict[str, Any] = {
         "version": VAULT_VERSION,
         "createdAt": datetime.now(UTC).isoformat(),
         "payloadVersion": VAULT_VERSION,
@@ -200,6 +255,9 @@ def encrypt_string(plaintext: str, passphrase: str) -> dict[str, Any]:
             "hash": integrity_hash,
         },
     }
+    if aad is not None:
+        envelope["aad_b64"] = base64.b64encode(aad).decode("ascii")
+    return envelope
 
 
 def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
@@ -234,6 +292,12 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
                 "Vault integrity check failed — ciphertext may be corrupted."
             )
 
+    # Recover AAD from envelope (backwards-compatible: None if absent)
+    aad: bytes | None = None
+    aad_b64 = envelope.get("aad_b64")
+    if isinstance(aad_b64, str):
+        aad = base64.b64decode(aad_b64)
+
     try:
         salt = base64.b64decode(str(kdf["salt"]))
         iv = base64.b64decode(str(cipher["iv"]))
@@ -247,7 +311,7 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
             parallelism=int(kdf["parallelism"]),
             key_length=int(kdf["keyLength"]),
         )
-        plaintext = AESGCM(key).decrypt(iv, ciphertext + tag, None)
+        plaintext = AESGCM(key).decrypt(iv, ciphertext + tag, aad)
     except ValueError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -257,7 +321,12 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
     return plaintext.decode("utf-8")
 
 
-def export_database_snapshot(db: Session, *, user_id: int | None = None) -> dict[str, list[dict[str, Any]]]:
+def export_database_snapshot(
+    db: Session,
+    *,
+    user_id: int | None = None,
+    dek: bytes | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     def _scoped(query, model):  # type: ignore[no-untyped-def]
         if user_id is not None and hasattr(model, "user_id"):
             return query.where(model.user_id == user_id)
@@ -274,15 +343,15 @@ def export_database_snapshot(db: Session, *, user_id: int | None = None) -> dict
         for user_key in db.scalars(_scoped(select(UserKey), UserKey)).all()
     ]
     memory_items = [
-        serialize_memory_item_record(item)
+        serialize_memory_item_record(item, dek=dek)
         for item in db.scalars(_scoped(select(MemoryItem), MemoryItem)).all()
     ]
     memory_episodes = [
-        serialize_memory_episode_record(ep)
+        serialize_memory_episode_record(ep, dek=dek)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
     ]
     memory_daily_logs = [
-        serialize_memory_daily_log_record(log)
+        serialize_memory_daily_log_record(log, dek=dek)
         for log in db.scalars(_scoped(select(MemoryDailyLog), MemoryDailyLog)).all()
     ]
     tasks = [
@@ -312,7 +381,7 @@ def export_database_snapshot(db: Session, *, user_id: int | None = None) -> dict
             ).all()
         ] if scoped_thread_ids else []
         agent_messages = [
-            serialize_agent_message_record(m, thread_user_map=_thread_user_map)
+            serialize_agent_message_record(m, thread_user_map=_thread_user_map, dek=dek)
             for m in db.scalars(
                 select(AgentMessage).where(
                     AgentMessage.thread_id.in_(scoped_thread_ids))
@@ -324,19 +393,19 @@ def export_database_snapshot(db: Session, *, user_id: int | None = None) -> dict
             for s in db.scalars(select(AgentStep)).all()
         ]
         agent_messages = [
-            serialize_agent_message_record(m, thread_user_map=_thread_user_map)
+            serialize_agent_message_record(m, thread_user_map=_thread_user_map, dek=dek)
             for m in db.scalars(select(AgentMessage)).all()
         ]
     session_notes = [
-        serialize_session_note_record(n)
+        serialize_session_note_record(n, dek=dek)
         for n in db.scalars(_scoped(select(SessionNote), SessionNote)).all()
     ]
     self_model_blocks = [
-        serialize_self_model_block_record(b)
+        serialize_self_model_block_record(b, dek=dek)
         for b in db.scalars(_scoped(select(SelfModelBlock), SelfModelBlock)).all()
     ]
     emotional_signals = [
-        serialize_emotional_signal_record(s)
+        serialize_emotional_signal_record(s, dek=dek)
         for s in db.scalars(_scoped(select(EmotionalSignal), EmotionalSignal)).all()
     ]
     return {
@@ -356,7 +425,12 @@ def export_database_snapshot(db: Session, *, user_id: int | None = None) -> dict
     }
 
 
-def restore_database_snapshot(db: Session, snapshot: dict[str, Any]) -> None:
+def restore_database_snapshot(
+    db: Session,
+    snapshot: dict[str, Any],
+    *,
+    scope: str = "full",
+) -> None:
     users_payload = snapshot.get("users")
     user_keys_payload = snapshot.get("userKeys")
     if not isinstance(users_payload, list) or not isinstance(user_keys_payload, list):
@@ -375,15 +449,19 @@ def restore_database_snapshot(db: Session, snapshot: dict[str, Any]) -> None:
     agent_steps_payload = snapshot.get("agentSteps", [])
     agent_messages_payload = snapshot.get("agentMessages", [])
 
+    # For memories-only imports, only clear tables that were exported
+    is_full = scope == "full"
+
     try:
         db.query(EmotionalSignal).delete()
         db.query(SelfModelBlock).delete()
         db.query(SessionNote).delete()
-        db.query(AgentStep).delete()
-        db.query(AgentMessage).delete()
-        db.query(AgentRun).delete()
-        db.query(AgentThread).delete()
-        db.query(Task).delete()
+        if is_full:
+            db.query(AgentStep).delete()
+            db.query(AgentMessage).delete()
+            db.query(AgentRun).delete()
+            db.query(AgentThread).delete()
+            db.query(Task).delete()
         db.query(MemoryDailyLog).delete()
         db.query(MemoryEpisode).delete()
         db.query(MemoryItem).delete()
@@ -806,11 +884,13 @@ def serialize_user_key_record(user_key: UserKey) -> dict[str, Any]:
     }
 
 
-def serialize_memory_item_record(item: MemoryItem) -> dict[str, Any]:
+def serialize_memory_item_record(
+    item: MemoryItem, *, dek: bytes | None = None,
+) -> dict[str, Any]:
     return {
         "id": item.id,
         "user_id": item.user_id,
-        "content": item.content,
+        "content": _decrypt_field_value(item.content, dek),
         "category": item.category,
         "importance": item.importance,
         "source": item.source,
@@ -823,7 +903,9 @@ def serialize_memory_item_record(item: MemoryItem) -> dict[str, Any]:
     }
 
 
-def serialize_memory_episode_record(ep: MemoryEpisode) -> dict[str, Any]:
+def serialize_memory_episode_record(
+    ep: MemoryEpisode, *, dek: bytes | None = None,
+) -> dict[str, Any]:
     return {
         "id": ep.id,
         "user_id": ep.user_id,
@@ -831,32 +913,36 @@ def serialize_memory_episode_record(ep: MemoryEpisode) -> dict[str, Any]:
         "date": ep.date,
         "time": ep.time,
         "topics_json": ep.topics_json,
-        "summary": ep.summary,
-        "emotional_arc": ep.emotional_arc,
+        "summary": _decrypt_field_value(ep.summary, dek),
+        "emotional_arc": _decrypt_field_value(ep.emotional_arc, dek),
         "significance_score": ep.significance_score,
         "turn_count": ep.turn_count,
         "created_at": serialize_optional_datetime(ep.created_at),
     }
 
 
-def serialize_memory_daily_log_record(log: MemoryDailyLog) -> dict[str, Any]:
+def serialize_memory_daily_log_record(
+    log: MemoryDailyLog, *, dek: bytes | None = None,
+) -> dict[str, Any]:
     return {
         "id": log.id,
         "user_id": log.user_id,
         "date": log.date,
-        "user_message": log.user_message,
-        "assistant_response": log.assistant_response,
+        "user_message": _decrypt_field_value(log.user_message, dek),
+        "assistant_response": _decrypt_field_value(log.assistant_response, dek),
         "created_at": serialize_optional_datetime(log.created_at),
     }
 
 
-def serialize_session_note_record(note: SessionNote) -> dict[str, Any]:
+def serialize_session_note_record(
+    note: SessionNote, *, dek: bytes | None = None,
+) -> dict[str, Any]:
     return {
         "id": note.id,
         "thread_id": note.thread_id,
         "user_id": note.user_id,
         "key": note.key,
-        "value": note.value,
+        "value": _decrypt_field_value(note.value, dek),
         "note_type": note.note_type,
         "is_active": note.is_active,
         "promoted_to_item_id": note.promoted_to_item_id,
@@ -931,6 +1017,7 @@ def serialize_agent_message_record(
     m: AgentMessage,
     *,
     thread_user_map: dict[int, int] | None = None,
+    dek: bytes | None = None,
 ) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -939,7 +1026,7 @@ def serialize_agent_message_record(
         "step_id": m.step_id,
         "sequence_id": m.sequence_id,
         "role": m.role,
-        "content_text": m.content_text,
+        "content_text": _decrypt_field_value(m.content_text, dek),
         "content_json": m.content_json,
         "tool_name": m.tool_name,
         "tool_call_id": m.tool_call_id,
@@ -950,12 +1037,14 @@ def serialize_agent_message_record(
     }
 
 
-def serialize_self_model_block_record(block: SelfModelBlock) -> dict[str, Any]:
+def serialize_self_model_block_record(
+    block: SelfModelBlock, *, dek: bytes | None = None,
+) -> dict[str, Any]:
     return {
         "id": block.id,
         "user_id": block.user_id,
         "section": block.section,
-        "content": block.content,
+        "content": _decrypt_field_value(block.content, dek),
         "version": block.version,
         "updated_by": block.updated_by,
         "metadata_json": block.metadata_json,
@@ -964,7 +1053,9 @@ def serialize_self_model_block_record(block: SelfModelBlock) -> dict[str, Any]:
     }
 
 
-def serialize_emotional_signal_record(signal: EmotionalSignal) -> dict[str, Any]:
+def serialize_emotional_signal_record(
+    signal: EmotionalSignal, *, dek: bytes | None = None,
+) -> dict[str, Any]:
     return {
         "id": signal.id,
         "user_id": signal.user_id,
@@ -972,10 +1063,10 @@ def serialize_emotional_signal_record(signal: EmotionalSignal) -> dict[str, Any]
         "emotion": signal.emotion,
         "confidence": signal.confidence,
         "evidence_type": signal.evidence_type,
-        "evidence": signal.evidence,
+        "evidence": _decrypt_field_value(signal.evidence, dek),
         "trajectory": signal.trajectory,
         "previous_emotion": signal.previous_emotion,
-        "topic": signal.topic,
+        "topic": _decrypt_field_value(signal.topic, dek),
         "acted_on": signal.acted_on,
         "created_at": serialize_optional_datetime(signal.created_at),
     }
@@ -1062,6 +1153,81 @@ def _rebuild_vector_indices(db: Session, snapshot: dict[str, Any]) -> None:
         import logging
         logging.getLogger(__name__).debug(
             "Vector index rebuild skipped during import")
+
+
+def _read_manifest_snapshot() -> dict[str, Any]:
+    """Read manifest.json for inclusion in vault export."""
+    manifest_path = settings.data_dir / "manifest.json"
+    if manifest_path.is_file():
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    return {}
+
+
+def _restore_manifest_identity(vault_manifest: dict[str, Any]) -> None:
+    """Restore core_id and created_at from vault manifest, preserving Core identity."""
+    manifest_path = settings.data_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    current = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    # Preserve the Core's birth identity from the vault
+    if "core_id" in vault_manifest:
+        current["core_id"] = vault_manifest["core_id"]
+    if "created_at" in vault_manifest:
+        current["created_at"] = vault_manifest["created_at"]
+
+    manifest_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+
+
+def _re_encrypt_snapshot_fields(
+    snapshot: dict[str, Any],
+    user_id: int,
+) -> None:
+    """Re-encrypt plaintext fields in a vault snapshot with the importing user's DEK.
+
+    The vault stores plaintext (field-level encryption was stripped on export).
+    This function applies the importing user's DEK before the data is written to DB.
+    """
+    dek = get_active_dek(user_id)
+    if dek is None:
+        return  # No encryption active — store as plaintext
+
+    for item in snapshot.get("memoryItems", []):
+        if isinstance(item, dict) and item.get("content"):
+            item["content"] = _re_encrypt_field_value(item["content"], user_id)
+
+    for ep in snapshot.get("memoryEpisodes", []):
+        if isinstance(ep, dict):
+            if ep.get("summary"):
+                ep["summary"] = _re_encrypt_field_value(ep["summary"], user_id)
+            if ep.get("emotional_arc"):
+                ep["emotional_arc"] = _re_encrypt_field_value(ep["emotional_arc"], user_id)
+
+    for log in snapshot.get("memoryDailyLogs", []):
+        if isinstance(log, dict):
+            if log.get("user_message"):
+                log["user_message"] = _re_encrypt_field_value(log["user_message"], user_id)
+            if log.get("assistant_response"):
+                log["assistant_response"] = _re_encrypt_field_value(log["assistant_response"], user_id)
+
+    for note in snapshot.get("sessionNotes", []):
+        if isinstance(note, dict) and note.get("value"):
+            note["value"] = _re_encrypt_field_value(note["value"], user_id)
+
+    for block in snapshot.get("selfModelBlocks", []):
+        if isinstance(block, dict) and block.get("content"):
+            block["content"] = _re_encrypt_field_value(block["content"], user_id)
+
+    for signal in snapshot.get("emotionalSignals", []):
+        if isinstance(signal, dict):
+            if signal.get("evidence"):
+                signal["evidence"] = _re_encrypt_field_value(signal["evidence"], user_id)
+            if signal.get("topic"):
+                signal["topic"] = _re_encrypt_field_value(signal["topic"], user_id)
+
+    for msg in snapshot.get("agentMessages", []):
+        if isinstance(msg, dict) and msg.get("content_text"):
+            msg["content_text"] = _re_encrypt_field_value(msg["content_text"], user_id)
 
 
 def random_bytes(length: int) -> bytes:

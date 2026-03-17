@@ -47,9 +47,9 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "Maintain the active persona consistently" in prompt
     assert "Do not fabricate facts, tool usage, permissions, external actions, or completed work." in prompt
     assert 'Do not default to generic "as an AI" disclaimers' in prompt
-    assert "I am Anima, a thoughtful and capable companion." in prompt
-    assert "I speak as Anima rather than as a generic assistant" in prompt
-    assert "I prefer concise answers by default" in prompt
+    assert "A thoughtful, capable companion" in prompt
+    assert "Calm, perceptive, sincere" in prompt
+    assert "Concise by default" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
 
