@@ -122,7 +122,7 @@ def register_account(
     user_id = allocate_user_id()
     factory = ensure_user_database(user_id)
     with factory() as db:
-        user, dek = create_user(
+        user, deks = create_user(
             db,
             username=normalized,
             password=password,
@@ -133,7 +133,7 @@ def register_account(
             user_id=user_id,
         )
     set_owner_user_id(user_id)
-    return serialize_user(user), dek
+    return serialize_user(user), deks
 
 
 def authenticate_account(username: str, password: str) -> tuple[dict[str, object], bytes]:
@@ -146,8 +146,8 @@ def authenticate_account(username: str, password: str) -> tuple[dict[str, object
         raise ValueError("Invalid credentials")
 
     with get_user_session_factory(account.user_id)() as db:
-        user, dek = authenticate_user(db, normalized, password)
-        return serialize_user(user), dek
+        user, deks = authenticate_user(db, normalized, password)
+        return serialize_user(user), deks
 
 
 def delete_account_storage(user_id: int) -> None:

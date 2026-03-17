@@ -8,7 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import User, UserKey
-from anima_server.services.crypto import WrappedDekRecord, create_wrapped_dek, unwrap_dek, wrap_dek
+from anima_server.services.crypto import WrappedDekRecord, create_wrapped_deks_for_domains, unwrap_dek, wrap_dek
+from anima_server.services.data_crypto import ALL_DOMAINS
 
 PASSWORD_HASHER = PasswordHasher(
     time_cost=3,
@@ -55,13 +56,16 @@ def get_user_by_id(db: Session, user_id: int) -> User | None:
     return db.get(User, user_id)
 
 
-def get_user_key_by_user_id(db: Session, user_id: int) -> UserKey | None:
-    return db.scalar(select(UserKey).where(UserKey.user_id == user_id))
+def get_user_keys_by_user_id(db: Session, user_id: int) -> list[UserKey]:
+    return list(db.scalars(
+        select(UserKey).where(UserKey.user_id == user_id)
+    ).all())
 
 
-def build_user_key(user_id: int, wrapped_dek: WrappedDekRecord) -> UserKey:
+def build_user_key(user_id: int, domain: str, wrapped_dek: WrappedDekRecord) -> UserKey:
     return UserKey(
         user_id=user_id,
+        domain=domain,
         kdf_salt=wrapped_dek.kdf_salt,
         kdf_time_cost=wrapped_dek.kdf_time_cost,
         kdf_memory_cost_kib=wrapped_dek.kdf_memory_cost_kib,
@@ -83,11 +87,11 @@ def create_user(
     relationship: str = "companion",
     *,
     user_id: int | None = None,
-) -> tuple[User, bytes]:
+) -> tuple[User, dict[str, bytes]]:
     from anima_server.models import AgentProfile, SelfModelBlock
     from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
 
-    dek, wrapped_dek = create_wrapped_dek(password)
+    deks, wrapped_records = create_wrapped_deks_for_domains(password, ALL_DOMAINS)
     user = User(
         id=user_id,
         username=username,
@@ -96,7 +100,9 @@ def create_user(
     )
     db.add(user)
     db.flush()
-    db.add(build_user_key(user.id, wrapped_dek))
+
+    for domain, wrapped_dek in wrapped_records:
+        db.add(build_user_key(user.id, domain, wrapped_dek))
 
     # Seed structured agent profile for fast lookup
     db.add(AgentProfile(
@@ -154,10 +160,10 @@ def create_user(
 
     db.commit()
     db.refresh(user)
-    return user, dek
+    return user, deks
 
 
-def authenticate_user(db: Session, username: str, password: str) -> tuple[User, bytes]:
+def authenticate_user(db: Session, username: str, password: str) -> tuple[User, dict[str, bytes]]:
     user = get_user_by_username(db, username)
     if user is None:
         raise ValueError("Invalid credentials")
@@ -166,21 +172,68 @@ def authenticate_user(db: Session, username: str, password: str) -> tuple[User, 
     if not verification.valid:
         raise ValueError("Invalid credentials")
 
-    user_key = get_user_key_by_user_id(db, user.id)
-    if user_key is None:
+    user_keys = get_user_keys_by_user_id(db, user.id)
+    if not user_keys:
         raise RuntimeError(f"User {user.id} is missing key material")
 
-    try:
-        dek = unwrap_dek(password, to_wrapped_dek_record(user_key))
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError("Invalid credentials") from exc
+    # Legacy migration: single key without domain → clone to all domains
+    if len(user_keys) == 1 and (user_keys[0].domain == "memories" or not user_keys[0].domain):
+        deks = _migrate_legacy_single_key(db, user.id, password, user_keys[0])
+    else:
+        deks = _unwrap_all_domain_keys(password, user_keys)
 
     if verification.needs_rehash:
         user.password_hash = hash_password(password)
         db.commit()
         db.refresh(user)
 
-    return user, dek
+    return user, deks
+
+
+def _migrate_legacy_single_key(
+    db: Session,
+    user_id: int,
+    password: str,
+    legacy_key: UserKey,
+) -> dict[str, bytes]:
+    """Migrate a legacy single-DEK user to per-domain DEKs.
+
+    The legacy DEK is preserved for all domains (same key, new architecture).
+    Future key rotation will produce independent per-domain keys.
+    """
+    legacy_dek = unwrap_dek(password, to_wrapped_dek_record(legacy_key))
+
+    deks: dict[str, bytes] = {}
+    for domain in ALL_DOMAINS:
+        if domain == (legacy_key.domain or "memories"):
+            deks[domain] = legacy_dek
+            continue
+        # Wrap the same DEK under a new row for each domain
+        wrapped = wrap_dek(password, legacy_dek)
+        db.add(build_user_key(user_id, domain, wrapped))
+        deks[domain] = legacy_dek
+
+    # Update legacy row to ensure it has explicit domain
+    if not legacy_key.domain or legacy_key.domain == "memories":
+        legacy_key.domain = "memories"
+
+    db.commit()
+    return deks
+
+
+def _unwrap_all_domain_keys(
+    password: str,
+    user_keys: list[UserKey],
+) -> dict[str, bytes]:
+    """Unwrap all per-domain DEKs from stored UserKey records."""
+    deks: dict[str, bytes] = {}
+    for uk in user_keys:
+        try:
+            dek = unwrap_dek(password, to_wrapped_dek_record(uk))
+            deks[uk.domain] = dek
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("Invalid credentials") from exc
+    return deks
 
 
 def change_user_password(
@@ -188,27 +241,32 @@ def change_user_password(
     user: User,
     old_password: str,
     new_password: str,
-    current_dek: bytes,
+    current_deks: dict[str, bytes],
 ) -> None:
     verification = verify_password(old_password, user.password_hash)
     if not verification.valid:
         raise ValueError("Invalid credentials")
 
-    wrapped_dek = wrap_dek(new_password, current_dek)
     user.password_hash = hash_password(new_password)
 
-    user_key = get_user_key_by_user_id(db, user.id)
-    if user_key is None:
+    user_keys = get_user_keys_by_user_id(db, user.id)
+    if not user_keys:
         raise RuntimeError(f"User {user.id} is missing key material")
 
-    user_key.kdf_salt = wrapped_dek.kdf_salt
-    user_key.kdf_time_cost = wrapped_dek.kdf_time_cost
-    user_key.kdf_memory_cost_kib = wrapped_dek.kdf_memory_cost_kib
-    user_key.kdf_parallelism = wrapped_dek.kdf_parallelism
-    user_key.kdf_key_length = wrapped_dek.kdf_key_length
-    user_key.wrap_iv = wrapped_dek.wrap_iv
-    user_key.wrap_tag = wrapped_dek.wrap_tag
-    user_key.wrapped_dek = wrapped_dek.wrapped_dek
+    # Re-wrap each domain DEK with the new password
+    for uk in user_keys:
+        dek = current_deks.get(uk.domain)
+        if dek is None:
+            continue
+        wrapped = wrap_dek(new_password, dek)
+        uk.kdf_salt = wrapped.kdf_salt
+        uk.kdf_time_cost = wrapped.kdf_time_cost
+        uk.kdf_memory_cost_kib = wrapped.kdf_memory_cost_kib
+        uk.kdf_parallelism = wrapped.kdf_parallelism
+        uk.kdf_key_length = wrapped.kdf_key_length
+        uk.wrap_iv = wrapped.wrap_iv
+        uk.wrap_tag = wrapped.wrap_tag
+        uk.wrapped_dek = wrapped.wrapped_dek
 
     db.commit()
     db.refresh(user)

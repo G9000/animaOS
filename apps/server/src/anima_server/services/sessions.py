@@ -8,11 +8,13 @@ from threading import Lock
 
 SESSION_TTL = timedelta(hours=24)
 
+DEFAULT_DOMAIN = "memories"
+
 
 @dataclass(frozen=True, slots=True)
 class UnlockSession:
     user_id: int
-    dek: bytes
+    deks: dict[str, bytes]
     expires_at: datetime
 
 
@@ -20,19 +22,19 @@ class UnlockSessionStore:
     def __init__(self) -> None:
         self._lock = Lock()
         self._sessions: dict[str, UnlockSession] = {}
-        self._latest_dek_by_user: dict[int, bytes] = {}
+        self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
 
-    def create(self, user_id: int, dek: bytes) -> str:
+    def create(self, user_id: int, deks: dict[str, bytes]) -> str:
         token = secrets.token_urlsafe(32)
         session = UnlockSession(
             user_id=user_id,
-            dek=dek,
+            deks=deks,
             expires_at=self._now() + SESSION_TTL,
         )
         with self._lock:
             self._purge_expired_locked()
             self._sessions[token] = session
-            self._latest_dek_by_user[user_id] = dek
+            self._latest_deks_by_user[user_id] = deks
         return token
 
     def resolve(self, token: str | None) -> UnlockSession | None:
@@ -55,8 +57,8 @@ class UnlockSessionStore:
         with self._lock:
             session = self._sessions.pop(token, None)
             if session is not None:
-                self._refresh_latest_dek_locked(session.user_id)
-                _zero_dek(session.dek)
+                self._refresh_latest_deks_locked(session.user_id)
+                _zero_deks(session.deks)
 
     def revoke_user(self, user_id: int) -> None:
         with self._lock:
@@ -67,17 +69,25 @@ class UnlockSessionStore:
             ]
             for token in matching_tokens:
                 self._sessions.pop(token, None)
-            self._latest_dek_by_user.pop(user_id, None)
+            self._latest_deks_by_user.pop(user_id, None)
 
     def clear(self) -> None:
         with self._lock:
             self._sessions.clear()
-            self._latest_dek_by_user.clear()
+            self._latest_deks_by_user.clear()
 
-    def get_active_dek(self, user_id: int) -> bytes | None:
+    def get_active_dek(self, user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
         with self._lock:
             self._purge_expired_locked()
-            return self._latest_dek_by_user.get(user_id)
+            deks = self._latest_deks_by_user.get(user_id)
+            if deks is None:
+                return None
+            return deks.get(domain)
+
+    def get_active_deks(self, user_id: int) -> dict[str, bytes] | None:
+        with self._lock:
+            self._purge_expired_locked()
+            return self._latest_deks_by_user.get(user_id)
 
     def _purge_expired_locked(self) -> None:
         now = self._now()
@@ -90,11 +100,11 @@ class UnlockSessionStore:
         for token in expired_tokens:
             expired = self._sessions.pop(token, None)
             if expired is not None:
-                _zero_dek(expired.dek)
+                _zero_deks(expired.deks)
         for user_id in affected_users:
-            self._refresh_latest_dek_locked(user_id)
+            self._refresh_latest_deks_locked(user_id)
 
-    def _refresh_latest_dek_locked(self, user_id: int) -> None:
+    def _refresh_latest_deks_locked(self, user_id: int) -> None:
         latest_session = next(
             (
                 session
@@ -104,9 +114,9 @@ class UnlockSessionStore:
             None,
         )
         if latest_session is None:
-            self._latest_dek_by_user.pop(user_id, None)
+            self._latest_deks_by_user.pop(user_id, None)
             return
-        self._latest_dek_by_user[user_id] = latest_session.dek
+        self._latest_deks_by_user[user_id] = latest_session.deks
 
     @staticmethod
     def _now() -> datetime:
@@ -116,8 +126,18 @@ class UnlockSessionStore:
 unlock_session_store = UnlockSessionStore()
 
 
-def get_active_dek(user_id: int) -> bytes | None:
-    return unlock_session_store.get_active_dek(user_id)
+def get_active_dek(user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
+    return unlock_session_store.get_active_dek(user_id, domain)
+
+
+def get_active_deks(user_id: int) -> dict[str, bytes] | None:
+    return unlock_session_store.get_active_deks(user_id)
+
+
+def _zero_deks(deks: dict[str, bytes]) -> None:
+    """Best-effort zeroing of all DEK bytes in memory."""
+    for dek in deks.values():
+        _zero_dek(dek)
 
 
 def _zero_dek(dek: bytes) -> None:

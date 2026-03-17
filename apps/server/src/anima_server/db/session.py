@@ -194,7 +194,24 @@ def ensure_user_database(user_id: int) -> sessionmaker[Session]:
     factory = get_session_factory(database_url)
     engine_instance = get_engine(database_url)
     Base.metadata.create_all(bind=engine_instance)
+    _migrate_user_keys_domain(engine_instance)
     return factory
+
+
+def _migrate_user_keys_domain(engine_instance: Engine) -> None:
+    """Add domain column to user_keys if it doesn't exist (legacy schema migration)."""
+    from sqlalchemy import inspect as sa_inspect, text as sa_text
+
+    insp = sa_inspect(engine_instance)
+    if not insp.has_table("user_keys"):
+        return
+    columns = {col["name"] for col in insp.get_columns("user_keys")}
+    if "domain" in columns:
+        return
+    with engine_instance.begin() as conn:
+        conn.execute(sa_text(
+            "ALTER TABLE user_keys ADD COLUMN domain VARCHAR(64) NOT NULL DEFAULT 'memories'"
+        ))
 
 
 def get_user_session_factory(user_id: int) -> sessionmaker[Session]:

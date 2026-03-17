@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from anima_server.db.base import Base
@@ -10,12 +10,17 @@ from anima_server.db.base import Base
 
 class UserKey(Base):
     __tablename__ = "user_keys"
+    __table_args__ = (
+        UniqueConstraint("user_id", "domain", name="uq_user_keys_user_domain"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
+    )
+    domain: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="memories",
     )
     kdf_salt: Mapped[str] = mapped_column(String(255), nullable=False)
     kdf_time_cost: Mapped[int] = mapped_column(Integer, nullable=False)

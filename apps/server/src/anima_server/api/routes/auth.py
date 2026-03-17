@@ -73,7 +73,7 @@ def register(
         raise HTTPException(status_code=422, detail="Name is required")
 
     try:
-        response, dek = register_account(
+        response, deks = register_account(
             username=username,
             password=payload.password,
             display_name=display_name,
@@ -94,7 +94,7 @@ def register(
             status_code=503, detail=str(exc)) from None
 
     response["unlockToken"] = unlock_session_store.create(
-        int(response["id"]), dek)
+        int(response["id"]), deks)
     return response
 
 
@@ -107,13 +107,13 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     try:
-        response, dek = authenticate_account(username, payload.password)
+        response, deks = authenticate_account(username, payload.password)
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     return {
         **response,
-        "unlockToken": unlock_session_store.create(int(response["id"]), dek),
+        "unlockToken": unlock_session_store.create(int(response["id"]), deks),
         "message": "Login successful",
     }
 
@@ -161,11 +161,11 @@ def change_password(
             user,
             old_password=payload.oldPassword,
             new_password=payload.newPassword,
-            current_dek=session.dek,
+            current_deks=session.deks,
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     unlock_session_store.revoke_user(user.id)
-    new_unlock_token = unlock_session_store.create(user.id, session.dek)
+    new_unlock_token = unlock_session_store.create(user.id, session.deks)
     return {"success": True, "unlockToken": new_unlock_token}

@@ -26,8 +26,8 @@ from anima_server.models import (
     UserKey,
 )
 from anima_server.config import settings
-from anima_server.services.data_crypto import ef as encrypt_field_for_user
-from anima_server.services.sessions import get_active_dek
+from anima_server.services.data_crypto import ef as encrypt_field_for_user, resolve_domain
+from anima_server.services.sessions import get_active_deks
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -100,13 +100,22 @@ _CONVERSATION_TABLES = frozenset({
 })
 
 
-def _decrypt_field_value(value: str | None, dek: bytes | None) -> str | None:
+def _decrypt_field_value(
+    value: str | None,
+    deks: dict[str, bytes] | None,
+    *,
+    table: str = "",
+) -> str | None:
     """Decrypt a field-level encrypted value for vault export.
 
     Returns plaintext so the vault envelope is the only encryption layer.
-    If no DEK is active or the value is not encrypted, returns as-is.
+    Resolves the correct domain DEK from the table name.
     """
-    if value is None or dek is None:
+    if value is None or deks is None:
+        return value
+    domain = resolve_domain(table)
+    dek = deks.get(domain)
+    if dek is None:
         return value
     return decrypt_text_with_dek(value, dek)
 
@@ -123,11 +132,11 @@ def _re_encrypt_field_value(
 def export_vault(db: Session, passphrase: str, *, user_id: int | None = None, scope: str = "full") -> dict[str, Any]:
     # Resolve active DEK so we can decrypt field-level encryption before export.
     # The vault envelope is the only encryption layer in the exported file.
-    dek: bytes | None = None
+    deks: dict[str, bytes] | None = None
     if user_id is not None:
-        dek = get_active_dek(user_id)
+        deks = get_active_deks(user_id)
 
-    full_snapshot = export_database_snapshot(db, user_id=user_id, dek=dek)
+    full_snapshot = export_database_snapshot(db, user_id=user_id, deks=deks)
 
     if scope == "memories":
         # Only memory/identity tables — no conversation transcripts
@@ -325,7 +334,7 @@ def export_database_snapshot(
     db: Session,
     *,
     user_id: int | None = None,
-    dek: bytes | None = None,
+    deks: dict[str, bytes] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     def _scoped(query, model):  # type: ignore[no-untyped-def]
         if user_id is not None and hasattr(model, "user_id"):
@@ -343,15 +352,15 @@ def export_database_snapshot(
         for user_key in db.scalars(_scoped(select(UserKey), UserKey)).all()
     ]
     memory_items = [
-        serialize_memory_item_record(item, dek=dek)
+        serialize_memory_item_record(item, deks=deks)
         for item in db.scalars(_scoped(select(MemoryItem), MemoryItem)).all()
     ]
     memory_episodes = [
-        serialize_memory_episode_record(ep, dek=dek)
+        serialize_memory_episode_record(ep, deks=deks)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
     ]
     memory_daily_logs = [
-        serialize_memory_daily_log_record(log, dek=dek)
+        serialize_memory_daily_log_record(log, deks=deks)
         for log in db.scalars(_scoped(select(MemoryDailyLog), MemoryDailyLog)).all()
     ]
     tasks = [
@@ -381,7 +390,7 @@ def export_database_snapshot(
             ).all()
         ] if scoped_thread_ids else []
         agent_messages = [
-            serialize_agent_message_record(m, thread_user_map=_thread_user_map, dek=dek)
+            serialize_agent_message_record(m, thread_user_map=_thread_user_map, deks=deks)
             for m in db.scalars(
                 select(AgentMessage).where(
                     AgentMessage.thread_id.in_(scoped_thread_ids))
@@ -393,19 +402,19 @@ def export_database_snapshot(
             for s in db.scalars(select(AgentStep)).all()
         ]
         agent_messages = [
-            serialize_agent_message_record(m, thread_user_map=_thread_user_map, dek=dek)
+            serialize_agent_message_record(m, thread_user_map=_thread_user_map, deks=deks)
             for m in db.scalars(select(AgentMessage)).all()
         ]
     session_notes = [
-        serialize_session_note_record(n, dek=dek)
+        serialize_session_note_record(n, deks=deks)
         for n in db.scalars(_scoped(select(SessionNote), SessionNote)).all()
     ]
     self_model_blocks = [
-        serialize_self_model_block_record(b, dek=dek)
+        serialize_self_model_block_record(b, deks=deks)
         for b in db.scalars(_scoped(select(SelfModelBlock), SelfModelBlock)).all()
     ]
     emotional_signals = [
-        serialize_emotional_signal_record(s, dek=dek)
+        serialize_emotional_signal_record(s, deks=deks)
         for s in db.scalars(_scoped(select(EmotionalSignal), EmotionalSignal)).all()
     ]
     return {
@@ -494,6 +503,7 @@ def restore_database_snapshot(
                 UserKey(
                     id=int(record["id"]),
                     user_id=int(record["user_id"]),
+                    domain=str(record.get("domain", "memories")),
                     kdf_salt=str(record["kdf_salt"]),
                     kdf_time_cost=int(record["kdf_time_cost"]),
                     kdf_memory_cost_kib=int(record["kdf_memory_cost_kib"]),
@@ -876,6 +886,7 @@ def serialize_user_key_record(user_key: UserKey) -> dict[str, Any]:
     return {
         "id": user_key.id,
         "user_id": user_key.user_id,
+        "domain": user_key.domain,
         "kdf_salt": user_key.kdf_salt,
         "kdf_time_cost": user_key.kdf_time_cost,
         "kdf_memory_cost_kib": user_key.kdf_memory_cost_kib,
@@ -890,12 +901,12 @@ def serialize_user_key_record(user_key: UserKey) -> dict[str, Any]:
 
 
 def serialize_memory_item_record(
-    item: MemoryItem, *, dek: bytes | None = None,
+    item: MemoryItem, *, deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": item.id,
         "user_id": item.user_id,
-        "content": _decrypt_field_value(item.content, dek),
+        "content": _decrypt_field_value(item.content, deks, table="memory_items"),
         "category": item.category,
         "importance": item.importance,
         "source": item.source,
@@ -909,7 +920,7 @@ def serialize_memory_item_record(
 
 
 def serialize_memory_episode_record(
-    ep: MemoryEpisode, *, dek: bytes | None = None,
+    ep: MemoryEpisode, *, deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": ep.id,
@@ -918,8 +929,8 @@ def serialize_memory_episode_record(
         "date": ep.date,
         "time": ep.time,
         "topics_json": ep.topics_json,
-        "summary": _decrypt_field_value(ep.summary, dek),
-        "emotional_arc": _decrypt_field_value(ep.emotional_arc, dek),
+        "summary": _decrypt_field_value(ep.summary, deks, table="memory_episodes"),
+        "emotional_arc": _decrypt_field_value(ep.emotional_arc, deks, table="memory_episodes"),
         "significance_score": ep.significance_score,
         "turn_count": ep.turn_count,
         "created_at": serialize_optional_datetime(ep.created_at),
@@ -927,27 +938,27 @@ def serialize_memory_episode_record(
 
 
 def serialize_memory_daily_log_record(
-    log: MemoryDailyLog, *, dek: bytes | None = None,
+    log: MemoryDailyLog, *, deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": log.id,
         "user_id": log.user_id,
         "date": log.date,
-        "user_message": _decrypt_field_value(log.user_message, dek),
-        "assistant_response": _decrypt_field_value(log.assistant_response, dek),
+        "user_message": _decrypt_field_value(log.user_message, deks, table="memory_daily_logs"),
+        "assistant_response": _decrypt_field_value(log.assistant_response, deks, table="memory_daily_logs"),
         "created_at": serialize_optional_datetime(log.created_at),
     }
 
 
 def serialize_session_note_record(
-    note: SessionNote, *, dek: bytes | None = None,
+    note: SessionNote, *, deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": note.id,
         "thread_id": note.thread_id,
         "user_id": note.user_id,
         "key": note.key,
-        "value": _decrypt_field_value(note.value, dek),
+        "value": _decrypt_field_value(note.value, deks, table="session_notes"),
         "note_type": note.note_type,
         "is_active": note.is_active,
         "promoted_to_item_id": note.promoted_to_item_id,
@@ -1022,7 +1033,7 @@ def serialize_agent_message_record(
     m: AgentMessage,
     *,
     thread_user_map: dict[int, int] | None = None,
-    dek: bytes | None = None,
+    deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -1031,7 +1042,7 @@ def serialize_agent_message_record(
         "step_id": m.step_id,
         "sequence_id": m.sequence_id,
         "role": m.role,
-        "content_text": _decrypt_field_value(m.content_text, dek),
+        "content_text": _decrypt_field_value(m.content_text, deks, table="agent_messages"),
         "content_json": m.content_json,
         "tool_name": m.tool_name,
         "tool_call_id": m.tool_call_id,
@@ -1043,13 +1054,13 @@ def serialize_agent_message_record(
 
 
 def serialize_self_model_block_record(
-    block: SelfModelBlock, *, dek: bytes | None = None,
+    block: SelfModelBlock, *, deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": block.id,
         "user_id": block.user_id,
         "section": block.section,
-        "content": _decrypt_field_value(block.content, dek),
+        "content": _decrypt_field_value(block.content, deks, table="self_model_blocks"),
         "version": block.version,
         "updated_by": block.updated_by,
         "metadata_json": block.metadata_json,
@@ -1059,7 +1070,7 @@ def serialize_self_model_block_record(
 
 
 def serialize_emotional_signal_record(
-    signal: EmotionalSignal, *, dek: bytes | None = None,
+    signal: EmotionalSignal, *, deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": signal.id,
@@ -1068,10 +1079,10 @@ def serialize_emotional_signal_record(
         "emotion": signal.emotion,
         "confidence": signal.confidence,
         "evidence_type": signal.evidence_type,
-        "evidence": _decrypt_field_value(signal.evidence, dek),
+        "evidence": _decrypt_field_value(signal.evidence, deks, table="emotional_signals"),
         "trajectory": signal.trajectory,
         "previous_emotion": signal.previous_emotion,
-        "topic": _decrypt_field_value(signal.topic, dek),
+        "topic": _decrypt_field_value(signal.topic, deks, table="emotional_signals"),
         "acted_on": signal.acted_on,
         "created_at": serialize_optional_datetime(signal.created_at),
     }
@@ -1193,8 +1204,8 @@ def _re_encrypt_snapshot_fields(
     The vault stores plaintext (field-level encryption was stripped on export).
     This function applies the importing user's DEK before the data is written to DB.
     """
-    dek = get_active_dek(user_id)
-    if dek is None:
+    deks = get_active_deks(user_id)
+    if deks is None:
         return  # No encryption active — store as plaintext
 
     for item in snapshot.get("memoryItems", []):

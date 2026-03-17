@@ -22,11 +22,11 @@ import pytest
 _FAKE_DEK = b"0123456789abcdef0123456789abcdef"  # 32 bytes
 
 
-def _mock_get_active_dek_none(user_id: int) -> None:
+def _mock_get_active_dek_none(user_id: int, domain: str = "memories") -> None:
     return None
 
 
-def _mock_get_active_dek_present(user_id: int) -> bytes:
+def _mock_get_active_dek_present(user_id: int, domain: str = "memories") -> bytes:
     return _FAKE_DEK
 
 

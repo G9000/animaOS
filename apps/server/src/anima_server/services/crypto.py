@@ -78,6 +78,24 @@ def create_wrapped_dek(passphrase: str) -> tuple[bytes, WrappedDekRecord]:
     return dek, wrap_dek(passphrase, dek)
 
 
+def create_wrapped_deks_for_domains(
+    passphrase: str,
+    domains: tuple[str, ...],
+) -> tuple[dict[str, bytes], list[tuple[str, WrappedDekRecord]]]:
+    """Generate independent DEKs for each domain.
+
+    Returns (deks_dict, wrapped_records) where deks_dict maps domain→plaintext
+    DEK and wrapped_records is a list of (domain, WrappedDekRecord) pairs.
+    """
+    deks: dict[str, bytes] = {}
+    records: list[tuple[str, WrappedDekRecord]] = []
+    for domain in domains:
+        dek, record = create_wrapped_dek(passphrase)
+        deks[domain] = dek
+        records.append((domain, record))
+    return deks, records
+
+
 def wrap_dek(passphrase: str, dek: bytes) -> WrappedDekRecord:
     salt = os.urandom(SALT_LENGTH)
     iv = os.urandom(IV_LENGTH)
