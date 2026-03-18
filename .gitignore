@@ -17,3 +17,10 @@ __pycache__/
 .local-docs/
 .claude/settings.local.json
 .anima-cli-session
+
+# External reference repos (not part of this project)
+letta/
+mem0/
+nemori/
+MemOS/
+MemoryOS/
