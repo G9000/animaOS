@@ -13,7 +13,7 @@ version: "1.0"
 **Roadmap Phase**: 9.5
 **Priority**: P1
 **Depends on**: None (independent); benefits from F1 for entity-name BM25 matching
-**Blocks**: F5 (graph ingestion is one of the parallel background tasks)
+**Blocks**: F5 (orchestrates `graph_ingestion` as one of the parallel background tasks)
 
 ---
 
@@ -70,11 +70,11 @@ These are independent strings with no relational structure. There is no way to:
 ### Goals
 
 1. Two new SQLite tables (`kg_entities`, `kg_relations`) for entity-relationship storage
-2. LLM-based entity and relation extraction via structured tool calling during consolidation
+2. LLM-based entity and relation extraction via structured tool calling during `graph_ingestion`
 3. Entity deduplication via normalized names and embedding similarity
 4. Graph traversal via SQL JOINs (max depth 2) for contextual retrieval
 5. `knowledge_graph` memory block injected into the system prompt with relevant entity relationships
-6. Graph ingestion runs in background consolidation pipeline, invisible to user
+6. Graph ingestion runs as its own structured background task in the F5 orchestrator, invisible to the user
 7. Keep the graph SQLite-backed inside the Core, preserving portability, encryption, and single-directory ownership
 
 ### Non-Goals
@@ -276,7 +276,8 @@ async def prune_stale_relations(
 async def ingest_conversation_graph(
     db: Session, *, user_id: int, user_message: str, assistant_response: str,
 ) -> tuple[int, int, int]:
-    """Full pipeline: extract → dedup → upsert entities + relations → prune stale relations.
+    """Full pipeline for the `graph_ingestion` background task:
+    extract → dedup → upsert entities + relations → prune stale relations.
     Returns (entities_upserted, relations_upserted, relations_pruned).
     """
     ...
@@ -307,9 +308,11 @@ For < 1,000 entities (typical for a personal AI), this completes in < 50ms.
 
 The graph is **not append-only**. F4 adopts a bounded lifecycle that keeps the graph local and SQLite-native while preventing monotonic accumulation of stale relations.
 
+`graph_ingestion` is a distinct structured background task that may run in parallel with consolidation under F5, but its scope remains bounded to the current turn and explicit graph deltas. It is not a transcript-wide graph sweep and it is not nested inside consolidation.
+
 **Lifecycle policy**
 
-1. During `ingest_conversation_graph()`, extract entities and relations from the current turn.
+1. During each `graph_ingestion` run, `ingest_conversation_graph()` extracts entities and relations from the current turn's user message and assistant response.
 2. Upsert entities first, then load only existing relations that touch the entities mentioned in the new turn.
 3. Run `prune_stale_relations()` against that bounded candidate set before finalizing the turn's graph state.
 4. Delete only relations the pruning step classifies as outdated or contradicted by evidence in the new turn.
@@ -330,7 +333,7 @@ The rationale is straightforward:
 
 | File | Function | Change |
 |------|----------|--------|
-| `consolidation.py` | `run_background_memory_consolidation()` | After memory consolidation, call `ingest_conversation_graph()` |
+| `sleep_agent.py` | `run_sleeptime_agents()` | Issue `graph_ingestion` as its own structured background task, calling `ingest_conversation_graph()` with current-turn inputs |
 | `memory_blocks.py` | `build_runtime_memory_blocks()` | Add `knowledge_graph` block between `relationships` and `current_focus`. Call `graph_context_for_query()`. |
 | `models/agent_runtime.py` | (module level) | Add `KGEntity` and `KGRelation` model classes |
 | `models/__init__.py` | exports | Export `KGEntity`, `KGRelation` |
@@ -386,7 +389,7 @@ member_of, located_in, part_of, created_by
 | F4.7 | `deduplicate_entity()` via embedding similarity (threshold 0.85) for alias resolution | Should |
 | F4.8 | `search_graph()` traversing with max_depth=2, limit=20 | Must |
 | F4.9 | `graph_context_for_query()` extracting entity names from query and returning context strings | Must |
-| F4.10 | `ingest_conversation_graph()` full pipeline called during background consolidation | Must |
+| F4.10 | `ingest_conversation_graph()` full pipeline called as its own structured `graph_ingestion` background task | Must |
 | F4.11 | `knowledge_graph` memory block added to `build_runtime_memory_blocks()` | Must |
 | F4.12 | Cap entity extraction at 5 per conversation turn (`maxItems: 5` in tool schema) | Must |
 | F4.13 | Bidirectional graph traversal (both source→dest and dest→source) | Must |
@@ -475,7 +478,7 @@ def upgrade():
 | T6 | Unit | `search_graph()` bidirectional | Create A→B, search from B, verify A found |
 | T7 | Unit | `deduplicate_entity()` | Create "New York City", attempt "NYC", verify dedup (mock embeddings) |
 | T8 | Integration | `extract_entities_and_relations()` | Mock LLM tool call response, verify parsing |
-| T9 | Integration | `ingest_conversation_graph()` | Feed conversation mentioning entities, verify they appear in graph |
+| T9 | Integration | `ingest_conversation_graph()` | Feed one turn mentioning entities, verify they appear in graph and pruning only inspects relations touching that turn's entities |
 | T10 | Integration | Prompt assembly | Verify `knowledge_graph` block appears when relevant entities exist |
 | T11 | Integration | Vault export/import | Export with entities, import on fresh DB, verify entities preserved |
 | T12 | Regression | Existing memory blocks | Adding graph block does not break existing block assembly |
@@ -510,7 +513,7 @@ def upgrade():
 3. Create `knowledge_graph.py` with all functions including `rerank_graph_results()` and `prune_stale_relations()`
 4. Implement ID hallucination protection helper (int mapping for LLM prompts)
 5. Write unit tests for entity normalization, upsert, graph traversal, BM25 reranking, relation pruning, ID mapping
-6. Modify `consolidation.py` to call `ingest_conversation_graph()` after fact extraction
+6. Integrate the F5 orchestrator so it issues `graph_ingestion` as a separate task calling `ingest_conversation_graph()`
 7. Modify `memory_blocks.py` to add `knowledge_graph` block
 8. Write integration tests for full pipeline, prompt assembly, and stale relation pruning
 9. Add vault export/import support for new tables

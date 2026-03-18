@@ -1,6 +1,6 @@
 ---
 title: "PRD: F5 — Async Sleep-Time Agents"
-description: Structured background tasks that run during user inactivity
+description: Structured background tasks triggered by turn frequency and user inactivity
 category: prd
 version: "1.0"
 ---
@@ -67,7 +67,7 @@ The competitor audit supports borrowing Letta's orchestration mechanics while re
 
 1. Turn counter with configurable frequency: run structured background tasks every N turns (default 3)
 2. Heat-threshold gating: expensive operations only fire when accumulated memory heat exceeds a threshold
-3. Parallel execution of independent background tasks (consolidation, graph ingestion, heat decay, episode check)
+3. Parallel execution of independent background tasks (consolidation, graph ingestion, heat decay, episode check), with `graph_ingestion` kept current-turn / explicit-delta scoped
 4. Sequential execution of expensive tasks (contradiction scan, profile synthesis, deep monologue) gated by heat
 5. `BackgroundTaskRun` table tracking all background work for debugging and monitoring
 6. `force=True` mode for the existing 5-minute inactivity timer to bypass all gating
@@ -190,7 +190,7 @@ async def run_sleeptime_agents(
 
     Parallel group (always run):
     1. Memory consolidation (predict-calibrate from F3)
-    2. Knowledge graph ingestion (F4)
+    2. Knowledge graph ingestion (F4; separate task, current-turn / explicit-delta scoped)
     3. Heat decay (F2)
     4. Episode generation check
 
@@ -204,12 +204,15 @@ async def run_sleeptime_agents(
     When force=True (inactivity timer): bypass frequency and heat gates.
 
     Context scope guidance by task:
-    - `graph_ingestion`, `profile_synthesis`, and `deep_monologue` may use
-      transcript-wide context when current-turn inputs or explicit deltas are
-      insufficient.
-    - `consolidation`, `contradiction_scan`, `heat_decay`, `episode_gen`, and
-      restart-cursor bookkeeping should remain current-turn or explicit-delta
-      scoped when possible so behavior stays structured and predictable.
+    - `profile_synthesis` and `deep_monologue` may use transcript-wide context
+      when current-turn inputs or explicit deltas are insufficient.
+    - `graph_ingestion`, `consolidation`, `contradiction_scan`,
+      `heat_decay`, `episode_gen`, and restart-cursor bookkeeping should
+      remain current-turn or explicit-delta scoped when possible so behavior
+      stays structured and predictable.
+    - For `graph_ingestion`, that bounded scope includes stale-relation
+      pruning candidates only for relations touching entities mentioned in the
+      current turn, consistent with F4.
 
     Returns list of task run IDs for tracking.
     """
@@ -287,6 +290,11 @@ await asyncio.gather(
 )
 ```
 
+`graph_ingestion` remains a first-class task in this parallel group, but it does
+not widen into a transcript-wide graph scan. Its input contract stays limited
+to current-turn messages plus the explicit relation-delta candidate set F4
+defines for bounded pruning.
+
 Each task opens its own DB session via `db_factory()` — no shared session state. SQLite WAL mode handles concurrent reads.
 
 ### 4.8 Restart Cursor Contract
@@ -350,7 +358,7 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | F5.1 | In-memory per-user turn counter with `bump_turn_counter()` | Must |
 | F5.2 | `should_run_sleeptime()` checking `turn_count % frequency == 0` | Must |
 | F5.3 | `SLEEPTIME_FREQUENCY` config (default: 3) | Must |
-| F5.4 | `run_sleeptime_agents()` orchestrating parallel + sequential structured background tasks with explicit task ordering and tracking | Must |
+| F5.4 | `run_sleeptime_agents()` orchestrating parallel + sequential structured background tasks with explicit task ordering and tracking; `graph_ingestion` remains a separate current-turn / explicit-delta-scoped task | Must |
 | F5.5 | Parallel execution of independent tasks via `asyncio.gather()` | Must |
 | F5.6 | Heat-threshold gating for expensive tasks (contradiction scan, profile synthesis) | Must |
 | F5.7 | `HEAT_THRESHOLD_CONSOLIDATION` config (default: 5.0) | Must |
@@ -390,7 +398,7 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | AC2 | With `SLEEPTIME_FREQUENCY=3`, messages 3, 6, 9 trigger background work | Unit test for `should_run_sleeptime()` |
 | AC3 | With heat below threshold, contradiction scan and profile synthesis are skipped | Integration test: verify no task runs of those types |
 | AC4 | With heat above threshold, contradiction scan and profile synthesis fire | Integration test |
-| AC5 | Independent tasks run in parallel (consolidation, graph, heat decay, episodes) | Integration test: verify all 4 task types have runs for the same trigger |
+| AC5 | Independent tasks run in parallel (consolidation, graph, heat decay, episodes), with `graph_ingestion` issued as its own task rather than nested inside consolidation | Integration test: verify all 4 task types have runs for the same trigger |
 | AC6 | One task failure does not cancel others | Unit test: mock one task to raise, verify others complete |
 | AC7 | All background task runs recorded in `background_task_runs` with correct status | Integration test: verify status transitions pending→running→completed/failed |
 | AC8 | `force=True` bypasses frequency and heat gates | Unit test |
@@ -413,11 +421,12 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | T5 | Unit | `force=True` | Verify all tasks fire regardless of counter or heat |
 | T6 | Unit | Task failure isolation | Mock one task to raise, verify others complete and all have correct status |
 | T7 | Integration | `_issue_background_task()` | Verify task run recorded with correct status, timestamps, result |
-| T8 | Integration | End-to-end 3-message flow | Send 3 messages, verify consolidation fires after 3rd |
-| T9 | Integration | Inactivity reflection | Wait 5 minutes (mock timer), verify full suite triggers with force |
-| T10 | Integration | Crash/restart resume | Seed a completed consolidation `BackgroundTaskRun` with cursor payload, restart the orchestrator, verify only newer messages are processed for that `(user_id, thread_id)` scope |
-| T11 | Integration | Thread-scoped cursor isolation | Seed different cursor payloads for two threads under one user, verify each thread resumes from its own cursor |
-| T12 | Regression | Full suite | All 602 tests pass |
+| T8 | Integration | End-to-end 3-message flow | Send 3 messages, verify the orchestrator issues separate consolidation and `graph_ingestion` runs after the 3rd turn |
+| T9 | Integration | Graph-ingestion scope contract | Trigger `graph_ingestion`, verify it receives current-turn inputs and only bounded relation-delta pruning candidates, not transcript-wide scan inputs |
+| T10 | Integration | Inactivity reflection | Wait 5 minutes (mock timer), verify full suite triggers with force |
+| T11 | Integration | Crash/restart resume | Seed a completed consolidation `BackgroundTaskRun` with cursor payload, restart the orchestrator, verify only newer messages are processed for that `(user_id, thread_id)` scope |
+| T12 | Integration | Thread-scoped cursor isolation | Seed different cursor payloads for two threads under one user, verify each thread resumes from its own cursor |
+| T13 | Regression | Full suite | All 602 tests pass |
 
 ---
 
