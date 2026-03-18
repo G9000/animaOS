@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Auditor"
+  short_description: "Implementation-grounded security auditing"
+  default_prompt: "Use $security-auditor to review this codebase for exploitable security issues and concrete fixes."

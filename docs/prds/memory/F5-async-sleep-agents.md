@@ -1,3 +1,10 @@
+---
+title: "PRD: F5 — Async Sleep-Time Agents"
+description: Background maintenance agents that run during user inactivity
+category: prd
+version: "1.0"
+---
+
 # PRD: F5 — Async Sleep-Time Agents
 
 **Version**: 1.0
@@ -225,7 +232,7 @@ def update_last_processed_message_id(user_id: int, message_id: int) -> None:
 |------|----------|--------|
 | `consolidation.py` | `schedule_background_memory_consolidation()` | Replace direct `asyncio.create_task()` with `bump_turn_counter()` + `should_run_sleeptime()` + `run_sleeptime_agents()` |
 | `reflection.py` | `schedule_reflection()` | Keep 5-minute timer. When it fires, call `run_sleeptime_agents(force=True)` |
-| `reflection.py` | `run_reflection()` | Delegate to `run_sleeptime_agents(force=True)` |
+| `reflection.py` | `run_reflection()` | Delegate to `run_sleeptime_agents(force=True)`. **Must preserve**: (1) `expire_working_memory_items()` call (line 86-98), (2) quick inner monologue call (line 101-118), both of which run BEFORE sleep tasks in the current flow. These are not sleep tasks — they are pre-sleep housekeeping. |
 | `sleep_tasks.py` | `run_sleep_tasks()` | Keep as-is but add heat-threshold gating for contradiction scan and profile synthesis. Make callable from `run_sleeptime_agents()`. |
 | `models/agent_runtime.py` | (module level) | Add `BackgroundTaskRun` model |
 
@@ -294,6 +301,10 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | F5.15 | `return_exceptions=True` in `asyncio.gather()` so one failure doesn't cancel others | Must |
 | F5.16 | Each task opens its own DB session via `db_factory()` | Must |
 | F5.17 | Vault export/import support for `background_task_runs` | Could |
+| F5.18 | Preserve `settings.agent_background_memory_enabled` guard from current `schedule_background_memory_consolidation()` (line 649) | Must |
+| F5.19 | Preserve `companion.invalidate_memory()` call after background processing completes (currently at `run_background_memory_consolidation()` line 607-610 and `run_reflection()` line 140-143) | Must |
+| F5.20 | Preserve working memory expiry (`expire_working_memory_items()`) and quick inner monologue in the `force=True` (inactivity timer) path — these run BEFORE sleep tasks, not as part of them | Must |
+| F5.21 | Preserve `_background_tasks` set tracking and `drain_background_memory_tasks()` lifecycle management, or provide equivalent | Must |
 
 ---
 

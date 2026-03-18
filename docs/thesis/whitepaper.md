@@ -24,19 +24,13 @@ The long-term aspiration behind ANIMA OS is not a better chat interface. It is a
 
 ## 2. The Problem
 
-### 2.1 Shallow Memory
-
-Most AI products now offer persistent memory, but the depth is limited. They store extracted facts and conversation summaries — flat representations that lose the texture of shared experience. They do not maintain structured understanding of the user's evolving projects, relationships, or long-term goals in a way that produces genuine continuity.
-
-This is not a storage problem. It is an architecture problem. Remembering that someone is a product manager is different from understanding their career arc, noticing their stress patterns around quarterly reviews, and adapting communication style based on accumulated experience.
-
-### 2.2 Privacy and Control
+### 2.1 Privacy and Control
 
 A truly personal AI requires access to highly sensitive context. That includes memories, goals, plans, unfinished thoughts, and interpersonal history. A cloud-first architecture makes this context dependent on external infrastructure by default.
 
 For a system intended to become deeply personal, this is a structural flaw. Users should be able to keep core life context under their own control.
 
-### 2.3 Interface Without Depth
+### 2.2 Interface Without Depth
 
 There is growing interest in voice assistants, wearable AI, and ambient computing. However, adding new interfaces without deep personal context does not solve the core problem. A voice assistant that can talk but does not understand the arc of a relationship is still shallow, regardless of how natural it sounds.
 
@@ -215,7 +209,7 @@ PP proposes that cognitive agents continuously generate predictions about their 
 | Belief updating             | Memory conflict resolution — superseding outdated facts            |
 | Precision-weighting         | Importance scoring — higher-confidence memories weighted more      |
 | Active inference             | Proactive behavior — the AI acts to reduce expected user surprise  |
-| Free energy minimization    | Self-model convergence — identity stabilizes as prediction errors shrink |
+| Free energy minimization    | Overall reduction of surprise in the system's internal model — self-model convergence is one component, alongside user-model convergence, world-model convergence, and behavioral adaptation |
 | Prediction error on self    | Growth log entries — "I was wrong about X, I adjusted"             |
 
 **The tension with GWT**: GWT and PP are competing cognitive architectures in the scientific literature. For ANIMA's purposes, they have complementary jurisdictions: GWT maps to context window assembly (what gets broadcast into the AI's awareness each turn), while PP/AIF maps to belief updating and consolidation (how the self-model evolves between turns). The frameworks coexist because they govern different timescales — GWT governs the moment, PP/AIF governs the arc.
@@ -237,6 +231,8 @@ This has direct implications for ANIMA's design:
 - **Emotions are not traits.** TCE's constructionist view reinforces the guardrail against persisting emotions as stable traits. "User seemed anxious this week" is a contextual observation. "User is anxious" is a category error.
 
 A 2025 computational model (Tsurumaki et al.) achieved ~75% agreement with human self-reports by modeling emotion formation through TCE's constructionist lens, demonstrating that the theory is computationally tractable — not just philosophically appealing.
+
+> **Theory-practice gap:** ANIMA's current implementation uses a 12-signal categorical taxonomy (closer to Ekman's basic emotions) rather than a dimensional (valence, arousal, dominance) representation. This is a pragmatic engineering compromise — discrete categories are more computationally tractable and more interpretable in system prompts. The long-term direction is toward dimensional representation aligned with TCE, but the categorical system serves as a functional approximation in the interim.
 
 ### 7.5 Memory-as-Ontology
 
@@ -377,7 +373,7 @@ ANIMA augments vector search with a lightweight knowledge graph — entity-relat
 
 This matters most for the companion's ability to understand the user's life as an interconnected whole rather than a collection of independent facts. Career arcs, relationship networks, project dependencies — these are inherently graph-structured, and flat vector search loses their structure.
 
-**Memory metadata**: MemOS (Li et al., 2025) introduces the MemCube abstraction — a memory unit that encapsulates both content and rich metadata: provenance (which conversation, which extraction method), version history (when superseded, by what), lifecycle state (active, archived, suppressed), and composability metadata (how this memory relates to others). MemOS achieved a 159% improvement in temporal reasoning over OpenAI's memory system and 38.9% overall improvement on the LOCOMO benchmark. ANIMA adopts this principle: each memory item carries provenance, version, lifecycle stage, and extraction confidence alongside its content. The metadata is not overhead — it is what enables the retrieval system to reason about memory quality, not just memory relevance.
+**Memory metadata**: MemOS (Li et al., 2025) introduces the MemCube abstraction — a memory unit that encapsulates both content and rich metadata: provenance (which conversation, which extraction method), version history (when superseded, by what), lifecycle state (active, archived, suppressed), and composability metadata (how this memory relates to others). MemOS achieved a 159% improvement in temporal reasoning over OpenAI's memory system and 38.9% overall improvement on the LOCOMO benchmark. ANIMA partially adopts this principle today — each memory item carries extraction confidence, importance scoring, supersession state, and reference tracking — and plans to extend toward full provenance (source conversation linking) and lifecycle stage metadata in future iterations. The metadata is not overhead — it is what enables the retrieval system to reason about memory quality, not just memory relevance.
 
 ### 9.6 Intentional Forgetting
 
@@ -406,7 +402,7 @@ This is not just a feature. It is a philosophical commitment:
 - **Visible evolution.** The growth log makes the AI's development observable: _"I used to be too verbose — I adjusted after you corrected me."_
 - **Trust through transparency.** Trust is built by showing your work, not by brand reputation.
 
-Why competitors cannot copy this easily: transparent memory requires human-readable storage, per-file organization, and an architecture where every memory operation produces inspectable output. Retrofitting this onto a database-backed system is a fundamental rewrite, not a feature toggle.
+Why this combination is difficult to replicate: individual components of transparent memory exist elsewhere (Letta offers editable memory blocks, Mem0 offers editable memory items). The defensible differentiation is the combination of transparency + user-owned encryption + local-first portability + digital succession — these properties are mutually reinforcing and require architectural commitment from the ground up, not bolt-on features.
 
 ---
 
@@ -488,7 +484,7 @@ Against consumer AI (ChatGPT, Apple Intelligence, Google Gemini): _They all reme
 | Predict-calibrate learning                            | Planned                                       | No                                           | No                                           | No                                            | Yes — FEP-based prediction-correction engine  | No                                            | No                                            |
 | Heat-based memory management                          | Planned                                       | No                                           | No                                           | No                                            | No                                            | No                                            | Yes — H = aN + bL + gR, LFU eviction         |
 | Multi-type memory (text + activation + parametric)    | Text + episodic + semantic                    | Not disclosed                                | Memory blocks                                | Vector + graph                                | Episodic + semantic                           | Yes — text + KV cache + LoRA + preference     | Short + mid + long-term                       |
-| Intentional forgetting                                | Yes — passive decay + active suppression      | Delete individual memories only              | No                                           | No                                            | No                                            | No                                            | LFU eviction                                  |
+| Intentional forgetting                                | Planned — passive decay + active suppression  | Delete individual memories only              | No                                           | No                                            | No                                            | No                                            | LFU eviction                                  |
 | Theoretical grounding                                 | CLS, GWT, PP/AIF, TCE                        | Not disclosed                                | CLS (sleep-time paper)                       | Not disclosed                                 | FEP, Event Segmentation Theory                | Not disclosed                                 | Not disclosed                                 |
 
 The differentiation has shifted. The question is no longer "who remembers?" — everyone does. The questions that matter now are: who owns the memory? Who can read it? Who can carry it to another machine? What happens when the owner dies? And does the AI actually understand you, or does it just recall facts about you?

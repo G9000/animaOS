@@ -1,3 +1,10 @@
+---
+title: "PRD: F6 — Batch Episode Segmentation"
+description: Batch segmentation of conversation turns into episodic memory
+category: prd
+version: "1.0"
+---
+
 # PRD: F6 — Batch Episode Segmentation
 
 **Version**: 1.0

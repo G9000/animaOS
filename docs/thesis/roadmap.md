@@ -222,6 +222,7 @@ Delivered:
 - emotional intelligence: 12-emotion taxonomy, confidence thresholds, trajectory tracking, rolling signal buffer
 - intentional agency: structured goals with lifecycle (detected, active, completed), procedural rules derived from experience
 - inner monologue: quick reflection (post-conversation) and deep monologue (sleep-time) update all self-model sections
+- deep monologue episode sampling: combined strategy — (1) stratified temporal sampling across time periods to prevent recency bias, (2) importance-weighted random sampling so high-significance old episodes are as likely as moderate recent ones, (3) significance-floor inclusion so episodes above 0.8 significance are always eligible regardless of age. See inner-life.md Section 13.6 for CLS justification.
 - consciousness REST API: view and edit self-model sections, emotional state, intentions
 - user edits treated as highest-confidence evidence, logged in growth log
 - full vault export/import support for consciousness tables
@@ -263,15 +264,16 @@ Deliverable: efficient resource allocation for memory consolidation based on act
 
 ## Phase 10.5: Intentional Forgetting
 
-Status: planned
+Status: planned — [PRD: F7](../prds/F7-intentional-forgetting.md)
 
 Goals:
 
-- passive decay: recency-weighted retrieval priority reduction (already implemented via 30-day half-life)
-- active suppression: explicitly corrected/superseded memories have associative connections weakened
-- user-initiated forgetting: cryptographic deletion of specific memories, episodes, or conversation segments
-- derived reference cleanup: flagging growth log entries and self-model sections that cite forgotten memories for regeneration
-- GDPR-aligned third-party memory governance
+- passive decay: heat-based visibility floor excludes sub-threshold memories from retrieval (integrates with Phase 10.4)
+- active suppression: explicitly corrected/superseded memories decay 3x faster and have derived references flagged for regeneration
+- user-initiated forgetting: cryptographic deletion of specific memories with embedding removal and derived-reference cleanup
+- topic-scoped forgetting: forget all memories matching a topic or entity (e.g., "forget everything about Alex")
+- forget audit log: records that forgetting occurred (scope, counts) without recording what was forgotten
+- derived reference cleanup: flagging growth log entries, episodes, and behavioral rules that cite forgotten memories for regeneration during sleep tasks
 
 Deliverable: forgetting as a first-class memory operation, not just archival.
 
@@ -349,7 +351,7 @@ These remain the product bar even where the current code has not fully reached i
 
 - See `docs/thesis/cryptographic-hardening.md` for the full cryptographic improvement thesis and audit findings
 - See `docs/thesis/research-report-2026-03-18.md` for the March 2026 research audit and new pattern discovery
-- See `docs/architecture/memory-repo-analysis.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
-- See `docs/architecture/memory-architecture-prd.md` for the PRD covering Features F1–F6 (Phases 9.5–10.7)
-- See `docs/architecture/memory-implementation-plan.md` for the detailed engineering spec (function signatures, schemas, test plans)
+- See `docs/architecture/memory/memory-repo-analysis.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
+- See `docs/prds/memory-architecture.md` for the PRD covering Features F1–F7 (Phases 9.5–10.7)
+- See `docs/architecture/memory/memory-implementation-plan.md` for the detailed engineering spec (function signatures, schemas, test plans)
 - See `docs/thesis/references/` for downloaded research papers supporting the thesis

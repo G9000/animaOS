@@ -1,3 +1,10 @@
+---
+title: "PRD: F3 — Predict-Calibrate Consolidation"
+description: Predictive consolidation with calibration feedback for memory quality
+category: prd
+version: "1.0"
+---
+
 # PRD: F3 — Predict-Calibrate Consolidation
 
 **Version**: 1.0
@@ -215,7 +222,8 @@ async def predict_calibrate_extraction(
 ### 4.6 Integration Points
 
 - **F1 (Hybrid Search)**: `predict_calibrate_extraction()` calls `hybrid_search()` to find relevant existing facts for the prediction step. Without F1, it could fall back to `get_memory_items_scored()` but with worse relevance.
-- **Storage**: Output feeds into the existing `store_memory_item()` pipeline. Dedup and conflict resolution still apply as a safety net.
+- **Storage**: Output feeds into the existing `store_memory_item()` + `upsert_claim()` pipeline. Dedup, conflict resolution, and claims dual-write all still apply as safety nets. The predict-calibrate output must return items in the same `list[dict]` format (with `content`, `category`, `importance` keys) consumed by the downstream pipeline.
+- **Emotional signal extraction**: The current `consolidate_turn_memory_with_llm()` extracts emotional signals alongside memories (lines 244-263). When predict-calibrate replaces `extract_memories_via_llm()`, emotional signal extraction must be preserved. The predict-calibrate path must either (a) include emotion extraction in its delta extraction prompt, or (b) run the existing emotion extraction as a separate call. Recommendation: include a `detected_emotion` field in the delta extraction prompt output, matching the existing `LLMExtractionResult.emotion` shape.
 - **Background execution**: This runs inside `run_background_memory_consolidation()` — invisible to the user.
 - **Token budget**: Net reduction in steady state. Two smaller, focused LLM calls instead of one broad extraction call, producing fewer but higher-quality items.
 
@@ -250,6 +258,8 @@ Send extracted statements through `KNOWLEDGE_QUALITY_PROMPT` for the LLM to filt
 | F3.8 | JSON-structured output from delta extraction prompt | Must |
 | F3.9 | Error handling: if predict-calibrate fails, fall back to direct extraction | Must |
 | F3.10 | Skip predict-calibrate for short conversations (< 3 user messages) | Should |
+| F3.11 | UUID/ID hallucination protection — when sending existing facts to LLM prompts, map real memory IDs to sequential integers and map back after response (adopted from Mem0) | Must |
+| F3.12 | Emotional signal extraction must be preserved — predict-calibrate path must output `detected_emotion` alongside extracted facts, matching the existing `LLMExtractionResult.emotion` format | Must |
 
 ---
 
@@ -302,6 +312,7 @@ Send extracted statements through `KNOWLEDGE_QUALITY_PROMPT` for the LLM to filt
 | **Over-filtering** (quality gates too aggressive) | Medium | Start with heuristic gates (less aggressive). `store_memory_item()` dedup is the real safety net. Monitor extraction counts and loosen if needed. |
 | **Integration with existing consolidation** | Medium | `consolidation.py` has careful error handling and fallback paths. The predict-calibrate call must be wrapped in the same try/except patterns. Fallback to direct extraction on any error. |
 | **Prediction hallucination** | Low | Predictions that hallucinate facts will show those facts as "already known" → they won't be extracted. This is a false negative (missed fact), not a false positive (wrong fact). Safer direction to err. |
+| **LLM ID hallucination** | Medium | LLMs may hallucinate or corrupt memory IDs when existing facts are listed in prompts. Mitigated by mapping real IDs to sequential integers before LLM calls (F3.11), adopted from Mem0. |
 
 ---
 

@@ -1,3 +1,10 @@
+---
+title: Memory Architecture Implementation Plan
+description: Phased implementation plan for the AnimaOS memory subsystem
+category: architecture
+date: 2026-03-18
+---
+
 # AnimaOS Memory Architecture Implementation Plan
 
 **Date**: 2026-03-18
@@ -8,45 +15,62 @@
 
 ---
 
-## Dependency Graph
+## Workstream Architecture
+
+Features are organized into parallel workstreams, not a linear sequence. Each stream can progress independently, converging at the orchestration layer (F5).
 
 ```
-                    Phase 1: Hybrid Search (BM25 + Vector + RRF)
-                        |
-              +---------+---------+
-              |                   |
-    Phase 2: Heat Scoring    Phase 4: Knowledge Graph
-              |                   |
-              v                   |
-    Phase 3: Predict-Calibrate    |
-              |                   |
-              v                   |
-    Phase 5: Async Sleep Agents <-+
-              |
-              v
-    Phase 6: Batch Episode Segmentation
+  RETRIEVAL STREAM          KNOWLEDGE STREAM         LIFECYCLE STREAM        CRYPTO STREAM
+  ================          ================         ================        ==============
+
+  F1: Hybrid Search         F4: Knowledge Graph      F7: Intentional         Encrypted Core v1
+  (BM25+Vector+RRF)        (SQLite graph)              Forgetting                  |
+        |                         |                       |                  Crypto Hardening
+        v                         |                  (benefits from F2)       (Phases 0-5)
+  F2: Heat Scoring                |
+        |                         |
+        v                         |
+  F3: Predict-Calibrate           |
+        |                         |
+        +------------+------------+
+                     |
+                     v
+           F5: Async Sleep Agents  (ORCHESTRATION — converges all streams)
+                     |
+                     v
+           F6: Batch Segmentation
 ```
 
-**Key dependency rules**:
-- Phase 1 is foundational: improved search benefits all subsequent phases
-- Phase 2 (heat) has no hard dependencies but benefits from Phase 1 for heat-triggered retrieval
-- Phase 3 (predict-calibrate) requires Phase 1 for relevant-statement retrieval
-- Phase 4 (knowledge graph) is independent but integrates with Phase 1 for graph+vector hybrid
-- Phase 5 (async agents) orchestrates Phases 2-4 as background tasks
-- Phase 6 (batch segmentation) is independent but integrates with Phase 3 and Phase 5
+### Workstream Details
 
----
+**Retrieval Stream** (F1 -> F2 -> F3): Progressively improves how memories are found and scored.
+- F1 is the foundation — every other feature retrieves memories; better retrieval = better everything
+- F2 adds the persistent scoring signal that gates all expensive operations
+- F3 wraps consolidation with predict-calibrate; depends on F1 for `hybrid_search()`
 
-## Recommended Execution Order
+**Knowledge Stream** (F4): Independent. Adds relational structure. Can start after F1 or in parallel.
+- No hard dependencies, but benefits from F1 for entity-name BM25 matching
+- Highest novelty — AnimaOS has zero relational structure today
 
-| Order | Phase | Rationale |
-|-------|-------|-----------|
-| 1st   | Phase 1: Hybrid Search | Foundation -- every other phase retrieves memories; better retrieval = better everything. AnimaOS already has RRF scaffolding in `embeddings.py` but uses naive Jaccard for the keyword leg. Adding real BM25 is the single highest-impact change. |
-| 2nd   | Phase 2: Heat Scoring | Low complexity, high value. Adds `heat` column to `MemoryItem`, replaces the current fixed-weight `_retrieval_score()`. Once heat exists, it gates all expensive operations. |
-| 3rd   | Phase 4: Knowledge Graph | Independent of Phases 2-3 and highest novelty. AnimaOS has zero relational structure today. SQLite graph tables are simple to add. |
-| 4th   | Phase 3: Predict-Calibrate | Depends on Phase 1 for retrieval. Modifies the consolidation pipeline which is the riskiest integration point. Doing it 4th means the search infrastructure is stable. |
-| 5th   | Phase 5: Async Sleep Agents | Orchestration layer. Must come after the things it orchestrates (heat, predict-calibrate, graph extraction). |
-| 6th   | Phase 6: Batch Segmentation | Lowest priority. Enhances episodes but the current fixed-size chunking works. Best saved for last. |
+**Lifecycle Stream** (F7): Independent. Adds principled forgetting.
+- No hard dependencies, but benefits from F2 (cold items as decay candidates)
+- Can start anytime — even before F1
+
+**Crypto Stream**: Fully independent. Runs in parallel with everything.
+- Encrypted Core v1 -> Cryptographic Hardening (6 phases)
+
+**Orchestration** (F5): Converges retrieval + knowledge streams. Must wait for F2, F3, F4.
+- F6 (Batch Segmentation) is standalone but benefits from F5 for scheduling.
+
+### Parallel Execution Map
+
+| After... | You can start... |
+|----------|-----------------|
+| Nothing (day 1) | F1, F4, F7, Crypto (all independent) |
+| F1 ships | F2, F3 preparation, F4 integration |
+| F2 ships | F3, F7 integration (heat visibility floor) |
+| F1 + F2 + F3 + F4 all ship | F5 (orchestration) |
+| F5 ships | F6 (batch segmentation) |
 
 ---
 
@@ -58,7 +82,7 @@
 
 That is the only new dependency. All other work uses SQLite, existing SQLAlchemy, and LLM calls via the existing provider abstraction. We explicitly avoid `spacy`, `neo4j`, `chromadb`, and `numpy` (using stdlib `math` instead).
 
-**Total new migration count across all phases**: 4
+**Total new migration count across all phases**: 5 (F2, F4, F5, F6, F7)
 
 ---
 
@@ -996,14 +1020,15 @@ The roadmap's existing Phase 6 (Reflection and Sleep Tasks) describes the curren
 | 4. Knowledge Graph | 1-2 | 3 | 1 | 2 | -- | Medium-High |
 | 5. Async Sleep Agents | 1 | 4 | 1 | 1 | -- | Medium |
 | 6. Batch Segmentation | 1 | 2 | 1 | 0 | -- | Medium |
-| **Totals** | **6-7** | **~14** | **4** | **3** | **1** | -- |
+| **Totals** | **7-8** | **~16** | **5** | **4** | **1** | -- |
 
-### Total Migration Count: 4
+### Total Migration Count: 5
 
-1. `20260319_0001_add_heat_column_to_memory_items.py` (Phase 2)
-2. `20260320_0001_create_knowledge_graph_tables.py` (Phase 4)
-3. `20260321_0001_create_background_task_runs.py` (Phase 5)
-4. `20260322_0001_add_episode_segmentation_columns.py` (Phase 6)
+1. `20260319_0001_add_heat_column_to_memory_items.py` (F2 — Heat Scoring)
+2. `20260320_0001_create_knowledge_graph_tables.py` (F4 — Knowledge Graph)
+3. `20260320_0002_add_forgetting_tables.py` (F7 — Intentional Forgetting: `forget_audit_log` table + `needs_regeneration` columns)
+4. `20260321_0001_create_background_task_runs.py` (F5 — Async Sleep Agents)
+5. `20260322_0001_add_episode_segmentation_columns.py` (F6 — Batch Segmentation)
 
 ### Constraints Compliance Checklist
 

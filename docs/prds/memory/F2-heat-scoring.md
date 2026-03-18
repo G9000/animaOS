@@ -1,3 +1,10 @@
+---
+title: "PRD: F2 — Heat-Based Memory Scoring"
+description: Recency-weighted scoring model for memory retrieval prioritization
+category: prd
+version: "1.0"
+---
+
 # PRD: F2 — Heat-Based Memory Scoring
 
 **Version**: 1.0
@@ -83,18 +90,20 @@ Supporting functions:
 ### 4.1 Heat Formula
 
 ```
-H = alpha * access_count + beta * interaction_depth + gamma * recency_decay
+H = alpha * access_count + beta * interaction_depth + gamma * recency_decay + delta * importance
 ```
 
 Where:
 - `access_count` = `reference_count` from `MemoryItem` (already tracked)
 - `interaction_depth` = how many times the memory appeared in a prompt that led to a meaningful conversation (approximated by `reference_count` initially; can be refined later with explicit depth tracking)
 - `recency_decay` = `exp(-hours_since_last_access / tau)` where `tau` defaults to 24 hours
+- `importance` = LLM-assigned importance score (0-10 scale, already tracked on `MemoryItem`). Preserves the extraction-time judgment about a fact's significance — without this, a memory marked importance=10 would rank the same as importance=1 given equal access patterns.
 
-Default weights (matching MemoryOS):
+Default weights (extending MemoryOS):
 - `HEAT_ALPHA = 1.0` (access count weight)
 - `HEAT_BETA = 1.0` (interaction depth weight)
 - `HEAT_GAMMA = 1.0` (recency weight)
+- `HEAT_DELTA = 0.5` (importance weight — lower than access/recency to let usage patterns dominate over time, but high enough to boost genuinely important memories)
 - `RECENCY_TAU_HOURS = 24.0` (time-decay half-life)
 
 ### 4.2 New File
@@ -107,6 +116,7 @@ apps/server/src/anima_server/services/agent/heat_scoring.py
 HEAT_ALPHA: float = 1.0
 HEAT_BETA: float = 1.0
 HEAT_GAMMA: float = 1.0
+HEAT_DELTA: float = 0.5
 RECENCY_TAU_HOURS: float = 24.0
 
 def compute_heat(
@@ -114,9 +124,10 @@ def compute_heat(
     access_count: int,
     interaction_depth: int,
     last_accessed_at: datetime | None,
+    importance: float = 0.0,
     now: datetime | None = None,
 ) -> float:
-    """Compute heat score: H = alpha * access + beta * depth + gamma * recency_decay."""
+    """Compute heat score: H = alpha * access + beta * depth + gamma * recency_decay + delta * importance."""
     ...
 
 def compute_time_decay(
@@ -175,7 +186,7 @@ def get_coldest_items(
 |------|----------|--------|
 | `memory_store.py` | `_retrieval_score()` | Replace body with call to `compute_heat()` for the base score, then blend with query embedding similarity as before |
 | `memory_store.py` | `touch_memory_items()` | After updating `reference_count` and `last_referenced_at`, call `update_heat_on_access()` to recompute and persist heat |
-| `memory_store.py` | `get_memory_items_scored()` | Use `ORDER BY heat DESC` from the database instead of fetching a large pool and sorting in Python |
+| `memory_store.py` | `get_memory_items_scored()` | Use `ORDER BY heat DESC` to pre-sort the candidate pool from the database, replacing the current `ORDER BY created_at DESC` pool fetch. **Query-aware blending (lines 280-298) must be preserved**: the pool is still fetched into Python where heat is blended with query embedding cosine similarity using per-category weights (`_CATEGORY_QUERY_WEIGHTS`). Heat replaces the base retrieval score, not the entire scoring pipeline. |
 | `sleep_tasks.py` | `run_sleep_tasks()` | Add step 0: `decay_all_heat(db, user_id=user_id)` to refresh heat scores before other operations |
 | `models/agent_runtime.py` | `MemoryItem` | Add `heat` column and composite index |
 
@@ -199,7 +210,7 @@ All existing items get `heat=0.0` from the migration default. On the first `run_
 
 ### 4.6 Integration Points
 
-- **Retrieval**: `get_memory_items_scored()` uses heat as the primary sort. Query-embedding blending is a secondary adjustment applied on top.
+- **Retrieval**: `get_memory_items_scored()` uses `ORDER BY heat DESC` to pre-sort the candidate pool from the database (replacing the current `ORDER BY created_at DESC`). The pool is then refined in Python: heat serves as the base score, blended with query embedding cosine similarity using the existing per-category weights (`_CATEGORY_QUERY_WEIGHTS` at lines 21-26). The Python blending step is load-bearing for retrieval quality and must not be eliminated — heat improves the pool quality, not replaces the scoring pipeline.
 - **Prompt assembly**: `build_facts_memory_block()` etc. in `memory_blocks.py` call `get_memory_items_scored()` — no changes needed at this layer.
 - **Sleep tasks**: Heat decay runs as step 0 of `run_sleep_tasks()`, so items cool before other operations assess them.
 - **F5 integration**: Heat thresholds will gate whether consolidation agents fire (e.g., only consolidate when max heat > threshold). This wiring happens in F5, not here.
@@ -212,16 +223,16 @@ All existing items get `heat=0.0` from the migration default. On the first `run_
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | F2.1 | `heat` column (Float, default 0.0) on `MemoryItem` with composite index `(user_id, heat)` | Must |
-| F2.2 | `compute_heat()` implementing the formula with configurable `alpha`, `beta`, `gamma`, `tau` | Must |
+| F2.2 | `compute_heat()` implementing the formula with configurable `alpha`, `beta`, `gamma`, `delta`, `tau` | Must |
 | F2.3 | `compute_time_decay()` implementing exponential decay `exp(-hours / tau)` | Must |
 | F2.4 | `update_heat_on_access()` called from `touch_memory_items()` to recompute heat on every memory access | Must |
 | F2.5 | `decay_all_heat()` batch-updating all items during sleep tasks | Must |
 | F2.6 | `get_hottest_items()` returning items sorted by heat descending | Should |
 | F2.7 | `get_coldest_items()` returning items below a heat threshold | Should |
 | F2.8 | `_retrieval_score()` replaced with `compute_heat()` as the base score | Must |
-| F2.9 | `get_memory_items_scored()` uses `ORDER BY heat DESC` from the database | Should |
+| F2.9 | `get_memory_items_scored()` uses `ORDER BY heat DESC` to pre-sort the candidate pool, then blends with query embedding similarity in Python (preserving existing `_CATEGORY_QUERY_WEIGHTS` system) | Should |
 | F2.10 | First `run_sleep_tasks()` after migration backfills heat for all existing items | Must |
-| F2.11 | Weights `HEAT_ALPHA`, `HEAT_BETA`, `HEAT_GAMMA`, `RECENCY_TAU_HOURS` are module-level constants (tunable without code changes beyond the constant definition) | Should |
+| F2.11 | Weights `HEAT_ALPHA`, `HEAT_BETA`, `HEAT_GAMMA`, `HEAT_DELTA`, `RECENCY_TAU_HOURS` are module-level constants (tunable without code changes beyond the constant definition) | Should |
 
 ---
 
@@ -266,7 +277,7 @@ def downgrade():
 
 | # | Type | Test | Details |
 |---|------|------|---------|
-| T1 | Unit | `compute_heat()` | Verify formula with known inputs: access=5, depth=3, last_access=2h ago → expected value |
+| T1 | Unit | `compute_heat()` | Verify formula with known inputs: access=5, depth=3, last_access=2h ago, importance=7 → expected value |
 | T2 | Unit | `compute_time_decay()` | Verify: 0h → 1.0, 24h → ~0.37, 48h → ~0.14 (with tau=24) |
 | T3 | Unit | `update_heat_on_access()` | Access item 5 times, verify heat increases each time |
 | T4 | Unit | `decay_all_heat()` | Set items with known `last_accessed_at`, run decay, verify heat decreases |
@@ -284,8 +295,8 @@ def downgrade():
 |------|----------|------------|
 | **Heat staleness between sleep tasks** | Low | `update_heat_on_access()` recomputes on every access. Decay only affects untouched items. Active items stay hot regardless of decay schedule. |
 | **Migration on existing data** | Low | All items get `heat=0.0`. First `run_sleep_tasks()` backfills using existing `reference_count` and `last_referenced_at`. |
-| **Formula tuning** | Low | Weights are module-level constants, easy to adjust. Default `alpha=beta=gamma=1.0` matches MemoryOS's validated configuration. |
-| **interaction_depth approximation** | Low | Initially proxied by `reference_count`. Can be refined later with explicit depth tracking if needed. |
+| **Formula tuning** | Low | Weights are module-level constants, easy to adjust. Default `alpha=beta=gamma=1.0` matches MemoryOS's validated configuration. `delta=0.5` for importance is set lower to let usage patterns dominate over time. |
+| **interaction_depth approximation** | Low | Initially proxied by `reference_count`, meaning `access_count` and `interaction_depth` are the same value in v1 — effectively `(alpha + beta) * ref_count + gamma * recency + delta * importance`. This is intentional: the formula shape is correct for when explicit depth tracking is added (e.g., counting prompt inclusions that led to the memory being cited in a response). Until then, the combined weight means usage signals are stronger than recency or importance alone. |
 
 ---
 

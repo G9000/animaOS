@@ -1,3 +1,10 @@
+---
+title: "PRD: F4 — Knowledge Graph (SQLite-backed)"
+description: SQLite-backed knowledge graph for relational memory
+category: prd
+version: "1.0"
+---
+
 # PRD: F4 — Knowledge Graph (SQLite-backed)
 
 **Version**: 1.0
@@ -233,20 +240,42 @@ def search_graph(
     """
     ...
 
+def rerank_graph_results(
+    results: list[dict[str, str]], query: str, top_n: int = 10,
+) -> list[dict[str, str]]:
+    """BM25-rerank graph traversal results for query relevance.
+    Tokenizes each triple as 'source relation destination', scores against query.
+    Adopted from Mem0's graph_memory.py BM25 reranking pattern.
+    """
+    ...
+
 def graph_context_for_query(
     db: Session, *, user_id: int, query: str, limit: int = 10,
 ) -> list[str]:
-    """Extract entity names from query, traverse graph, return context strings.
+    """Extract entity names from query, traverse graph, BM25-rerank results,
+    return context strings.
     Output: ["Alice (person, User's sister) → lives_in → Munich", ...]
     Suitable for inclusion in a memory block.
     """
     ...
 
+async def prune_stale_relations(
+    db: Session, *, user_id: int, new_facts: list[str],
+    existing_relations: list[dict[str, str]],
+) -> list[int]:
+    """LLM-driven relation pruning. Given new facts from the current conversation
+    and existing relations touching the same entities, ask the LLM which relations
+    are now outdated or contradicted.
+    Returns list of kg_relations.id to delete.
+    Adopted from Mem0's DELETE_RELATIONS_SYSTEM_PROMPT pattern.
+    """
+    ...
+
 async def ingest_conversation_graph(
     db: Session, *, user_id: int, user_message: str, assistant_response: str,
-) -> tuple[int, int]:
-    """Full pipeline: extract → dedup → upsert entities + relations.
-    Returns (entities_upserted, relations_upserted).
+) -> tuple[int, int, int]:
+    """Full pipeline: extract → dedup → upsert entities + relations → prune stale relations.
+    Returns (entities_upserted, relations_upserted, relations_pruned).
     """
     ...
 ```
@@ -338,6 +367,10 @@ member_of, located_in, part_of, created_by
 | F4.13 | Bidirectional graph traversal (both source→dest and dest→source) | Must |
 | F4.14 | REST API endpoints for viewing entities and relations | Could |
 | F4.15 | Full vault export/import support for `kg_entities` and `kg_relations` | Must |
+| F4.16 | `rerank_graph_results()` — BM25 reranking of graph traversal results before returning context (adopted from Mem0) | Should |
+| F4.17 | `prune_stale_relations()` — LLM-driven deletion of outdated/contradicted relations during ingestion (adopted from Mem0) | Must |
+| F4.18 | UUID/ID hallucination protection — map real entity/relation IDs to sequential integers before sending to LLM prompts, map back after (adopted from Mem0) | Must |
+| F4.19 | Tool-calling fallback — when the LLM does not support `function_call` / tool use, fall back to a JSON-formatted prompt with response parsing (consistent with existing codebase patterns in consolidation.py, episodes.py) | Must |
 
 ---
 
@@ -398,6 +431,9 @@ def upgrade():
 | AC8 | `knowledge_graph` block is omitted when no relevant entities found | Integration test |
 | AC9 | Vault export includes `kg_entities` and `kg_relations` | Integration test |
 | AC10 | All 602 existing tests pass | CI |
+| AC11 | When user says "I left Google", the `works_at` relation between User and Google is pruned by `prune_stale_relations()` | Integration test |
+| AC12 | `graph_context_for_query()` returns BM25-reranked results (most relevant triples first) | Unit test with mock graph results |
+| AC13 | Entity/relation IDs sent to LLM prompts are mapped to sequential integers, not real IDs | Unit test for ID mapping |
 
 ---
 
@@ -418,6 +454,10 @@ def upgrade():
 | T11 | Integration | Vault export/import | Export with entities, import on fresh DB, verify entities preserved |
 | T12 | Regression | Existing memory blocks | Adding graph block does not break existing block assembly |
 | T13 | Performance | Graph traversal | 1,000 entities, depth=2 traversal < 50ms |
+| T14 | Unit | `rerank_graph_results()` | 20 triples, BM25 rerank for query, verify top results are most relevant |
+| T15 | Unit | `prune_stale_relations()` | Mock LLM returns deletion list, verify stale relations removed from DB |
+| T16 | Integration | Stale relation pruning | Store "User works_at Google", conversation says "I left Google", verify relation pruned |
+| T17 | Unit | ID hallucination protection | Map 3 real IDs to [1,2,3], send to LLM, map response back, verify correct round-trip |
 
 ---
 
@@ -431,6 +471,8 @@ def upgrade():
 | **LLM tool calling compatibility** | Medium | Not all models via Ollama/OpenRouter support structured tool calling. Fallback: use a regular prompt with JSON output format + parsing. |
 | **Entity type drift** | Low | Fixed enum in tool schema. LLM may occasionally choose wrong type, but this is cosmetic — graph traversal doesn't filter by type. |
 | **Relation type inconsistency** | Low | LLM may use "works_at" vs "employed_at" vs "works_for" for the same relation. Normalize common variations in `upsert_relation()`. |
+| **Stale relation accumulation** | Medium | Without pruning, the graph grows monotonically and outdated relations compete with current ones. Mitigated by `prune_stale_relations()` (F4.17) running during each ingestion cycle, adopted from Mem0's pattern. |
+| **LLM ID hallucination** | Medium | LLMs may hallucinate or corrupt entity/relation IDs when they appear in prompts. Mitigated by mapping real IDs to sequential integers before LLM calls (F4.18), adopted from Mem0's pattern. |
 
 ---
 
@@ -438,14 +480,15 @@ def upgrade():
 
 1. Create `KGEntity` and `KGRelation` models in `models/agent_runtime.py`
 2. Create Alembic migration for both tables
-3. Create `knowledge_graph.py` with all functions
-4. Write unit tests for entity normalization, upsert, graph traversal
-5. Modify `consolidation.py` to call `ingest_conversation_graph()` after fact extraction
-6. Modify `memory_blocks.py` to add `knowledge_graph` block
-7. Write integration tests for full pipeline and prompt assembly
-8. Add vault export/import support for new tables
-9. Run full test suite (602+ tests)
-10. Ship as single PR
+3. Create `knowledge_graph.py` with all functions including `rerank_graph_results()` and `prune_stale_relations()`
+4. Implement ID hallucination protection helper (int mapping for LLM prompts)
+5. Write unit tests for entity normalization, upsert, graph traversal, BM25 reranking, relation pruning, ID mapping
+6. Modify `consolidation.py` to call `ingest_conversation_graph()` after fact extraction
+7. Modify `memory_blocks.py` to add `knowledge_graph` block
+8. Write integration tests for full pipeline, prompt assembly, and stale relation pruning
+9. Add vault export/import support for new tables
+10. Run full test suite (602+ tests)
+11. Ship as single PR
 
 ---
 
@@ -464,6 +507,10 @@ A higher-level "world model narrative" — a synthesized prose summary of the us
 ## 12. References
 
 - Mem0 `graph_memory.py` — `MemoryGraph.add()`, `EXTRACT_ENTITIES_TOOL`, entity dedup via embedding similarity
+- Mem0 `graph_memory.py` lines 117-130 — BM25 reranking of graph search results
+- Mem0 `graph_memory.py` `_get_delete_entities_from_search_output()` — LLM-driven relation pruning on each add
+- Mem0 `main.py` lines 496-499 — UUID-to-integer ID mapping to prevent LLM hallucination
 - Mem0 — 26% accuracy improvement with graph-augmented vector search
 - Research Report Section 1.5, Finding C2 — Knowledge Graph rated "Critical"
-- [Implementation Plan Phase 4](../memory-implementation-plan.md) — detailed SQLAlchemy model definitions and function signatures
+- [Implementation Plan](../../architecture/memory/memory-implementation-plan.md) — detailed SQLAlchemy model definitions and function signatures
+- [Competitor Audit: Letta & Mem0](competitor-audit-letta-mem0.md) — source-code-level analysis informing F4.16-F4.18

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cryptographic Auditor"
+  short_description: "Crypto implementation and key audits"
+  default_prompt: "Use $cryptographic-auditor to review this codebase for cryptographic implementation flaws, key-management risks, and broken security guarantees."

@@ -18,22 +18,22 @@
 
 ## Architecture & Design — [`architecture/`](architecture/)
 
-| Document                                                                    | Description                                                                                      |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [Memory System](architecture/memory-system.md)                              | Architecture and implementation of the ANIMA memory system                                       |
-| [Structured Memory Claims](architecture/structured-memory-claims-design.md) | Design for structured memory claims in `apps/server`                                             |
-| [Agent Runtime Improvements](architecture/agent-runtime-improvements.md)    | Improvement plan for the live Python agent runtime — turn atomicity, prompt budgeting, streaming |
-| [Agent Orchestration Audit](architecture/agent-orchestration-audit.md)      | Full architecture audit of agent/chat orchestration across both backends                         |
-| [Agent Graph (legacy)](architecture/agent-graph.md)                         | Legacy `apps/api` LangGraph architecture — how ANIMA processes chat requests                     |
-| [Agent Runtime Migration](architecture/agent-runtime-migration.md)          | Archived migration plan from LangGraph to the current orchestration loop                         |
+See [Architecture README](architecture/README.md) for the full index, organized by domain:
+- **[System](architecture/system/)** — directory structure, API routes, services, database schema, data flow, configuration, cross-cutting concerns
+- **[Agent](architecture/agent/)** — agent runtime deep dive, tool catalog
+- **[Memory](architecture/memory/)** — memory system, implementation plan, competitor repo analysis
+- **[Crypto](architecture/crypto/)** — encryption, session management, key derivation
 
 ---
 
-## PRDs — [`prd/`](prd/)
+## PRDs — [`prds/`](prds/)
 
-| Document                                      | Status | Description                                                             |
-| --------------------------------------------- | ------ | ----------------------------------------------------------------------- |
-| [Encrypted Core v1](prd/encrypted-core-v1.md) | Draft  | Make the local Core encrypted-by-default and remove plaintext artifacts |
+See [PRDs README](prds/README.md) for the full index, organized by domain:
+- **Memory Retrieval & Search** — F1 Hybrid Search, F2 Heat Scoring
+- **Memory Consolidation & Learning** — F3 Predict-Calibrate, F6 Batch Segmentation, F7 Intentional Forgetting
+- **Knowledge Representation** — F4 Knowledge Graph
+- **Background Processing** — F5 Async Sleep Agents
+- **Cryptography & Security** — Encrypted Core v1, Crypto Hardening
 
 ---
 

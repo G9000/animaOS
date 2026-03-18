@@ -1,3 +1,10 @@
+---
+title: "PRD: F1 — Hybrid Search (BM25 + Vector + RRF)"
+description: Hybrid retrieval combining BM25, vector similarity, and Reciprocal Rank Fusion
+category: prd
+version: "1.0"
+---
+
 # PRD: F1 — Hybrid Search (BM25 + Vector + RRF)
 
 **Version**: 1.0
@@ -201,7 +208,7 @@ This is intentionally simple. BM25's strength is in TF-IDF weighting, not in sop
 |---------|---------|------|---------|-----|
 | `rank-bm25` | latest | ~15 KB | Apache 2.0 | Pure Python BM25Okapi implementation |
 
-This is the only new pip dependency across all 6 features. We explicitly avoid `spacy` (200+ MB, overkill for tokenization), `numpy` (use stdlib `math`), `chromadb`, and `neo4j`.
+This is the only new pip dependency across all 7 memory features (F1-F7). We explicitly avoid `spacy` (200+ MB, overkill for tokenization), `numpy` (use stdlib `math`), `chromadb`, and `neo4j`.
 
 ---
 

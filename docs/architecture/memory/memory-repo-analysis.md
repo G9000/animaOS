@@ -1,3 +1,10 @@
+---
+title: Memory Framework Repository Analysis
+description: Comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS
+category: research
+date: 2026-03-18
+---
+
 # Memory Framework Repository Analysis
 **Date**: 2026-03-18
 **Repos Analyzed**: Letta, Mem0, Nemori, MemOS, MemoryOS
@@ -285,6 +292,6 @@ EXTRACT_ENTITIES_TOOL = {
 
 These 12 recommendations have been translated into a concrete engineering plan with exact file paths, function signatures, and Alembic migration specs:
 
-- See `docs/architecture/memory-implementation-plan.md` for the phase-by-phase implementation plan (Phases 1-6)
+- See `docs/architecture/memory/memory-implementation-plan.md` for the phase-by-phase implementation plan (Phases 1-6)
 - See `docs/thesis/roadmap.md` for the product-level roadmap phases (9.5, 9.7, 10.3, 10.4, 10.6, 10.7)
 - See `docs/thesis/research-report-2026-03-18.md` for the research context behind these findings
