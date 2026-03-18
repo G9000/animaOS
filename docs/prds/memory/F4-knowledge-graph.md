@@ -75,14 +75,16 @@ These are independent strings with no relational structure. There is no way to:
 4. Graph traversal via SQL JOINs (max depth 2) for contextual retrieval
 5. `knowledge_graph` memory block injected into the system prompt with relevant entity relationships
 6. Graph ingestion runs in background consolidation pipeline, invisible to user
+7. Keep the graph SQLite-backed inside the Core, preserving portability, encryption, and single-directory ownership
 
 ### Non-Goals
 
-- **Neo4j or external graph database** — SQLite-only, within the encrypted Core
+- **Neo4j, Kuzu, Memgraph, or any external graph platform** — competitor backends inform lifecycle patterns only; AnimaOS remains SQLite-backed inside the Core
 - **Deep graph traversal** (depth > 2) — unnecessary for personal-scale graphs
 - **Automatic entity resolution against external knowledge bases** — no Wikipedia, Wikidata, etc.
 - **Graph visualization UI** — backend only in this PRD
 - **Replacing vector search** — the graph augments it, does not replace it
+- **Importing graph-platform abstractions** — no Cypher, graph services, graph daemons, or backend-specific admin workflows
 - **World model synthesis** — the knowledge graph provides raw entities and relations; a higher-level "world model" narrative synthesis is a separate feature
 
 ---
@@ -301,7 +303,30 @@ WHERE r.destination_id = :entity_id AND r.user_id = :user_id
 
 For < 1,000 entities (typical for a personal AI), this completes in < 50ms.
 
-### 4.6 Modified Files
+### 4.6 Graph Lifecycle
+
+The graph is **not append-only**. F4 adopts a bounded lifecycle that keeps the graph local and SQLite-native while preventing monotonic accumulation of stale relations.
+
+**Lifecycle policy**
+
+1. During `ingest_conversation_graph()`, extract entities and relations from the current turn.
+2. Upsert entities first, then load only existing relations that touch the entities mentioned in the new turn.
+3. Run `prune_stale_relations()` against that bounded candidate set before finalizing the turn's graph state.
+4. Delete only relations the pruning step classifies as outdated, contradicted, or clearly superseded by the new facts.
+
+This means stale-relation pruning happens **during ingestion**, not as a separate external graph-maintenance system and not as an unbounded whole-graph sweep. Sleep-time tasks may later add a capped maintenance pass for low-mention or long-stale relations, but that is not required for F4 and must remain bounded if added. Competitor systems using Neo4j, Kuzu, or Memgraph are relevant here only as evidence that append-only graphs drift; they do not change AnimaOS's storage architecture.
+
+### 4.7 Graph Retrieval and Reranking Policy
+
+F4 explicitly **adopts lightweight reranking** for graph results. After `search_graph()` returns a small traversal set (max 20 triples), `rerank_graph_results()` BM25-reranks those triples against the user query before `graph_context_for_query()` builds the `knowledge_graph` block.
+
+The rationale is straightforward:
+
+- SQL traversal is good at finding connected triples, not ordering them by query phrasing.
+- The candidate set is already small, so in-process BM25 reranking is cheap and predictable.
+- AnimaOS does **not** add an external reranker service or graph-specific search backend for this; lightweight local reranking is enough.
+
+### 4.8 Modified Files
 
 | File | Function | Change |
 |------|----------|--------|
@@ -310,7 +335,7 @@ For < 1,000 entities (typical for a personal AI), this completes in < 50ms.
 | `models/agent_runtime.py` | (module level) | Add `KGEntity` and `KGRelation` model classes |
 | `models/__init__.py` | exports | Export `KGEntity`, `KGRelation` |
 
-### 4.7 Memory Block Format
+### 4.9 Memory Block Format
 
 The `knowledge_graph` block in the system prompt:
 
@@ -326,7 +351,7 @@ The `knowledge_graph` block in the system prompt:
 
 Estimated size: 200-400 tokens for 10-15 triples. Omitted when no relevant graph context is found for the current query.
 
-### 4.8 Entity Type Taxonomy
+### 4.10 Entity Type Taxonomy
 
 | Type | Examples | When extracted |
 |------|----------|----------------|
@@ -336,7 +361,7 @@ Estimated size: 200-400 tokens for 10-15 triples. Omitted when no relevant graph
 | `project` | Project Aurora, "my thesis", "the kitchen renovation" | Named efforts or initiatives |
 | `concept` | Python, machine learning, stoicism | Technical terms, interests, philosophies |
 
-### 4.9 Relation Type Conventions
+### 4.11 Relation Type Conventions
 
 Freeform strings, but the LLM prompt encourages consistent naming:
 
@@ -367,10 +392,11 @@ member_of, located_in, part_of, created_by
 | F4.13 | Bidirectional graph traversal (both source→dest and dest→source) | Must |
 | F4.14 | REST API endpoints for viewing entities and relations | Could |
 | F4.15 | Full vault export/import support for `kg_entities` and `kg_relations` | Must |
-| F4.16 | `rerank_graph_results()` — BM25 reranking of graph traversal results before returning context (adopted from Mem0) | Should |
+| F4.16 | `rerank_graph_results()` — BM25 reranking of graph traversal results before returning context; lightweight local reranking is required for the max-20 triple candidate set | Must |
 | F4.17 | `prune_stale_relations()` — LLM-driven deletion of outdated/contradicted relations during ingestion (adopted from Mem0) | Must |
-| F4.18 | UUID/ID hallucination protection — map real entity/relation IDs to sequential integers before sending to LLM prompts, map back after (adopted from Mem0) | Must |
+| F4.18 | UUID/ID hallucination protection — map real entity/relation IDs to sequential integers before sending to LLM prompts, map back after; use ID indirection only inside LLM-facing pruning flows, not as a new storage layer (adopted from Mem0) | Must |
 | F4.19 | Tool-calling fallback — when the LLM does not support `function_call` / tool use, fall back to a JSON-formatted prompt with response parsing (consistent with existing codebase patterns in consolidation.py, episodes.py) | Must |
+| F4.20 | Storage architecture constraint — the knowledge graph remains SQLite-backed inside the Core; Neo4j, Kuzu, Memgraph, and similar systems are reference material only, not implementation targets | Must |
 
 ---
 
@@ -468,10 +494,11 @@ def upgrade():
 | **Entity extraction quality** | Medium | Structured tool calling (function_call) with explicit schema. 5-entity cap prevents garbage floods. Entity dedup catches duplicates. |
 | **Graph explosion** | Medium | 5-entity cap per turn. `mentions` increment on existing entities rather than creating new ones. Aggressive normalization + embedding dedup. |
 | **SQLite graph traversal performance** | Low | Depth capped at 2, result limit 20. For < 1,000 entities, this is fast. No recursive CTEs — just two sequential queries. |
+| **Architecture drift from competitor patterns** | Medium | Mem0 and similar systems inform pruning and ID-indirection safeguards only. F4 explicitly rejects Neo4j, Kuzu, Memgraph, and related platform abstractions to preserve the portable Core. |
 | **LLM tool calling compatibility** | Medium | Not all models via Ollama/OpenRouter support structured tool calling. Fallback: use a regular prompt with JSON output format + parsing. |
 | **Entity type drift** | Low | Fixed enum in tool schema. LLM may occasionally choose wrong type, but this is cosmetic — graph traversal doesn't filter by type. |
 | **Relation type inconsistency** | Low | LLM may use "works_at" vs "employed_at" vs "works_for" for the same relation. Normalize common variations in `upsert_relation()`. |
-| **Stale relation accumulation** | Medium | Without pruning, the graph grows monotonically and outdated relations compete with current ones. Mitigated by `prune_stale_relations()` (F4.17) running during each ingestion cycle, adopted from Mem0's pattern. |
+| **Stale relation accumulation** | Medium | Without pruning, the graph grows monotonically and outdated relations compete with current ones. Mitigated by ingestion-time pruning scoped to relations touching the current turn's entities via `prune_stale_relations()` (F4.17), adopted from Mem0's pattern but kept bounded for SQLite/Core constraints. |
 | **LLM ID hallucination** | Medium | LLMs may hallucinate or corrupt entity/relation IDs when they appear in prompts. Mitigated by mapping real IDs to sequential integers before LLM calls (F4.18), adopted from Mem0's pattern. |
 
 ---
@@ -514,3 +541,5 @@ A higher-level "world model narrative" — a synthesized prose summary of the us
 - Research Report Section 1.5, Finding C2 — Knowledge Graph rated "Critical"
 - [Implementation Plan](../../architecture/memory/memory-implementation-plan.md) — detailed SQLAlchemy model definitions and function signatures
 - [Competitor Audit: Letta & Mem0](competitor-audit-letta-mem0.md) — source-code-level analysis informing F4.16-F4.18
+- [Whitepaper](../../thesis/whitepaper.md) — Core portability, user ownership, and encrypted local-first constraints
+- [Memory System Deep Dive](../../architecture/memory/memory-system.md) — SQLite-centered memory lifecycle and prompt-assembly context
