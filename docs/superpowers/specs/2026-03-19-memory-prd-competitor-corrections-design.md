@@ -117,7 +117,7 @@ The audit shows Mem0 handles graph lifecycle more aggressively than the current 
 
 - Add a graph-lifecycle section covering stale-relation pruning or deletion strategy.
 - Make clear whether pruning happens on write, during sleep tasks, or through a bounded maintenance pass.
-- Evaluate a cheap reranking stage for graph search results, especially if result sets are small enough to justify BM25-style reranking without architectural complexity.
+- Require the revised PRD to take a position on graph-result reranking: either adopt a cheap reranking stage for small result sets or explicitly reject it and explain why.
 - Preserve SQLite-backed graph storage and Core portability as a hard constraint.
 - Clarify why AnimaOS deliberately rejects external graph infrastructure despite competitor use.
 
@@ -157,6 +157,16 @@ The audit does not reveal a stronger full forgetting design in competitors, but 
 - Tighten differentiation claims so they are specific rather than broad.
 - Keep F7 focused on lifecycle integrity, not just deletion features.
 
+### Decision Rubric
+
+Edit `F7` only if at least one of these is true:
+
+- the current PRD blurs deletion and forgetting in a way that would mislead planning,
+- the competitor audit reveals a missing risk or missing design boundary,
+- the current differentiation language is too vague to defend.
+
+Skip `F7` if the audit only provides stronger justification for a design the PRD already states clearly.
+
 ### Skip Condition
 
 If the final editorial review concludes that the existing F7 PRD already captures these points clearly enough, omit changes to avoid churn.
@@ -181,7 +191,7 @@ The correction pass succeeds when:
 
 ## Deliverables
 
-1. Revised PRDs for the selected files.
+1. Revised PRDs for `F1`, `F4`, `F5`, and `F7` only if the skip condition is not met.
 2. A brief change summary tied to the competitor audit.
 3. A clear note on whether `F7` was changed or intentionally left alone.
 
