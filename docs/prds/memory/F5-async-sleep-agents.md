@@ -1,6 +1,6 @@
 ---
 title: "PRD: F5 — Async Sleep-Time Agents"
-description: Background maintenance agents that run during user inactivity
+description: Structured background tasks that run during user inactivity
 category: prd
 version: "1.0"
 ---
@@ -207,9 +207,9 @@ async def run_sleeptime_agents(
     - `graph_ingestion`, `profile_synthesis`, and `deep_monologue` may use
       transcript-wide context when current-turn inputs or explicit deltas are
       insufficient.
-    - `consolidation`, `heat_decay`, `episode_gen`, and restart-cursor
-      bookkeeping should remain current-turn or explicit-delta scoped when
-      possible.
+    - `consolidation`, `contradiction_scan`, `heat_decay`, `episode_gen`, and
+      restart-cursor bookkeeping should remain current-turn or explicit-delta
+      scoped when possible so behavior stays structured and predictable.
 
     Returns list of task run IDs for tracking.
     """
