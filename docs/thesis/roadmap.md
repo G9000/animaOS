@@ -127,7 +127,7 @@ Delivered:
 - working memory expiry sweep removes date-tagged items automatically
 - feedback signal collection (re-asks, corrections) feeds into growth log
 
-Future enhancement (from Letta source analysis): Letta's `SleeptimeMultiAgentV4` runs background "sleep-time agents" asynchronously after each foreground conversation step, with configurable frequency gating (`sleeptime_agent_frequency`) and last-processed-message tracking to avoid reprocessing. AnimaOS's existing sleep tasks could adopt this pattern: run consolidation/reflection asynchronously after conversation turns (not just on inactivity), with frequency gating so not every turn triggers expensive background work.
+Future enhancement: adopting the async post-turn execution pattern from Letta's `SleeptimeMultiAgentV4` — see Phase 10.6 for the full plan.
 
 ## Phase 7: Proactive Companion
 
@@ -275,6 +275,42 @@ Goals:
 
 Deliverable: forgetting as a first-class memory operation, not just archival.
 
+## Phase 10.6: Async Sleep-Time Agents
+
+Status: planned
+
+Goals:
+
+- replace inactivity-triggered synchronous sleep tasks with asynchronous post-turn execution
+- frequency gating: configurable `sleeptime_agent_frequency` prevents expensive background work on every turn
+- last-processed-message tracking: `BackgroundTaskRun` table stores the last conversation message processed, preventing reprocessing
+- per-user async queues: `asyncio.create_task()` replaces blocking calls, allowing the foreground response to return immediately
+- heat-gated dispatch: background consolidation only fires when heat threshold is exceeded (integrates with Phase 10.4)
+
+Rationale: Current AnimaOS sleep tasks run on inactivity timers, meaning consolidation only happens when the user stops talking. Letta's `SleeptimeMultiAgentV4` demonstrated that post-turn async execution with frequency gating produces more timely and efficient background processing. The user's response is not blocked; consolidation runs in the background while the conversation continues.
+
+Implementation pattern (from Letta source analysis): `SleeptimeMultiAgentV4.step()` calls `asyncio.create_task(run_sleeptime_agents())` after each foreground step. `run_sleeptime_agents()` uses a per-agent `_sleeptime_agent_frequency` counter and only runs if `turn_count % frequency == 0`. A `last_processed_message_id` field prevents reprocessing the same conversation turn on restart. AnimaOS implements this via a new `BackgroundTaskRun` SQLAlchemy model and a `schedule_background_memory_consolidation()` orchestrator that replaces the current inactivity-based trigger.
+
+Deliverable: background consolidation that runs continuously after turns, not just on inactivity, with configurable frequency gating and restart safety.
+
+## Phase 10.7: Batch Episode Segmentation
+
+Status: planned
+
+Goals:
+
+- replace fixed-size episode chunking (every N turns) with LLM-driven topic-coherent segmentation
+- single LLM call groups a buffer of messages into non-contiguous topic episodes (e.g., `[[1,2,3], [8,10,11], [4,5,6,7,9,12]]`)
+- non-continuous grouping: messages belonging to different topics can be interleaved, and the segmenter assigns each to the correct episode
+- low-temperature generation (0.2) for deterministic groupings
+- fallback to sequential method if LLM segmentation fails
+
+Rationale: Current AnimaOS episodes are created by counting turns (every 6 turns = one episode). This misses topic boundaries — a conversation may switch subjects mid-episode or sustain a single topic across many turns. Nemori's `BatchSegmenter` demonstrated that LLM-driven segmentation produces topic-coherent episodes that better represent the semantic structure of a conversation, improving retrieval precision for episodic memory.
+
+Implementation pattern (from Nemori source analysis): Nemori's `BatchSegmenter.segment()` sends a buffer of messages (with 1-based indices) to the LLM and receives back a list of index groups. Non-continuous indices are valid — `[1,2,3]` and `[8,10,11]` can both appear as separate episodes even though messages 4-7 and 9 appear in a third group. AnimaOS implements this as a new `batch_segmenter.py` module modifying `maybe_generate_episode()` in `episodes.py`, triggered when the message buffer exceeds 8 turns. A new `segmentation_method` column on the episode table tracks whether sequential or batch-LLM segmentation was used.
+
+Deliverable: topic-coherent episodes that reflect actual conversation structure rather than fixed turn counts, improving episodic memory retrieval quality.
+
 ## Phase 11: Embodied Extensions
 
 Status: future
@@ -313,5 +349,6 @@ These remain the product bar even where the current code has not fully reached i
 
 - See `docs/thesis/cryptographic-hardening.md` for the full cryptographic improvement thesis and audit findings
 - See `docs/thesis/research-report-2026-03-18.md` for the March 2026 research audit and new pattern discovery
-- See `docs/thesis/repo-analysis-2026-03-18.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
+- See `docs/architecture/memory-repo-analysis.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
+- See `docs/architecture/memory-implementation-plan.md` for the phase-by-phase implementation plan
 - See `docs/thesis/references/` for downloaded research papers supporting the thesis

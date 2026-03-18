@@ -263,7 +263,7 @@ EXTRACT_ENTITIES_TOOL = {
 3. **Add BM25 search**: Complement existing vector search with lexical matching
 4. **RRF fusion**: Combine vector + BM25 results using Reciprocal Rank Fusion
 
-### High Priority (Phase 10.5 - Intentional Forgetting)
+### High Priority (Phase 10.4 - Heat-Based Memory Scoring)
 5. **Heat-based memory scoring**: `H = alpha * access_count + beta * interaction_depth + gamma * recency_decay`
 6. **Heat-triggered consolidation**: Replace fixed-timer consolidation with heat-threshold triggers
 
@@ -278,3 +278,13 @@ EXTRACT_ENTITIES_TOOL = {
 ### Future (Activation Memory)
 11. **KV cache pre-computation**: If using vLLM/local models, pre-compute KV caches from core memories for faster inference
 12. **Batch segmentation**: Use LLM to intelligently group conversation messages by topic (non-continuous grouping)
+
+---
+
+## References
+
+These 12 recommendations have been translated into a concrete engineering plan with exact file paths, function signatures, and Alembic migration specs:
+
+- See `docs/architecture/memory-implementation-plan.md` for the phase-by-phase implementation plan (Phases 1-6)
+- See `docs/thesis/roadmap.md` for the product-level roadmap phases (9.5, 9.7, 10.3, 10.4, 10.6, 10.7)
+- See `docs/thesis/research-report-2026-03-18.md` for the research context behind these findings
