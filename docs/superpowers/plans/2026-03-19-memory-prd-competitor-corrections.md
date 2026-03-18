@@ -37,10 +37,11 @@ Run:
 
 ```powershell
 $base = git rev-parse HEAD
+Set-Content -Path "$env:TEMP\memory-prd-correction-base.txt" -Value $base
 Write-Output $base
 ```
 
-Expected: a 40-character commit hash copied into the worker's notes for reuse in Task 5, Step 3.
+Expected: a 40-character commit hash printed and persisted to `$env:TEMP\memory-prd-correction-base.txt` for reuse in Task 5, Step 3 across shell sessions.
 
 ## Task 1: Tighten F1 Hybrid Search PRD
 
@@ -91,7 +92,17 @@ Assumption: the BM25 corpus is built from the currently search-indexed memory te
 Risk: fresh or unembedded memories may be temporarily invisible to the BM25 leg until embedding sync or index rebuild completes.
 ```
 
-- [ ] **Step 5: Downgrade unverified performance and certainty claims**
+- [ ] **Step 5: Preserve the self-hosted differentiation without overclaiming**
+
+Keep the competitive claim that AnimaOS delivers self-hosted BM25 + vector + RRF without external search infrastructure, but phrase it as an infrastructure and retrieval-quality advantage rather than a total-system advantage.
+
+Use wording like:
+
+```md
+This design keeps hybrid lexical-semantic retrieval self-hosted and local to the Core, rather than depending on external search infrastructure for BM25 fusion quality.
+```
+
+- [ ] **Step 6: Downgrade unverified performance and certainty claims**
 
 Convert hard claims such as `<100ms`, `<5 MB`, “Nemori's validated configuration”, and “no rollback risk” into targets, defaults, or hypotheses.
 
@@ -102,13 +113,13 @@ Use wording like:
 - `_RRF_K = 60` is retained as the current standard RRF constant and existing implementation default.
 ```
 
-- [ ] **Step 6: Verify the edited F1 document**
+- [ ] **Step 7: Verify the edited F1 document**
 
-Run: `rg -n "Lexical-Semantic|candidate-generation|companion.py|corpus|unembedded|target build time|_RRF_K = 60" "docs/prds/memory/F1-hybrid-search.md"`
+Run: `rg -n "Lexical-Semantic|candidate-generation|companion.py|corpus|unembedded|self-hosted|external search infrastructure|target build time|_RRF_K = 60" "docs/prds/memory/F1-hybrid-search.md"`
 
-Expected: The revised file contains the narrowed framing, corrected integration wording, explicit corpus assumption, and softened certainty language.
+Expected: The revised file contains the narrowed framing, corrected integration wording, explicit corpus assumption, preserved self-hosted differentiation, and softened certainty language.
 
-- [ ] **Step 7: Commit the F1 changes**
+- [ ] **Step 8: Commit the F1 changes**
 
 ```bash
 git add docs/prds/memory/F1-hybrid-search.md
@@ -335,7 +346,12 @@ Expected: No stale overclaim language remains in the revised docs.
 
 - [ ] **Step 3: Review the final patch as one coherent editorial pass**
 
-Run: `git diff --word-diff=plain $base -- docs/prds/memory/F1-hybrid-search.md docs/prds/memory/F4-knowledge-graph.md docs/prds/memory/F5-async-sleep-agents.md docs/prds/memory/F7-intentional-forgetting.md docs/prds/memory/competitor-audit-prd-corrections-summary-2026-03-19.md`
+Run:
+
+```powershell
+$base = (Get-Content "$env:TEMP\memory-prd-correction-base.txt").Trim()
+git diff --word-diff=plain $base -- docs/prds/memory/F1-hybrid-search.md docs/prds/memory/F4-knowledge-graph.md docs/prds/memory/F5-async-sleep-agents.md docs/prds/memory/F7-intentional-forgetting.md docs/prds/memory/competitor-audit-prd-corrections-summary-2026-03-19.md
+```
 
 Expected: The diff from the pre-edit baseline shows the full competitor-informed correction pass across all touched files, even if earlier tasks were committed individually.
 
