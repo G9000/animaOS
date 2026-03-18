@@ -21,7 +21,7 @@ version: "1.0"
 
 Refactor the background memory processing pipeline from two suboptimal trigger modes (every-turn consolidation + 5-minute inactivity reflection) into a unified, frequency-gated, heat-threshold-aware async orchestrator. F5 adopts the useful orchestration patterns visible in Letta's `SleeptimeMultiAgentV4` such as turn counting, configurable frequency, tracked task runs, and last-processed restart cursors, but it does **not** adopt Letta's open-ended background-agent model.
 
-AnimaOS intentionally uses structured background tasks instead of general-purpose background agents with their own evolving memory. This is a deliberate reliability tradeoff: the system gives up some flexibility in exchange for more predictable and auditable background behavior. The user's foreground response is never blocked, and last-processed tracking remains a required part of restart safety rather than an optional optimization.
+AnimaOS intentionally uses structured background tasks instead of general-purpose, open-ended workers with their own evolving memory. This is a deliberate reliability tradeoff: the system gives up some flexibility in exchange for more predictable and auditable background behavior. The user's foreground response is never blocked, and last-processed tracking remains a required part of restart safety rather than an optional optimization.
 
 ---
 
@@ -65,7 +65,7 @@ The competitor audit supports borrowing Letta's orchestration mechanics while re
 
 ### Goals
 
-1. Turn counter with configurable frequency: run background agents every N turns (default 3)
+1. Turn counter with configurable frequency: run structured background tasks every N turns (default 3)
 2. Heat-threshold gating: expensive operations only fire when accumulated memory heat exceeds a threshold
 3. Parallel execution of independent background tasks (consolidation, graph ingestion, heat decay, episode check)
 4. Sequential execution of expensive tasks (contradiction scan, profile synthesis, deep monologue) gated by heat
@@ -131,7 +131,7 @@ User sends message
 | `user_id` | Integer | FK → users.id, CASCADE | |
 | `task_type` | String(50) | NOT NULL | consolidation, graph_ingestion, heat_decay, episode_gen, contradiction_scan, profile_synthesis, deep_monologue |
 | `status` | String(20) | NOT NULL, default "pending" | pending, running, completed, failed |
-| `result_json` | JSON | nullable | Task-specific result data (items extracted, entities added, etc.) |
+| `result_json` | JSON | nullable | Task-specific result data. For `task_type="consolidation"`, completed runs **must** persist the restart cursor payload `{ "thread_id": int | null, "last_processed_message_id": int, "messages_processed": int }`. |
 | `error_message` | Text | nullable | Error details on failure |
 | `started_at` | DateTime(tz) | nullable | When the task started executing |
 | `completed_at` | DateTime(tz) | nullable | When the task finished |
@@ -145,7 +145,8 @@ User sends message
 # Turn counter — no persistence needed (worst case: extra run after restart)
 _turn_counters: dict[int, int] = {}  # user_id -> turn_count
 
-# Last-processed message — persisted via most recent BackgroundTaskRun
+# Restart cursor — persisted by completed consolidation BackgroundTaskRun rows
+# Scope is (user_id, thread_id) when thread_id exists, otherwise per-user
 # Avoids reprocessing on restart
 ```
 
@@ -183,8 +184,8 @@ async def run_sleeptime_agents(
 ) -> list[str]:
     """Orchestrate all background tasks.
 
-    This orchestrator issues structured background tasks, not autonomous
-    background agents. Task selection and ordering remain explicit in code so
+    This orchestrator issues structured background tasks, not autonomous,
+    open-ended workers. Task selection and ordering remain explicit in code so
     runs are predictable and auditable.
 
     Parallel group (always run):
@@ -202,11 +203,13 @@ async def run_sleeptime_agents(
 
     When force=True (inactivity timer): bypass frequency and heat gates.
 
-    Context scope guidance:
-    - Use transcript-wide context for synthesis-oriented tasks such as profile
-      updates or graph maintenance when message-local inputs are insufficient.
-    - Keep extraction and bookkeeping tasks narrow and deterministic when
-      possible by preferring the current turn or explicit deltas.
+    Context scope guidance by task:
+    - `graph_ingestion`, `profile_synthesis`, and `deep_monologue` may use
+      transcript-wide context when current-turn inputs or explicit deltas are
+      insufficient.
+    - `consolidation`, `heat_decay`, `episode_gen`, and restart-cursor
+      bookkeeping should remain current-turn or explicit-delta scoped when
+      possible.
 
     Returns list of task run IDs for tracking.
     """
@@ -229,14 +232,34 @@ async def _issue_background_task(
     """
     ...
 
-def get_last_processed_message_id(user_id: int) -> int | None:
-    """Get the last conversation message ID processed by sleeptime agents.
-    Reads from most recent completed BackgroundTaskRun of type 'consolidation'.
+def get_last_processed_message_id(
+    user_id: int,
+    thread_id: int | None = None,
+) -> int | None:
+    """Get the last processed message ID for the active cursor scope.
+
+    Reads from the most recent completed `BackgroundTaskRun` where
+    `task_type="consolidation"` and `result_json.thread_id` matches the
+    requested thread scope. The cursor scope is `(user_id, thread_id)` when a
+    thread exists, otherwise the per-user conversation stream.
     """
     ...
 
-def update_last_processed_message_id(user_id: int, message_id: int) -> None:
-    """Store in the consolidation task's result_json."""
+def update_last_processed_message_id(
+    user_id: int,
+    thread_id: int | None,
+    message_id: int,
+    messages_processed: int,
+) -> None:
+    """Persist the consolidation restart cursor payload in `result_json`.
+
+    Required payload shape for completed consolidation runs:
+    {
+        "thread_id": thread_id,
+        "last_processed_message_id": message_id,
+        "messages_processed": messages_processed,
+    }
+    """
     ...
 ```
 
@@ -244,7 +267,7 @@ def update_last_processed_message_id(user_id: int, message_id: int) -> None:
 
 | File | Function | Change |
 |------|----------|--------|
-| `consolidation.py` | `schedule_background_memory_consolidation()` | Replace direct `asyncio.create_task()` with `bump_turn_counter()` + `should_run_sleeptime()` + `run_sleeptime_agents()` |
+| `consolidation.py` | `schedule_background_memory_consolidation()` | Replace direct `asyncio.create_task()` with `bump_turn_counter()` + `should_run_sleeptime()` + `run_sleeptime_agents()`. Consolidation is responsible for persisting the restart cursor payload for its `(user_id, thread_id)` scope. |
 | `reflection.py` | `schedule_reflection()` | Keep 5-minute timer. When it fires, call `run_sleeptime_agents(force=True)` |
 | `reflection.py` | `run_reflection()` | Delegate to `run_sleeptime_agents(force=True)`. **Must preserve**: (1) `expire_working_memory_items()` call (line 86-98), (2) quick inner monologue call (line 101-118), both of which run BEFORE sleep tasks in the current flow. These are not sleep tasks — they are pre-sleep housekeeping. |
 | `sleep_tasks.py` | `run_sleep_tasks()` | Keep as-is but add heat-threshold gating for contradiction scan and profile synthesis. Make callable from `run_sleeptime_agents()`. |
@@ -266,7 +289,33 @@ await asyncio.gather(
 
 Each task opens its own DB session via `db_factory()` — no shared session state. SQLite WAL mode handles concurrent reads.
 
-### 4.8 Frequency Gating Logic
+### 4.8 Restart Cursor Contract
+
+Restart safety is enforced through completed `BackgroundTaskRun` rows for
+`task_type="consolidation"`.
+
+- Cursor location: `background_task_runs.result_json` on the completed
+  consolidation run.
+- Cursor scope: `(user_id, thread_id)` when `thread_id` exists; otherwise the
+  per-user conversation stream.
+- Required payload on every completed consolidation run:
+
+```json
+{
+  "thread_id": 123,
+  "last_processed_message_id": 456,
+  "messages_processed": 7
+}
+```
+
+- `thread_id` may be `null` when no thread exists.
+- `last_processed_message_id` is the highest conversation message ID durably
+  processed for that cursor scope.
+- `messages_processed` records how many messages were consumed in that
+  consolidation pass so crash recovery and auditing can distinguish a no-op run
+  from a replayed range.
+
+### 4.9 Frequency Gating Logic
 
 ```python
 def should_run_sleeptime(user_id: int) -> bool:
@@ -282,7 +331,7 @@ With `SLEEPTIME_FREQUENCY=3`:
 - Turn 5: skip
 - Turn 6: run
 
-### 4.9 Heat Gating Logic
+### 4.10 Heat Gating Logic
 
 ```python
 async def _should_run_expensive(db: Session, user_id: int) -> bool:
@@ -311,7 +360,7 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | F5.11 | `force=True` mode bypassing frequency + heat gates (for inactivity timer) | Must |
 | F5.12 | `schedule_background_memory_consolidation()` routes through the frequency-gated orchestrator | Must |
 | F5.13 | `schedule_reflection()` calls `run_sleeptime_agents(force=True)` | Must |
-| F5.14 | `last_processed_message_id` tracking is required for restart safety | Must |
+| F5.14 | Restart safety must use a consolidation-owned cursor stored in completed `BackgroundTaskRun.result_json` payloads | Must |
 | F5.15 | `return_exceptions=True` in `asyncio.gather()` so one failure doesn't cancel others | Must |
 | F5.16 | Each task opens its own DB session via `db_factory()` | Must |
 | F5.17 | Vault export/import support for `background_task_runs` | Could |
@@ -319,6 +368,8 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | F5.19 | Preserve `companion.invalidate_memory()` call after background processing completes (currently at `run_background_memory_consolidation()` line 607-610 and `run_reflection()` line 140-143) | Must |
 | F5.20 | Preserve working memory expiry (`expire_working_memory_items()`) and quick inner monologue in the `force=True` (inactivity timer) path — these run BEFORE sleep tasks, not as part of them | Must |
 | F5.21 | Preserve `_background_tasks` set tracking and `drain_background_memory_tasks()` lifecycle management, or provide equivalent | Must |
+| F5.22 | `get_last_processed_message_id()` / `update_last_processed_message_id()` must scope the cursor by `(user_id, thread_id)` when `thread_id` exists | Must |
+| F5.23 | Completed consolidation runs must write `thread_id`, `last_processed_message_id`, and `messages_processed` in `result_json` | Must |
 
 ---
 
@@ -345,7 +396,9 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | AC8 | `force=True` bypasses frequency and heat gates | Unit test |
 | AC9 | 5-minute inactivity timer still triggers full suite | Integration test |
 | AC10 | Foreground response is not blocked by background processing | Integration test: measure response time with and without background tasks |
-| AC11 | All 602 existing tests pass | CI |
+| AC11 | After a crash or restart, consolidation resumes from the most recent completed cursor for the same `(user_id, thread_id)` scope and does not reprocess older messages | Integration test with persisted `BackgroundTaskRun.result_json` |
+| AC12 | A cursor written for one thread does not resume processing for another thread owned by the same user | Integration test |
+| AC13 | All 602 existing tests pass | CI |
 
 ---
 
@@ -362,7 +415,9 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 | T7 | Integration | `_issue_background_task()` | Verify task run recorded with correct status, timestamps, result |
 | T8 | Integration | End-to-end 3-message flow | Send 3 messages, verify consolidation fires after 3rd |
 | T9 | Integration | Inactivity reflection | Wait 5 minutes (mock timer), verify full suite triggers with force |
-| T10 | Regression | Full suite | All 602 tests pass |
+| T10 | Integration | Crash/restart resume | Seed a completed consolidation `BackgroundTaskRun` with cursor payload, restart the orchestrator, verify only newer messages are processed for that `(user_id, thread_id)` scope |
+| T11 | Integration | Thread-scoped cursor isolation | Seed different cursor payloads for two threads under one user, verify each thread resumes from its own cursor |
+| T12 | Regression | Full suite | All 602 tests pass |
 
 ---
 
@@ -370,9 +425,9 @@ async def _should_run_expensive(db: Session, user_id: int) -> bool:
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| **Lost work on crash** | Low | `BackgroundTaskRun` records what started, and `last_processed_message_id` bounds replay after restart. All operations are designed to be idempotent, so limited re-running is safe. |
+| **Lost work on crash** | Low | Completed consolidation runs must persist a restart cursor payload in `BackgroundTaskRun.result_json`, scoped by `(user_id, thread_id)` when present. That bounds replay after restart, and all operations are designed to be idempotent so limited re-running is safe. |
 | **Race conditions** | Medium | Each task opens own DB session via `db_factory()`. SQLite WAL mode handles concurrent reads. No shared mutable state between tasks. |
-| **Turn counter lost on restart** | Low | Worst case: one extra background run or one skipped run. `last_processed_message_id` prevents reprocessing of old data. |
+| **Turn counter lost on restart** | Low | Worst case: one extra background run or one skipped run. The persisted consolidation cursor prevents reprocessing of older messages within the same cursor scope. |
 | **Frequency tuning** | Low | `SLEEPTIME_FREQUENCY` is a module-level constant. Start with 3, adjust based on observation. |
 | **Heat threshold tuning** | Low | `HEAT_THRESHOLD_CONSOLIDATION` defaults to 5.0. If too high, expensive tasks never fire; if too low, they fire too often. Mitigated by `force=True` on inactivity timer guaranteeing they run at least once per idle period. |
 
