@@ -350,5 +350,6 @@ These remain the product bar even where the current code has not fully reached i
 - See `docs/thesis/cryptographic-hardening.md` for the full cryptographic improvement thesis and audit findings
 - See `docs/thesis/research-report-2026-03-18.md` for the March 2026 research audit and new pattern discovery
 - See `docs/architecture/memory-repo-analysis.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
-- See `docs/architecture/memory-implementation-plan.md` for the phase-by-phase implementation plan
+- See `docs/architecture/memory-architecture-prd.md` for the PRD covering Features F1–F6 (Phases 9.5–10.7)
+- See `docs/architecture/memory-implementation-plan.md` for the detailed engineering spec (function signatures, schemas, test plans)
 - See `docs/thesis/references/` for downloaded research papers supporting the thesis
