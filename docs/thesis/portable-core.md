@@ -278,9 +278,9 @@ Keys are not static. They have a lifecycle, and the Core must manage every phase
 
 A vault exported today could be stolen and stored. If the passphrase is cracked years later — through brute force, social engineering, or quantum advances — the attacker gets everything that was in the vault at export time.
 
-The Core should consider an additional protection for vault exports: an ephemeral key component mixed into the vault's encryption, so that even the correct passphrase alone is insufficient to decrypt an old vault without the ephemeral material. This is forward secrecy applied to archives — ensuring that the compromise of a long-lived secret (the passphrase) doesn't retroactively compromise every vault ever created with it.
+The resolution: an ephemeral X25519 keypair is generated per vault export and mixed into the vault encryption key. The ephemeral private key is discarded immediately after export. Even if the passphrase is later compromised, the attacker cannot decrypt the vault without the ephemeral key — which no longer exists. Each vault export is cryptographically independent.
 
-This is an open design question, not a settled requirement. The tradeoff is usability: forward secrecy for vaults would require the user to store or transfer an additional secret alongside the vault file. Whether that cost is worth the protection depends on the threat model. But the thesis should name it explicitly.
+This adds no user-facing friction — the ephemeral key is invisible, embedded in the cryptographic construction. The vault remains a single file, decryptable with a single passphrase. The forward secrecy is in the construction, not in an additional secret the user must manage. See Section 11.1 for the full construction.
 
 ### 3.7 The Passphrase as Portability Key
 
@@ -566,27 +566,45 @@ Wire the portable Core into the succession protocol:
 
 ## 11. Open Questions
 
-### 11.1 Manifest Encryption
+### 11.1 Vault Forward Secrecy (Resolved)
+
+The question (from Section 3.6): a vault exported today could be stolen and stored. If the passphrase is cracked years later, the attacker gets everything.
+
+The resolution: ephemeral keypair per vault export.
+
+1. At export time, generate an ephemeral X25519 keypair.
+2. Derive a shared secret by combining the ephemeral private key with a static public key embedded in the vault envelope (or derived from the Core's Ed25519 keypair via birational mapping).
+3. Mix the shared secret into the vault encryption key alongside the passphrase-derived key: `vault_key = HKDF(passphrase_key || ecdh_shared_secret, info="vault-fs")`.
+4. Include the ephemeral public key in the vault envelope (it is not secret).
+5. Discard the ephemeral private key. It is never stored.
+
+The result: even if the passphrase is later compromised, the attacker cannot decrypt the vault without the ephemeral private key — which was destroyed at export time. Each vault export is cryptographically independent.
+
+The tradeoff: the vault is now truly self-contained and one-shot. You cannot re-derive the vault key from the passphrase alone. If the vault file is corrupted, there is no recovery path beyond creating a new export. This is consistent with the cryptographic mortality principle — the vault is fragile by design.
+
+For the common case (machine transfer: export, carry, import), this adds no friction. The ephemeral key is embedded in the vault's cryptographic construction, invisible to the user. For the backup case (vault stored for years), the forward secrecy is the point — old vaults become permanently sealed even if the passphrase leaks.
+
+### 11.2 Manifest Encryption
 
 Should the manifest be encrypted? If it only contains structural metadata (version, encryption mode, schema state) and no personal data, keeping it plaintext makes validation simpler — you can check the Core version before prompting for a passphrase. But the spec must enforce that no personal content ever leaks into it.
 
-### 11.2 Single-Writer Enforcement
+### 11.3 Single-Writer Enforcement
 
 If two hosts try to open the same Core simultaneously, data corruption is likely. Options: advisory lock file, manifest lock field, or documented convention. Needs a decision.
 
-### 11.3 Derived Caches
+### 11.4 Derived Caches
 
 Vector search caches and embedding indices are derived from canonical data stored in the database. A host should rebuild its own search index rather than depending on a specific cache format. The spec should define derived data as disposable and host-specific.
 
-### 11.4 Schema Migration Across Languages
+### 11.5 Schema Migration Across Languages
 
 The migration contract should be plain SQL so any language can implement a migration runner. This means the Core's target database dialect needs to be specified — likely SQLite.
 
-### 11.5 Key Rotation
+### 11.6 Key Rotation
 
 Changing the passphrase requires re-wrapping all encryption keys and re-encrypting the database. This is a destructive, time-sensitive operation. The spec should define atomicity guarantees to prevent a half-rotated Core.
 
-### 11.6 Core Size Over Time
+### 11.7 Core Size Over Time
 
 Years of conversation history makes a large Core. Considerations: binary archive format, incremental exports, configurable retention for conversation history vs. permanent memories.
 

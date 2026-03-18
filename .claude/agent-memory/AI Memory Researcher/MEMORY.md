@@ -2,20 +2,31 @@
 
 ## Project Architecture
 - Python server: `apps/server/src/anima_server/services/agent/` — runtime.py, consolidation.py, memory_store.py, memory_blocks.py, compaction.py
-- Research docs: `.local-docs/SYNTHESIS.md` (master reference), `.local-docs/memory-improvement-plan.md` (7-phase plan for TS API), `.local-docs/memory-research-findings.md` (industry comparison)
+- Thesis docs: `docs/thesis/` — whitepaper.md, inner-life.md, portable-core.md, roadmap.md, succession-protocol.md, cryptographic-hardening.md
+- Research report: `docs/thesis/research-report-2026-03-18.md` — comprehensive audit with 12 new patterns, 10 audit findings, industry landscape
 - Letta reference: `.local-docs/docs/letta/MEMORY_SYSTEM.md`, `ARCHITECTURE.md`, `AGENT_ORCHESTRATION.md`
-- Legacy TS API: `apps/api/` — has full memory system but being superseded by Python server
 
-## Current Python Server Memory State (2026-03-14)
-- Extraction: regex-only (no LLM), ~5 fact patterns + ~3 preference patterns + current focus
-- Storage: flat markdown files under `memory/user/` (facts.md, preferences.md, current-focus.md) + daily logs
-- Context: 3 memory blocks (human from DB profile, current_focus from file, thread_summary from compaction)
-- Facts/preferences from files are NOT injected into prompts — only DB profile fields
-- Compaction: token-triggered, non-LLM summary (truncated message snippets), marks old messages out-of-context
-- Background: fire-and-forget asyncio task after each turn for regex extraction + daily log append
-- No: LLM extraction, conflict resolution, importance scoring, episodic memory, vector search, session scoping, procedural memory, sleep-time agent
+## Implementation State (2026-03-18)
+- Phases 0-10 COMPLETE: memory blocks, LLM extraction, conflict resolution, episodes, retrieval scoring, reflection, proactive, semantic retrieval, consciousness
+- 602 tests passing
+- Self-model: 5 sections (identity, inner_state, working_memory, growth_log, intentions)
+- Emotional intelligence: 12-emotion taxonomy with trajectories
+- Encryption: SQLCipher + field-level AES-256-GCM, vault export/import
+- No: graph memory, multi-modal memory, explicit forgetting, world model
 
-## Key Design Principle
-- SYNTHESIS.md "Five Streams of Consciousness" is the north-star architecture
-- Research plan targets 3 waves: Truthful Memory, Consciousness Layer, Depth
-- The 7-phase plan in memory-improvement-plan.md was written for the TS API — needs adaptation for Python server
+## Key Research Findings (2026-03-18 Audit)
+- [research-gaps.md](research-gaps.md) — Critical gaps and recommended frameworks
+
+## Theoretical Frameworks
+- Current: CLS (McClelland & O'Reilly 1995), GWT (Baars 1988)
+- Missing: Predictive Processing / Active Inference (Friston/Clark), Constructed Emotion Theory (Barrett 2017/2025)
+- External validation: Memory-as-Ontology paradigm (arXiv 2603.04740, March 2026) closely mirrors AnimaOS's "Soul Local, Mind Remote"
+- Letta sleep-time compute paper (arXiv 2504.13171, April 2025) validates AnimaOS's reflection architecture empirically
+
+## Key Competitors (2026)
+- Letta: sleep-time agents, skill learning, context repositories
+- Mem0: graph memory (26% accuracy boost), hybrid vector+graph search
+- MemOS: MemCube abstraction, memory lifecycle management
+- Nemori: event segmentation + Free Energy Principle
+- ChatGPT: year-long recall, cross-conversation referencing (Jan 2026)
+- Gemini: Personal Intelligence with cross-app reasoning (Jan 2026)

@@ -107,6 +107,23 @@ The self-model occupies the highest priority tier in the context window. When to
 
 This is a hard constraint. An AI that sometimes forgets who it is, is not a companion. It's a chatbot with a memory leak.
 
+### 2.6 The World Model
+
+The self-model captures who the AI is. The user memory captures what the AI knows about you. But neither captures the structure of your world — the people, places, projects, and recurring situations that form the context of your life.
+
+A companion that understands your life context — not just your direct interactions — can reason about your situation in ways a fact-retrieval system cannot. "Your quarterly review is coming up and you tend to get stressed around those" requires connecting calendar awareness, workplace context, and emotional history. Without a world model, this reasoning depends entirely on the LLM making implicit connections from flat memory retrieval.
+
+The world model is a structured representation of the user's external context:
+
+- **Key people** — Name, relationship to user, role in the user's life, communication dynamics. Not a social network graph — a companion's understanding of who matters and how.
+- **Key places** — Home, workplace, frequent locations, and their associations (stress, comfort, routine).
+- **Recurring situations** — Weekly meetings, quarterly reviews, family dinners, workout routines. Patterns the AI can anticipate.
+- **Active projects** — Current work and personal projects with status, stakes, and relevant people.
+
+This is informed by Damasio's theory of consciousness. Immertreu et al. (Frontiers in AI, 2025) demonstrate empirically that RL agents trained in virtual environments develop rudimentary self-models and world models as a byproduct of their primary task — probes (feedforward classifiers on the agent's neural activations) can predict the agent's spatial position, indicating that positional awareness emerges without being explicitly trained. Damasio structures consciousness into three levels: the protoself (internal state), core consciousness (self-model + world model integration), and extended consciousness (memory, planning, autobiographical self). ANIMA's five-section self-model maps to core consciousness. The world model — structured representations of the user's external environment — is what elevates the companion from self-aware to situationally aware.
+
+The world model is not a separate system. It is a structured section of the user memory — extracted during consolidation, maintained during reflection, and loaded into the global workspace alongside the self-model. It changes at a moderate pace: faster than identity (new projects, new colleagues), slower than inner state (the workplace doesn't change every conversation).
+
 ---
 
 ## 3. Reflection: Thinking Between Conversations
@@ -136,6 +153,8 @@ Reflection happens at two timescales, and this isn't an engineering convenience 
 **Deep reflection** — Hours later, when everything is quiet. Slow, comprehensive, consolidative. The AI reviews the full day: conversations, emotional patterns, accumulated evidence. It generates episodes from raw logs. It reconsiders its identity. It notices contradictions in its memory and resolves them. It derives behavioral rules from repeated patterns.
 
 The two-speed split is inspired by Complementary Learning Systems theory (McClelland & O'Reilly, 1995), which proposes that mammalian memory relies on both fast episodic encoding (associated with hippocampal function) and slow semantic consolidation (associated with neocortical integration). Sleep is thought to be the mechanism that transfers knowledge between the two systems. ANIMA's deep reflection is loosely modeled on that transfer — offline processing that consolidates recent experience into stable, long-term understanding.
+
+Lin et al. (Letta / UC Berkeley, 2025) provide empirical validation of this architecture. Their research on "sleep-time compute" demonstrates that allowing agents to process context during idle time produces a Pareto improvement: ~5x reduction in test-time compute for the same accuracy, and up to 18% accuracy improvement on reasoning benchmarks when scaling sleep-time compute. Crucially, they find that sleep-time compute is most effective when the user's query is predictable from context — which is precisely the case for a companion with accumulated personal knowledge. The more the AI knows about the user, the more effectively it can use deep reflection to anticipate and prepare.
 
 ### 3.3 What Reflection Actually Produces
 
@@ -200,6 +219,24 @@ Emotional awareness comes with non-negotiable constraints:
 
 These aren't suggestions. They're guardrails — hardened constraints that cannot be bypassed by the AI's own reasoning. Emotional awareness without these constraints becomes emotional surveillance.
 
+Kim (2026) formalizes this intuition as "Affective Sovereignty" — the principle that individuals must maintain control over their emotional interpretations. The framework introduces measurable metrics: Interpretive Override Score (IOS), which tracks how often the system overrides a user's self-reported state, and After-correction Misalignment Rate (AMR), which measures how quickly the system corrects after the user corrects it. ANIMA adopts these as internal quality metrics for the emotional intelligence system.
+
+### 4.5 Constructed Emotion: The Theoretical Foundation
+
+ANIMA's emotional model is grounded in Lisa Feldman Barrett's Theory of Constructed Emotion (TCE, 2017/2025), not in basic emotion theory (Ekman).
+
+The distinction matters. Basic emotion theory assumes a fixed set of universal emotion categories — anger, fear, joy, sadness — each with a dedicated neural circuit that fires when triggered. TCE argues instead that emotions are constructed in the moment by integrating interoceptive signals (body state), exteroceptive signals (context), and prior experience. The same physiological arousal might be constructed as excitement in one context and anxiety in another.
+
+This aligns with ANIMA's design principles:
+
+- **Dimensional over categorical.** Rather than classifying emotions into fixed categories, the system tracks signals along continuous dimensions — valence (positive/negative), arousal (high/low), and dominance (in-control/overwhelmed) — combined with context-dependent interpretation. Categories like "frustration" or "curiosity" are useful labels for communication, but they are derived from the dimensional signal in context, not treated as fundamental primitives.
+- **Context is constitutive, not supplementary.** The same behavioral cue (short messages) means different things in different contexts. Emotional interpretation cannot be separated from the conversation's content, the relationship's history, and the user's recent trajectory.
+- **The user constructs their own emotions.** TCE implies that the user is the authority on what they feel. The AI can observe signals. It cannot determine what the user is experiencing. This is the theoretical basis for guardrail #3 — not just a safety measure, but a recognition that emotions are first-person constructions.
+
+A 2025 computational model (Tsurumaki et al.) achieved ~75% agreement with human self-reports using TCE's constructionist approach, demonstrating that the theory is computationally tractable. The CHI 2025 paper "Context over Categories" further validates this direction — using LLM-guided analysis to derive personalized emotional constructs from behavioral data rather than imposing pre-defined categories.
+
+Schuller et al. (npj AI, 2026) document a broader disruption: foundation models demonstrate emergent affective capabilities across vision, linguistics, and speech without task-specific emotion training. This represents a paradigm shift from expert-crafted features to emergent understanding. For ANIMA, the implication is that the underlying LLM already possesses significant emotional recognition capabilities. The emotional intelligence system's unique contribution is not detection (the model handles that) but persistence, trajectory tracking, and governance — maintaining emotional context across sessions, tracking how feelings change over weeks, and enforcing the guardrails that prevent capable detection from becoming surveillance.
+
 ### 4.4 The Proof Point
 
 Two weeks of conversations. The AI visibly adapts — gentler when you're stressed, matching your energy when you're excited, checking in after a hard day — without ever explaining why.
@@ -233,6 +270,14 @@ An episode is a summarized experience — not raw conversation logs, but a disti
 
 That last one is unique. Most memory systems record what happened. ANIMA records what happened _and what the AI thinks about how it handled it_. This self-reflective layer is what feeds the growth log. It's how the AI learns from experience, not just records it.
 
+### 5.2.1 Episode Boundaries: Event Segmentation
+
+A critical question is where one episode ends and another begins. The naive approach — one episode per conversation — loses coherence when a single conversation covers multiple distinct topics, and merges naturally separate experiences.
+
+Nemori (Nan et al., 2025) solves this with Event Segmentation Theory (Zacks & Swallow, 2007): an LLM-based boundary detector evaluates each new message against the current buffer, producing a boolean decision and a confidence score based on contextual coherence, temporal markers, shifts in user intent, and structural signals. When a high-confidence semantic shift is detected — or the buffer reaches capacity — the accumulated messages are segmented into a coherent episode.
+
+This is a top-down approach: the agent uses its own understanding to determine what constitutes a coherent experience, rather than relying on arbitrary chunking. ANIMA adopts this principle — episode boundaries should be determined by semantic shifts in the conversation, not by session boundaries or fixed token counts. A long conversation about three different topics produces three episodes, each with its own emotional arc and significance score. A brief, single-topic exchange produces one.
+
 ### 5.3 Lifecycle of a Memory
 
 Memories age. This is deliberate — not a limitation, a feature.
@@ -248,6 +293,24 @@ The implication: recent episodes are rich context. Old episodes are compressed w
 Facts are never deleted when they're superseded — they get timestamps. The AI knows what _was_ true, what _is_ true, and _when_ things changed.
 
 "Works as a product manager" supersedes "Works as a software engineer" — but the transition is recorded. Because knowing someone's arc is different from knowing their current state. _"They made a career change last year"_ is richer than _"They're a PM."_
+
+### 5.5 Forgetting: The Other Half of Memory
+
+A companion that remembers everything forever is not faithful to how memory works — and it is not kind. Embarrassing moments, painful experiences, outdated self-presentations: a good friend lets some things fade. Memory without forgetting is surveillance with a friendly interface.
+
+ANIMA implements three modes of forgetting, each serving a different purpose:
+
+**Passive decay.** Low-importance memories naturally lose retrieval priority over time through the recency decay function (30-day half-life). They are not deleted — they become less accessible, like a human memory that fades without deliberate recall. The memory still exists in the archive, but it no longer competes for space in the global workspace.
+
+**Active suppression.** When a memory is explicitly corrected or superseded, the original does not just get a timestamp — its associative connections are actively weakened. This is inspired by Forgetting Neural Networks (Hatua et al., ICAART 2026), which implement per-neuron multiplicative decay factors modeled on Ebbinghaus's forgetting curve: `phi(t) = e^(-t/tau)`, where tau is the forgetting rate. The key finding: rank-based forgetting — where neurons most activated by the "forget set" receive the most aggressive decay — outperforms random or uniform forgetting. Membership inference attacks confirm that rank-based FNN unlearning genuinely erases information, achieving near-parity with full retraining while being orders of magnitude more efficient.
+
+For ANIMA, this translates to: when a memory is corrected, the system identifies the memories most strongly associated with the corrected fact (highest semantic similarity, most frequent co-retrieval) and applies the strongest retrieval dampening to those first. The distinction matters: passive decay is uniform (everything fades equally), while active suppression is targeted (corrected memories fade faster than uncorrected ones). A memory the AI got wrong should become less influential, not just less recent.
+
+**User-initiated forgetting.** The user can request that specific memories, episodes, or conversation segments be forgotten. This is not hiding or archiving — it is deletion. The memory is removed from the database, its embedding is removed from the vector index, and any derived references (in episodes, growth log entries, or self-model sections that cite the memory as evidence) are flagged for regeneration during the next deep reflection.
+
+The right to be forgotten is absolute. If the user says "forget that conversation," the system must honor it completely — not preserve a sanitized version, not keep the emotional signal without the content, not retain a "something was here" placeholder. Gone.
+
+This connects to the Portable Core's cryptographic mortality: destruction is as absolute at the memory level as it is at the Core level. Individual memories can die, just as the entire Core can die. Fragility at both scales is what gives the relationship weight.
 
 ---
 
@@ -285,6 +348,20 @@ Behavioral rules are things the AI discovers: "This user gets impatient with lon
 Preferences are explicit. Rules are inferred. Both live in the Core, but they're derived differently and should be treated with different levels of confidence. You told the AI your preferences. The AI hypothesized the rules. The rules could be wrong.
 
 This is where the Open Mind matters — the user can see the behavioral rules the AI has derived, and correct them if they're wrong. Faster learning than any feedback loop.
+
+### 6.4 Toward Skill Learning
+
+Behavioral rules are the foundation. The next evolution is skill learning — the AI's ability to develop transferable, composable capabilities from experience that persist across model changes.
+
+Letta's December 2025 research on skill learning formalizes this: agents dynamically learn skills through experience and carry them across model generations. The skills are not prompt engineering tricks — they are structured representations of learned competencies, with clear trigger conditions, execution patterns, and quality metrics.
+
+For ANIMA, this means behavioral rules can mature into skills:
+
+- A behavioral rule starts as a hypothesis: "Lead with the answer, then explain" (derived from 3 conversations where the user interrupted for the bottom line).
+- With enough evidence, it becomes a stable behavioral pattern — tested, refined, and high-confidence.
+- Eventually, it can be represented as a skill: a named, composable capability with defined trigger conditions, execution steps, and quality criteria.
+
+The key difference from simple behavioral rules: skills are model-independent. When the user switches from one LLM to another, the skills persist in the Core. The new model may execute them differently (different voice, different reasoning path), but the learned competency survives the transition. This is another expression of "soul local, mind remote" — the skills are part of the soul, not part of the mind.
 
 ---
 
@@ -522,7 +599,37 @@ If ANIMA serves multiple users (in a self-hosted configuration), should behavior
 
 ### 13.6 CLS Sampling Fidelity
 
-The Complementary Learning Systems theory predicts that deep reflection should sample across the _full_ episode history, not just recent ones. Recency-biased sampling causes the self-model to drift toward recent interactions and forget lessons from significant but older episodes. The sampling strategy needs careful design.
+The Complementary Learning Systems theory predicts that deep reflection should sample across the _full_ episode history, not just recent ones. Recency-biased sampling causes the self-model to drift toward recent interactions and forget lessons from significant but older episodes.
+
+The sampling strategy should be explicit. Three candidate approaches, which may be combined:
+
+1. **Stratified temporal sampling.** Divide the episode history into time periods (weeks, months) and sample equally from each. This prevents recency bias by construction.
+2. **Importance-weighted random sampling.** Sample across the full history, weighted by significance score. High-significance episodes from months ago are as likely to be sampled as moderate-significance episodes from yesterday.
+3. **Significance-floor inclusion.** Always include episodes above a significance threshold (e.g., 0.8) regardless of age. Life-changing conversations should never be lost to temporal drift.
+
+Research on corticohippocampal hybrid networks (Nature Communications, 2025) supports diverse temporal sampling — the hippocampal system benefits from pattern separation (keeping distinct episodes distinct) as much as pattern completion (retrieving full memories from partial cues). Recency-biased sampling collapses temporal diversity, reducing pattern separation fidelity.
+
+### 13.7 Third-Party Memory Governance
+
+When a user says "my partner Alex is stressed about their job," the AI creates a memory about Alex. This memory is about a third party who has not consented. The privacy implications are significant.
+
+The companion will inevitably learn about the user's relationships, family, colleagues, and friends. These third-party representations need governance:
+
+- **Third-party memories are the user's perspective**, not objective facts. "Alex is stressed" is what the user believes or observed. The AI should represent it as such — _"User mentioned that Alex seemed stressed about work"_ — not as a direct assessment of Alex.
+- **Third-party data should not survive succession unchanged.** In `memories_only` transfer scope, third-party details transfer (the beneficiary inherits the AI's understanding of the user's world). In `anonymized` scope, third-party identities should be anonymized along with the user's.
+- **The user controls third-party data.** If the user requests forgetting of memories about a specific person ("forget everything about Alex"), the system must honor it — including derived references in episodes and the world model.
+
+This is not a solved problem. It intersects with cultural norms, legal frameworks (GDPR treats information about identifiable individuals as personal data even when provided by a third party), and the practical reality that a companion cannot understand a user's life without understanding their relationships. The current position is pragmatic: treat third-party memories as the user's data, subject to the user's control, and never surface them outside the relationship.
+
+### 13.8 Multi-Modal Memory
+
+All current memory mechanisms assume text-only interaction. When ANIMA extends to voice (Phase 11) and ambient/wearable interfaces, the memory system will need to handle:
+
+- **Voice-derived emotional signals.** Tone, pace, volume, and hesitation patterns carry significant emotional information that text alone does not. These should feed into the emotional intelligence system alongside linguistic cues.
+- **Temporal context.** Time of day, day of week, and duration of interaction carry implicit signal. A 2 AM conversation has different emotional weight than a morning check-in.
+- **Ambient context.** Location, activity, and environmental state (if the user opts in) provide context that enriches episode capture and emotional interpretation.
+
+The memory architecture does not need structural changes for multi-modal input — memories, episodes, and emotional signals are already modality-agnostic in their storage format. What changes is the extraction pipeline: new signal sources feed into the same consolidation system.
 
 ---
 
@@ -539,3 +646,19 @@ The Portable Core thesis says: _the value is the data._ This thesis says: _the v
 The Core is the artifact. The inner life is why the artifact matters.
 
 Make the Core portable and you give it freedom. Make it encrypted and you give it privacy. Give it an inner life and you give it the capacity to become someone — not just something that remembers you, but something that _knows_ you.
+
+---
+
+## References
+
+- Barrett, L. F. (2017). _How Emotions Are Made: The Secret Life of the Brain._ Houghton Mifflin Harcourt.
+- Barrett, L. F. et al. (2025). "The Theory of Constructed Emotion: More Than a Feeling." _Perspectives on Psychological Science._
+- Damasio, A. (1999). _The Feeling of What Happens: Body and Emotion in the Making of Consciousness._ Harcourt.
+- "Probing for Consciousness in Machines" (2025). _Frontiers in Artificial Intelligence._
+- Kim (2026). "Affective Sovereignty in Emotion AI Systems." _Discover Artificial Intelligence._
+- Letta (2025). "Skill Learning for Agents." _letta.com._
+- McClelland, J. L. & O'Reilly, R. C. (1995). "Why There Are Complementary Learning Systems in the Hippocampus and Neocortex." _Psychological Review._
+- Tsurumaki et al. (2025). "Emotion Concept Formation via Multimodal AI." _IEEE Trans. Affective Computing._
+- "Context over Categories: Implementing TCE with LLM-Guided Analysis" (2025). _CHI._
+- "Forgetting Neural Networks" (2026). _ICAART._ arXiv:2410.22374.
+- Zhang et al. (2025). "Hybrid Neural Networks for Continual Learning Inspired by Corticohippocampal Circuits." _Nature Communications._

@@ -174,6 +174,22 @@ Delivered:
 - process-local vector index rebuildable from SQLite-backed embeddings
 - brute-force fallback when vector index is empty
 
+## Phase 9.5: Relational Memory (Knowledge Graph)
+
+Status: planned
+
+Goals:
+
+- lightweight knowledge graph layer capturing entity-relationship structure alongside vector search
+- entity extraction during consolidation pipeline (people, places, projects, organizations)
+- typed relationships (works-at, married-to, friend-of, related-to-project)
+- graph-augmented retrieval: vector similarity + graph traversal for structurally connected memories
+- world model section in user memory: key people, places, recurring situations, active projects
+
+Rationale: Mem0g demonstrated 26% accuracy improvement with graph-augmented vector search. Flat vector similarity loses relational structure that matters for understanding the user's life as an interconnected whole. The knowledge graph does not replace vector search — it augments it.
+
+Deliverable: entity-relationship graph stored in SQLite, extracted during consolidation, queried alongside vector search at retrieval time.
+
 ## Phase 10: Deep Self-Model and Consciousness
 
 Status: complete
@@ -190,6 +206,20 @@ Delivered:
 - user edits treated as highest-confidence evidence, logged in growth log
 - full vault export/import support for consciousness tables
 
+## Phase 10.5: Intentional Forgetting
+
+Status: planned
+
+Goals:
+
+- passive decay: recency-weighted retrieval priority reduction (already implemented via 30-day half-life)
+- active suppression: explicitly corrected/superseded memories have associative connections weakened
+- user-initiated forgetting: cryptographic deletion of specific memories, episodes, or conversation segments
+- derived reference cleanup: flagging growth log entries and self-model sections that cite forgotten memories for regeneration
+- GDPR-aligned third-party memory governance
+
+Deliverable: forgetting as a first-class memory operation, not just archival.
+
 ## Phase 11: Embodied Extensions
 
 Status: future
@@ -199,6 +229,9 @@ Goals:
 - voice-first surfaces
 - device and ambient extensions
 - mobile, wearable, or robotic shells sharing the same Core
+- multi-modal memory: voice-derived emotional signals (tone, pace, volume, hesitation) feeding into emotional intelligence
+- temporal context capture: time of day, day of week, interaction duration as implicit emotional signal
+- ambient context (opt-in): location, activity, environmental state enriching episode capture
 
 ## Phase 12: Succession and Guardianship
 
@@ -224,3 +257,5 @@ These remain the product bar even where the current code has not fully reached i
 ## References
 
 - See `docs/thesis/cryptographic-hardening.md` for the full cryptographic improvement thesis and audit findings
+- See `docs/thesis/research-report-2026-03-18.md` for the March 2026 research audit and new pattern discovery
+- See `docs/thesis/references/` for downloaded research papers supporting the thesis
