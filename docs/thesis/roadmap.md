@@ -127,6 +127,8 @@ Delivered:
 - working memory expiry sweep removes date-tagged items automatically
 - feedback signal collection (re-asks, corrections) feeds into growth log
 
+Future enhancement (from Letta source analysis): Letta's `SleeptimeMultiAgentV4` runs background "sleep-time agents" asynchronously after each foreground conversation step, with configurable frequency gating (`sleeptime_agent_frequency`) and last-processed-message tracking to avoid reprocessing. AnimaOS's existing sleep tasks could adopt this pattern: run consolidation/reflection asynchronously after conversation turns (not just on inactivity), with frequency gating so not every turn triggers expensive background work.
+
 ## Phase 7: Proactive Companion
 
 Status: complete
@@ -188,7 +190,25 @@ Goals:
 
 Rationale: Mem0g demonstrated 26% accuracy improvement with graph-augmented vector search. Flat vector similarity loses relational structure that matters for understanding the user's life as an interconnected whole. The knowledge graph does not replace vector search — it augments it.
 
+Implementation pattern (from Mem0 source analysis): Mem0's `MemoryGraph` extracts entities via structured LLM tool calls (`EXTRACT_ENTITIES_TOOL` with name/type/description schema), then extracts relations between them. Entity deduplication uses a second LLM pass to detect aliases (e.g., "NYC" = "New York City"). AnimaOS should implement this as two SQLite tables (`entities`, `entity_relations`) within the existing encrypted Core, extracted during the consolidation pipeline alongside existing regex + LLM fact extraction.
+
 Deliverable: entity-relationship graph stored in SQLite, extracted during consolidation, queried alongside vector search at retrieval time.
+
+## Phase 9.7: Hybrid Search (BM25 + Vector + RRF)
+
+Status: planned
+
+Goals:
+
+- add BM25 lexical search index alongside existing in-memory vector index
+- Reciprocal Rank Fusion (RRF) to combine vector and BM25 results (k=60)
+- parallel search execution: vector and BM25 searches run concurrently via thread pool
+
+Rationale: Pure vector similarity misses keyword-relevant memories that embedding models under-represent. Nemori's `UnifiedSearchEngine` demonstrated that BM25 + vector + RRF fusion catches memories that either search alone would miss. MemoryOS's session search combines semantic similarity with keyword Jaccard similarity for a similar effect.
+
+Implementation pattern (from Nemori source analysis): Nemori maintains parallel BM25 and ChromaDB indices with `ThreadPoolExecutor(max_workers=2)`, fetches 2x `top_k` candidates from each, then applies RRF: `score(item) = sum(1/(k + rank + 1))` across both result sets. AnimaOS can implement BM25 in-process (using `rank_bm25` library against SQLite-stored memory text) alongside the existing vector index, with RRF fusion in the retrieval scoring layer.
+
+Deliverable: hybrid search returning higher-recall, higher-precision memory retrieval without additional infrastructure.
 
 ## Phase 10: Deep Self-Model and Consciousness
 
@@ -205,6 +225,41 @@ Delivered:
 - consciousness REST API: view and edit self-model sections, emotional state, intentions
 - user edits treated as highest-confidence evidence, logged in growth log
 - full vault export/import support for consciousness tables
+
+## Phase 10.3: Predict-Calibrate Consolidation
+
+Status: planned
+
+Goals:
+
+- prediction-correction learning cycle during memory consolidation (based on Free Energy Principle)
+- before extracting facts from a conversation, predict expected content from existing knowledge
+- extract only the delta: surprises, contradictions, and genuinely new information
+- knowledge quality gates: persistence test, specificity test, utility test, independence test
+- cold-start mode for first interactions when no prior knowledge exists
+
+Rationale: Nemori's `PredictionCorrectionEngine` demonstrated that predict-then-extract produces higher-quality semantic memories than direct extraction alone. By predicting what you'd expect, you focus extraction on surprises — the information with highest learning value. This mirrors the neuroscience Free Energy Principle: learning = prediction error minimization.
+
+Implementation pattern (from Nemori source analysis): Two-step process: (1) retrieve relevant existing semantic memories via vector search, generate LLM prediction of episode content; (2) compare prediction with actual conversation, extract only statements that represent new knowledge. Quality filter applies 4 tests: Will this still be true in 6 months? Does it contain concrete, searchable information? Can it help predict future needs? Can it be understood without conversation context? AnimaOS's existing `consolidation.py` LLM extraction can be wrapped with this predict-calibrate layer.
+
+Deliverable: higher-quality fact extraction that avoids redundant storage and focuses on genuinely novel information.
+
+## Phase 10.4: Heat-Based Memory Scoring
+
+Status: planned
+
+Goals:
+
+- heat score for memory items: `H = alpha * access_count + beta * interaction_depth + gamma * recency_decay`
+- heat-triggered consolidation: expensive operations (profile extraction, deep reflection) run only when accumulated heat exceeds threshold
+- heat-triggered promotion: memories with sustained heat graduate from episodic to semantic to self-model level
+- replace fixed-timer reflection triggers with heat-threshold triggers for more efficient resource use
+
+Rationale: MemoryOS's heat-based session management demonstrated that importance-weighted memory management outperforms both fixed-timer and simple-recency approaches. Sessions with high visit frequency, deep interactions, and recent access accumulate "heat" that triggers analysis. This is more efficient than running consolidation on a fixed schedule.
+
+Implementation pattern (from MemoryOS source analysis): `compute_segment_heat(session)` = `alpha * N_visit + beta * L_interaction + gamma * R_recency` where `R_recency = compute_time_decay(last_visit, now, tau_hours=24)`. Sessions stored in a max-heap (negated min-heap). When top session's heat exceeds threshold, profile + knowledge extraction runs in parallel via `ThreadPoolExecutor(max_workers=2)`. After analysis, heat resets. AnimaOS can apply this to memory items: each access bumps heat, consolidation fires when hottest memory cluster exceeds threshold.
+
+Deliverable: efficient resource allocation for memory consolidation based on actual memory activity rather than wall-clock time.
 
 ## Phase 10.5: Intentional Forgetting
 
@@ -258,4 +313,5 @@ These remain the product bar even where the current code has not fully reached i
 
 - See `docs/thesis/cryptographic-hardening.md` for the full cryptographic improvement thesis and audit findings
 - See `docs/thesis/research-report-2026-03-18.md` for the March 2026 research audit and new pattern discovery
+- See `docs/thesis/repo-analysis-2026-03-18.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
 - See `docs/thesis/references/` for downloaded research papers supporting the thesis

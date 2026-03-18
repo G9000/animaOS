@@ -359,6 +359,8 @@ The Core exists in two forms:
 
 The vault isn't just a backup. It's the Core's canonical portable form. The live directory is an unpacked vault. The vault is a frozen Core.
 
+**Industry validation**: MemOS (Li et al., 2025) independently arrived at a similar portable memory abstraction — the MemCube. Each MemCube is a directory containing `config.json` + serialized memories that can be `load(dir)`/`dump(dir)` to any machine. MemOS supports selective loading (`memory_types=["text_mem", "pref_mem"]`) and even remote loading from HuggingFace repos. However, MemOS lacks encryption — its MemCubes are plaintext directories, and its portability depends on matching schema versions checked at load time. ANIMA's Core is architecturally superior: it is encrypted at rest (SQLCipher), carries its own key derivation parameters, supports per-domain DEK compartmentalization, and can be vault-exported as a single self-contained encrypted file rather than an unprotected directory. The MemCube validates the concept of portable AI memory; the Core raises it to the level of cryptographic sovereignty.
+
 ### 6.2 Self-Describing Manifest
 
 The manifest should carry enough metadata that a new host knows what it's looking at without reading source code: what format version we're on, what encryption scheme is in use, what schema version the databases contain, what's derived and disposable versus canonical. Still no personal data. Still the label on the box. But the label should tell you how to open it.

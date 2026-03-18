@@ -156,6 +156,8 @@ The two-speed split is inspired by Complementary Learning Systems theory (McClel
 
 Lin et al. (Letta / UC Berkeley, 2025) provide empirical validation of this architecture. Their research on "sleep-time compute" demonstrates that allowing agents to process context during idle time produces a Pareto improvement: ~5x reduction in test-time compute for the same accuracy, and up to 18% accuracy improvement on reasoning benchmarks when scaling sleep-time compute. Crucially, they find that sleep-time compute is most effective when the user's query is predictable from context — which is precisely the case for a companion with accumulated personal knowledge. The more the AI knows about the user, the more effectively it can use deep reflection to anticipate and prepare.
 
+Source analysis of Letta's `SleeptimeMultiAgentV4` reveals the concrete implementation: the foreground agent (`LettaAgentV3`) handles the user conversation, and after each `step()`, `run_sleeptime_agents()` fires asynchronously. Key design details: (1) a **frequency counter** (`sleeptime_agent_frequency`) gates how often sleep-time agents run — not every turn needs background processing; (2) a **last-processed message ID** tracker ensures sleep-time agents only process new messages since their last run; (3) each sleep-time agent receives the foreground agent's response messages as input; (4) in streaming mode, sleep-time agents run in the `finally` block, ensuring they execute even if the stream is interrupted. This pattern maps directly onto ANIMA's quick reflection: instead of waiting for inactivity, run consolidation asynchronously after every Nth conversation turn, with message deduplication to avoid reprocessing.
+
 ### 3.3 What Reflection Actually Produces
 
 Quick reflection produces:
@@ -278,6 +280,8 @@ Nemori (Nan et al., 2025) solves this with Event Segmentation Theory (Zacks & Sw
 
 This is a top-down approach: the agent uses its own understanding to determine what constitutes a coherent experience, rather than relying on arbitrary chunking. ANIMA adopts this principle — episode boundaries should be determined by semantic shifts in the conversation, not by session boundaries or fixed token counts. A long conversation about three different topics produces three episodes, each with its own emotional arc and significance score. A brief, single-topic exchange produces one.
 
+Source analysis of Nemori's `BatchSegmenter` reveals a concrete implementation: messages accumulate in a per-user buffer (with user-level `RLock` for concurrency), and when the buffer reaches a configurable threshold, the entire batch is sent to an LLM for intelligent grouping. The LLM returns episode groups as lists of message indices — critically, these can be **non-continuous** (e.g., `[[1,2,3], [4,5,6,7], [8,10,11], [9,12]]`), meaning messages 9 and 12 might share a topic distinct from messages 8, 10, and 11. This is more sophisticated than sequential boundary detection: it allows interleaved topics to be correctly separated. MemoryOS takes a complementary approach with `check_conversation_continuity()` — an LLM-based check of whether consecutive QA pairs belong to the same dialogue chain, with `meta_info` propagation across linked pages.
+
 ### 5.3 Lifecycle of a Memory
 
 Memories age. This is deliberate — not a limitation, a feature.
@@ -287,6 +291,8 @@ A fresh episode is vivid. Full detail, high relevance, readily retrieved. Over t
 This loosely mirrors how human memory is thought to work. You remember your first day at a job in vivid detail. After a year, you remember the feeling, not the specifics. After five years, it's a paragraph in your personal narrative, not a scene you can replay.
 
 The implication: recent episodes are rich context. Old episodes are compressed wisdom. The system should handle both — not just chronologically, but at different levels of detail.
+
+Source analysis of MemoryOS reveals a concrete mechanism for managing this lifecycle: **heat scoring**. Each memory session accumulates "heat" via `H = alpha * N_visit + beta * L_interaction + gamma * R_recency`, where `N_visit` tracks access frequency, `L_interaction` counts interaction depth, and `R_recency` applies exponential time decay (`tau_hours=24`). Sessions are maintained in a max-heap so the "hottest" memories are always accessible. When heat exceeds a configurable threshold, expensive operations run: profile extraction and knowledge distillation execute in parallel via `ThreadPoolExecutor(max_workers=2)`, then heat resets. Cold sessions face LFU (least-frequently-used) eviction when capacity limits are reached. This is more efficient than fixed-timer consolidation — expensive processing runs only when accumulated activity warrants it.
 
 ### 5.4 Temporal Fact Validity
 
@@ -630,6 +636,24 @@ All current memory mechanisms assume text-only interaction. When ANIMA extends t
 - **Ambient context.** Location, activity, and environmental state (if the user opts in) provide context that enriches episode capture and emotional interpretation.
 
 The memory architecture does not need structural changes for multi-modal input — memories, episodes, and emotional signals are already modality-agnostic in their storage format. What changes is the extraction pipeline: new signal sources feed into the same consolidation system.
+
+### 13.9 Predict-Calibrate Consolidation
+
+The current consolidation pipeline extracts facts and emotions from every conversation indiscriminately. This produces redundant storage: the same fact extracted repeatedly from conversations that cover familiar ground, with no mechanism to distinguish genuinely new information from restated knowledge.
+
+Source analysis of Nemori's `PredictionCorrectionEngine` reveals a principled alternative: before extracting from a conversation, predict what you'd expect based on existing knowledge, then extract only the delta. The concrete implementation is a two-step LLM pipeline: (1) retrieve relevant existing semantic memories via vector search, generate a prediction of the episode's content; (2) compare prediction with actual conversation content, extract only statements that represent new knowledge — surprises, contradictions, and genuinely novel information.
+
+This aligns with the Free Energy Principle: learning equals prediction error minimization. The system learns most from what it couldn't predict. Nemori further applies quality gates: each extracted statement must pass persistence (will this still be true in 6 months?), specificity (does it contain concrete, searchable information?), utility (can it help predict future needs?), and independence (can it be understood without conversation context?) tests.
+
+ANIMA's consolidation pipeline should adopt this pattern. The existing LLM extraction in `consolidation.py` can be wrapped with a prediction layer: before extraction, the system checks what it already knows about the topic and focuses extraction resources on genuinely new information.
+
+### 13.10 Hybrid Retrieval and Rank Fusion
+
+The current retrieval system relies solely on vector similarity (cosine distance between query and memory embeddings). This misses keyword-relevant memories that embedding models under-represent — a query about "React performance optimization" might not retrieve a memory mentioning "React.memo and useMemo hooks" if the embedding model doesn't capture the specific API names.
+
+Source analysis of Nemori's `UnifiedSearchEngine` demonstrates the solution: parallel BM25 (lexical) and vector (semantic) search, fused via Reciprocal Rank Fusion (RRF). The implementation runs both searches in `ThreadPoolExecutor(max_workers=2)`, fetches 2x `top_k` candidates from each, then applies RRF: `score(item) = sum(1/(k + rank + 1))` across both result sets, with `k=60`. Items found by both searches receive higher fused scores.
+
+ANIMA can implement BM25 in-process (using the `rank_bm25` library against SQLite-stored memory text) alongside the existing in-memory vector index. The RRF fusion layer sits between the dual search backends and the existing retrieval scoring (`importance * recency * access_frequency`). This produces higher-recall, higher-precision retrieval without any external infrastructure.
 
 ---
 
