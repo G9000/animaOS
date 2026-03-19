@@ -34,6 +34,8 @@ This document traces every path through AnimaOS's memory system: how memories ar
 18. [Encryption & Portability](#encryption--portability)
 19. [File Reference](#file-reference)
 
+> **See also:** [F1-F7 Memory System Implementation](memory-f1-f7-implementation.md) — BM25 hybrid search, heat scoring, predict-calibrate, knowledge graph, async orchestrator, batch segmentation, intentional forgetting
+
 ---
 
 ## Architecture Overview
@@ -46,39 +48,31 @@ This document traces every path through AnimaOS's memory system: how memories ar
      [Real-time Path]                    [Background Path]
             |                              (after turn completes)
             v                                     |
-   +----------------+                    +--------v---------+
-   | Hybrid Search  |                    | Consolidation    |
-   | (embeddings.py)|                    | (consolidation.py|
-   | - embed query  |                    | - regex extract  |
-   | - semantic leg |                    | - LLM extract    |
-   | - keyword leg  |                    | - emotion detect |
-   | - RRF merge    |                    | - claim upsert   |
-   +-------+--------+                    +--------+---------+
-           |                                      |
-           v                                      v
-   +----------------+                    +------------------+
-   | Memory Blocks  |                    | Memory Store     |
-   | (memory_blocks)|                    | (memory_store.py)|
-   | - 15+ blocks   |                    | - add/supersede  |
-   | - scored ranked |                   | - dedup check    |
-   | -> system prompt|                   | - tag sync       |
-   +----------------+                    +------------------+
-                                                  |
-                                         +--------v---------+
-                                         | Vector Store     |
-                                         | (vector_store.py)|
-                                         | - embed + store  |
-                                         | - ORM-backed     |
-                                         +------------------+
-                                                  |
-                              +-------------------+-------------------+
-                              |                   |                   |
-                     +--------v---+      +--------v---+     +--------v---+
-                     | Reflection |      | Sleep Tasks |     | Episodes   |
-                     | - 5min delay|     | - contradict|     | - summarize|
-                     | - monologue |     | - merge     |     | - topics   |
-                     | - self-model|     | - embed fill|     | - emotional|
-                     +-------------+     +-------------+     +------------+
+   +------------------+                  +--------v-----------+
+   | Hybrid Search    |                  | Sleep-Time Agent   |
+   | (embeddings.py)  |                  | Orchestrator (F5)  |
+   | - embed query    |                  |                    |
+   | - semantic leg   |                  | Per-turn:          |
+   | - BM25 leg (F1)  |                  |  - consolidation   |
+   | - RRF merge      |                  |    (predict-cal F3)|
+   | - heat floor (F2)|                  |                    |
+   +--------+---------+                  | Every Nth turn:    |
+            |                            | +-- parallel ---+  |
+            v                            | | consolidate   |  |
+   +------------------+                  | | embed backfill|  |
+   | Memory Blocks    |                  | | KG ingest (F4)|  |
+   | (memory_blocks)  |                  | | heat decay(F2)|  |
+   | - 15+ blocks     |                  | | episode gen   |  |
+   | - KG context (F4)|                  | |  (batch F6)   |  |
+   | - scored ranked  |                  | +-- heat-gated -+  |
+   | -> system prompt |                  | | contradict    |  |
+   +------------------+                  | | profile synth |  |
+                                         | +-- time-gated -+  |
+                                         | | deep monologue|  |
+                                         | +-- forgetting -+  |
+                                         | | passive decay |  |
+                                         | | suppress (F7) |  |
+                                         +---------+----------+
 ```
 
 ---
@@ -91,16 +85,20 @@ All persistent memory lives in SQLite tables. The system uses **supersession** (
 
 | Table | Purpose | Key Fields |
 |-------|---------|-----------|
-| `memory_items` | Core long-term memories (facts, preferences, goals, relationships, focus) | `content`, `category`, `importance`, `embedding_json`, `superseded_by`, `reference_count`, `last_referenced_at` |
+| `memory_items` | Core long-term memories (facts, preferences, goals, relationships, focus) | `content`, `category`, `importance`, `embedding_json`, `superseded_by`, `heat`, `reference_count`, `last_referenced_at` |
 | `memory_item_tags` | Tag junction table for memory items | `item_id`, `tag`, `user_id` |
 | `memory_claims` | Structured slot-based claims (deterministic dedup) | `canonical_key`, `namespace`, `slot`, `value_text`, `polarity`, `confidence`, `status` |
 | `memory_claim_evidence` | Evidence backing each claim | `claim_id`, `source_text`, `source_kind` |
 | `memory_daily_logs` | Raw conversation turn logs | `user_message`, `assistant_response`, `date` |
-| `memory_episodes` | Summarized conversation sessions | `summary`, `topics_json`, `emotional_arc`, `significance_score`, `turn_count` |
+| `memory_episodes` | Summarized conversation sessions | `summary`, `topics_json`, `emotional_arc`, `significance_score`, `turn_count`, `message_indices_json`, `segmentation_method`, `needs_regeneration` |
 | `memory_vectors` | Packed float32 embeddings for fast search | `item_id`, `content`, `embedding` (binary), `category`, `importance` |
-| `self_model_blocks` | Agent's self-model sections (identity, persona, soul, etc.) | `section`, `content`, `version` |
+| `self_model_blocks` | Agent's self-model sections (identity, persona, soul, etc.) | `section`, `content`, `version`, `needs_regeneration` |
 | `emotional_signals` | Detected user emotional states | `emotion`, `confidence`, `trajectory`, `evidence_type`, `evidence` |
 | `session_notes` | Working notes scoped to conversation thread | `key`, `value`, `note_type`, `is_active` |
+| `kg_entities` | Knowledge graph entities (F4) | `name`, `name_normalized`, `entity_type`, `description`, `mention_count` |
+| `kg_relations` | Knowledge graph relations (F4) | `source_id`, `destination_id`, `relation_type`, `confidence` |
+| `forget_audit_log` | Audit trail for forgetting operations (F7) | `trigger`, `scope`, `items_forgotten`, `derived_refs_affected` |
+| `background_task_runs` | Sleep-time task tracking (F5) | `task_type`, `status`, `result_json`, `error_message` |
 
 ### Memory Categories
 
@@ -318,7 +316,7 @@ class InMemoryVectorStore(VectorStore):
 
 The search is currently brute-force (load all vectors, compute similarity in Python). This works because memory counts are typically in the hundreds, not millions.
 
-### Hybrid Search with RRF
+### Hybrid Search with RRF (F1 Enhanced)
 
 ```python
 async def hybrid_search(db, *, user_id, query, limit=15,
@@ -328,14 +326,17 @@ async def hybrid_search(db, *, user_id, query, limit=15,
        - search_similar() via vector store
        - Fallback: brute-force over embedding_json if vector store empty
        - Filter by similarity_threshold (0.25)
-    3. Keyword leg:
-       - search_by_text() via vector store
-       - Jaccard word-overlap scoring
+    3. BM25 Lexical leg (F1):
+       - bm25_search() via in-memory BM25Okapi index
+       - Per-user index, built lazily, invalidated on mutations
+       - Tokenized with stopword removal
     4. RRF merge (Reciprocal Rank Fusion, k=60):
        score[item] = Σ weight / (k + rank + 1)
        - semantic_weight=0.5, keyword_weight=0.5
     5. Resolve item IDs -> MemoryItem objects
-    6. Optional tag filtering (post-filter)
+    6. Heat visibility floor (F2):
+       - Exclude items with heat < 0.01 (NULL heat = visible)
+    7. Optional tag filtering (post-filter)
     -> HybridSearchResult(items, query_embedding)
 ```
 
@@ -718,45 +719,50 @@ record_emotional_signal(db, *, user_id, emotion, confidence,
 
 ## Sleep Tasks (Background Maintenance)
 
-**File**: `sleep_tasks.py`
+**Files**: `sleep_agent.py` (F5 orchestrator), `sleep_tasks.py` (task implementations)
 
-Five maintenance tasks run during user inactivity:
+Background maintenance is managed by the **Sleep-Time Agent Orchestrator** (F5), which replaces the previous independent fire-and-forget model with coordinated, frequency-gated execution.
 
-### 1. Contradiction Scan
-
-```
-For each category (fact, preference, goal, relationship):
-  1. Load all active items (limit 100)
-  2. Find pairs with Jaccard similarity 0.3-0.95
-  3. Ask LLM: CONFLICT or COMPATIBLE?
-  4. If CONFLICT:
-     - KEEP_FIRST: supersede item_b with item_a
-     - KEEP_SECOND: supersede item_a with item_b
-     - MERGE: create merged item, supersede both
-  Cap: 10 pairs per category
-```
-
-### 2. Profile Synthesis
+### Orchestration Model
 
 ```
-  1. Load all facts (limit 50)
-  2. Ask LLM: which facts can be combined?
-  3. For each merge group:
-     - Create merged item from first
-     - Point all others' superseded_by at merged
+Every turn:
+  bump_turn_counter(user_id)
+  |
+  if turn_count % 3 == 0:   (SLEEPTIME_FREQUENCY)
+  |   run_sleeptime_agents()     <- full orchestrator
+  else:
+  |   consolidation only         <- per-turn extraction
 ```
 
-### 3. Episode Generation
+### Parallel Group (always run on orchestrator turns)
 
-Delegates to `episodes.py` -- creates an episodic summary if enough un-episoded turns exist.
+| Task | What it does |
+|------|-------------|
+| Consolidation | Predict-calibrate extraction (F3) |
+| Embedding backfill | Embed items without vectors (batch of 50) |
+| KG ingestion | Extract entities/relations for knowledge graph (F4) |
+| Heat decay | Recompute all heat scores (F2) |
+| Episode generation | Create episodic summary if enough turns (F6 batch if ≥8 messages) |
 
-### 4. Deep Inner Monologue
+### Sequential Group (heat-gated, skip if max heat < 5.0)
 
-Runs `run_deep_monologue()` -- full self-model reflection. Rate-limited to once per 24 hours to prevent identity thrashing.
+| Task | What it does |
+|------|-------------|
+| Contradiction scan | Find conflicting items via Jaccard similarity, resolve via LLM (KEEP_FIRST/KEEP_SECOND/MERGE). Guards against double-processing with resolved_ids set. Calls `suppress_memory()` on losers. |
+| Profile synthesis | Merge related facts into single statements. Cleanup vector/BM25/derived refs for all merged-away items. |
 
-### 5. Embedding Backfill
+### Time-Gated (once per 24h)
 
-Finds memory items without embeddings and generates them in batches (up to 50 per run).
+| Task | What it does |
+|------|-------------|
+| Deep monologue | Full self-model reflection. `mark_deep_monologue_done()` only called on success (no errors). Failed monologue does not advance the 24h gate. |
+
+### Task Tracking
+
+All tasks are tracked in `background_task_runs` with status lifecycle: pending → running → completed/failed. Each run records `result_json` for restart cursors and `error_message` on failure.
+
+See [F1-F7 Implementation](memory-f1-f7-implementation.md#f5--async-sleep-time-orchestrator) for full orchestrator details.
 
 ---
 
@@ -857,19 +863,27 @@ Portability guarantee: copy `.anima/` directory, enter passphrase on new machine
 
 | File | Role |
 |------|------|
-| `memory_blocks.py` | Builds 15+ MemoryBlock objects for system prompt |
-| `memory_store.py` | Core CRUD, scored retrieval, dedup, supersession |
-| `consolidation.py` | Post-turn extraction (regex + LLM + emotional signals) |
-| `embeddings.py` | Embedding generation, hybrid search, adaptive filter |
+| `memory_blocks.py` | Builds 15+ MemoryBlock objects for system prompt (incl. KG context) |
+| `memory_store.py` | Core CRUD, scored retrieval, dedup, supersession, heat visibility floor |
+| `consolidation.py` | Post-turn extraction (predict-calibrate F3 + emotional signals), orchestrator routing (F5) |
+| `embeddings.py` | Embedding generation, hybrid search (BM25 F1 + semantic), heat floor, adaptive filter |
 | `vector_store.py` | ORM-backed vector storage and cosine similarity search |
+| `bm25_index.py` | **F1** — BM25Okapi lexical search index (per-user, in-memory) |
+| `heat_scoring.py` | **F2** — Heat formula, exponential decay, visibility floor |
+| `predict_calibrate.py` | **F3** — Two-stage extraction with quality gate |
+| `knowledge_graph.py` | **F4** — Entity-relation extraction, dedup, traversal, pruning |
+| `sleep_agent.py` | **F5** — Async orchestrator, task wrappers, tracking, inner reasoning stripping |
+| `batch_segmenter.py` | **F6** — LLM-driven topic-coherent episode segmentation |
+| `forgetting.py` | **F7** — Passive decay, active suppression, user-initiated delete, chain cleanup |
 | `claims.py` | Structured slot-based claims with deterministic dedup |
 | `session_memory.py` | Thread-scoped working notes |
-| `episodes.py` | Episodic memory generation (LLM-summarized sessions) |
+| `episodes.py` | Episodic memory generation (LLM-summarized sessions, batch segmentation F6) |
 | `self_model.py` | Agent identity sections (5 mutable + 4 fixed) |
 | `emotional_intelligence.py` | Emotion detection, signal buffer, trajectory tracking |
-| `sleep_tasks.py` | Background maintenance (contradictions, synthesis, backfill) |
+| `sleep_tasks.py` | Task implementations (contradictions, synthesis, monologue gating) |
 | `reflection.py` | Delayed reflection scheduling, working memory expiry |
 | `inner_monologue.py` | Quick reflection + deep self-model reflection |
 | `conversation_search.py` | Full-text + semantic search across conversation history |
 | `compaction.py` | Context window compaction (text-based + LLM-powered) |
 | `feedback_signals.py` | Re-ask/correction detection from user turns |
+| `api/routes/forgetting.py` | **F7** — REST API for forget operations |
