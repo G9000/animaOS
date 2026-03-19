@@ -17,28 +17,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "agent_runs",
-        sa.Column(
-            "pending_approval_message_id",
-            sa.Integer(),
-            nullable=True,
-        ),
-    )
-    op.create_foreign_key(
-        op.f("fk_agent_runs_pending_approval_message_id_agent_messages"),
-        "agent_runs",
-        "agent_messages",
-        ["pending_approval_message_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    with op.batch_alter_table("agent_runs") as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "pending_approval_message_id",
+                sa.Integer(),
+                nullable=True,
+            ),
+        )
+        batch_op.create_foreign_key(
+            op.f("fk_agent_runs_pending_approval_message_id_agent_messages"),
+            "agent_messages",
+            ["pending_approval_message_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        op.f("fk_agent_runs_pending_approval_message_id_agent_messages"),
-        "agent_runs",
-        type_="foreignkey",
-    )
-    op.drop_column("agent_runs", "pending_approval_message_id")
+    with op.batch_alter_table("agent_runs") as batch_op:
+        batch_op.drop_constraint(
+            op.f("fk_agent_runs_pending_approval_message_id_agent_messages"),
+            type_="foreignkey",
+        )
+        batch_op.drop_column("pending_approval_message_id")

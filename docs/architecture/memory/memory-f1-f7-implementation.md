@@ -775,6 +775,8 @@ or_(
 
 ## Database Migrations
 
+Migrations run automatically on startup via Alembic (programmatic `upgrade head` inside `ensure_user_database`). No manual migration step is needed.
+
 | Migration | Feature | Changes |
 |-----------|---------|---------|
 | `20260319_0001` | F2 Heat | Add `heat` FLOAT column to `memory_items` |
@@ -782,8 +784,9 @@ or_(
 | `20260319_0003` | F7 Forgetting | Create `forget_audit_log` table; add `needs_regeneration` to `memory_episodes` and `self_model_blocks` |
 | `20260319_0004` | F5 Orchestrator | Create `background_task_runs` table |
 | `20260319_0005` | F6 Segmentation | Add `message_indices_json`, `segmentation_method` to `memory_episodes` |
+| `20260319_0006` | Crypto | Add `domain` column to `user_keys`; update unique constraint to `(user_id, domain)` |
 
-All migrations use `batch_alter_table` for SQLite compatibility.
+Migrations that modify existing tables use `batch_alter_table` for SQLite compatibility.
 
 ---
 

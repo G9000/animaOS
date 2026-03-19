@@ -194,3 +194,34 @@ erDiagram
 | `tasks` | `Task` | `models/task.py` | User task list (todo/reminder system) |
 | `telegram_links` | `TelegramLink` | `models/links.py` | Telegram chat_id to user mapping |
 | `discord_links` | `DiscordLink` | `models/links.py` | Discord channel_id to user mapping |
+
+## Schema Migrations
+
+Schema changes are managed by **Alembic** and run automatically on startup. When `ensure_user_database()` is called, it runs `alembic upgrade head` programmatically against the per-user SQLCipher engine. No manual migration step is needed.
+
+Migration files live in `apps/server/alembic/versions/`. Migrations that modify existing tables must use `batch_alter_table` (SQLite does not support `ALTER` for constraints or foreign keys).
+
+### Migration History
+
+| Revision | Description |
+|----------|-------------|
+| `20260311_0001` | Baseline (empty) |
+| `04d82bffa29f` | Create `users` table |
+| `20260312_0002` | Add user profile fields |
+| `20260312_0003` | Create `user_keys` table |
+| `623075d8d13e` | Create agent runtime tables (`agent_threads`, `agent_messages`, `agent_runs`, `agent_steps`) |
+| `20260314_0001` | Create memory tables (`memory_items`, `memory_episodes`, `memory_daily_logs`, `memory_vectors`) |
+| `20260314_0002` | Create `tasks` table |
+| `20260314_0003` | Add `embedding_json` to `memory_items` |
+| `20260314_0004` | Create `session_notes` table |
+| `20260314_0005` | Create consciousness tables (`self_model_blocks`, `emotional_signals`) |
+| `20260314_0006` | Add sequence counter to `agent_threads` |
+| `20260316_0001` | Create `agent_profile` table |
+| `20260316_0002` | Add `pending_approval_message_id` FK to `agent_runs` |
+| `20260316_0003` | Phase 3 storage: `memory_item_tags`, `memory_claims`, `memory_claim_evidence`, `tags_json` |
+| `20260319_0001` | Add `heat` column to `memory_items` |
+| `20260319_0002` | Create KG tables (`kg_entities`, `kg_relations`) |
+| `20260319_0003` | Create `forget_audit_log`; add `needs_regeneration` to `memory_episodes` and `self_model_blocks` |
+| `20260319_0004` | Create `background_task_runs` table |
+| `20260319_0005` | Add `message_indices_json`, `segmentation_method` to `memory_episodes` |
+| `20260319_0006` | Add `domain` column to `user_keys`; update unique constraint |

@@ -11,8 +11,9 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+from pathlib import Path
+
 from anima_server.config import settings
-from anima_server.db.base import Base
 from anima_server.db.url import ensure_database_directory
 from anima_server.services.sessions import get_sqlcipher_key, unlock_session_store
 from anima_server.services.storage import get_user_data_dir
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 _engine_cache_lock = RLock()
 _engine_cache: dict[str, Engine] = {}
 _session_factory_cache: dict[str, sessionmaker[Session]] = {}
+_migrated_databases: set[str] = set()
+
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
 
 
 def _make_engine(database_url: str | None = None) -> Engine:
@@ -226,26 +230,38 @@ def get_user_database_url(user_id: int) -> str:
 def ensure_user_database(user_id: int) -> sessionmaker[Session]:
     database_url = get_user_database_url(user_id)
     factory = get_session_factory(database_url)
-    engine_instance = get_engine(database_url)
-    Base.metadata.create_all(bind=engine_instance)
-    _migrate_user_keys_domain(engine_instance)
+    if database_url not in _migrated_databases:
+        engine_instance = get_engine(database_url)
+        _run_alembic_upgrade(engine_instance)
+        _migrated_databases.add(database_url)
     return factory
 
 
-def _migrate_user_keys_domain(engine_instance: Engine) -> None:
-    """Add domain column to user_keys if it doesn't exist (legacy schema migration)."""
-    from sqlalchemy import inspect as sa_inspect, text as sa_text
+def _run_alembic_upgrade(engine_instance: Engine) -> None:
+    """Run Alembic migrations against a per-user engine."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect as sa_inspect
+
+    cfg = Config(str(_ALEMBIC_INI))
 
     insp = sa_inspect(engine_instance)
-    if not insp.has_table("user_keys"):
-        return
-    columns = {col["name"] for col in insp.get_columns("user_keys")}
-    if "domain" in columns:
-        return
-    with engine_instance.begin() as conn:
-        conn.execute(sa_text(
-            "ALTER TABLE user_keys ADD COLUMN domain VARCHAR(64) NOT NULL DEFAULT 'memories'"
-        ))
+    has_alembic = insp.has_table("alembic_version")
+    has_app_tables = insp.has_table("users")
+
+    with engine_instance.begin() as connection:
+        cfg.attributes["connection"] = connection
+
+        if has_app_tables and not has_alembic:
+            # Legacy DB created by create_all — stamp at head so Alembic
+            # considers it up-to-date (columns were already added manually).
+            command.stamp(cfg, "head")
+            logger.info("Stamped legacy database at Alembic head.")
+        else:
+            # Fresh DB: creates all tables via migration chain.
+            # Existing tracked DB: applies only pending migrations.
+            command.upgrade(cfg, "head")
+            logger.info("Alembic upgrade complete.")
 
 
 def get_user_session_factory(user_id: int) -> sessionmaker[Session]:
@@ -256,6 +272,7 @@ def dispose_database(database_url: str) -> None:
     with _engine_cache_lock:
         factory = _session_factory_cache.pop(database_url, None)
         engine_instance = _engine_cache.pop(database_url, None)
+    _migrated_databases.discard(database_url)
 
     del factory
     if engine_instance is not None:
@@ -271,6 +288,7 @@ def dispose_cached_engines() -> None:
         engine_items = list(_engine_cache.items())
         _engine_cache.clear()
         _session_factory_cache.clear()
+    _migrated_databases.clear()
 
     for _, engine_instance in engine_items:
         engine_instance.dispose()

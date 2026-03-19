@@ -37,20 +37,31 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    from anima_server.db.session import engine as app_engine
+    connectable = config.attributes.get("connection", None)
 
-    connectable = app_engine
-
-    with connectable.connect() as connection:
+    if connectable is not None:
+        # Programmatic usage: connection passed from ensure_user_database
         context.configure(
-            connection=connection,
+            connection=connectable,
             target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
         )
-
         with context.begin_transaction():
             context.run_migrations()
+    else:
+        # CLI usage: alembic upgrade head
+        from anima_server.db.session import engine as app_engine
+
+        with app_engine.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                compare_server_default=True,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
 
 
 if context.is_offline_mode():

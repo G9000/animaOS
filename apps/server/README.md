@@ -27,16 +27,32 @@ docker compose up -d postgres
 
 ## Database
 
-The server defaults to a local SQLite database under `.anima/dev/anima.db`.
+The server uses per-user SQLite databases under `.anima/dev/users/{id}/anima.db`,
+encrypted with SQLCipher when a passphrase is configured.
 
-Example default:
+### Migrations
+
+Schema migrations run automatically on startup via Alembic. When
+`ensure_user_database()` is called for a user, it runs
+`alembic upgrade head` programmatically against that user's database engine.
+
+- **Fresh databases**: the full migration chain creates all tables from scratch.
+- **Legacy databases** (created before Alembic was wired in): automatically
+  stamped at the current head revision.
+- **Existing tracked databases**: only pending migrations are applied.
+
+The CLI commands below are still available for manual inspection:
 
 ```bash
-ANIMA_DATABASE_URL=sqlite:///C:/path/to/animaOS/.anima/dev/anima.db
+uv run --project apps/server alembic -c apps/server/alembic.ini heads
+uv run --project apps/server alembic -c apps/server/alembic.ini current
 ```
 
-Override it in `.env` if you want Postgres instead:
+### Adding a new migration
 
 ```bash
-ANIMA_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5433/anima
+bun run db:server:revision -- "describe the change"
 ```
+
+Edit the generated file in `alembic/versions/`, using `batch_alter_table`
+for any operations that modify existing tables (SQLite requirement).
