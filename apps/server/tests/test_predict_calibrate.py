@@ -51,8 +51,8 @@ class TestApplyQualityGates:
         assert self._gates(stmts) == []
 
     def test_reject_vague(self):
-        stmts = [{"content": "User likes food", "category": "preference", "confidence": 0.6}]
-        # 3 words is below the 5-word threshold
+        stmts = [{"content": "Likes food", "category": "preference", "confidence": 0.6}]
+        # 2 words is below the 3-word threshold
         assert self._gates(stmts) == []
 
     # -- Utility: reject "User said/asked" --
@@ -165,7 +165,7 @@ class TestColdStartPath:
         monkeypatch.setattr(predict_calibrate, "hybrid_search", mock_hybrid_search)
         monkeypatch.setattr(predict_calibrate, "extract_memories_via_llm", mock_extract_direct)
 
-        result = await predict_calibrate.predict_calibrate_extraction(
+        result, _emotion = await predict_calibrate.predict_calibrate_extraction(
             user_id=1,
             user_message="I love pizza",
             assistant_response="That's great!",
@@ -235,7 +235,7 @@ class TestPredictCalibratePipeline:
         # Mock df to return content as-is (no encryption in tests)
         monkeypatch.setattr(predict_calibrate, "df", lambda uid, content, **kw: content)
 
-        result = await predict_calibrate.predict_calibrate_extraction(
+        result, _emotion = await predict_calibrate.predict_calibrate_extraction(
             user_id=1,
             user_message="Actually, I'm moving to Berlin next month.",
             assistant_response="That's exciting! Berlin is a great city.",
@@ -285,7 +285,7 @@ class TestPredictCalibratePipeline:
         monkeypatch.setattr(predict_calibrate, "extract_memories_via_llm", mock_extract_direct)
         monkeypatch.setattr(predict_calibrate, "df", lambda uid, content, **kw: content)
 
-        result = await predict_calibrate.predict_calibrate_extraction(
+        result, _emotion = await predict_calibrate.predict_calibrate_extraction(
             user_id=1,
             user_message="I like swimming",
             assistant_response="That's nice!",
@@ -342,7 +342,7 @@ class TestPredictCalibratePipeline:
         monkeypatch.setattr(predict_calibrate, "extract_knowledge_delta", mock_extract_delta)
         monkeypatch.setattr(predict_calibrate, "df", lambda uid, content, **kw: content)
 
-        result = await predict_calibrate.predict_calibrate_extraction(
+        result, pc_emotion = await predict_calibrate.predict_calibrate_extraction(
             user_id=1,
             user_message="My manager is driving me crazy",
             assistant_response="I'm sorry to hear that.",
@@ -350,6 +350,9 @@ class TestPredictCalibratePipeline:
         )
 
         assert len(result) >= 1
+        # Bug 3 fix: emotion_data should be returned even when items exist
+        assert pc_emotion is not None
+        assert pc_emotion["emotion"] == "frustrated"
         emotion_item = [r for r in result if "frustrated" in r["content"]]
         assert len(emotion_item) == 1
         assert emotion_item[0].get("detected_emotion") is not None

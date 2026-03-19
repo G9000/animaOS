@@ -14,16 +14,16 @@ router = APIRouter(prefix="/api/memories", tags=["forgetting"])
 
 
 @router.delete(
-    "/{memory_id}/forget",
+    "/{user_id}/{memory_id}/forget",
     status_code=status.HTTP_200_OK,
 )
 async def forget_single_memory(
+    user_id: int,
     memory_id: int,
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Hard-delete a single memory with full cleanup."""
-    user_id = _get_user_id(request)
     require_unlocked_user(request, user_id)
 
     item = db.get(MemoryItem, memory_id)
@@ -44,10 +44,11 @@ async def forget_single_memory(
 
 
 @router.delete(
-    "/forget",
+    "/{user_id}/forget",
     status_code=status.HTTP_200_OK,
 )
 async def forget_by_topic_endpoint(
+    user_id: int,
     request: Request,
     topic: str = Query(min_length=1),
     db: Session = Depends(get_db),
@@ -56,7 +57,6 @@ async def forget_by_topic_endpoint(
 
     Does NOT delete. Returns candidate list for the user to review and confirm.
     """
-    user_id = _get_user_id(request)
     require_unlocked_user(request, user_id)
 
     candidates = forget_by_topic(db, topic=topic, user_id=user_id)
@@ -74,14 +74,3 @@ async def forget_by_topic_endpoint(
             for item in candidates
         ],
     }
-
-
-def _get_user_id(request: Request) -> int:
-    """Extract user_id from request state (set by auth middleware)."""
-    user_id = getattr(request.state, "user_id", None)
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-    return int(user_id)

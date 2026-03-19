@@ -224,6 +224,10 @@ class TestForceMode:
                 new_callable=AsyncMock, return_value={},
             ),
             patch(
+                "anima_server.services.agent.sleep_agent._task_embedding_backfill",
+                new_callable=AsyncMock, return_value={},
+            ),
+            patch(
                 "anima_server.services.agent.sleep_agent._task_graph_ingestion",
                 new_callable=AsyncMock, return_value={},
             ),
@@ -249,7 +253,7 @@ class TestForceMode:
             ) as mock_monologue,
             patch(
                 "anima_server.services.agent.sleep_tasks._should_run_deep_monologue",
-                return_value=False,
+                return_value=True,
             ),
             patch(
                 "anima_server.services.agent.companion.get_companion",
@@ -264,8 +268,8 @@ class TestForceMode:
                 force=True,
             )
 
-        # With force=True, contradiction_scan, profile_synthesis run
-        # (deep_monologue also runs because force=True bypasses time gate)
+        # With force=True, contradiction_scan, profile_synthesis run.
+        # Deep monologue respects 24h throttle (mocked True here).
         assert any("contradiction_scan" in r for r in run_ids)
         assert any("profile_synthesis" in r for r in run_ids)
         assert any("deep_monologue" in r for r in run_ids)
@@ -358,10 +362,14 @@ class TestRestartCursor:
 class TestRunSleeptimeAgents:
     @pytest.mark.asyncio()
     async def test_parallel_tasks_all_run(self, db_factory):
-        """All four parallel tasks should create BackgroundTaskRun records."""
+        """All five parallel tasks should create BackgroundTaskRun records."""
         with (
             patch(
                 "anima_server.services.agent.sleep_agent._task_consolidation",
+                new_callable=AsyncMock, return_value={"ok": True},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_embedding_backfill",
                 new_callable=AsyncMock, return_value={"ok": True},
             ),
             patch(
@@ -396,13 +404,13 @@ class TestRunSleeptimeAgents:
                 db_factory=db_factory,
             )
 
-        assert len(run_ids) == 4
+        assert len(run_ids) == 5
         task_types = {r.split(":")[0] for r in run_ids}
-        assert task_types == {"consolidation", "graph_ingestion", "heat_decay", "episode_gen"}
+        assert task_types == {"consolidation", "embedding_backfill", "graph_ingestion", "heat_decay", "episode_gen"}
 
         with db_factory() as db:
             runs = list(db.scalars(select(BackgroundTaskRun)).all())
-            assert len(runs) == 4
+            assert len(runs) == 5
             assert all(r.status == "completed" for r in runs)
 
 

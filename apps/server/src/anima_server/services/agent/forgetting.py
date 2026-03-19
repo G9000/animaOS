@@ -22,6 +22,7 @@ from anima_server.models import (
     MemoryItem,
 )
 from anima_server.models.consciousness import SelfModelBlock
+from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,10 @@ def find_derived_references(
             )
         ).all()
     )
+    memory_content_lower = memory_content.lower()
     for ep in episodes:
-        if memory_content.lower() in (ep.summary or "").lower():
+        summary = df(user_id, ep.summary, table="memory_episodes", field="summary")
+        if memory_content_lower in summary.lower():
             refs.episodes.append(DerivedReference(
                 table="memory_episodes",
                 record_id=ep.id,
@@ -112,7 +115,8 @@ def find_derived_references(
         ).all()
     )
     for block in blocks:
-        if memory_content.lower() in (block.content or "").lower():
+        content = df(user_id, block.content, table="self_model_blocks", field="content")
+        if memory_content_lower in content.lower():
             refs.self_model_blocks.append(DerivedReference(
                 table="self_model_blocks",
                 record_id=block.id,
@@ -237,22 +241,40 @@ def forget_memory(
     from anima_server.services.data_crypto import df
     content = df(user_id, memory.content, table="memory_items", field="content")
 
-    # 1-2. Find and flag derived references
-    refs = find_derived_references(db, memory_content=content, user_id=user_id)
-    if refs.total > 0:
-        result.derived_refs_affected = redact_derived_references(
-            db, refs=refs, strategy="flag_for_regeneration",
+    # 1. Walk the full supersession chain (A→B→C: forgetting C must
+    #    also remove B and A, otherwise ON DELETE SET NULL resurrects them).
+    chain_ids = [memory_id]
+    chain_items = [memory]
+    frontier = [memory_id]
+    while frontier:
+        preds = list(
+            db.scalars(
+                select(MemoryItem).where(MemoryItem.superseded_by.in_(frontier))
+            ).all()
         )
+        frontier = [p.id for p in preds]
+        for pred in preds:
+            chain_ids.append(pred.id)
+            chain_items.append(pred)
 
-    # 3. Delete associated claims and evidence
-    claims = list(
+    # 2. Find and flag derived references for ALL items in the chain
+    for item in chain_items:
+        item_content = df(user_id, item.content, table="memory_items", field="content")
+        refs = find_derived_references(db, memory_content=item_content, user_id=user_id)
+        if refs.total > 0:
+            result.derived_refs_affected += redact_derived_references(
+                db, refs=refs, strategy="flag_for_regeneration",
+            )
+
+    # 3. Delete associated claims and evidence for ALL items in the chain
+    all_claims = list(
         db.scalars(
             select(MemoryClaim).where(
-                MemoryClaim.memory_item_id == memory_id,
+                MemoryClaim.memory_item_id.in_(chain_ids),
             )
         ).all()
     )
-    for claim in claims:
+    for claim in all_claims:
         db.execute(
             delete(MemoryClaimEvidence).where(
                 MemoryClaimEvidence.claim_id == claim.id,
@@ -260,19 +282,20 @@ def forget_memory(
         )
         db.delete(claim)
 
-    # 4. Hard-delete the memory item
-    db.delete(memory)
+    # 4. Hard-delete all items in the chain
+    for item in chain_items:
+        db.delete(item)
     db.flush()
-    result.items_forgotten = 1
+    result.items_forgotten = len(chain_items)
 
-    # 5. Remove from vector store
+    # 5. Remove ALL chain items from vector store and invalidate BM25
     try:
         from anima_server.services.agent.vector_store import delete_memory
-        delete_memory(user_id, item_id=memory_id, db=db)
+        for item_id in chain_ids:
+            delete_memory(user_id, item_id=item_id, db=db)
     except Exception:  # noqa: BLE001
-        logger.debug("Vector store cleanup failed for item %d", memory_id)
+        logger.debug("Vector store cleanup failed for chain %s", chain_ids)
 
-    # 6. Invalidate BM25 index
     try:
         from anima_server.services.agent.bm25_index import invalidate_index
         invalidate_index(user_id)
@@ -326,28 +349,19 @@ def forget_by_topic(
         if topic_lower in plaintext.lower():
             candidates.append(item)
 
-    # Also try hybrid search for semantic matches
+    # Also try BM25 search for lexical matches beyond substring
     try:
-        from anima_server.services.agent.embeddings import hybrid_search
-        import asyncio
+        from anima_server.services.agent.bm25_index import bm25_search
 
-        # Try to get running loop, otherwise skip async search
-        try:
-            loop = asyncio.get_running_loop()
-            # We're in an async context, but we can't await here
-            # The caller should handle this separately if needed
-        except RuntimeError:
-            pass
-
+        bm25_results = bm25_search(user_id, query=topic, limit=20, db=db)
+        keyword_ids = {item.id for item in candidates}
+        for item_id, _score in bm25_results:
+            if item_id not in keyword_ids:
+                item = db.get(MemoryItem, item_id)
+                if item is not None and item.superseded_by is None:
+                    candidates.append(item)
+                    keyword_ids.add(item_id)
     except Exception:  # noqa: BLE001
-        logger.debug("Hybrid search unavailable for topic forget")
+        logger.debug("BM25 search unavailable for topic forget")
 
-    # Deduplicate
-    seen_ids: set[int] = set()
-    unique: list[MemoryItem] = []
-    for item in candidates:
-        if item.id not in seen_ids:
-            seen_ids.add(item.id)
-            unique.append(item)
-
-    return unique
+    return candidates

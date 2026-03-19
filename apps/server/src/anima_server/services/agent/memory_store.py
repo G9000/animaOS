@@ -268,8 +268,9 @@ def get_memory_items_scored(
         MemoryItem.user_id == user_id,
         MemoryItem.superseded_by.is_(None),
         # Exclude items that have been scored (heat > 0) but decayed below floor.
-        # Items with heat == 0.0 are unscored and should NOT be excluded.
+        # Items with heat == 0.0 or NULL are unscored and should NOT be excluded.
         or_(
+            MemoryItem.heat.is_(None),
             MemoryItem.heat == 0.0,
             MemoryItem.heat >= HEAT_VISIBILITY_FLOOR,
         ),

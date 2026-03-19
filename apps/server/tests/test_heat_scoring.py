@@ -62,8 +62,9 @@ class TestComputeHeat:
             last_accessed_at=None,
             importance=3.0,
         )
-        # H = 0 + 0 + 0 (no last_accessed) + 0.5*3 = 1.5
-        assert heat == pytest.approx(1.5, rel=1e-2)
+        # H = 0 + 0 + 0 (no recency) + 0.5*3*0 = 0.0
+        # importance is weighted by recency, so no recency = no importance contribution
+        assert heat == pytest.approx(0.0, abs=1e-6)
 
     def test_frequently_accessed_beats_old(self):
         now = datetime.now(UTC)
@@ -124,7 +125,7 @@ class TestComputeHeat:
         heat = compute_heat(
             access_count=3,
             interaction_depth=3,
-            last_accessed_at=None,
+            last_accessed_at=datetime.now(UTC),
             importance=5.0,
         )
         assert heat > 0

@@ -70,10 +70,11 @@ def compute_heat(
     if recency_ref is not None:
         recency = compute_time_decay(recency_ref, ref_now, tau_hours=tau_hours)
     return (
-        HEAT_ALPHA * access_count
-        + HEAT_BETA * interaction_depth
+        (HEAT_ALPHA * access_count
+         + HEAT_BETA * interaction_depth
+         + HEAT_DELTA * importance)
+        * recency
         + HEAT_GAMMA * recency
-        + HEAT_DELTA * importance
     )
 
 

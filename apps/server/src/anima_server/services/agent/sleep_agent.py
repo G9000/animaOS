@@ -160,16 +160,17 @@ async def run_sleeptime_agents(
 
     Parallel group (always run):
     1. Memory consolidation (predict-calibrate from F3)
-    2. Knowledge graph ingestion (F4)
-    3. Heat decay (F2)
-    4. Episode generation check
+    2. Embedding backfill
+    3. Knowledge graph ingestion (F4)
+    4. Heat decay (F2)
+    5. Episode generation check
 
     Sequential group (heat-gated, skipped if heat < threshold):
-    5. Contradiction scan
-    6. Profile synthesis
+    6. Contradiction scan
+    7. Profile synthesis
 
     Time-gated:
-    7. Deep monologue (only once per 24h)
+    8. Deep monologue (only once per 24h)
 
     When force=True (inactivity timer): bypass heat gates.
     Returns list of task run IDs for tracking.
@@ -187,6 +188,12 @@ async def run_sleeptime_agents(
             user_message=user_message,
             assistant_response=assistant_response,
             thread_id=thread_id,
+        ),
+        _issue_background_task(
+            user_id=user_id,
+            task_type="embedding_backfill",
+            task_fn=_task_embedding_backfill,
+            db_factory=db_factory,
         ),
         _issue_background_task(
             user_id=user_id,
@@ -257,7 +264,7 @@ async def run_sleeptime_agents(
     try:
         from anima_server.services.agent.sleep_tasks import _should_run_deep_monologue
 
-        if force or _should_run_deep_monologue(user_id, db_factory=db_factory):
+        if _should_run_deep_monologue(user_id, db_factory=db_factory):
             rid = await _issue_background_task(
                 user_id=user_id,
                 task_type="deep_monologue",
@@ -278,6 +285,26 @@ async def run_sleeptime_agents(
         logger.debug("Companion cache invalidation failed for user %s", user_id)
 
     return run_ids
+
+
+_INNER_REASONING_MARKER = "[Agent's inner reasoning]"
+_USER_RESPONSE_MARKER = "[Agent's response to user]"
+
+
+def _strip_inner_reasoning(text: str) -> str:
+    """Remove the [Agent's inner reasoning] section from enriched responses.
+
+    The consolidation pipeline adds this prefix for memory extraction, but
+    downstream consumers (e.g. KG ingestion) should only see the actual response.
+    """
+    if _USER_RESPONSE_MARKER in text:
+        idx = text.index(_USER_RESPONSE_MARKER) + len(_USER_RESPONSE_MARKER)
+        return text[idx:].lstrip("\n")
+    if text.startswith(_INNER_REASONING_MARKER):
+        # Fallback: strip everything up to double newline
+        parts = text.split("\n\n", 1)
+        return parts[1] if len(parts) > 1 else text
+    return text
 
 
 # ── Task implementations (thin wrappers) ─────────────────────────────
@@ -303,7 +330,6 @@ async def _task_consolidation(
     from anima_server.services.agent.consolidation import (
         consolidate_turn_memory,
         consolidate_turn_memory_with_llm,
-        _backfill_user_embeddings,
     )
 
     if settings.agent_provider != "scaffold":
@@ -321,18 +347,26 @@ async def _task_consolidation(
             db_factory=db_factory,
         )
 
-    # Opportunistic embedding backfill
-    try:
-        await _backfill_user_embeddings(user_id, db_factory=db_factory)
-    except Exception:  # noqa: BLE001
-        logger.debug("Embedding backfill skipped for user %s", user_id)
-
     # Return restart cursor payload (F5.23)
     return {
         "thread_id": thread_id,
         "last_processed_message_id": None,  # TODO: wire actual message ID
         "messages_processed": 1,
     }
+
+
+async def _task_embedding_backfill(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Backfill embeddings for existing user memories."""
+    from anima_server.services.agent.consolidation import _backfill_user_embeddings
+
+    try:
+        await _backfill_user_embeddings(user_id, db_factory=db_factory)
+    except Exception:  # noqa: BLE001
+        logger.debug("Embedding backfill skipped for user %s", user_id)
 
 
 async def _task_graph_ingestion(
@@ -349,13 +383,17 @@ async def _task_graph_ingestion(
     from anima_server.db.session import SessionLocal
     from anima_server.services.agent.knowledge_graph import ingest_conversation_graph
 
+    # Strip inner reasoning prefix — the KG extraction prompt doesn't
+    # understand it and may extract spurious entities from it.
+    clean_response = _strip_inner_reasoning(assistant_response)
+
     factory = db_factory or SessionLocal
     with factory() as db:
         entities, relations, pruned = await ingest_conversation_graph(
             db,
             user_id=user_id,
             user_message=user_message,
-            assistant_response=assistant_response,
+            assistant_response=clean_response,
         )
         db.commit()
 
@@ -422,8 +460,10 @@ async def _task_deep_monologue(
 ) -> dict:
     """Run deep inner monologue."""
     from anima_server.services.agent.inner_monologue import run_deep_monologue
+    from anima_server.services.agent.sleep_tasks import mark_deep_monologue_done
 
     monologue = await run_deep_monologue(user_id=user_id, db_factory=db_factory)
+    mark_deep_monologue_done(user_id)
     return {"errors": monologue.errors if monologue.errors else []}
 
 
@@ -479,7 +519,7 @@ def update_last_processed_message_id(
     """Persist the consolidation restart cursor in the most recent run."""
     from anima_server.db.session import SessionLocal
     from anima_server.models import BackgroundTaskRun
-    from sqlalchemy import select, desc
+    from sqlalchemy import desc, select
 
     factory = db_factory or SessionLocal
     with factory() as db:
@@ -491,9 +531,14 @@ def update_last_processed_message_id(
                 BackgroundTaskRun.status == "completed",
             )
             .order_by(desc(BackgroundTaskRun.completed_at))
-            .limit(1)
         )
-        run = db.scalars(stmt).first()
+        runs = list(db.scalars(stmt).all())
+        run = None
+        for candidate in runs:
+            rj = candidate.result_json
+            if isinstance(rj, dict) and rj.get("thread_id") == thread_id:
+                run = candidate
+                break
         if run is not None:
             run.result_json = {
                 "thread_id": thread_id,

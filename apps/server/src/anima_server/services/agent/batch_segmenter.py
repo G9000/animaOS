@@ -217,9 +217,11 @@ async def generate_episodes_from_segments(
     episodes: list[MemoryEpisode] = []
 
     for segment_0based in segments:
-        segment_logs = [logs[i] for i in segment_0based]
+        # Sort indices chronologically so the summarizer sees turns in order
+        sorted_indices = sorted(segment_0based)
+        segment_logs = [logs[i] for i in sorted_indices]
         # Store 1-based indices for the DB column
-        indices_1based = [i + 1 for i in segment_0based]
+        indices_1based = [i + 1 for i in sorted_indices]
 
         if settings.agent_provider == "scaffold":
             episode = _create_fallback_episode(

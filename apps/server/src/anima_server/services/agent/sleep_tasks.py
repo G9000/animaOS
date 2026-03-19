@@ -114,12 +114,10 @@ async def run_sleep_tasks(
                 ).all()
             )
             regen_count = len(stale_episodes) + len(stale_blocks)
-            for ep in stale_episodes:
-                ep.needs_regeneration = False
-            for blk in stale_blocks:
-                blk.needs_regeneration = False
-            if regen_count > 0:
-                db.commit()
+            # NOTE: We intentionally do NOT clear needs_regeneration here.
+            # The flags must remain until actual content regeneration is
+            # implemented.  Clearing them prematurely would discard the
+            # only signal that stale derived references need repair.
             result.refs_regenerated = regen_count
     except Exception as e:  # noqa: BLE001
         logger.debug("Derived ref regeneration failed for user %s: %s", user_id, e)
@@ -232,20 +230,20 @@ async def scan_contradictions(
                 merged = resolution.get("merged")
 
                 if action == "KEEP_SECOND":
-                    supersede_memory_item(
-                        db,
-                        old_item_id=item_a.id,
-                        new_content=df(user_id, item_b.content, table="memory_items", field="content"),
-                        importance=max(item_a.importance, item_b.importance),
-                    )
+                    # Mark A as superseded by B (no new row needed)
+                    item_a.superseded_by = item_b.id
+                    item_a.updated_at = datetime.now(UTC)
+                    item_b.importance = max(item_a.importance, item_b.importance)
+                    _cleanup_superseded_indexes(user_id, item_a.id, db)
+                    _suppress_after_contradiction(db, item_a.id, item_b.id, user_id)
                     resolved += 1
                 elif action == "KEEP_FIRST":
-                    supersede_memory_item(
-                        db,
-                        old_item_id=item_b.id,
-                        new_content=df(user_id, item_a.content, table="memory_items", field="content"),
-                        importance=max(item_a.importance, item_b.importance),
-                    )
+                    # Mark B as superseded by A (no new row needed)
+                    item_b.superseded_by = item_a.id
+                    item_b.updated_at = datetime.now(UTC)
+                    item_a.importance = max(item_a.importance, item_b.importance)
+                    _cleanup_superseded_indexes(user_id, item_b.id, db)
+                    _suppress_after_contradiction(db, item_b.id, item_a.id, user_id)
                     resolved += 1
                 elif action == "MERGE" and merged:
                     # Create one merged item, point both old items at it
@@ -255,11 +253,37 @@ async def scan_contradictions(
                     )
                     item_b.superseded_by = merged_item.id
                     item_b.updated_at = datetime.now(UTC)
+                    _cleanup_superseded_indexes(user_id, item_b.id, db)
                     resolved += 1
 
             db.commit()
 
     return found, resolved
+
+
+def _cleanup_superseded_indexes(user_id: int, item_id: int, db: Any) -> None:
+    """Remove a superseded item from vector store and BM25 index."""
+    try:
+        from anima_server.services.agent.vector_store import delete_memory
+        delete_memory(user_id, item_id=item_id, db=db)
+    except Exception:  # noqa: BLE001
+        logger.debug("Vector cleanup failed for superseded item %d", item_id)
+    try:
+        from anima_server.services.agent.bm25_index import invalidate_index
+        invalidate_index(user_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("BM25 invalidation failed for user %d", user_id)
+
+
+def _suppress_after_contradiction(
+    db: Any, loser_id: int, winner_id: int, user_id: int,
+) -> None:
+    """Flag derived references for the losing item in a contradiction."""
+    try:
+        from anima_server.services.agent.forgetting import suppress_memory
+        suppress_memory(db, memory_id=loser_id, superseded_by=winner_id, user_id=user_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("Suppress failed for contradiction loser %d", loser_id)
 
 
 async def synthesize_profile(
@@ -322,15 +346,23 @@ def _should_run_deep_monologue(
     *,
     db_factory: Callable[..., object] | None = None,
 ) -> bool:
-    """Return True if enough time has passed since the last deep monologue."""
+    """Return True if enough time has passed since the last deep monologue.
+
+    Does NOT update the timestamp — call ``mark_deep_monologue_done()``
+    after the monologue succeeds.
+    """
     last = _last_deep_monologue.get(user_id)
-    now = datetime.now(UTC)
     if last is not None:
+        now = datetime.now(UTC)
         hours_since = (now - last).total_seconds() / 3600
         if hours_since < _DEEP_MONOLOGUE_INTERVAL_HOURS:
             return False
-    _last_deep_monologue[user_id] = now
     return True
+
+
+def mark_deep_monologue_done(user_id: int) -> None:
+    """Record that a deep monologue completed successfully."""
+    _last_deep_monologue[user_id] = datetime.now(UTC)
 
 
 async def _check_contradiction(

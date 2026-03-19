@@ -189,6 +189,17 @@ def consolidate_turn_memory(
                 result.conflicts_resolved.append(
                     f"{write_result.matched_item.content} -> {fact}"
                 )
+                try:
+                    from anima_server.services.agent.forgetting import suppress_memory
+                    if write_result.matched_item and write_result.item:
+                        suppress_memory(
+                            db,
+                            memory_id=write_result.matched_item.id,
+                            superseded_by=write_result.item.id,
+                            user_id=user_id,
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Suppression failed for regex-superseded fact")
 
         for pref in extracted.preferences:
             write_result = store_memory_item(
@@ -205,6 +216,17 @@ def consolidate_turn_memory(
                 result.conflicts_resolved.append(
                     f"{write_result.matched_item.content} -> {pref}"
                 )
+                try:
+                    from anima_server.services.agent.forgetting import suppress_memory
+                    if write_result.matched_item and write_result.item:
+                        suppress_memory(
+                            db,
+                            memory_id=write_result.matched_item.id,
+                            superseded_by=write_result.item.id,
+                            user_id=user_id,
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Suppression failed for regex-superseded pref")
 
         if extracted.current_focus:
             set_current_focus(db, user_id=user_id,
@@ -239,11 +261,12 @@ async def consolidate_turn_memory_with_llm(
     # Try predict-calibrate extraction when enough facts exist.
     # On failure, fall back to direct extraction (F3.9).
     pc_items: list[dict[str, Any]] | None = None
+    pc_emotion_data: dict[str, Any] | None = None
     try:
         from anima_server.services.agent.predict_calibrate import predict_calibrate_extraction
 
         with factory() as _pcdb:
-            pc_items = await predict_calibrate_extraction(
+            pc_items, pc_emotion_data = await predict_calibrate_extraction(
                 user_id=user_id,
                 user_message=user_message,
                 assistant_response=assistant_response,
@@ -254,12 +277,7 @@ async def consolidate_turn_memory_with_llm(
 
     if pc_items is not None:
         llm_items = pc_items
-        # Extract emotion data from predict-calibrate results (F3.12)
-        emotion_data: dict[str, Any] | None = None
-        for pc_item in pc_items:
-            if pc_item.get("detected_emotion"):
-                emotion_data = pc_item["detected_emotion"]
-                break
+        emotion_data = pc_emotion_data
     else:
         # Fallback: direct extraction (original path)
         extraction = await extract_memories_via_llm(
@@ -714,19 +732,30 @@ def schedule_background_memory_consolidation(
         should_run_sleeptime,
     )
 
-    bump_turn_counter(user_id)
-    if not should_run_sleeptime(user_id):
-        return
+    turn = bump_turn_counter(user_id)
+    run_full_orchestrator = should_run_sleeptime(user_id)
 
-    task = loop.create_task(
-        run_sleeptime_agents(
-            user_id=user_id,
-            user_message=user_message,
-            assistant_response=assistant_response,
-            thread_id=thread_id,
-            db_factory=db_factory,
+    if run_full_orchestrator:
+        # Every N turns: run the full orchestrator (consolidation + KG + heat decay + episodes + …)
+        task = loop.create_task(
+            run_sleeptime_agents(
+                user_id=user_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                thread_id=thread_id,
+                db_factory=db_factory,
+            )
         )
-    )
+    else:
+        # Every turn: at minimum run consolidation + embedding backfill
+        task = loop.create_task(
+            run_background_memory_consolidation(
+                user_id=user_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                db_factory=db_factory,
+            )
+        )
     with _background_tasks_lock:
         _background_tasks.add(task)
     task.add_done_callback(_on_background_task_done)

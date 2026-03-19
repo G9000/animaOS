@@ -590,12 +590,19 @@ async def hybrid_search(
         ).all()
     } if merged_ids else {}
 
+    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+
     results: list[tuple[MemoryItem, float]] = []
     for item_id, rrf_score in merged[:limit]:
         if item_id in items_by_id:
             if allowed_ids is not None and item_id not in allowed_ids:
                 continue
-            results.append((items_by_id[item_id], rrf_score))
+            item = items_by_id[item_id]
+            # Respect passive forgetting: skip items that have been scored
+            # (heat > 0) but decayed below the visibility floor.
+            if item.heat not in (None, 0.0) and item.heat < HEAT_VISIBILITY_FLOOR:
+                continue
+            results.append((item, rrf_score))
 
     return HybridSearchResult(items=results, query_embedding=query_embedding)
 

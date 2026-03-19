@@ -76,7 +76,7 @@ _CONTEXT_DEPENDENT_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 _COLD_START_THRESHOLD = 5
-_MIN_WORD_COUNT = 5
+_MIN_WORD_COUNT = 3
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -303,7 +303,7 @@ async def predict_calibrate_extraction(
     user_message: str,
     assistant_response: str,
     db: Any,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Full predict-calibrate pipeline:
 
     1. Retrieve relevant existing facts via hybrid_search
@@ -311,8 +311,8 @@ async def predict_calibrate_extraction(
     3. Predict expected knowledge
     4. Extract delta
     5. Apply quality gates
-    6. Return list of dicts with content, category, importance,
-       and optionally detected_emotion
+    6. Return filtered items plus any detected emotional signal from the
+       raw delta extraction
 
     F3.9: If predict-calibrate fails, falls back to direct extraction.
     """
@@ -370,6 +370,15 @@ async def predict_calibrate_extraction(
             assistant_response=assistant_response,
         )
 
+    emotion_data = next(
+        (
+            item["detected_emotion"]
+            for item in delta_items
+            if item.get("detected_emotion")
+        ),
+        None,
+    )
+
     # Step 5: Apply quality gates (F3.3)
     filtered = apply_quality_gates(statements=delta_items)
 
@@ -386,14 +395,14 @@ async def predict_calibrate_extraction(
             result["detected_emotion"] = item["detected_emotion"]
         results.append(result)
 
-    return results
+    return results, emotion_data
 
 
 async def _cold_start_extraction(
     *,
     user_message: str,
     assistant_response: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Cold-start fallback: use direct LLM extraction and apply quality gates."""
     extraction = await extract_memories_via_llm(
         user_message=user_message,
@@ -413,11 +422,13 @@ async def _cold_start_extraction(
         }
         results.append(result)
 
-    # Attach emotion from the extraction result if present
-    if extraction.emotion and extraction.emotion.get("emotion") and results:
-        results[0]["detected_emotion"] = extraction.emotion
+    emotion_data = extraction.emotion if extraction.emotion and extraction.emotion.get("emotion") else None
 
-    return results
+    # Attach emotion from the extraction result if present
+    if emotion_data and results:
+        results[0]["detected_emotion"] = emotion_data
+
+    return results, emotion_data
 
 
 def _confidence_to_importance(confidence: float) -> int:
