@@ -31,6 +31,7 @@ def build_runtime_memory_blocks(
     thread_id: int,
     semantic_results: list[tuple[int, str, float]] | None = None,
     query_embedding: list[float] | None = None,
+    query: str | None = None,
 ) -> tuple[MemoryBlock, ...]:
     blocks: list[MemoryBlock] = []
 
@@ -92,6 +93,11 @@ def build_runtime_memory_blocks(
         db, user_id=user_id, query_embedding=query_embedding)
     if relationships_block is not None:
         blocks.append(relationships_block)
+
+    # Knowledge graph block (Priority 4 — entity-relationship context)
+    kg_block = build_knowledge_graph_block(db, user_id=user_id, query=query)
+    if kg_block is not None:
+        blocks.append(kg_block)
 
     current_focus_block = build_current_focus_memory_block(db, user_id=user_id)
     if current_focus_block is not None:
@@ -566,6 +572,41 @@ def build_emotional_context_block(
         description="My sense of how the user is doing emotionally. Guide tone, not verbal analysis.",
         value=text,
     )
+
+
+def build_knowledge_graph_block(
+    db: Session,
+    *,
+    user_id: int,
+    query: str | None = None,
+) -> MemoryBlock | None:
+    """Build a memory block with relevant knowledge graph context.
+
+    Calls graph_context_for_query() to traverse the entity graph and
+    return formatted relationship triples. Omitted when no relevant
+    graph context is found.
+    """
+    if not query:
+        return None
+
+    try:
+        from anima_server.services.agent.knowledge_graph import graph_context_for_query
+
+        lines = graph_context_for_query(db, user_id=user_id, query=query, limit=10)
+        if not lines:
+            return None
+
+        value = "\n".join(f"- {line}" for line in lines)
+        if len(value) > 1500:
+            value = value[:1500]
+
+        return MemoryBlock(
+            label="knowledge_graph",
+            description="Relationships between entities in the user's life. Use these naturally for context.",
+            value=value,
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def serialize_memory_blocks(

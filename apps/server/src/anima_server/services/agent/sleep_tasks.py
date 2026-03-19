@@ -73,6 +73,18 @@ async def run_sleep_tasks(
     """Run the full suite of sleep-time maintenance tasks."""
     result = SleepTaskResult()
 
+    # 0. Decay heat scores for all items
+    try:
+        from anima_server.services.agent.heat_scoring import decay_all_heat
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+        with factory() as db:
+            decay_all_heat(db, user_id=user_id)
+            db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Heat decay failed for user %s: %s", user_id, e)
+
     # 1. Scan for contradictions
     try:
         cr = await scan_contradictions(user_id=user_id, db_factory=db_factory)

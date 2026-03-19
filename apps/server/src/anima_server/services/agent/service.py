@@ -514,11 +514,12 @@ async def _prepare_turn_context(
             db, user_id=user_id, thread_id=thread.id,
             semantic_results=semantic_results,
             query_embedding=query_embedding,
+            query=user_message,
         )
         # Re-populate the cache with the freshly-built static subset so
         # the next turn that has no semantic changes still benefits.
         companion.set_memory_cache(tuple(
-            b for b in memory_blocks if b.label != "relevant_memories"
+            b for b in memory_blocks if b.label not in ("relevant_memories", "knowledge_graph")
         ))
     else:
         memory_blocks = static_blocks

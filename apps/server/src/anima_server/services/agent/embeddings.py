@@ -520,7 +520,7 @@ async def hybrid_search(
 
     query_embedding = await generate_embedding(query)
 
-    from anima_server.services.agent.vector_store import search_by_text, search_similar
+    from anima_server.services.agent.vector_store import search_similar
 
     # --- Semantic leg ---
     semantic_ranked: list[tuple[int, float]] = []
@@ -560,18 +560,15 @@ async def hybrid_search(
             bruteforce.sort(key=lambda x: x[1], reverse=True)
             semantic_ranked = bruteforce[:limit]
 
-    # --- Keyword leg ---
+    # --- Keyword leg (BM25) ---
     keyword_ranked: list[tuple[int, float]] = []
     try:
-        kw_results = search_by_text(
-            user_id, query_text=query, limit=limit, db=db)
-        keyword_ranked = [
-            (r["id"], r["similarity"])
-            for r in kw_results
-            if r["similarity"] > 0.0
-        ]
+        from anima_server.services.agent.bm25_index import bm25_search
+
+        keyword_ranked = bm25_search(
+            user_id, query=query, limit=limit, db=db)
     except Exception:  # noqa: BLE001
-        logger.debug("Keyword search failed in hybrid_search")
+        logger.debug("BM25 keyword search failed in hybrid_search")
 
     # --- RRF merge ---
     if not semantic_ranked and not keyword_ranked:

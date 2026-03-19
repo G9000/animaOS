@@ -438,6 +438,11 @@ def upsert_memory(
         user_id, item_id=item_id, content=content,
         embedding=embedding, category=category, importance=importance,
     )
+    try:
+        from anima_server.services.agent.bm25_index import invalidate_index
+        invalidate_index(user_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def delete_memory(user_id: int, *, item_id: int, db: Session | None = None) -> None:
@@ -445,6 +450,11 @@ def delete_memory(user_id: int, *, item_id: int, db: Session | None = None) -> N
         _get_store(db).delete(user_id, item_id=item_id)
     except Exception:  # noqa: BLE001
         logger.debug("Failed to delete item %d from vector store", item_id)
+    try:
+        from anima_server.services.agent.bm25_index import invalidate_index
+        invalidate_index(user_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def search_similar(
@@ -499,7 +509,13 @@ def rebuild_user_index(
     *,
     db: Session | None = None,
 ) -> int:
-    return _get_store(db).rebuild(user_id, items)
+    result = _get_store(db).rebuild(user_id, items)
+    try:
+        from anima_server.services.agent.bm25_index import invalidate_index
+        invalidate_index(user_id)
+    except Exception:  # noqa: BLE001
+        pass
+    return result
 
 
 def get_collection(user_id: int, *, db: Session | None = None) -> Any:

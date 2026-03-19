@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -192,6 +193,7 @@ class MemoryItem(Base):
     __table_args__ = (
         Index("ix_memory_items_user_category_active",
               "user_id", "category", "superseded_by"),
+        Index("ix_memory_items_user_heat", "user_id", "heat"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -224,6 +226,9 @@ class MemoryItem(Base):
     )
     tags_json: Mapped[list[str] | None] = mapped_column(
         JSON, nullable=True,
+    )
+    heat: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0.0"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -481,3 +486,58 @@ class MemoryVector(Base):
         String(24), nullable=False, default="fact")
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+
+class KGEntity(Base):
+    """Knowledge graph entity: a person, place, organization, project, or concept."""
+
+    __tablename__ = "kg_entities"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name_normalized", name="uq_kg_entities_user_name"),
+        Index("ix_kg_entities_user_type", "user_id", "entity_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    name_normalized: Mapped[str] = mapped_column(String(200), nullable=False)
+    entity_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default=text("'unknown'"))
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("''"))
+    mentions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1"))
+    embedding_json: Mapped[list[float] | None] = mapped_column(
+        JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class KGRelation(Base):
+    """Knowledge graph relation: a typed edge between two entities."""
+
+    __tablename__ = "kg_relations"
+    __table_args__ = (
+        Index("ix_kg_relations_source", "source_id"),
+        Index("ix_kg_relations_dest", "destination_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False)
+    destination_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    mentions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1"))
+    source_memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now())

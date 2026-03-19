@@ -302,35 +302,36 @@ def get_memory_items_scored(
 
 
 def _retrieval_score(item: MemoryItem, now: datetime) -> float:
-    """Compute a 0-1 retrieval score combining importance, recency, and access frequency."""
-    # Importance: normalize 1-5 to 0-1
-    importance_score = (item.importance - 1) / 4.0
+    """Return a normalized [0,1] retrieval score based on item heat.
 
-    # Recency: exponential decay from created_at
-    created = item.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=UTC)
-    age_days = max(0.0, (now - created).total_seconds() / 86400.0)
-    recency_score = math.exp(-0.693 * age_days / _DECAY_HALF_LIFE_DAYS)
+    Uses a sigmoid-like function ``heat / (heat + k)`` to map unbounded
+    heat values into [0,1], keeping the output compatible with the
+    query-aware blending in ``get_memory_items_scored()``.
+    """
+    if hasattr(item, "heat") and item.heat is not None and item.heat > 0.0:
+        raw = item.heat
+    else:
+        # Fallback: compute heat on-the-fly for items that haven't been scored yet
+        from anima_server.services.agent.heat_scoring import compute_heat
 
-    # Access frequency: logarithmic scaling of reference_count
-    ref_count = item.reference_count or 0
-    access_score = min(1.0, math.log1p(ref_count) / math.log1p(10))
+        ref_count = item.reference_count or 0
+        raw = compute_heat(
+            access_count=ref_count,
+            interaction_depth=ref_count,
+            last_accessed_at=item.last_referenced_at,
+            importance=float(item.importance),
+            now=now,
+            created_at=item.created_at,
+        )
+    # Normalize: k chosen so that heat=5 maps to ~0.5 (typical mid-range
+    # for a moderately accessed item with average importance).
+    return raw / (raw + _HEAT_NORM_K)
 
-    # Boost if recently referenced (within last 3 days)
-    if item.last_referenced_at is not None:
-        last_ref = item.last_referenced_at
-        if last_ref.tzinfo is None:
-            last_ref = last_ref.replace(tzinfo=UTC)
-        ref_age_days = (now - last_ref).total_seconds() / 86400.0
-        if ref_age_days < 3.0:
-            access_score = min(1.0, access_score + 0.3)
 
-    return (
-        _WEIGHT_IMPORTANCE * importance_score
-        + _WEIGHT_RECENCY * recency_score
-        + _WEIGHT_ACCESS * access_score
-    )
+# Normalization constant for heat-to-score mapping.  heat/(heat+k) maps
+# heat=k to 0.5.  k=5 means a heat of 5 gives a 0.5 score, 10 gives 0.67,
+# 20 gives 0.8 — compressing the range for fair blending with query cosine.
+_HEAT_NORM_K: float = 5.0
 
 
 def touch_memory_items(
@@ -347,6 +348,12 @@ def touch_memory_items(
         item.reference_count = (item.reference_count or 0) + 1
         item.last_referenced_at = ref_now
     db.flush()
+    try:
+        from anima_server.services.agent.heat_scoring import update_heat_on_access
+
+        update_heat_on_access(db, items, now=ref_now)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def supersede_memory_item(
