@@ -299,6 +299,10 @@ async def test_consolidate_turn_memory_with_llm_deduplicates_slot_paraphrase(
 
 @pytest.mark.asyncio
 async def test_run_agent_schedules_background_memory_consolidation() -> None:
+    # Pre-set turn counter so that the next bump lands on a frequency multiple
+    # (F5 frequency gating runs every SLEEPTIME_FREQUENCY turns).
+    from anima_server.services.agent.sleep_agent import _turn_counters, SLEEPTIME_FREQUENCY
+
     original_provider = settings.agent_provider
     invalidate_agent_runtime_cache()
 
@@ -314,6 +318,9 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
             )
             session.add(user)
             session.commit()
+
+            # Set turn counter so next bump triggers sleeptime (lands on frequency multiple)
+            _turn_counters[user.id] = SLEEPTIME_FREQUENCY - 1
 
             result = await run_agent(
                 "I prefer short walks. My current focus is finishing the memory pipeline.",
