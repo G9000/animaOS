@@ -278,10 +278,15 @@ async def semantic_search(
                         select(MemoryItem).where(MemoryItem.id.in_(item_ids))
                     ).all()
                 }
+                from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR as _HVF
+
                 results: list[tuple[MemoryItem, float]] = []
                 for r in vs_results:
                     if r["similarity"] >= similarity_threshold and r["id"] in items_by_id:
-                        results.append((items_by_id[r["id"]], r["similarity"]))
+                        item = items_by_id[r["id"]]
+                        if item.heat not in (None, 0.0) and item.heat < _HVF:
+                            continue
+                        results.append((item, r["similarity"]))
                 return results[:limit]
     except Exception:  # noqa: BLE001
         logger.debug("Vector store search failed, falling back to brute-force")
@@ -297,8 +302,12 @@ async def semantic_search(
         ).all()
     )
 
+    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR as _HVF2
+
     scored: list[tuple[MemoryItem, float]] = []
     for item in items:
+        if item.heat not in (None, 0.0) and item.heat < _HVF2:
+            continue
         item_embedding = _parse_embedding(item.embedding_json)
         if item_embedding is None:
             continue

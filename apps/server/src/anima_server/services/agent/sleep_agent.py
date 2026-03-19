@@ -463,7 +463,8 @@ async def _task_deep_monologue(
     from anima_server.services.agent.sleep_tasks import mark_deep_monologue_done
 
     monologue = await run_deep_monologue(user_id=user_id, db_factory=db_factory)
-    mark_deep_monologue_done(user_id)
+    if not monologue.errors:
+        mark_deep_monologue_done(user_id)
     return {"errors": monologue.errors if monologue.errors else []}
 
 

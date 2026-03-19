@@ -308,7 +308,7 @@ def forget_memory(
         forgotten_at=datetime.now(UTC),
         trigger=trigger,
         scope="single",
-        items_forgotten=1,
+        items_forgotten=result.items_forgotten,
         derived_refs_affected=result.derived_refs_affected,
     )
     db.add(log)

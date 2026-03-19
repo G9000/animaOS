@@ -159,6 +159,8 @@ async def run_sleep_tasks(
             result.deep_monologue_ran = True
             if monologue.errors:
                 result.errors.extend(f"monologue: {e}" for e in monologue.errors)
+            else:
+                mark_deep_monologue_done(user_id)
         else:
             logger.debug("Deep monologue skipped for user %s (ran recently)", user_id)
     except Exception as e:  # noqa: BLE001
@@ -213,7 +215,11 @@ async def scan_contradictions(
                     if 0.3 < sim < 0.95:  # Similar but not duplicate
                         pairs.append((older_item, newer_item))
 
+            resolved_ids: set[int] = set()
             for item_a, item_b in pairs[:10]:  # Cap per category
+                # Skip if either side was already superseded in this scan
+                if item_a.id in resolved_ids or item_b.id in resolved_ids:
+                    continue
                 found += 1
                 resolution = await _check_contradiction(
                     df(user_id, item_a.content, table="memory_items", field="content"),
@@ -236,6 +242,7 @@ async def scan_contradictions(
                     item_b.importance = max(item_a.importance, item_b.importance)
                     _cleanup_superseded_indexes(user_id, item_a.id, db)
                     _suppress_after_contradiction(db, item_a.id, item_b.id, user_id)
+                    resolved_ids.add(item_a.id)
                     resolved += 1
                 elif action == "KEEP_FIRST":
                     # Mark B as superseded by A (no new row needed)
@@ -244,6 +251,7 @@ async def scan_contradictions(
                     item_a.importance = max(item_a.importance, item_b.importance)
                     _cleanup_superseded_indexes(user_id, item_b.id, db)
                     _suppress_after_contradiction(db, item_b.id, item_a.id, user_id)
+                    resolved_ids.add(item_b.id)
                     resolved += 1
                 elif action == "MERGE" and merged:
                     # Create one merged item, point both old items at it
@@ -254,6 +262,10 @@ async def scan_contradictions(
                     item_b.superseded_by = merged_item.id
                     item_b.updated_at = datetime.now(UTC)
                     _cleanup_superseded_indexes(user_id, item_b.id, db)
+                    _suppress_after_contradiction(db, item_a.id, merged_item.id, user_id)
+                    _suppress_after_contradiction(db, item_b.id, merged_item.id, user_id)
+                    resolved_ids.add(item_a.id)
+                    resolved_ids.add(item_b.id)
                     resolved += 1
 
             db.commit()
@@ -329,6 +341,8 @@ async def synthesize_profile(
             for item in merge_items[1:]:
                 item.superseded_by = merged_item.id
                 item.updated_at = datetime.now(UTC)
+                _cleanup_superseded_indexes(user_id, item.id, db)
+                _suppress_after_contradiction(db, item.id, merged_item.id, user_id)
             merged_count += 1
 
         if merged_count > 0:
