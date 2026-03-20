@@ -168,10 +168,10 @@ def wrap_dek(passphrase: str, dek: bytes) -> WrappedDekRecord:
 
 
 def unwrap_dek(passphrase: str, record: WrappedDekRecord) -> bytes:
-    salt = base64.b64decode(record.kdf_salt)
-    iv = base64.b64decode(record.wrap_iv)
-    tag = base64.b64decode(record.wrap_tag)
-    ciphertext = base64.b64decode(record.wrapped_dek)
+    salt = base64.b64decode(record.kdf_salt, validate=True)
+    iv = base64.b64decode(record.wrap_iv, validate=True)
+    tag = base64.b64decode(record.wrap_tag, validate=True)
+    ciphertext = base64.b64decode(record.wrapped_dek, validate=True)
     kek = derive_argon2id_key(
         passphrase,
         salt,
