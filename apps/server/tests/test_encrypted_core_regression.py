@@ -19,6 +19,7 @@ SENTINEL_ROUND_TRIP = "SENTINEL_ROUND_TRIP_ALPHA_20260320"
 SENTINEL_WRONG_PASS = "SENTINEL_WRONG_PASS_BETA_20260320"
 SENTINEL_PORTABILITY = "SENTINEL_PORTABILITY_GAMMA_20260320"
 SENTINEL_SOUL_MIGRATION = "SENTINEL_SOUL_MIGRATION_DELTA_20260320"
+SENTINEL_ENCRYPTED_LOOKALIKE = "enc1:not-base64"
 
 
 @pytest.fixture()
@@ -297,3 +298,79 @@ def test_legacy_plaintext_soul_is_rewritten_on_first_read_without_data_loss(
 
     raw_db = (isolated_runtime_root / "users" / str(user_id) / "anima.db").read_bytes()
     assert SENTINEL_SOUL_MIGRATION.encode("utf-8") not in raw_db
+
+
+def test_plaintext_soul_that_looks_encrypted_is_returned_verbatim(
+    isolated_runtime_root: Path,
+) -> None:
+    settings.core_passphrase = ""
+    settings.core_require_encryption = False
+
+    with TestClient(create_app()) as client:
+        reg = _register_user(client, "soul-prefix", "prefix-password", "Soul Prefix")
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        from anima_server.db.session import get_user_session_factory
+        from anima_server.models import SelfModelBlock
+        from sqlalchemy import select
+
+        with get_user_session_factory(user_id)() as db:
+            block = db.scalar(
+                select(SelfModelBlock).where(
+                    SelfModelBlock.user_id == user_id,
+                    SelfModelBlock.section == "user_directive",
+                )
+            )
+            if block is None:
+                block = SelfModelBlock(
+                    user_id=user_id,
+                    section="user_directive",
+                    content=SENTINEL_ENCRYPTED_LOOKALIKE,
+                    version=1,
+                    updated_by="test",
+                )
+                db.add(block)
+            else:
+                block.content = SENTINEL_ENCRYPTED_LOOKALIKE
+            db.commit()
+
+        read = client.get(f"/api/soul/{user_id}", headers=headers)
+        assert read.status_code == 200
+        assert read.json() == {
+            "content": SENTINEL_ENCRYPTED_LOOKALIKE,
+            "source": "database",
+        }
+
+
+def test_corrupt_wrapped_sqlcipher_metadata_surfaces_server_error(
+    isolated_runtime_root: Path,
+    encrypted_core_supported: bool,
+) -> None:
+    if not encrypted_core_supported:
+        pytest.skip("SQLCipher encrypted open unsupported")
+
+    settings.core_passphrase = ""
+    settings.core_require_encryption = True
+
+    with TestClient(create_app()) as client:
+        _register_user(client, "corrupt-wrap", "correct-password", "Corrupt Wrap")
+
+        from anima_server.services.core import (
+            get_wrapped_sqlcipher_key,
+            store_wrapped_sqlcipher_key,
+        )
+
+        wrapped = dict(get_wrapped_sqlcipher_key() or {})
+        assert wrapped
+        wrapped["kdf_salt"] = "not-base64"
+        store_wrapped_sqlcipher_key(wrapped)
+
+    _reset_fresh_process_state()
+
+    with TestClient(create_app(), raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "corrupt-wrap", "password": "correct-password"},
+        )
+        assert response.status_code == 500
