@@ -529,6 +529,14 @@ class AgentRuntime:
             else:
                 deferred_step_index = len(step_traces)
                 for dtc in deferred_tool_calls:
+                    if dtc.name in tools_used:
+                        logger.info(
+                            "Skipping deferred tool call %r — already "
+                            "executed during the turn (call_id=%s)",
+                            dtc.name,
+                            dtc.id,
+                        )
+                        continue
                     try:
                         deferred_result = await self._tool_executor.execute(
                             dtc,
