@@ -78,7 +78,7 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
 
 
 def create_app() -> FastAPI:
-    if settings.core_require_encryption and not settings.sidecar_nonce:
+    if settings.core_require_encryption and not settings.sidecar_nonce and settings.app_env != "development":
         raise RuntimeError(
             "Sidecar nonce must be configured when encryption is required."
         )
