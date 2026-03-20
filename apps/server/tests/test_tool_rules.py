@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+from unittest.mock import patch
 
 import pytest
 from anima_server.services.agent.rules import (
@@ -247,39 +247,35 @@ class TestCycleDetection:
 
 
 class TestWarnUnknownTools:
-    def test_logs_warning_for_unknown_init_tool(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_logs_warning_for_unknown_init_tool(self) -> None:
         solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
-        with caplog.at_level("WARNING"):
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
             solver.warn_unknown_tools(["real_tool"])
-        assert "ghost_tool" in caplog.text
-
-    def test_no_warning_when_all_tools_known(self, caplog: pytest.LogCaptureFixture) -> None:
-        solver = ToolRulesSolver([InitToolRule(tool_name="tool_a")])
-        with caplog.at_level("WARNING"):
-            solver.warn_unknown_tools(["tool_a", "tool_b"])
-        assert caplog.text == ""
-
-    def test_logs_warning_for_unknown_prerequisite(self, caplog: pytest.LogCaptureFixture) -> None:
-        solver = ToolRulesSolver(
-            [
-                PrerequisiteToolRule(prerequisite_tool="unknown_pre", dependent_tool="tool_a"),
-            ]
+        warning_mock.assert_called_once_with(
+            "InitToolRule references unknown tool %r",
+            "ghost_tool",
         )
-        with caplog.at_level("WARNING"):
-            solver.warn_unknown_tools(["tool_a"])
-        assert "unknown_pre" in caplog.text
 
-    def test_logs_warning_even_if_rules_logger_level_was_raised(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        rules_logger = logging.getLogger("anima_server.services.agent.rules")
-        previous_level = rules_logger.level
-        try:
-            rules_logger.setLevel(logging.ERROR)
-            solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
-            with caplog.at_level("WARNING"):
-                solver.warn_unknown_tools(["real_tool"])
-        finally:
-            rules_logger.setLevel(previous_level)
-        assert "ghost_tool" in caplog.text
+    def test_no_warning_when_all_tools_known(self) -> None:
+        solver = ToolRulesSolver([InitToolRule(tool_name="tool_a")])
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+            solver.warn_unknown_tools(["tool_a", "tool_b"])
+        warning_mock.assert_not_called()
+
+    def test_logs_warning_for_unknown_prerequisite(self) -> None:
+        solver = ToolRulesSolver([
+            PrerequisiteToolRule(
+                prerequisite_tool="unknown_pre", dependent_tool="tool_a"),
+        ])
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+            solver.warn_unknown_tools(["tool_a"])
+        warning_mock.assert_called_once_with(
+            "PrerequisiteToolRule references unknown prerequisite tool %r",
+            "unknown_pre",
+        )
+
+    def test_logs_warning_even_if_rules_logger_level_was_raised(self) -> None:
+        solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+            solver.warn_unknown_tools(["real_tool"])
+        warning_mock.assert_called_once()
