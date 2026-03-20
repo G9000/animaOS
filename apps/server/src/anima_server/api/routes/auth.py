@@ -5,7 +5,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.db import get_db
-from anima_server.db.user_store import authenticate_account, register_account
+from anima_server.db.user_store import (
+    InvalidCredentialsError,
+    authenticate_account,
+    register_account,
+)
 from anima_server.schemas.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
@@ -108,7 +112,7 @@ def login(
 
     try:
         response, deks = authenticate_account(username, payload.password)
-    except ValueError:
+    except InvalidCredentialsError:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     return {
