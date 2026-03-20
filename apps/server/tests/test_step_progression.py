@@ -7,6 +7,8 @@ from collections import deque
 
 import pytest
 
+from anima_server.services.agent.adapters.openai_compatible import OpenAICompatibleAdapter
+from anima_server.services.agent.openai_compatible_client import OpenAICompatibleStreamChunk
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.rules import TerminalToolRule
 from anima_server.services.agent.runtime import AgentRuntime
@@ -213,6 +215,48 @@ async def test_timing_event_emitted_via_callback() -> None:
     assert len(timing_events) == 1
     assert timing_events[0].data["stepIndex"] == 0
     assert timing_events[0].data["stepDurationMs"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_ttft_uses_first_ollama_chunk_even_when_hidden_by_reasoning() -> None:
+    class HiddenReasoningChatClient:
+        async def ainvoke(self, input: list[object]) -> object:
+            raise AssertionError("streaming path should be used")
+
+        async def astream(self, input: list[object]):
+            del input
+            yield OpenAICompatibleStreamChunk(content_delta="<think>hidden")
+            await asyncio.sleep(0.15)
+            yield OpenAICompatibleStreamChunk(
+                content_delta=" plan</think>\n\nvisible",
+                done=True,
+            )
+
+        def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+            del tools, tool_choice, kwargs
+            return self
+
+    runtime = AgentRuntime(
+        adapter=OpenAICompatibleAdapter(
+            HiddenReasoningChatClient(),
+            provider="ollama",
+            model="test-model",
+        ),
+        max_steps=1,
+    )
+
+    events: list[AgentStreamEvent] = []
+
+    async def collect(event: AgentStreamEvent) -> None:
+        events.append(event)
+
+    result = await runtime.invoke("hello", user_id=1, history=[], event_callback=collect)
+
+    assert result.response == "visible"
+    timing = result.step_traces[0].timing
+    assert timing is not None
+    assert timing.ttft_ms is not None
+    assert timing.ttft_ms < 100
 
 
 @pytest.mark.asyncio

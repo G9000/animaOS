@@ -163,6 +163,33 @@ def test_build_conversation_messages_empty_history() -> None:
     assert isinstance(messages[1], HumanMessage)
 
 
+def test_build_conversation_messages_prunes_stale_tool_rule_violations() -> None:
+    history = [
+        StoredMessage(role="user", content="first"),
+        StoredMessage(
+            role="tool",
+            content="Tool rule violation: Tool current_datetime is not allowed yet",
+            tool_call_id="call-1",
+            tool_name="current_datetime",
+        ),
+        StoredMessage(
+            role="tool",
+            content="Approval required before running tool: send_email",
+            tool_call_id="call-2",
+            tool_name="send_email",
+        ),
+    ]
+
+    messages = build_conversation_messages(
+        history, "second", system_prompt="Be nice."
+    )
+
+    assert len(messages) == 4
+    assert isinstance(messages[1], HumanMessage)
+    assert isinstance(messages[2], ToolMessage)
+    assert messages[2].content == "Approval required before running tool: send_email"
+
+
 # --------------------------------------------------------------------------- #
 # Type predicates
 # --------------------------------------------------------------------------- #

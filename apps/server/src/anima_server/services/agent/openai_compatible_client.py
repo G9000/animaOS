@@ -112,8 +112,7 @@ class OpenAICompatibleChatClient:
         return OpenAICompatibleResponse(
             content=_coerce_response_content(message.get("content")),
             tool_calls=tool_calls,
-            usage_metadata=body.get("usage") if isinstance(
-                body.get("usage"), dict) else None,
+            usage_metadata=_extract_usage_metadata(body),
         )
 
     async def astream(
@@ -162,10 +161,8 @@ class OpenAICompatibleChatClient:
                     tool_call_deltas=_normalize_stream_tool_call_deltas(
                         delta.get("tool_calls")
                     ),
-                    usage_metadata=body.get("usage")
-                    if isinstance(body.get("usage"), dict)
-                    else None,
-                    done=choice.get("finish_reason") is not None,
+                    usage_metadata=_extract_usage_metadata(body),
+                    done=choice.get("finish_reason") is not None or body.get("done") is True,
                 )
 
     def _build_payload(
@@ -346,6 +343,35 @@ def _normalize_stream_tool_call_deltas(
             }
         )
     return tuple(normalized)
+
+
+def _extract_usage_metadata(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    usage_payload = payload.get("usage")
+    usage = dict(usage_payload) if isinstance(usage_payload, dict) else {}
+
+    prompt_eval_count = payload.get("prompt_eval_count")
+    eval_count = payload.get("eval_count")
+
+    if isinstance(prompt_eval_count, int):
+        usage.setdefault("prompt_tokens", prompt_eval_count)
+        usage["prompt_eval_count"] = prompt_eval_count
+    if isinstance(eval_count, int):
+        usage.setdefault("completion_tokens", eval_count)
+        usage["eval_count"] = eval_count
+
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if (
+        "total_tokens" not in usage
+        and isinstance(prompt_tokens, int)
+        and isinstance(completion_tokens, int)
+    ):
+        usage["total_tokens"] = prompt_tokens + completion_tokens
+
+    return usage or None
 
 
 def _parse_tool_arguments(raw_arguments: object) -> tuple[dict[str, object], str | None, str | None]:

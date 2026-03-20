@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from anima_server.services.agent.rules import (
@@ -245,3 +247,18 @@ class TestWarnUnknownTools:
         with caplog.at_level("WARNING"):
             solver.warn_unknown_tools(["tool_a"])
         assert "unknown_pre" in caplog.text
+
+    def test_logs_warning_even_if_rules_logger_level_was_raised(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        rules_logger = logging.getLogger("anima_server.services.agent.rules")
+        previous_level = rules_logger.level
+        try:
+            rules_logger.setLevel(logging.ERROR)
+            solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
+            with caplog.at_level("WARNING"):
+                solver.warn_unknown_tools(["real_tool"])
+        finally:
+            rules_logger.setLevel(previous_level)
+        assert "ghost_tool" in caplog.text

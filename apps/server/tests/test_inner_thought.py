@@ -75,6 +75,10 @@ def test_inner_thought_is_not_terminal() -> None:
     assert "inner_thought" not in terminal_names
 
 
+def test_inner_thought_description_requires_thought_argument() -> None:
+    assert "You MUST provide a thought string argument." in inner_thought.description
+
+
 # ---------------------------------------------------------------------------
 # Runtime: think-first enforcement
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import json
 import logging
 from typing import Any
@@ -48,6 +49,15 @@ class ToolExecutor:
 
         # Shared flag container — the tool (running in a thread) writes to
         # this dict, and we read it back in the async context.
+        validation_error = _validate_tool_arguments(tool, tool_call.arguments)
+        if validation_error is not None:
+            return ToolExecutionResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                output=validation_error,
+                is_error=True,
+            )
+
         flags: dict[str, bool] = {"memory_modified": False}
 
         try:
@@ -159,6 +169,70 @@ def _check_memory_modified(flags: dict[str, bool]) -> None:
             ctx.memory_modified = False  # reset for next tool
     except RuntimeError:
         pass
+
+
+def _validate_tool_arguments(
+    tool: Any,
+    arguments: dict[str, Any],
+) -> str | None:
+    required_arguments = _get_required_tool_arguments(tool)
+    if not required_arguments:
+        return None
+
+    payload = arguments if isinstance(arguments, dict) else {}
+    missing = [
+        name for name in required_arguments
+        if name not in payload or payload[name] is None
+    ]
+    if not missing:
+        return None
+
+    noun = "argument" if len(missing) == 1 else "arguments"
+    missing_list = ", ".join(missing)
+    tool_name = getattr(tool, "name", "") or getattr(tool, "__name__", "unknown")
+    return (
+        f"Tool {tool_name} is missing required {noun}: {missing_list}. "
+        "Provide a JSON object with all required fields."
+    )
+
+
+def _get_required_tool_arguments(tool: Any) -> tuple[str, ...]:
+    schema = _get_tool_schema(tool)
+    if schema is not None:
+        required = schema.get("required", [])
+        return tuple(name for name in required if isinstance(name, str))
+
+    if hasattr(tool, "ainvoke") or hasattr(tool, "invoke"):
+        return ()
+
+    try:
+        signature = inspect.signature(tool)
+    except (TypeError, ValueError):
+        return ()
+
+    required: list[str] = []
+    for name, param in signature.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+    return tuple(required)
+
+
+def _get_tool_schema(tool: Any) -> dict[str, Any] | None:
+    schema = getattr(tool, "args_schema", None)
+    if schema is None or not hasattr(schema, "model_json_schema"):
+        return None
+
+    try:
+        resolved = schema.model_json_schema()
+    except Exception:  # noqa: BLE001
+        return None
+
+    return resolved if isinstance(resolved, dict) else None
 
 
 def _stringify_output(value: Any) -> str:

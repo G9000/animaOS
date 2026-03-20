@@ -215,6 +215,67 @@ async def test_openai_compatible_chat_client_streams_sse_chunks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_chat_client_extracts_ollama_stream_usage_counts() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        body = (
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": "hello",
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                }
+            )
+            + "\n\n"
+            + "data: "
+            + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "done": True,
+                    "prompt_eval_count": 19,
+                    "eval_count": 7,
+                }
+            )
+            + "\n\n"
+            + "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            content=body.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = OpenAICompatibleChatClient(
+        provider="ollama",
+        model="llama3.2",
+        base_url="http://ollama.local/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    chunks = [chunk async for chunk in client.astream([HumanMessage(content="hello")])]
+
+    assert chunks[1].usage_metadata == {
+        "prompt_tokens": 19,
+        "completion_tokens": 7,
+        "total_tokens": 26,
+        "prompt_eval_count": 19,
+        "eval_count": 7,
+    }
+    assert chunks[1].done is True
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_chat_client_preserves_malformed_tool_args() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         del request

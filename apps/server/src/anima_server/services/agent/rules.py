@@ -105,29 +105,29 @@ class ToolRulesSolver:
         known = _normalize_tool_names(known_tools)
         for rule in self._init_rules:
             if rule.tool_name not in known:
-                logger.warning(
+                _warn_rule_issue(
                     "InitToolRule references unknown tool %r", rule.tool_name)
         for name in self._terminal_tools:
             if name not in known:
-                logger.warning(
+                _warn_rule_issue(
                     "TerminalToolRule references unknown tool %r", name)
         for rule in self._prerequisite_rules:
             if rule.prerequisite_tool not in known:
-                logger.warning(
+                _warn_rule_issue(
                     "PrerequisiteToolRule references unknown prerequisite tool %r", rule.prerequisite_tool)
             if rule.dependent_tool not in known:
-                logger.warning(
+                _warn_rule_issue(
                     "PrerequisiteToolRule references unknown dependent tool %r", rule.dependent_tool)
         for rule in self._conditional_rules.values():
             if rule.tool_name not in known:
-                logger.warning(
+                _warn_rule_issue(
                     "ConditionalToolRule references unknown tool %r", rule.tool_name)
             for child in rule.child_output_mapping.values():
                 if child not in known:
-                    logger.warning(
+                    _warn_rule_issue(
                         "ConditionalToolRule maps to unknown child tool %r", child)
             if rule.default_child and rule.default_child not in known:
-                logger.warning(
+                _warn_rule_issue(
                     "ConditionalToolRule default_child references unknown tool %r", rule.default_child)
 
     @property
@@ -295,6 +295,14 @@ def build_default_tool_rules(tool_names: Collection[str]) -> tuple[ToolRule, ...
     if "send_message" in normalized_tools:
         rules.append(TerminalToolRule(tool_name="send_message"))
     return tuple(rules)
+
+
+def _warn_rule_issue(message: str, *args: object) -> None:
+    """Emit rule warnings even if a prior test raised this logger's level."""
+    if logger.isEnabledFor(logging.WARNING):
+        logger.warning(message, *args)
+        return
+    logging.getLogger().warning(message, *args)
 
 
 def _normalize_tool_names(tool_names: Collection[str]) -> set[str]:

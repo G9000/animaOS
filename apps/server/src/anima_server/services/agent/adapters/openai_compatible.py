@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 import json
+import time
 from typing import Any
 
 from anima_server.config import settings
@@ -100,11 +101,15 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         tool_call_state: dict[int, dict[str, object]] = {}
         usage: UsageStats | None = None
         reasoning_filter = ReasoningTraceFilter()
+        request_start_time = time.monotonic()
+        first_content_time: float | None = None
 
         try:
             async for chunk in llm.astream(list(request.messages)):
                 content_delta = getattr(chunk, "content_delta", "")
                 if content_delta:
+                    if first_content_time is None:
+                        first_content_time = time.monotonic()
                     visible_delta = reasoning_filter.feed(content_delta)
                     if visible_delta:
                         content_parts.append(visible_delta)
@@ -152,6 +157,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 tool_calls=_finalize_stream_tool_calls(tool_call_state),
                 usage=usage,
                 reasoning_content=tag_reasoning,
+                ttft_ms=round((first_content_time - request_start_time) * 1000, 2)
+                if first_content_time is not None
+                else None,
             )
         )
 

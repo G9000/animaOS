@@ -81,6 +81,7 @@ class StepExecutionResult:
     raw_response: Any | None = None
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
+    ttft_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

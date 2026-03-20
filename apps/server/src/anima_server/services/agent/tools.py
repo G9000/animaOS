@@ -66,6 +66,7 @@ def _build_args_schema(func: Callable[..., Any]) -> _SimpleSchema:
 def inner_thought(thought: str) -> str:
     """Record your private reasoning before taking action. This is ALWAYS your
     first step in every turn. The user never sees this — it is internal only.
+    You MUST provide a thought string argument.
     Use it to:
     - Interpret the user's intent and emotional tone
     - Decide which tools to call (or whether to respond directly)

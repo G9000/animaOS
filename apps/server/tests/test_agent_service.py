@@ -41,6 +41,36 @@ class FailingThenReplyRunner:
         )
 
 
+class RecordingRunner:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    async def invoke(
+        self,
+        user_message: str,
+        user_id: int,
+        history: list[agent_service.StoredMessage],
+        **kwargs: object,
+    ) -> AgentResult:
+        del kwargs
+        self.requests.append({
+            "user_message": user_message,
+            "user_id": user_id,
+            "history": [
+                (message.role, message.content, message.tool_name, message.tool_call_id)
+                for message in history
+            ],
+        })
+        reply = f"Reply to: {user_message}"
+        return AgentResult(
+            response=reply,
+            model="test-model",
+            provider="test-provider",
+            stop_reason="end_turn",
+            step_traces=[StepTrace(step_index=0, assistant_text=reply)],
+        )
+
+
 @contextmanager
 def _db_session() -> Generator[Session, None, None]:
     engine: Engine = create_engine(
@@ -109,6 +139,39 @@ async def test_failed_turn_retry_keeps_history_clean(
     assert [message.content_text for message in history] == [
         "second attempt",
         "Recovered reply.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_only_prior_turns_in_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _db_session() as session:
+            user = User(
+                username="history-check",
+                password_hash="not-used",
+                display_name="History Check",
+            )
+            session.add(user)
+            session.commit()
+
+            await run_agent("first turn", user.id, session)
+            await run_agent("second turn", user.id, session)
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert runner.requests[0]["user_message"] == "first turn"
+    assert runner.requests[0]["history"] == []
+    assert runner.requests[1]["user_message"] == "second turn"
+    assert runner.requests[1]["history"] == [
+        ("user", "first turn", None, None),
+        ("assistant", "Reply to: first turn", None, None),
     ]
 
 

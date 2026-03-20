@@ -823,6 +823,10 @@ class AgentRuntime:
                     if step_result is None:
                         raise RuntimeError(
                             "Adapter stream ended without a final step result.")
+                    if step_result.ttft_ms is not None:
+                        ttft_time = ctx.start_time + (step_result.ttft_ms / 1000)
+                        if ctx.ttft_time is None or ttft_time < ctx.ttft_time:
+                            ctx.ttft_time = ttft_time
 
                     ctx.progression = StepProgression.RESPONSE_RECEIVED
 

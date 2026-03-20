@@ -4,6 +4,7 @@ import pytest
 
 from anima_server.services.agent.executor import ToolExecutor, _stringify_output
 from anima_server.services.agent.runtime_types import ToolCall, ToolExecutionResult
+from anima_server.services.agent.tools import tool
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +227,26 @@ async def test_executor_tool_exception_returns_error() -> None:
     assert result.is_error is True
     assert "tool exploded" in result.output
     assert result.name == "failing_tool"
+
+
+@pytest.mark.asyncio
+async def test_executor_reports_missing_required_arguments_before_invoking() -> None:
+    calls: list[str] = []
+
+    @tool
+    def greet(name: str) -> str:
+        """Greet a user by name."""
+        calls.append(name)
+        return f"hello {name}"
+
+    executor = ToolExecutor([greet])
+    tc = ToolCall(id="c10b", name="greet", arguments={})
+    result = await executor.execute(tc)
+
+    assert calls == []
+    assert result.is_error is True
+    assert "missing required argument" in result.output.lower()
+    assert "name" in result.output
 
 
 # --------------------------------------------------------------------------- #

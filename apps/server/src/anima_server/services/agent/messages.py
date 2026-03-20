@@ -7,6 +7,8 @@ from typing import Any
 from anima_server.services.agent.runtime_types import ToolCall
 from anima_server.services.agent.state import StoredMessage
 
+_TOOL_RULE_VIOLATION_PREFIX = "Tool rule violation:"
+
 
 @dataclass
 class SystemMessage:
@@ -44,10 +46,21 @@ def build_conversation_messages(
     system_prompt: str,
 ) -> list[Any]:
     messages: list[Any] = [make_system_message(system_prompt)]
-    messages.extend(to_runtime_message(message) for message in history)
+    messages.extend(
+        to_runtime_message(message)
+        for message in history
+        if not _is_stale_tool_rule_violation_message(message)
+    )
     if user_message is not None:
         messages.append(make_user_message(user_message))
     return messages
+
+
+def _is_stale_tool_rule_violation_message(message: StoredMessage) -> bool:
+    return (
+        message.role == "tool"
+        and message.content.startswith(_TOOL_RULE_VIOLATION_PREFIX)
+    )
 
 
 def to_runtime_message(message: StoredMessage) -> Any:

@@ -255,20 +255,7 @@ async def approve_or_deny_turn(
         ),
     )
     db.commit()
-
-    # Update companion window
-    from anima_server.services.agent.state import StoredMessage
-    result_messages = []
-    for trace in result.step_traces:
-        if trace.assistant_text:
-            result_messages.append(
-                StoredMessage(role="assistant", content=trace.assistant_text))
-        for tr in trace.tool_results:
-            result_messages.append(
-                StoredMessage(role="tool", content=tr.output,
-                              tool_name=tr.name, tool_call_id=tr.call_id))
-    if result_messages:
-        companion.append_to_window(result_messages)
+    _refresh_companion_history(user_id=user_id, db=db)
 
     # Post-turn hooks
     _run_post_turn_hooks(
@@ -400,6 +387,7 @@ async def _execute_agent_turn_locked(
             db, thread=thread, run=run, result=result,
             initial_sequence_id=initial_sequence_id,
         )
+        _refresh_companion_history(user_id=user_id, db=db)
         if event_callback is not None:
             if pending_tc is not None:
                 await event_callback(build_approval_pending_event(
@@ -421,6 +409,7 @@ async def _execute_agent_turn_locked(
         db, thread=thread, run=run, result=result,
         initial_sequence_id=initial_sequence_id,
     )
+    _refresh_companion_history(user_id=user_id, db=db)
 
     # Stage 4: Post-turn hooks
     _run_post_turn_hooks(
@@ -542,10 +531,6 @@ async def _prepare_turn_context(
     memory_blocks = _inject_memory_pressure_warning(
         memory_blocks, history, companion,
     )
-
-    # Append the user message to the companion's conversation window.
-    companion.append_to_window(
-        [StoredMessage(role="user", content=user_message)])
 
     turn_ctx = _TurnContext(
         history=history,
@@ -793,6 +778,15 @@ def _rebuild_turn_context_after_compaction(
     )
 
 
+def _refresh_companion_history(*, user_id: int, db: Session) -> None:
+    """Reload the cached conversation window from persisted in-context history."""
+    companion = get_companion(user_id)
+    if companion is None:
+        return
+    companion.invalidate_history()
+    companion.ensure_history_loaded(db)
+
+
 def _handle_step_failure(
     db: Session,
     *,
@@ -888,21 +882,6 @@ def _persist_approval_checkpoint(
         step_id=None,
         sequence_id=seq_id,
     )
-
-    # Update companion window
-    companion = get_companion(run.user_id)
-    if companion is not None:
-        result_messages = []
-        for trace in result.step_traces:
-            if trace.assistant_text:
-                result_messages.append(
-                    StoredMessage(role="assistant", content=trace.assistant_text))
-            for tr in trace.tool_results:
-                result_messages.append(
-                    StoredMessage(role="tool", content=tr.output,
-                                  tool_name=tr.name, tool_call_id=tr.call_id))
-        if result_messages:
-            companion.append_to_window(result_messages)
 
     db.commit()
     return pending_tool_call
