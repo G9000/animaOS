@@ -4,6 +4,7 @@ import { api, type AgentConfig, type ProviderInfo } from "../../lib/api";
 
 const SUGGESTED_MODELS: Record<string, string[]> = {
   ollama: [
+    "qwen3.5-uncensored:35b",
     "qwen3:14b",
     "gemma3:12b",
     "deepseek-r1:32b",
@@ -27,7 +28,7 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
 };
 
 const FALLBACK_PROVIDERS: ProviderInfo[] = [
-  { name: "ollama", defaultModel: "qwen3:14b", requiresApiKey: false },
+  { name: "ollama", defaultModel: "qwen3.5-uncensored:35b", requiresApiKey: false },
   { name: "openrouter", defaultModel: "openrouter/free", requiresApiKey: true },
   { name: "openai", defaultModel: "gpt-4o", requiresApiKey: true },
   { name: "anthropic", defaultModel: "claude-sonnet-4-20250514", requiresApiKey: true },
@@ -41,7 +42,7 @@ export default function AiSettings() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [provider, setProvider] = useState("ollama");
-  const [model, setModel] = useState("llama3.1:8b");
+  const [model, setModel] = useState("qwen3.5-uncensored:35b");
   const [apiKey, setApiKey] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
   const [systemPrompt, setSystemPrompt] = useState("");

@@ -30,11 +30,11 @@ _that was never anyone else's_
 
 AnimaOS uses tool calling (function calling) extensively — the AI thinks, remembers, and responds through a multi-step cognitive loop. **This requires a model that handles structured tool calls well.**
 
-**Primary model:** `qwen3.5:35b` via Ollama (24GB VRAM, 256K context). This is what AnimaOS is developed and tested against. Anything smaller is not recommended — smaller models struggle with the multi-step cognitive loop and will produce broken or robotic responses.
+**Primary model:** `qwen3.5-uncensored:35b` via Ollama (24GB VRAM, 256K context). This is what AnimaOS is developed and tested against. Anything smaller is not recommended — smaller models struggle with the multi-step cognitive loop and will produce broken or robotic responses.
 
 | Tier                | Models                                              | Notes                                                                                  |
 | ------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| **Recommended**     | `qwen3.5:35b`, `qwen3.5:122b`                       | Best persona adherence, tool calling, and natural conversation                         |
+| **Recommended**     | `qwen3.5-uncensored:35b`, `qwen3.5:122b`            | Best persona adherence, tool calling, and natural conversation                         |
 | **May work**        | `qwen3:32b`, `deepseek-r1:32b`, `gemma3:27b`        | Capable but not tested extensively                                                     |
 | **Not recommended** | Anything below 30B parameters                        | Will ignore persona, leak raw tool calls, give robotic responses                       |
 
