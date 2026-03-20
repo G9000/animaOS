@@ -356,7 +356,15 @@ class AgentRuntime:
                 if event_callback is not None:
                     await event_callback(
                         build_timing_event(step_index, _compute_timing(step_ctx)))
-                stop_reason = StopReason.END_TURN
+                # Detect completely empty response (no text, no tool calls)
+                # when tool use was forced — the model failed to comply.
+                stop_reason = _resolve_empty_forced_tool_stop_reason(
+                    step_index=step_index,
+                    force_tool_call=force_tool_call,
+                    step_result=step_result,
+                )
+                if stop_reason is None:
+                    stop_reason = StopReason.END_TURN
                 break
 
             if event_callback is not None:
@@ -696,14 +704,22 @@ class AgentRuntime:
             await event_callback(
                 build_timing_event(1, _compute_timing(follow_ctx)))
 
+        stop_reason = _resolve_empty_forced_tool_stop_reason(
+            step_index=1,
+            force_tool_call=force_tool_call,
+            step_result=step_result,
+        )
+        if stop_reason is None:
+            stop_reason = StopReason.END_TURN
+
         if not response:
-            response = _default_response(StopReason.END_TURN)
+            response = _default_response(stop_reason)
 
         return AgentResult(
             response=response,
             model=self._adapter.model,
             provider=self._adapter.provider,
-            stop_reason=StopReason.END_TURN.value,
+            stop_reason=stop_reason.value,
             tools_used=tools_used,
             step_traces=step_traces,
             prompt_budget=prompt_budget,
@@ -1037,9 +1053,34 @@ def _default_response(stop_reason: StopReason) -> str:
         return "Agent runtime reached the maximum step limit without a final response."
     if stop_reason == StopReason.AWAITING_APPROVAL:
         return "Agent runtime is waiting for approval before running a tool."
+    if stop_reason == StopReason.EMPTY_RESPONSE:
+        return (
+            "I'm sorry, I wasn't able to generate a response. "
+            "Could you try rephrasing or sending your message again?"
+        )
     if stop_reason == StopReason.CANCELLED:
         return ""
     return ""
+
+
+def _resolve_empty_forced_tool_stop_reason(
+    *,
+    step_index: int,
+    force_tool_call: bool,
+    step_result: StepExecutionResult,
+) -> StopReason | None:
+    if (
+        not force_tool_call
+        or step_result.assistant_text.strip()
+        or step_result.tool_calls
+    ):
+        return None
+    logger.warning(
+        "Step %d: force_tool_call was set but LLM produced "
+        "no text and no tool calls; marking as empty_response",
+        step_index,
+    )
+    return StopReason.EMPTY_RESPONSE
 
 
 def _compute_timing(ctx: StepContext) -> StepTiming:

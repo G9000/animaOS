@@ -12,6 +12,7 @@ class StopReason(StrEnum):
     MAX_STEPS = "max_steps"
     AWAITING_APPROVAL = "awaiting_approval"
     CANCELLED = "cancelled"
+    EMPTY_RESPONSE = "empty_response"
 
 
 class StepProgression(IntEnum):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 import json
+import logging
 import time
 from typing import Any
 
@@ -31,6 +32,8 @@ from anima_server.services.agent.runtime_types import (
 
 from .base import BaseLLMAdapter
 
+logger = logging.getLogger(__name__)
+
 
 class OpenAICompatibleAdapter(BaseLLMAdapter):
     def __init__(
@@ -57,6 +60,40 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         return None
 
     async def invoke(self, request: LLMRequest) -> StepExecutionResult:
+        result = await self._invoke_once(request)
+
+        # Retry with downgraded tool_choice if force_tool_call produced an
+        # empty response (no text *and* no tool calls).  Some models (e.g.
+        # Qwen via Ollama) return nothing when tool_choice="required".
+        if (
+            request.force_tool_call
+            and request.available_tools
+            and not result.assistant_text.strip()
+            and not result.tool_calls
+        ):
+            logger.warning(
+                "Empty response with tool_choice='required'; "
+                "retrying with tool_choice='auto'"
+            )
+            auto_request = _downgrade_tool_choice(request, mode="auto")
+            result = await self._invoke_once(auto_request)
+
+        if (
+            request.force_tool_call
+            and request.available_tools
+            and not result.assistant_text.strip()
+            and not result.tool_calls
+        ):
+            logger.warning(
+                "Still empty with tool_choice='auto'; "
+                "retrying without tools"
+            )
+            no_tools_request = _downgrade_tool_choice(request, mode="none")
+            result = await self._invoke_once(no_tools_request)
+
+        return result
+
+    async def _invoke_once(self, request: LLMRequest) -> StepExecutionResult:
         llm: Any = self._llm
         if request.available_tools:
             llm = self._llm.bind_tools(
@@ -90,6 +127,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         )
 
     async def stream(self, request: LLMRequest) -> AsyncGenerator[StepStreamEvent, None]:
+        # Stream normally first, yielding per-chunk deltas to the caller.
         llm: Any = self._llm
         if request.available_tools:
             llm = self._llm.bind_tools(
@@ -149,19 +187,152 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             yield StepStreamEvent(content_delta=remaining_visible_text)
 
         tag_reasoning = reasoning_filter.captured_reasoning
-        # Native fields not available during streaming (no final response
-        # object), so we rely on tag-based capture only.
-        yield StepStreamEvent(
-            result=StepExecutionResult(
-                assistant_text="".join(content_parts),
-                tool_calls=_finalize_stream_tool_calls(tool_call_state),
-                usage=usage,
-                reasoning_content=tag_reasoning,
-                ttft_ms=round((first_content_time - request_start_time) * 1000, 2)
-                if first_content_time is not None
-                else None,
-            )
+        result = StepExecutionResult(
+            assistant_text="".join(content_parts),
+            tool_calls=_finalize_stream_tool_calls(tool_call_state),
+            usage=usage,
+            reasoning_content=tag_reasoning,
+            ttft_ms=round((first_content_time - request_start_time) * 1000, 2)
+            if first_content_time is not None
+            else None,
         )
+
+        # Retry with downgraded tool_choice if force_tool_call produced an
+        # empty response (no text *and* no tool calls).  Some models (e.g.
+        # Qwen via Ollama) return nothing when tool_choice="required".
+        # No chunks were streamed yet (result is empty), so retrying is safe.
+        if (
+            request.force_tool_call
+            and request.available_tools
+            and not result.assistant_text.strip()
+            and not result.tool_calls
+        ):
+            logger.warning(
+                "Empty streamed response with tool_choice='required'; "
+                "retrying with tool_choice='auto'"
+            )
+            auto_request = _downgrade_tool_choice(request, mode="auto")
+            result = await self._stream_once(auto_request)
+            if result.assistant_text:
+                yield StepStreamEvent(content_delta=result.assistant_text)
+
+        if (
+            request.force_tool_call
+            and request.available_tools
+            and not result.assistant_text.strip()
+            and not result.tool_calls
+        ):
+            logger.warning(
+                "Still empty with tool_choice='auto'; "
+                "retrying without tools"
+            )
+            no_tools_request = _downgrade_tool_choice(request, mode="none")
+            result = await self._stream_once(no_tools_request)
+            # Emit recovered text as a content delta so the runtime sees it.
+            if result.assistant_text:
+                yield StepStreamEvent(content_delta=result.assistant_text)
+
+        yield StepStreamEvent(result=result)
+
+    async def _stream_once(self, request: LLMRequest) -> StepExecutionResult:
+        """Run a single streaming LLM call and return the assembled result."""
+        llm: Any = self._llm
+        if request.available_tools:
+            llm = self._llm.bind_tools(
+                list(request.available_tools),
+                tool_choice="required" if request.force_tool_call else "auto",
+            )
+
+        content_parts: list[str] = []
+        tool_call_state: dict[int, dict[str, object]] = {}
+        usage: UsageStats | None = None
+        reasoning_filter = ReasoningTraceFilter()
+        request_start_time = time.monotonic()
+        first_content_time: float | None = None
+
+        try:
+            async for chunk in llm.astream(list(request.messages)):
+                content_delta = getattr(chunk, "content_delta", "")
+                if content_delta:
+                    if first_content_time is None:
+                        first_content_time = time.monotonic()
+                    visible_delta = reasoning_filter.feed(content_delta)
+                    if visible_delta:
+                        content_parts.append(visible_delta)
+
+                for delta in _stream_tool_call_deltas(chunk):
+                    index = delta.get("index", 0)
+                    if not isinstance(index, int):
+                        continue
+                    state = tool_call_state.setdefault(
+                        index,
+                        {"id": None, "name": "", "arguments_parts": []},
+                    )
+                    call_id = delta.get("id")
+                    if isinstance(call_id, str) and call_id.strip():
+                        state["id"] = call_id
+                    name = delta.get("name")
+                    if isinstance(name, str) and name.strip():
+                        state["name"] = name
+                    arguments = delta.get("arguments")
+                    if isinstance(arguments, str) and arguments:
+                        state["arguments_parts"].append(arguments)
+
+                chunk_usage = _normalize_usage(chunk)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+        except Exception as exc:
+            raise wrap_llm_error(
+                exc,
+                provider=self.provider,
+                base_url=self._base_url,
+            ) from exc
+
+        remaining_visible_text = reasoning_filter.flush()
+        if remaining_visible_text:
+            content_parts.append(remaining_visible_text)
+
+        tag_reasoning = reasoning_filter.captured_reasoning
+
+        return StepExecutionResult(
+            assistant_text="".join(content_parts),
+            tool_calls=_finalize_stream_tool_calls(tool_call_state),
+            usage=usage,
+            reasoning_content=tag_reasoning,
+            ttft_ms=round((first_content_time - request_start_time) * 1000, 2)
+            if first_content_time is not None
+            else None,
+        )
+
+
+def _downgrade_tool_choice(request: LLMRequest, *, mode: str) -> LLMRequest:
+    """Return a copy of *request* with a downgraded tool_choice strategy.
+
+    ``mode="auto"`` — keep tools but clear force_tool_call.
+    ``mode="none"`` — remove tools entirely.
+    """
+    if mode == "none":
+        return LLMRequest(
+            messages=request.messages,
+            user_id=request.user_id,
+            step_index=request.step_index,
+            max_steps=request.max_steps,
+            system_prompt=request.system_prompt,
+            conversation_turn_count=request.conversation_turn_count,
+            available_tools=(),
+            force_tool_call=False,
+        )
+    # mode == "auto"
+    return LLMRequest(
+        messages=request.messages,
+        user_id=request.user_id,
+        step_index=request.step_index,
+        max_steps=request.max_steps,
+        system_prompt=request.system_prompt,
+        conversation_turn_count=request.conversation_turn_count,
+        available_tools=request.available_tools,
+        force_tool_call=False,
+    )
 
 
 def _normalize_tool_calls(raw_tool_calls: Sequence[Any]) -> tuple[ToolCall, ...]:
