@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { getDbViewerEnabled } from "../pages/settings/AdvancedSettings";
+import { getTheme, toggleTheme, type Theme } from "../lib/theme";
 
 const STATIC_NAV_ITEMS = [
   { to: "/", label: "HOME", icon: "\u2302" },
@@ -27,6 +28,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     catch { return false; }
   });
   const [showUser, setShowUser] = useState(false);
+  const [theme, setTheme] = useState<Theme>(getTheme);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const dockRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
@@ -181,6 +183,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="w-px h-5 bg-border" />
+
+          {/* Theme toggle */}
+          <button
+            onClick={() => setTheme(toggleTheme())}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            className="flex items-center justify-center w-7 h-9 font-mono text-[11px] text-text-muted/50 hover:text-text-muted transition-colors"
+          >
+            {theme === "dark" ? "\u2600" : "\u263E"}
+          </button>
 
           {/* Pin toggle */}
           <button

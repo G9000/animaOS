@@ -33,15 +33,9 @@ export default function Login() {
     <div className="flex items-center justify-center min-h-screen p-8 bg-bg">
       <div className="w-full max-w-[380px]">
         <div className="text-center mb-12">
-          <div className="flex items-center justify-center gap-2 mb-3">
-            <div className="w-2 h-2 bg-primary" />
-          </div>
           <h1 className="font-mono text-lg font-medium tracking-[0.3em] text-text">
             ANIMA
           </h1>
-          <p className="font-mono text-[9px] text-text-muted/30 tracking-wider mt-1">
-            RUNTIME ACCESS
-          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
