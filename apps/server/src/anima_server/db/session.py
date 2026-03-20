@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _engine_cache_lock = RLock()
 _engine_cache: dict[str, Engine] = {}
 _session_factory_cache: dict[str, sessionmaker[Session]] = {}
+_user_engines: dict[str, Engine] = {}
 _migrated_databases: set[str] = set()
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
@@ -229,9 +230,11 @@ def get_user_database_url(user_id: int) -> str:
 
 def ensure_user_database(user_id: int) -> sessionmaker[Session]:
     database_url = get_user_database_url(user_id)
+    engine_instance = get_engine(database_url)
+    with _engine_cache_lock:
+        _user_engines[database_url] = engine_instance
     factory = get_session_factory(database_url)
     if database_url not in _migrated_databases:
-        engine_instance = get_engine(database_url)
         _run_alembic_upgrade(engine_instance)
         _migrated_databases.add(database_url)
     return factory
@@ -272,6 +275,7 @@ def dispose_database(database_url: str) -> None:
     with _engine_cache_lock:
         factory = _session_factory_cache.pop(database_url, None)
         engine_instance = _engine_cache.pop(database_url, None)
+        _user_engines.pop(database_url, None)
     _migrated_databases.discard(database_url)
 
     del factory
@@ -288,7 +292,21 @@ def dispose_cached_engines() -> None:
         engine_items = list(_engine_cache.items())
         _engine_cache.clear()
         _session_factory_cache.clear()
+        _user_engines.clear()
     _migrated_databases.clear()
+
+    for _, engine_instance in engine_items:
+        engine_instance.dispose()
+
+
+def dispose_all_user_engines() -> None:
+    with _engine_cache_lock:
+        engine_items = list(_user_engines.items())
+        _user_engines.clear()
+        for database_url, _engine_instance in engine_items:
+            _engine_cache.pop(database_url, None)
+            _session_factory_cache.pop(database_url, None)
+            _migrated_databases.discard(database_url)
 
     for _, engine_instance in engine_items:
         engine_instance.dispose()

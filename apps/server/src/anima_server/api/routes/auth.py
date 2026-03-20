@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import read_unlock_token
-from anima_server.db import get_db
+from anima_server.db import dispose_all_user_engines, get_db
 from anima_server.db.user_store import authenticate_account, register_account
 from anima_server.schemas.auth import (
     ChangePasswordRequest,
@@ -28,7 +28,7 @@ from anima_server.services.auth import (
     normalize_username,
     serialize_user,
 )
-from anima_server.services.sessions import unlock_session_store
+from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -187,6 +187,8 @@ def me(
 @router.post("/logout", response_model=LogoutResponse)
 def logout(request: Request) -> dict[str, bool]:
     unlock_session_store.revoke(read_unlock_token(request))
+    clear_sqlcipher_key()
+    dispose_all_user_engines()
     return {"success": True}
 
 

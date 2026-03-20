@@ -257,6 +257,8 @@ def _write_manifest(manifest: dict[str, object]) -> None:
     path = get_manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(path, 0o600)
 
 
 def _detect_next_user_id() -> int:

@@ -3,7 +3,9 @@ from __future__ import annotations
 import anima_server.api.routes.auth as auth_routes
 from fastapi.testclient import TestClient
 
+from anima_server.db import session as db_session
 from anima_server.services.sessions import get_active_dek
+from anima_server.services.sessions import get_sqlcipher_key, set_sqlcipher_key
 from conftest import managed_test_client
 
 
@@ -73,6 +75,36 @@ def test_login_me_and_logout_use_the_same_unlock_token() -> None:
         assert locked_response.status_code == 401
         assert locked_response.json() == {
             "error": "Session locked. Please sign in again."}
+
+
+def test_logout_clears_sqlcipher_key_and_disposes_user_engines() -> None:
+    with managed_test_client("anima-auth-test-") as client:
+        register_payload = _register_user(client, password="pw123456")
+        headers = {"x-anima-unlock": register_payload["unlockToken"]}
+
+        set_sqlcipher_key(b"test-sqlcipher-key")
+
+        me_response = client.get("/api/auth/me", headers=headers)
+        assert me_response.status_code == 200
+
+        user_engines = list(db_session._user_engines.values())
+        assert len(user_engines) == 1
+
+        dispose_calls: list[bool] = []
+        original_dispose = user_engines[0].dispose
+
+        def _tracked_dispose() -> None:
+            dispose_calls.append(True)
+            original_dispose()
+
+        user_engines[0].dispose = _tracked_dispose  # type: ignore[method-assign]
+
+        logout_response = client.post("/api/auth/logout", headers=headers)
+
+        assert logout_response.status_code == 200
+        assert get_sqlcipher_key() is None
+        assert dispose_calls == [True]
+        assert db_session._user_engines == {}
 
 
 def test_login_rejects_invalid_credentials() -> None:

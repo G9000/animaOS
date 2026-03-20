@@ -23,6 +23,7 @@ class UnlockSessionStore:
         self._lock = Lock()
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
+        self._db_viewer_verified_at: dict[str, float] = {}
 
     def create(self, user_id: int, deks: dict[str, bytes]) -> str:
         token = secrets.token_urlsafe(32)
@@ -56,6 +57,7 @@ class UnlockSessionStore:
             return
         with self._lock:
             session = self._sessions.pop(token, None)
+            self._db_viewer_verified_at.pop(token, None)
             if session is not None:
                 self._refresh_latest_deks_locked(session.user_id)
                 _zero_deks(session.deks)
@@ -68,13 +70,19 @@ class UnlockSessionStore:
                 if session.user_id == user_id
             ]
             for token in matching_tokens:
-                self._sessions.pop(token, None)
+                session = self._sessions.pop(token, None)
+                self._db_viewer_verified_at.pop(token, None)
+                if session is not None:
+                    _zero_deks(session.deks)
             self._latest_deks_by_user.pop(user_id, None)
 
     def clear(self) -> None:
         with self._lock:
+            for session in self._sessions.values():
+                _zero_deks(session.deks)
             self._sessions.clear()
             self._latest_deks_by_user.clear()
+            self._db_viewer_verified_at.clear()
 
     def get_active_dek(self, user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
         with self._lock:
@@ -89,6 +97,30 @@ class UnlockSessionStore:
             self._purge_expired_locked()
             return self._latest_deks_by_user.get(user_id)
 
+    def set_db_viewer_verified_at(
+        self,
+        token: str | None,
+        verified_at: float | None,
+    ) -> None:
+        if token is None:
+            return
+        with self._lock:
+            self._purge_expired_locked()
+            if token not in self._sessions:
+                self._db_viewer_verified_at.pop(token, None)
+                return
+            if verified_at is None:
+                self._db_viewer_verified_at.pop(token, None)
+                return
+            self._db_viewer_verified_at[token] = verified_at
+
+    def get_db_viewer_verified_at(self, token: str | None) -> float | None:
+        if token is None:
+            return None
+        with self._lock:
+            self._purge_expired_locked()
+            return self._db_viewer_verified_at.get(token)
+
     def _purge_expired_locked(self) -> None:
         now = self._now()
         expired_tokens = []
@@ -99,6 +131,7 @@ class UnlockSessionStore:
                 affected_users.add(session.user_id)
         for token in expired_tokens:
             expired = self._sessions.pop(token, None)
+            self._db_viewer_verified_at.pop(token, None)
             if expired is not None:
                 _zero_deks(expired.deks)
         for user_id in affected_users:
@@ -159,6 +192,8 @@ def get_sqlcipher_key() -> bytes | None:
 def clear_sqlcipher_key() -> None:
     global _sqlcipher_key  # noqa: PLW0603
     with _sqlcipher_key_lock:
+        if _sqlcipher_key is not None:
+            _zero_dek(_sqlcipher_key)
         _sqlcipher_key = None
 
 

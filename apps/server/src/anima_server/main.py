@@ -1,4 +1,5 @@
 import hmac
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +35,7 @@ CORS_ORIGINS = [
 
 # Paths exempt from sidecar-nonce validation.
 _NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health"})
+logger = logging.getLogger(__name__)
 
 
 class SidecarNonceMiddleware(BaseHTTPMiddleware):
@@ -48,6 +50,13 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     desktop frontend via a trusted Tauri IPC command so that other
     local processes cannot obtain it.
     """
+
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        if not settings.sidecar_nonce and settings.app_env != "development":
+            logger.warning(
+                "Sidecar nonce is not configured in non-development environment"
+            )
 
     # type: ignore[override]
     async def dispatch(self, request: Request, call_next):
@@ -64,6 +73,12 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
 
 
 def create_app() -> FastAPI:
+    if settings.core_require_encryption and not settings.sidecar_nonce:
+        raise RuntimeError(
+            "Sidecar nonce must be configured when encryption is required."
+        )
+    if not settings.sidecar_nonce and settings.app_env != "development":
+        logger.warning("Sidecar nonce is not configured in non-development environment")
     ensure_core_manifest()
     acquire_core_lock()
     ensure_per_user_databases_ready()
@@ -72,8 +87,7 @@ def create_app() -> FastAPI:
     # Sidecar nonce enforcement — added before CORSMiddleware so that
     # Starlette's reverse-add ordering makes CORS the outermost layer,
     # allowing OPTIONS preflights to succeed before the nonce check runs.
-    if settings.sidecar_nonce:
-        app.add_middleware(SidecarNonceMiddleware)
+    app.add_middleware(SidecarNonceMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

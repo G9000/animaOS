@@ -11,14 +11,16 @@ Covers:
 """
 from __future__ import annotations
 
+import shutil
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from anima_server.config import settings
 from anima_server.db.session import is_sqlite_mode
 
-from conftest import managed_test_client
+from conftest import create_managed_temp_dir, managed_test_client
 
 
 # --------------------------------------------------------------------------- #
@@ -33,6 +35,20 @@ def _register_user(client: TestClient) -> dict[str, object]:
     )
     assert response.status_code == 201
     return response.json()
+
+
+def _create_test_app() -> tuple[object, object, object]:
+    from anima_server.main import create_app
+
+    temp_root = create_managed_temp_dir("anima-sec-app-")
+    original_data_dir = settings.data_dir
+    settings.data_dir = temp_root / "anima-data"
+    try:
+        return create_app(), original_data_dir, temp_root
+    except Exception:
+        settings.data_dir = original_data_dir
+        shutil.rmtree(temp_root, ignore_errors=True)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -77,11 +93,11 @@ def test_require_sqlite_mode_passes_in_sqlite_mode() -> None:
     from anima_server.api.deps.db_mode import require_sqlite_mode
 
     with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=True):
-        require_sqlite_mode()  # should not raise
+        require_sqlite_mode()
 
 
 # --------------------------------------------------------------------------- #
-# get_user_database_url – fail-closed for non-SQLite
+# get_user_database_url - fail-closed for non-SQLite
 # --------------------------------------------------------------------------- #
 
 
@@ -236,29 +252,30 @@ def test_config_update_allowed_in_sqlite_mode() -> None:
 
 
 def test_nonce_middleware_rejects_missing_header() -> None:
-    """When sidecar_nonce is set, a non-exempt endpoint must return 403 without the header."""
-    original = settings.sidecar_nonce
+    original_nonce = settings.sidecar_nonce
+    original_data_dir = settings.data_dir
+    temp_root = None
     try:
         settings.sidecar_nonce = "test-nonce-enforce"
-        from anima_server.main import create_app
-
-        app = create_app()
+        app, original_data_dir, temp_root = _create_test_app()
         with TestClient(app) as client:
             resp = client.get("/api/config/providers")
             assert resp.status_code == 403
             assert "nonce" in resp.json()["error"].lower()
     finally:
-        settings.sidecar_nonce = original
+        settings.sidecar_nonce = original_nonce
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_nonce_middleware_accepts_correct_header() -> None:
-    """When the correct x-anima-nonce is provided, the request should pass through."""
-    original = settings.sidecar_nonce
+    original_nonce = settings.sidecar_nonce
+    original_data_dir = settings.data_dir
+    temp_root = None
     try:
         settings.sidecar_nonce = "test-nonce-enforce"
-        from anima_server.main import create_app
-
-        app = create_app()
+        app, original_data_dir, temp_root = _create_test_app()
         with TestClient(app) as client:
             resp = client.get(
                 "/api/config/providers",
@@ -266,17 +283,19 @@ def test_nonce_middleware_accepts_correct_header() -> None:
             )
             assert resp.status_code == 200
     finally:
-        settings.sidecar_nonce = original
+        settings.sidecar_nonce = original_nonce
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_nonce_middleware_rejects_wrong_header() -> None:
-    """When a wrong x-anima-nonce is provided, the request must be rejected."""
-    original = settings.sidecar_nonce
+    original_nonce = settings.sidecar_nonce
+    original_data_dir = settings.data_dir
+    temp_root = None
     try:
         settings.sidecar_nonce = "test-nonce-enforce"
-        from anima_server.main import create_app
-
-        app = create_app()
+        app, original_data_dir, temp_root = _create_test_app()
         with TestClient(app) as client:
             resp = client.get(
                 "/api/config/providers",
@@ -284,17 +303,21 @@ def test_nonce_middleware_rejects_wrong_header() -> None:
             )
             assert resp.status_code == 403
     finally:
-        settings.sidecar_nonce = original
+        settings.sidecar_nonce = original_nonce
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_nonce_middleware_uses_compare_digest() -> None:
-    """Nonce validation must use constant-time comparison."""
-    original = settings.sidecar_nonce
+    original_nonce = settings.sidecar_nonce
+    original_data_dir = settings.data_dir
+    temp_root = None
     try:
         settings.sidecar_nonce = "test-nonce-enforce"
         from anima_server import main as main_module
 
-        app = main_module.create_app()
+        app, original_data_dir, temp_root = _create_test_app()
         with patch.object(main_module.hmac, "compare_digest", return_value=True) as compare_digest:
             with TestClient(app) as client:
                 resp = client.get(
@@ -304,46 +327,97 @@ def test_nonce_middleware_uses_compare_digest() -> None:
         assert resp.status_code == 200
         compare_digest.assert_called_once_with("test-nonce-enforce", "test-nonce-enforce")
     finally:
-        settings.sidecar_nonce = original
+        settings.sidecar_nonce = original_nonce
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_health_exempt_from_nonce() -> None:
-    """Health endpoints must be accessible without the nonce header."""
-    original = settings.sidecar_nonce
+    original_nonce = settings.sidecar_nonce
+    original_data_dir = settings.data_dir
+    temp_root = None
     try:
         settings.sidecar_nonce = "test-nonce-enforce"
-        from anima_server.main import create_app
-
-        app = create_app()
+        app, original_data_dir, temp_root = _create_test_app()
         with TestClient(app) as client:
             resp = client.get("/health")
             assert resp.status_code == 200
             assert resp.json()["status"] == "ok"
     finally:
-        settings.sidecar_nonce = original
+        settings.sidecar_nonce = original_nonce
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_health_endpoint_does_not_expose_nonce() -> None:
-    """Health endpoint must NOT include the nonce — it is only delivered via Tauri IPC."""
-    original = settings.sidecar_nonce
+    original_nonce = settings.sidecar_nonce
+    original_data_dir = settings.data_dir
+    temp_root = None
     try:
         settings.sidecar_nonce = "test-nonce-abc123"
-        from anima_server.main import create_app
-
-        app = create_app()
+        app, original_data_dir, temp_root = _create_test_app()
         with TestClient(app) as client:
             resp = client.get("/health")
             assert resp.status_code == 200
             data = resp.json()
             assert "nonce" not in data
     finally:
-        settings.sidecar_nonce = original
+        settings.sidecar_nonce = original_nonce
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_health_endpoint_omits_nonce_when_not_configured() -> None:
-    """Health endpoint should not include nonce if ANIMA_SIDECAR_NONCE is empty."""
     with managed_test_client("anima-sec-test-") as client:
         resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
         assert "nonce" not in data
+
+
+def test_create_app_warns_when_nonce_missing_outside_development() -> None:
+    original_nonce = settings.sidecar_nonce
+    original_env = settings.app_env
+    original_require_encryption = settings.core_require_encryption
+    original_data_dir = settings.data_dir
+    temp_root = None
+    try:
+        settings.sidecar_nonce = ""
+        settings.app_env = "production"
+        settings.core_require_encryption = False
+
+        from anima_server import main as main_module
+
+        with patch.object(main_module.logger, "warning") as warning:
+            _, original_data_dir, temp_root = _create_test_app()
+
+        warning.assert_called_once_with(
+            "Sidecar nonce is not configured in non-development environment"
+        )
+    finally:
+        settings.sidecar_nonce = original_nonce
+        settings.app_env = original_env
+        settings.core_require_encryption = original_require_encryption
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_app_refuses_to_start_when_encryption_required_without_nonce() -> None:
+    original_nonce = settings.sidecar_nonce
+    original_env = settings.app_env
+    original_require_encryption = settings.core_require_encryption
+    try:
+        settings.sidecar_nonce = ""
+        settings.app_env = "production"
+        settings.core_require_encryption = True
+
+        with pytest.raises(RuntimeError):
+            _create_test_app()
+    finally:
+        settings.sidecar_nonce = original_nonce
+        settings.app_env = original_env
+        settings.core_require_encryption = original_require_encryption

@@ -4,6 +4,52 @@
 **Auditors**: Codex (GPT-5.4), Claude Crypto Auditor, Claude Security Auditor
 **Scope**: SQLCipher integration, key derivation, key wrapping, passphrase handling, encryption at rest, vault import/export, auth flows, trust boundaries, API access control
 
+## Remediation Status
+
+| Finding | Severity | Status | Fix Date |
+|---------|----------|--------|----------|
+| H1 — SQL injection via `/api/db/query` | High | FIXED | 2026-03-20 |
+| H2 — DB mutation on system tables | High | FIXED | 2026-03-20 |
+| H3 — Sidecar nonce disabled in debug | High | FIXED | 2026-03-20 |
+| M1 — DEK material outlives logout | Medium | FIXED | 2026-03-20 |
+| M2 — Unbounded vault KDF params | Medium | FIXED | 2026-03-20 |
+| M3 — Weak password min length | Medium | FIXED | 2026-03-20 |
+| M4 — DB viewer no re-auth | Medium | FIXED | 2026-03-20 |
+| M5 — Timing-unsafe nonce comparison | Medium | FIXED | 2026-03-20 |
+| M6 — No AAD on DEK wrapping | Medium | Open | — |
+| M7 — Legacy single-DEK across domains | Medium | Open | — |
+| M8 — No login rate limiting | Medium | FIXED | 2026-03-20 |
+| M9 — Vault export plaintext in memory | Medium | Open | — |
+| M10 — Plaintext manifest metadata | Medium | FIXED | 2026-03-20 |
+| M11 — Destructive vault import | Medium | Open | — |
+| L1 — Redundant integrity hash naming | Low | Open | — |
+| L2 — Vault AAD stored in envelope | Low | Open | — |
+| L3 — Health endpoint info leakage | Low | Open | — |
+| L4 — LLM error details leaked | Low | Open | — |
+| L5 — CORS dev origins in all envs | Low | Open | — |
+| L6 — Best-effort `_zero_dek` | Low | Open | — |
+| I1 — `cipher_memory_security` on Win | Info | Accepted | — |
+| I2 — Hex key in engine closure | Info | Accepted | — |
+| I3 — Memories export includes users | Info | Open | — |
+
+### Fix Details
+
+**P0 (2026-03-20):**
+- **H1**: Added `sqlite3.set_authorizer` callback whitelisting read-only operations, regex blocklist for `ATTACH`/`DETACH`/`load_extension`, semicolon rejection, and protected table checks in query endpoint. (`api/routes/db.py`)
+- **H2**: Added `PROTECTED_TABLES` set (`users`, `user_keys`, `alembic_version`). `delete_row` and `update_row` return 403 for protected tables. (`api/routes/db.py`)
+- **M5**: Replaced `!=` with `hmac.compare_digest()` for constant-time nonce comparison. (`main.py`)
+
+**P1 (2026-03-20):**
+- **M3**: `RegisterRequest.password` min_length 1 -> 8, `ChangePasswordRequest.newPassword` min_length 6 -> 8. All test passwords updated. (`schemas/auth.py`)
+- **M8**: In-memory per-username rate limiter: 5 attempts per 60s window, returns 429 with `Retry-After` header, clears on successful login. (`api/routes/auth.py`)
+- **M2**: KDF param bounds: `timeCost <= 10`, `memoryCostKiB <= 2,097,152`, `parallelism <= 8`, `keyLength == 32`. Validated before Argon2 derivation. (`services/vault.py`)
+
+**P2 (2026-03-20):**
+- **M1**: DEKs now zeroed via `_zero_deks()` in `revoke_user()`, `revoke()`, and `clear()`. `clear_sqlcipher_key()` zeros the global key before clearing. Logout calls `clear_sqlcipher_key()` and `dispose_all_user_engines()` to dispose cached SQLCipher engines. (`services/sessions.py`, `db/session.py`, `api/routes/auth.py`)
+- **M4**: DB viewer endpoints now require password re-verification within 5 minutes. `/api/db/verify-password` sets a `db_viewer_verified_at` timestamp on the session. `require_db_viewer_auth` dependency checks expiry on `read_table`, `run_query`, `delete_row`, `update_row`. (`api/routes/db.py`, `services/sessions.py`)
+- **H3**: `SidecarNonceMiddleware` always installed. Logs warning if nonce is empty in non-development env. `create_app()` raises `RuntimeError` if `core_require_encryption=True` without a nonce. (`main.py`)
+- **M10**: `_write_manifest()` now calls `os.chmod(path, 0o600)` on non-Windows platforms. (`services/core.py`)
+
 ---
 
 ## Architecture Overview

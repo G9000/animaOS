@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -11,6 +12,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.db import get_db
 from anima_server.services.crypto import (
@@ -20,7 +22,7 @@ from anima_server.services.crypto import (
 )
 from anima_server.services.auth import verify_password
 from anima_server.services.data_crypto import resolve_domain
-from anima_server.services.sessions import UnlockSession
+from anima_server.services.sessions import UnlockSession, unlock_session_store
 from anima_server.models import User
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/db", tags=["db"])
 
 MAX_ROWS = 500
+DB_VIEWER_REAUTH_WINDOW_SECONDS = 300
 PROTECTED_TABLES = {"users", "user_keys", "alembic_version"}
 
 # Map (actual_table, actual_column) → (aad_table, aad_field) for columns
@@ -263,6 +266,24 @@ def _decrypt_rows_multi_domain(
     return decrypted
 
 
+def require_db_viewer_auth(request: Request) -> UnlockSession:
+    session = require_unlocked_session(request)
+    token = read_unlock_token(request)
+    verified_at = unlock_session_store.get_db_viewer_verified_at(token)
+    if verified_at is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Password verification required for DB viewer access.",
+        )
+    if time.time() - verified_at > DB_VIEWER_REAUTH_WINDOW_SECONDS:
+        unlock_session_store.set_db_viewer_verified_at(token, None)
+        raise HTTPException(
+            status_code=403,
+            detail="Password verification expired for DB viewer access.",
+        )
+    return session
+
+
 # --------------------------------------------------------------------------- #
 # Read endpoints
 # --------------------------------------------------------------------------- #
@@ -302,19 +323,19 @@ def verify_db_password(
     result = verify_password(body.password, user.password_hash)
     if not result.valid:
         raise HTTPException(status_code=401, detail="Invalid password")
+    unlock_session_store.set_db_viewer_verified_at(read_unlock_token(request), time.time())
     return {"verified": True}
 
 
 @router.get("/tables/{table_name}")
 def get_table_rows(
     table_name: str,
-    request: Request,
+    session: UnlockSession = Depends(require_db_viewer_auth),
     _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
     limit: int = Query(default=100, ge=1, le=MAX_ROWS),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, object]:
-    session = require_unlocked_session(request)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
 
@@ -339,12 +360,11 @@ def get_table_rows(
 
 @router.post("/query")
 def run_query(
-    request: Request,
     body: dict[str, str],
+    session: UnlockSession = Depends(require_db_viewer_auth),
     _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    session = require_unlocked_session(request)
     sql = (body.get("sql") or "").strip()
     if not sql:
         raise HTTPException(status_code=400, detail="Empty query")
@@ -386,11 +406,10 @@ class RowUpdate(BaseModel):
 def delete_row(
     table_name: str,
     body: RowConditions,
-    request: Request,
+    _session: UnlockSession = Depends(require_db_viewer_auth),
     _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    require_unlocked_session(request)
     _ensure_table_not_protected(table_name)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
@@ -419,11 +438,10 @@ def delete_row(
 def update_row(
     table_name: str,
     body: RowUpdate,
-    request: Request,
+    _session: UnlockSession = Depends(require_db_viewer_auth),
     _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    require_unlocked_session(request)
     _ensure_table_not_protected(table_name)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
