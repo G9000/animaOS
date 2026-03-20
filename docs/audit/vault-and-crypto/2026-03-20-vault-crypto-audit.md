@@ -16,17 +16,17 @@
 | M3 — Weak password min length | Medium | FIXED | 2026-03-20 |
 | M4 — DB viewer no re-auth | Medium | FIXED | 2026-03-20 |
 | M5 — Timing-unsafe nonce comparison | Medium | FIXED | 2026-03-20 |
-| M6 — No AAD on DEK wrapping | Medium | Open | — |
+| M6 — No AAD on DEK wrapping | Medium | FIXED | 2026-03-20 |
 | M7 — Legacy single-DEK across domains | Medium | Open | — |
 | M8 — No login rate limiting | Medium | FIXED | 2026-03-20 |
 | M9 — Vault export plaintext in memory | Medium | Open | — |
 | M10 — Plaintext manifest metadata | Medium | FIXED | 2026-03-20 |
-| M11 — Destructive vault import | Medium | Open | — |
-| L1 — Redundant integrity hash naming | Low | Open | — |
+| M11 — Destructive vault import | Medium | FIXED | 2026-03-20 |
+| L1 — Redundant integrity hash naming | Low | FIXED | 2026-03-20 |
 | L2 — Vault AAD stored in envelope | Low | Open | — |
 | L3 — Health endpoint info leakage | Low | Open | — |
-| L4 — LLM error details leaked | Low | Open | — |
-| L5 — CORS dev origins in all envs | Low | Open | — |
+| L4 — LLM error details leaked | Low | FIXED | 2026-03-20 |
+| L5 — CORS dev origins in all envs | Low | FIXED | 2026-03-20 |
 | L6 — Best-effort `_zero_dek` | Low | Open | — |
 | I1 — `cipher_memory_security` on Win | Info | Accepted | — |
 | I2 — Hex key in engine closure | Info | Accepted | — |
@@ -49,6 +49,13 @@
 - **M4**: DB viewer endpoints now require password re-verification within 5 minutes. `/api/db/verify-password` sets a `db_viewer_verified_at` timestamp on the session. `require_db_viewer_auth` dependency checks expiry on `read_table`, `run_query`, `delete_row`, `update_row`. (`api/routes/db.py`, `services/sessions.py`)
 - **H3**: `SidecarNonceMiddleware` always installed. Logs warning if nonce is empty in non-development env. `create_app()` raises `RuntimeError` if `core_require_encryption=True` without a nonce. (`main.py`)
 - **M10**: `_write_manifest()` now calls `os.chmod(path, 0o600)` on non-Windows platforms. (`services/core.py`)
+
+**P3 (2026-03-20):**
+- **M6**: `wrap_dek` and `unwrap_dek` now accept `user_id` and `domain`, constructing AAD as `dek-wrap:user={user_id}:domain={domain}`. Legacy fallback: `unwrap_dek` retries with `None` AAD on `InvalidTag`, logging a warning. All callers updated. (`services/crypto.py`, `services/auth.py`, `db/user_store.py`)
+- **M11**: Vault import now preserves the authenticated user's `password_hash` — reads it before import, re-sets it after `restore_database_snapshot` completes. (`api/routes/vault.py`)
+- **L1**: Renamed vault envelope `"integrity"` field to `"checksum"`. `decrypt_string` accepts both for backward compatibility. (`services/vault.py`)
+- **L4**: Replaced `f"AI provider error: {exc}"` with generic `"AI provider error occurred"`. Full exception logged server-side via `logger.exception()`. (`api/routes/auth.py`)
+- **L5**: CORS dev origins (`localhost:1420`, `localhost:5173`) only included when `app_env == "development"`. Tauri origins always allowed. (`main.py`)
 
 ---
 

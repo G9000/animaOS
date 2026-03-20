@@ -25,13 +25,18 @@ from .config import settings
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
 from .db.user_store import ensure_per_user_databases_ready
 
-CORS_ORIGINS = [
-    "http://localhost:1420",
-    "http://localhost:5173",
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-    "tauri://localhost",
-]
+def get_cors_origins() -> list[str]:
+    origins = [
+        "tauri://localhost",
+        "https://tauri.localhost",
+    ]
+    if settings.app_env == "development":
+        origins.extend([
+            "http://localhost:1420",
+            "http://localhost:5173",
+            "http://tauri.localhost",
+        ])
+    return origins
 
 # Paths exempt from sidecar-nonce validation.
 _NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health"})
@@ -91,7 +96,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ORIGINS,
+        allow_origins=get_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

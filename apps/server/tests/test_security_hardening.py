@@ -51,6 +51,13 @@ def _create_test_app() -> tuple[object, object, object]:
         raise
 
 
+def _cors_allow_origins(app: object) -> list[str]:
+    for middleware in app.user_middleware:  # type: ignore[attr-defined]
+        if middleware.cls.__name__ == "CORSMiddleware":
+            return list(middleware.kwargs.get("allow_origins", []))
+    raise AssertionError("CORSMiddleware not found")
+
+
 # --------------------------------------------------------------------------- #
 # is_sqlite_mode()
 # --------------------------------------------------------------------------- #
@@ -421,3 +428,42 @@ def test_create_app_refuses_to_start_when_encryption_required_without_nonce() ->
         settings.sidecar_nonce = original_nonce
         settings.app_env = original_env
         settings.core_require_encryption = original_require_encryption
+
+
+def test_create_app_limits_localhost_cors_origins_outside_development() -> None:
+    original_env = settings.app_env
+    original_data_dir = settings.data_dir
+    temp_root = None
+    try:
+        settings.app_env = "production"
+        app, original_data_dir, temp_root = _create_test_app()
+        origins = _cors_allow_origins(app)
+        assert "http://localhost:1420" not in origins
+        assert "http://localhost:5173" not in origins
+        assert "tauri://localhost" in origins
+        assert "https://tauri.localhost" in origins
+    finally:
+        settings.app_env = original_env
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_app_allows_localhost_cors_origins_in_development() -> None:
+    original_env = settings.app_env
+    original_data_dir = settings.data_dir
+    temp_root = None
+    try:
+        settings.app_env = "development"
+        app, original_data_dir, temp_root = _create_test_app()
+        origins = _cors_allow_origins(app)
+        assert "http://localhost:1420" in origins
+        assert "http://localhost:5173" in origins
+        assert "http://tauri.localhost" in origins
+        assert "tauri://localhost" in origins
+        assert "https://tauri.localhost" in origins
+    finally:
+        settings.app_env = original_env
+        settings.data_dir = original_data_dir
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)

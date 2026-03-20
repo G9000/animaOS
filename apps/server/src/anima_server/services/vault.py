@@ -268,7 +268,7 @@ def encrypt_string(
             "tag": base64.b64encode(tag).decode("ascii"),
         },
         "ciphertext": ciphertext_b64,
-        "integrity": {
+        "checksum": {
             "algorithm": "sha256",
             "hash": integrity_hash,
         },
@@ -300,10 +300,12 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
     ):
         raise ValueError("Vault payload format is invalid.")
 
-    # Pre-decryption integrity check (v2+ envelopes include integrity hash)
-    integrity = envelope.get("integrity")
-    if isinstance(integrity, dict) and integrity.get("algorithm") == "sha256":
-        expected = integrity.get("hash", "")
+    # Pre-decryption checksum check (accept legacy "integrity" envelopes too)
+    checksum = envelope.get("checksum")
+    if not isinstance(checksum, dict):
+        checksum = envelope.get("integrity")
+    if isinstance(checksum, dict) and checksum.get("algorithm") == "sha256":
+        expected = checksum.get("hash", "")
         actual = hashlib.sha256(ciphertext_b64.encode("ascii")).hexdigest()
         if actual != expected:
             raise ValueError(

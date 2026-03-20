@@ -91,7 +91,10 @@ def create_user(
     from anima_server.models import AgentProfile, SelfModelBlock
     from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
 
-    deks, wrapped_records = create_wrapped_deks_for_domains(password, ALL_DOMAINS)
+    if user_id is None:
+        raise ValueError("User id is required to create wrapped DEKs")
+
+    deks, wrapped_records = create_wrapped_deks_for_domains(password, ALL_DOMAINS, user_id)
     user = User(
         id=user_id,
         username=username,
@@ -201,7 +204,8 @@ def _migrate_legacy_single_key(
     The legacy DEK is preserved for all domains (same key, new architecture).
     Future key rotation will produce independent per-domain keys.
     """
-    legacy_dek = unwrap_dek(password, to_wrapped_dek_record(legacy_key))
+    legacy_domain = legacy_key.domain or "memories"
+    legacy_dek = unwrap_dek(password, to_wrapped_dek_record(legacy_key), user_id, legacy_domain)
 
     deks: dict[str, bytes] = {}
     for domain in ALL_DOMAINS:
@@ -209,7 +213,7 @@ def _migrate_legacy_single_key(
             deks[domain] = legacy_dek
             continue
         # Wrap the same DEK under a new row for each domain
-        wrapped = wrap_dek(password, legacy_dek)
+        wrapped = wrap_dek(password, legacy_dek, user_id, domain)
         db.add(build_user_key(user_id, domain, wrapped))
         deks[domain] = legacy_dek
 
@@ -229,7 +233,7 @@ def _unwrap_all_domain_keys(
     deks: dict[str, bytes] = {}
     for uk in user_keys:
         try:
-            dek = unwrap_dek(password, to_wrapped_dek_record(uk))
+            dek = unwrap_dek(password, to_wrapped_dek_record(uk), uk.user_id, uk.domain)
             deks[uk.domain] = dek
         except Exception as exc:  # noqa: BLE001
             raise ValueError("Invalid credentials") from exc
@@ -258,7 +262,7 @@ def change_user_password(
         dek = current_deks.get(uk.domain)
         if dek is None:
             continue
-        wrapped = wrap_dek(new_password, dek)
+        wrapped = wrap_dek(new_password, dek, uk.user_id, uk.domain)
         uk.kdf_salt = wrapped.kdf_salt
         uk.kdf_time_cost = wrapped.kdf_time_cost
         uk.kdf_memory_cost_kib = wrapped.kdf_memory_cost_kib

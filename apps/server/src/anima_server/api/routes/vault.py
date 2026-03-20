@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.db import get_db
+from anima_server.models import User
 from anima_server.schemas.vault import (
     VaultExportRequest,
     VaultExportResponse,
@@ -36,10 +37,24 @@ def import_encrypted_vault(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     session = require_unlocked_session(request)
+    current_user = db.get(User, session.user_id)
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    original_password_hash = current_user.password_hash
+
     try:
         result = import_vault(db, payload.vault, payload.passphrase, user_id=session.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    imported_user = db.get(User, session.user_id)
+    if imported_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Imported vault did not restore the authenticated user.",
+        )
+    imported_user.password_hash = original_password_hash
+    db.commit()
 
     unlock_session_store.clear()
     return {"status": "ok", **result}

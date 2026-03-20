@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -130,6 +131,67 @@ def test_import_vault_rejects_wrong_passphrase() -> None:
         }
 
 
+def test_import_vault_preserves_original_password_hash() -> None:
+    with managed_test_client("anima-vault-test-") as client:
+        user = _register_user(client, username="vault-user", password="pw123456", name="Vault User")
+        user_id = int(user["id"])
+        token = str(user["unlockToken"])
+
+        with get_user_session_factory(user_id)() as db:
+            original_user = db.get(User, user_id)
+            assert original_user is not None
+            original_password_hash = original_user.password_hash
+
+        export_response = client.post(
+            "/api/vault/export",
+            headers={"x-anima-unlock": token},
+            json={"passphrase": "vault-pass"},
+        )
+        assert export_response.status_code == 200
+
+        envelope = json.loads(export_response.json()["vault"])
+        plaintext = decrypt_string(envelope, "vault-pass")
+        payload = json.loads(plaintext)
+        payload["database"]["users"][0]["password_hash"] = "$argon2id$v=19$m=65536,t=3,p=4$invalid$invalid"
+        tampered_vault = json.dumps(
+            encrypt_string(
+                json.dumps(payload),
+                "vault-pass",
+                aad=base64.b64decode(envelope["aad_b64"]),
+            )
+        )
+
+        import_response = client.post(
+            "/api/vault/import",
+            headers={"x-anima-unlock": token},
+            json={"passphrase": "vault-pass", "vault": tampered_vault},
+        )
+        assert import_response.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            imported_user = db.get(User, user_id)
+            assert imported_user is not None
+            assert imported_user.password_hash == original_password_hash
+
+        stale_session_response = client.get(
+            "/api/auth/me",
+            headers={"x-anima-unlock": token},
+        )
+        assert stale_session_response.status_code == 401
+
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "vault-user", "password": "pw123456"},
+        )
+        assert login_response.status_code == 200
+
+        bad_login_response = client.post(
+            "/api/auth/login",
+            json={"username": "vault-user", "password": "tampered-password"},
+        )
+        assert bad_login_response.status_code == 401
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -157,3 +219,15 @@ def test_decrypt_string_rejects_out_of_bounds_kdf_parameters(
 
     with pytest.raises(ValueError, match=message):
         decrypt_string(envelope, "vault-pass")
+
+
+def test_encrypt_string_uses_checksum_and_decrypt_string_accepts_legacy_integrity() -> None:
+    envelope = encrypt_string("secret", "vault-pass")
+
+    assert "checksum" in envelope
+    assert "integrity" not in envelope
+
+    legacy_envelope = dict(envelope)
+    legacy_envelope["integrity"] = legacy_envelope.pop("checksum")
+
+    assert decrypt_string(legacy_envelope, "vault-pass") == "secret"

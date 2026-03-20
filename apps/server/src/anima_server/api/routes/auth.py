@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import time
 
@@ -31,6 +32,7 @@ from anima_server.services.auth import (
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 _FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _LOGIN_RATE_LIMIT = 5
@@ -87,8 +89,9 @@ async def create_ai_chat(payload: CreateAIChatRequest) -> dict[str, object]:
             status_code=503, detail="AI provider is not configured."
         ) from None
     except LLMInvocationError as exc:
+        logger.exception("AI provider invocation failed", exc_info=exc)
         raise HTTPException(
-            status_code=503, detail=f"AI provider error: {exc}"
+            status_code=503, detail="AI provider error occurred"
         ) from None
 
     return {
@@ -232,7 +235,7 @@ def _rewrap_sqlcipher_key_if_unified(new_password: str) -> None:
     if settings.core_passphrase.strip():
         return
 
-    from anima_server.services.core import get_wrapped_sqlcipher_key, store_wrapped_sqlcipher_key
+    from anima_server.services.core import get_owner_user_id, get_wrapped_sqlcipher_key, store_wrapped_sqlcipher_key
     from anima_server.services.sessions import get_sqlcipher_key
 
     raw_key = get_sqlcipher_key()
@@ -245,8 +248,10 @@ def _rewrap_sqlcipher_key_if_unified(new_password: str) -> None:
 
     from anima_server.services.crypto import wrap_dek
 
-    wrapped = wrap_dek(new_password, raw_key)
+    owner_user_id = get_owner_user_id() or 0
+    wrapped = wrap_dek(new_password, raw_key, owner_user_id, "sqlcipher")
     store_wrapped_sqlcipher_key({
+        "user_id": owner_user_id,
         "kdf_salt": wrapped.kdf_salt,
         "kdf_time_cost": wrapped.kdf_time_cost,
         "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,

@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from typing import TypeVar
 import base64
+import logging
 import os
 
 from argon2.low_level import Type, hash_secret_raw
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
@@ -35,6 +37,7 @@ VAULT_ARGON2_PARALLELISM = 4
 
 # Domain separator for HKDF-based SQLCipher key derivation
 SQLCIPHER_HKDF_INFO = b"anima-sqlcipher-v1"
+logger = logging.getLogger(__name__)
 
 
 def _run_with_large_stack(fn: Callable[[], _T]) -> _T:
@@ -125,14 +128,23 @@ def derive_sqlcipher_key(passphrase: str, salt: bytes) -> bytes:
     ).derive(master)
 
 
-def create_wrapped_dek(passphrase: str) -> tuple[bytes, WrappedDekRecord]:
+def _build_dek_wrap_aad(user_id: int, domain: str) -> bytes:
+    return f"dek-wrap:user={user_id}:domain={domain}".encode("utf-8")
+
+
+def create_wrapped_dek(
+    passphrase: str,
+    user_id: int,
+    domain: str,
+) -> tuple[bytes, WrappedDekRecord]:
     dek = os.urandom(KEY_LENGTH)
-    return dek, wrap_dek(passphrase, dek)
+    return dek, wrap_dek(passphrase, dek, user_id, domain)
 
 
 def create_wrapped_deks_for_domains(
     passphrase: str,
     domains: tuple[str, ...],
+    user_id: int,
 ) -> tuple[dict[str, bytes], list[tuple[str, WrappedDekRecord]]]:
     """Generate independent DEKs for each domain.
 
@@ -142,17 +154,18 @@ def create_wrapped_deks_for_domains(
     deks: dict[str, bytes] = {}
     records: list[tuple[str, WrappedDekRecord]] = []
     for domain in domains:
-        dek, record = create_wrapped_dek(passphrase)
+        dek, record = create_wrapped_dek(passphrase, user_id, domain)
         deks[domain] = dek
         records.append((domain, record))
     return deks, records
 
 
-def wrap_dek(passphrase: str, dek: bytes) -> WrappedDekRecord:
+def wrap_dek(passphrase: str, dek: bytes, user_id: int, domain: str) -> WrappedDekRecord:
     salt = os.urandom(SALT_LENGTH)
     iv = os.urandom(IV_LENGTH)
     kek = derive_argon2id_key(passphrase, salt)
-    encrypted = AESGCM(kek).encrypt(iv, dek, None)
+    aad = _build_dek_wrap_aad(user_id, domain)
+    encrypted = AESGCM(kek).encrypt(iv, dek, aad)
     ciphertext, tag = encrypted[:-AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
 
     return WrappedDekRecord(
@@ -167,7 +180,12 @@ def wrap_dek(passphrase: str, dek: bytes) -> WrappedDekRecord:
     )
 
 
-def unwrap_dek(passphrase: str, record: WrappedDekRecord) -> bytes:
+def unwrap_dek(
+    passphrase: str,
+    record: WrappedDekRecord,
+    user_id: int,
+    domain: str,
+) -> bytes:
     salt = base64.b64decode(record.kdf_salt)
     iv = base64.b64decode(record.wrap_iv)
     tag = base64.b64decode(record.wrap_tag)
@@ -180,7 +198,16 @@ def unwrap_dek(passphrase: str, record: WrappedDekRecord) -> bytes:
         parallelism=record.kdf_parallelism,
         key_length=record.kdf_key_length,
     )
-    return AESGCM(kek).decrypt(iv, ciphertext + tag, None)
+    aad = _build_dek_wrap_aad(user_id, domain)
+    try:
+        return AESGCM(kek).decrypt(iv, ciphertext + tag, aad)
+    except InvalidTag:
+        logger.warning(
+            "Falling back to legacy DEK unwrap without AAD for user_id=%s domain=%s",
+            user_id,
+            domain,
+        )
+        return AESGCM(kek).decrypt(iv, ciphertext + tag, None)
 
 
 def encrypt_text_with_dek(plaintext: str, dek: bytes, *, aad: bytes | None = None) -> str:

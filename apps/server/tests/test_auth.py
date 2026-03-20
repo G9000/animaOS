@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import anima_server.api.routes.auth as auth_routes
 from fastapi.testclient import TestClient
 
 from anima_server.db import session as db_session
+from anima_server.services.agent.llm import LLMInvocationError
 from anima_server.services.sessions import get_active_dek
 from anima_server.services.sessions import get_sqlcipher_key, set_sqlcipher_key
 from conftest import managed_test_client
@@ -313,3 +316,23 @@ def test_health_provisioned_flag_after_register() -> None:
 
         health_after = client.get("/api/health").json()
         assert health_after["provisioned"] is True
+
+
+def test_create_ai_chat_hides_provider_error_details() -> None:
+    async def _raise_provider_error(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise LLMInvocationError("provider leaked details")
+
+    with managed_test_client("anima-auth-test-") as client:
+        with patch("anima_server.services.creation_agent.handle_creation_turn", _raise_provider_error):
+            with patch.object(auth_routes.logger, "exception") as log_exception:
+                response = client.post(
+                    "/api/auth/create-ai/chat",
+                    json={
+                        "ownerName": "Alice",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "AI provider error occurred"}
+    log_exception.assert_called_once()

@@ -129,8 +129,8 @@ def register_account(
     if not normalized:
         raise ValueError("Username is required")
 
-    _maybe_generate_sqlcipher_key(password)
     user_id = allocate_user_id()
+    _maybe_generate_sqlcipher_key(password, user_id)
     factory = ensure_user_database(user_id)
     with factory() as db:
         user, deks = create_user(
@@ -269,7 +269,7 @@ def _legacy_backup_path(shared_db_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _maybe_generate_sqlcipher_key(password: str) -> None:
+def _maybe_generate_sqlcipher_key(password: str, user_id: int) -> None:
     """Generate and store a wrapped SQLCipher key if unified mode is active.
 
     Called during registration when no ANIMA_CORE_PASSPHRASE env var is set.
@@ -284,8 +284,9 @@ def _maybe_generate_sqlcipher_key(password: str) -> None:
     import os
 
     raw_key = os.urandom(KEY_LENGTH)
-    wrapped = wrap_dek(password, raw_key)
+    wrapped = wrap_dek(password, raw_key, user_id, "sqlcipher")
     store_wrapped_sqlcipher_key({
+        "user_id": user_id,
         "kdf_salt": wrapped.kdf_salt,
         "kdf_time_cost": wrapped.kdf_time_cost,
         "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
@@ -329,5 +330,5 @@ def _maybe_unwrap_sqlcipher_key(password: str) -> None:
         wrap_tag=str(wrapped_data["wrap_tag"]),
         wrapped_dek=str(wrapped_data["wrapped_key"]),
     )
-    raw_key = unwrap_dek(password, record)
+    raw_key = unwrap_dek(password, record, int(wrapped_data.get("user_id", 0)), "sqlcipher")
     set_sqlcipher_key(raw_key)
