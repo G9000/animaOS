@@ -956,6 +956,11 @@ _TEXT_TOOL_CALL_JSON_RE = re.compile(
     re.DOTALL,
 )
 
+# Matches Letta/MemGPT-style opening tags: <function=tool_name>
+_TEXT_TOOL_CALL_FUNCTION_TAG_RE = re.compile(
+    r"<function=(?P<name>[a-z_][a-z0-9_]*)>",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _ParsedTextToolCall:
@@ -974,6 +979,7 @@ def _parse_text_tool_calls(
     - ``tool_name("string argument")``
     - ``tool_name {"key": "value"}``
     - ``tool_name({"key": "value"})``
+    - ``<function=tool_name>content</function>``  (Letta/MemGPT style)
 
     Only matches tool names that exist in ``known_tool_names``.
     Returns a list of parsed calls (may contain multiple if text has
@@ -997,6 +1003,54 @@ def _parse_text_tool_calls(
         if parsed is not None:
             results.append(parsed)
 
+    if results:
+        return results
+
+    # Try Letta/MemGPT-style <function=tool_name>content</function> tags.
+    # This handles multi-line content blocks and multiple tags in one response.
+    results = _parse_function_tag_tool_calls(stripped, known_tool_names)
+
+    return results
+
+
+def _parse_function_tag_tool_calls(
+    text: str,
+    known_tool_names: set[str],
+) -> list[_ParsedTextToolCall]:
+    """Parse Letta/MemGPT-style ``<function=name>content</function>`` blocks.
+
+    Handles multiple blocks in a single response and content that spans
+    multiple lines.  The closing ``</function>`` tag may be absent (the
+    regex consumes to end-of-string in that case).  Content is mapped to
+    the tool's first argument via ``_infer_first_arg_name``.
+    """
+    results: list[_ParsedTextToolCall] = []
+    matches = list(_TEXT_TOOL_CALL_FUNCTION_TAG_RE.finditer(text))
+    for index, match in enumerate(matches):
+        name = match.group("name")
+        if name not in known_tool_names:
+            continue
+
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        raw_content = text[match.end():next_start]
+        closing_index = raw_content.find("</function>")
+        if closing_index != -1:
+            raw_content = raw_content[:closing_index]
+
+        content = raw_content.strip()
+        if not content:
+            continue
+        # Try to parse the content as JSON first (model may emit a JSON
+        # object inside the function tags).
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and data:
+                results.append(_ParsedTextToolCall(name=name, arguments=data))
+                continue
+        except (json.JSONDecodeError, ValueError):
+            pass
+        arg_name = _infer_first_arg_name(name)
+        results.append(_ParsedTextToolCall(name=name, arguments={arg_name: content}))
     return results
 
 
