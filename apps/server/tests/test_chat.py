@@ -22,7 +22,7 @@ def _register_user(client: TestClient, username: str = "alice") -> dict[str, obj
         "/api/auth/register",
         json={
             "username": username,
-            "password": "pw1234",
+            "password": "pw123456",
             "name": "Alice",
         },
     )
@@ -484,7 +484,7 @@ def test_chat_invalid_persona_template_returns_error() -> None:
                 "/api/auth/register",
                 json={
                     "username": "bad-persona",
-                    "password": "pw1234",
+                    "password": "pw123456",
                     "name": "BadPersona",
                 },
             )

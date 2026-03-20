@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/db", tags=["db"])
 
 MAX_ROWS = 500
+PROTECTED_TABLES = {"users", "user_keys", "alembic_version"}
 
 # Map (actual_table, actual_column) → (aad_table, aad_field) for columns
 # where encryption used different table/field names than the real DB schema.
@@ -65,12 +67,111 @@ _FROM_RE = re.compile(
     r'\bFROM\s+"?(\w+)"?',
     re.IGNORECASE,
 )
+_BLOCKED_QUERY_KEYWORDS_RE = re.compile(
+    r"\b(?:ATTACH|DETACH|load_extension)\b",
+    re.IGNORECASE,
+)
+_FALLBACK_UNSAFE_QUERY_RE = re.compile(
+    r"\b(?:ALTER|ANALYZE|CREATE|DELETE|DROP|INSERT|REINDEX|REPLACE|SAVEPOINT|UPDATE|VACUUM)\b",
+    re.IGNORECASE,
+)
+_PROTECTED_TABLE_QUERY_RE = re.compile(
+    r'(?<!\w)(?:"(?:alembic_version|user_keys|users)"|(?:alembic_version|user_keys|users))(?!\w)',
+    re.IGNORECASE,
+)
+_SQLITE_DENY_ACTIONS = {
+    getattr(sqlite3, name)
+    for name in (
+        "SQLITE_ALTER_TABLE",
+        "SQLITE_ANALYZE",
+        "SQLITE_ATTACH",
+        "SQLITE_CREATE_INDEX",
+        "SQLITE_CREATE_TABLE",
+        "SQLITE_CREATE_TEMP_INDEX",
+        "SQLITE_CREATE_TEMP_TABLE",
+        "SQLITE_CREATE_TEMP_TRIGGER",
+        "SQLITE_CREATE_TEMP_VIEW",
+        "SQLITE_CREATE_TRIGGER",
+        "SQLITE_CREATE_VIEW",
+        "SQLITE_DELETE",
+        "SQLITE_DETACH",
+        "SQLITE_DROP_INDEX",
+        "SQLITE_DROP_TABLE",
+        "SQLITE_DROP_TEMP_INDEX",
+        "SQLITE_DROP_TEMP_TABLE",
+        "SQLITE_DROP_TEMP_TRIGGER",
+        "SQLITE_DROP_TEMP_VIEW",
+        "SQLITE_DROP_TRIGGER",
+        "SQLITE_DROP_VIEW",
+        "SQLITE_INSERT",
+        "SQLITE_PRAGMA",
+        "SQLITE_REINDEX",
+        "SQLITE_TRANSACTION",
+        "SQLITE_UPDATE",
+    )
+    if hasattr(sqlite3, name)
+}
 
 
 def _extract_table_name(sql: str) -> str | None:
     """Best-effort extract a single table name from a SQL query."""
     m = _FROM_RE.search(sql)
     return m.group(1) if m else None
+
+
+def _ensure_table_not_protected(table_name: str) -> None:
+    if table_name in PROTECTED_TABLES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Table '{table_name}' is protected",
+        )
+
+
+def _validate_query_sql(sql: str) -> None:
+    if ";" in sql.rstrip():
+        raise HTTPException(status_code=400, detail="Semicolons are not allowed")
+    if _BLOCKED_QUERY_KEYWORDS_RE.search(sql):
+        raise HTTPException(status_code=400, detail="Query contains blocked keywords")
+    if _PROTECTED_TABLE_QUERY_RE.search(sql):
+        raise HTTPException(status_code=403, detail="Query references a protected table")
+
+
+def _query_authorizer(
+    action: int,
+    arg1: str | None,
+    arg2: str | None,
+    _db_name: str | None,
+    _trigger_name: str | None,
+) -> int:
+    if action == getattr(sqlite3, "SQLITE_FUNCTION", -1):
+        function_name = (arg2 or arg1 or "").lower()
+        if function_name == "load_extension":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+    if action == getattr(sqlite3, "SQLITE_READ", -1) and (arg1 or "") in PROTECTED_TABLES:
+        return sqlite3.SQLITE_DENY
+    if action in _SQLITE_DENY_ACTIONS:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def _execute_read_only_query(db: Session, sql: str):
+    connection = db.connection().connection
+    dbapi_connection = getattr(connection, "driver_connection", None)
+    if dbapi_connection is None:
+        dbapi_connection = getattr(connection, "dbapi_connection", connection)
+
+    set_authorizer = getattr(dbapi_connection, "set_authorizer", None)
+    if set_authorizer is None:
+        if _FALLBACK_UNSAFE_QUERY_RE.search(sql):
+            raise HTTPException(status_code=400, detail="Query contains blocked keywords")
+        return db.execute(text(sql))
+
+    set_authorizer(_query_authorizer)
+    try:
+        return db.execute(text(sql))
+    finally:
+        set_authorizer(None)
 
 
 def _try_decrypt_cell(
@@ -254,7 +355,8 @@ def run_query(
         raise HTTPException(
             status_code=400, detail="Only SELECT, PRAGMA, and EXPLAIN queries are allowed")
 
-    result = db.execute(text(sql))
+    _validate_query_sql(sql)
+    result = _execute_read_only_query(db, sql)
     columns = list(result.keys()) if result.returns_rows else []
     rows = [dict(zip(columns, row))
             for row in result.fetchall()] if result.returns_rows else []
@@ -289,6 +391,7 @@ def delete_row(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     require_unlocked_session(request)
+    _ensure_table_not_protected(table_name)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
 
@@ -321,6 +424,7 @@ def update_row(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     require_unlocked_session(request)
+    _ensure_table_not_protected(table_name)
     insp = inspect(db.get_bind())
     _validate_table(insp, table_name)
 

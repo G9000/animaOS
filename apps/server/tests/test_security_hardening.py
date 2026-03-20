@@ -29,7 +29,7 @@ from conftest import managed_test_client
 def _register_user(client: TestClient) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
-        json={"username": "sectest", "password": "pw1234", "name": "Sec Test"},
+        json={"username": "sectest", "password": "pw123456", "name": "Sec Test"},
     )
     assert response.status_code == 201
     return response.json()
@@ -283,6 +283,26 @@ def test_nonce_middleware_rejects_wrong_header() -> None:
                 headers={"x-anima-nonce": "wrong-nonce"},
             )
             assert resp.status_code == 403
+    finally:
+        settings.sidecar_nonce = original
+
+
+def test_nonce_middleware_uses_compare_digest() -> None:
+    """Nonce validation must use constant-time comparison."""
+    original = settings.sidecar_nonce
+    try:
+        settings.sidecar_nonce = "test-nonce-enforce"
+        from anima_server import main as main_module
+
+        app = main_module.create_app()
+        with patch.object(main_module.hmac, "compare_digest", return_value=True) as compare_digest:
+            with TestClient(app) as client:
+                resp = client.get(
+                    "/api/config/providers",
+                    headers={"x-anima-nonce": " test-nonce-enforce "},
+                )
+        assert resp.status_code == 200
+        compare_digest.assert_called_once_with("test-nonce-enforce", "test-nonce-enforce")
     finally:
         settings.sidecar_nonce = original
 

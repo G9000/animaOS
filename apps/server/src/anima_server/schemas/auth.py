@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    password: str = Field(min_length=8)
     name: str = Field(min_length=1)
     agentName: str = Field(default="Anima", min_length=1, max_length=50)
     userDirective: str = Field(default="")
@@ -37,7 +37,7 @@ class LoginRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     oldPassword: str = Field(min_length=1)
-    newPassword: str = Field(min_length=6)
+    newPassword: str = Field(min_length=8)
 
 
 class UserResponse(BaseModel):

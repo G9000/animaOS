@@ -47,6 +47,9 @@ vault_logger = logging.getLogger(__name__)
 
 
 VAULT_VERSION = 2
+_MAX_VAULT_TIME_COST = 10
+_MAX_VAULT_MEMORY_COST_KIB = 2_097_152
+_MAX_VAULT_PARALLELISM = 8
 
 # ---------------------------------------------------------------------------
 # Vault version migration
@@ -314,6 +317,16 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
         aad = base64.b64decode(aad_b64)
 
     try:
+        time_cost = int(kdf["timeCost"])
+        memory_cost_kib = int(kdf["memoryCostKiB"])
+        parallelism = int(kdf["parallelism"])
+        key_length = int(kdf["keyLength"])
+        _validate_vault_kdf_params(
+            time_cost=time_cost,
+            memory_cost_kib=memory_cost_kib,
+            parallelism=parallelism,
+            key_length=key_length,
+        )
         salt = base64.b64decode(str(kdf["salt"]))
         iv = base64.b64decode(str(cipher["iv"]))
         tag = base64.b64decode(str(cipher["tag"]))
@@ -321,10 +334,10 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
         key = derive_argon2id_key(
             passphrase,
             salt,
-            time_cost=int(kdf["timeCost"]),
-            memory_cost_kib=int(kdf["memoryCostKiB"]),
-            parallelism=int(kdf["parallelism"]),
-            key_length=int(kdf["keyLength"]),
+            time_cost=time_cost,
+            memory_cost_kib=memory_cost_kib,
+            parallelism=parallelism,
+            key_length=key_length,
         )
         plaintext = AESGCM(key).decrypt(iv, ciphertext + tag, aad)
     except ValueError:
@@ -334,6 +347,29 @@ def decrypt_string(envelope: dict[str, Any], passphrase: str) -> str:
             "Failed to decrypt vault. Check the passphrase and payload.") from exc
 
     return plaintext.decode("utf-8")
+
+
+def _validate_vault_kdf_params(
+    *,
+    time_cost: int,
+    memory_cost_kib: int,
+    parallelism: int,
+    key_length: int,
+) -> None:
+    if time_cost > _MAX_VAULT_TIME_COST:
+        raise ValueError(
+            "Vault KDF timeCost exceeds maximum allowed value of 10."
+        )
+    if memory_cost_kib > _MAX_VAULT_MEMORY_COST_KIB:
+        raise ValueError(
+            "Vault KDF memoryCostKiB exceeds maximum allowed value of 2097152."
+        )
+    if parallelism > _MAX_VAULT_PARALLELISM:
+        raise ValueError(
+            "Vault KDF parallelism exceeds maximum allowed value of 8."
+        )
+    if key_length != 32:
+        raise ValueError("Vault KDF keyLength must be exactly 32.")
 
 
 def export_database_snapshot(

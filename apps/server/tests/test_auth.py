@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anima_server.api.routes.auth as auth_routes
 from fastapi.testclient import TestClient
 
 from anima_server.services.sessions import get_active_dek
@@ -10,7 +11,7 @@ def _register_user(
     client: TestClient,
     *,
     username: str = "alice",
-    password: str = "pw1234",
+    password: str = "pw123456",
     name: str = "Alice",
 ) -> dict[str, object]:
     response = client.post(
@@ -27,7 +28,7 @@ def _register_user(
 
 def test_register_creates_user_and_unlock_session() -> None:
     with managed_test_client("anima-auth-test-") as client:
-        payload = _register_user(client, password="pw123")
+        payload = _register_user(client, password="pw123456")
 
         assert payload["username"] == "alice"
         assert payload["name"] == "Alice"
@@ -45,11 +46,11 @@ def test_register_creates_user_and_unlock_session() -> None:
 
 def test_login_me_and_logout_use_the_same_unlock_token() -> None:
     with managed_test_client("anima-auth-test-") as client:
-        _register_user(client, password="pw123")
+        _register_user(client, password="pw123456")
 
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "Alice", "password": "pw123"},
+            json={"username": "Alice", "password": "pw123456"},
         )
 
         assert login_response.status_code == 200
@@ -85,6 +86,102 @@ def test_login_rejects_invalid_credentials() -> None:
 
         assert response.status_code == 401
         assert response.json() == {"error": "Invalid credentials"}
+
+
+def test_register_rejects_passwords_shorter_than_eight_characters() -> None:
+    with managed_test_client("anima-auth-test-") as client:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "username": "shorty",
+                "password": "pw1234",
+                "name": "Shorty",
+            },
+        )
+
+        assert response.status_code == 422
+
+
+def test_login_rate_limits_after_five_failed_attempts_within_one_minute() -> None:
+    original_time = auth_routes.time.time
+    auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    try:
+        auth_routes.time.time = lambda: 1_000.0
+        with managed_test_client("anima-auth-test-") as client:
+            _register_user(
+                client,
+                username="rate-limit-user",
+                password="correct-password",
+                name="Rate Limit User",
+            )
+
+            for _ in range(4):
+                response = client.post(
+                    "/api/auth/login",
+                    json={
+                        "username": "rate-limit-user",
+                        "password": "wrong-password",
+                    },
+                )
+                assert response.status_code == 401
+
+            blocked_response = client.post(
+                "/api/auth/login",
+                json={
+                    "username": "rate-limit-user",
+                    "password": "wrong-password",
+                },
+            )
+
+            assert blocked_response.status_code == 429
+            assert blocked_response.headers["Retry-After"] == "60"
+            assert blocked_response.json() == {
+                "error": "Too many failed login attempts. Try again later.",
+            }
+    finally:
+        auth_routes.time.time = original_time
+        auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+
+
+def test_login_rate_limit_expires_after_one_minute() -> None:
+    original_time = auth_routes.time.time
+    auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    now = 2_000.0
+    try:
+        auth_routes.time.time = lambda: now
+        with managed_test_client("anima-auth-test-") as client:
+            _register_user(
+                client,
+                username="rate-limit-reset",
+                password="correct-password",
+                name="Rate Limit Reset",
+            )
+
+            for _ in range(5):
+                response = client.post(
+                    "/api/auth/login",
+                    json={
+                        "username": "rate-limit-reset",
+                        "password": "wrong-password",
+                    },
+                )
+
+            assert response.status_code == 429
+
+            now += 61.0
+            reset_response = client.post(
+                "/api/auth/login",
+                json={
+                    "username": "rate-limit-reset",
+                    "password": "wrong-password",
+                },
+            )
+
+            assert reset_response.status_code == 401
+            assert "Retry-After" not in reset_response.headers
+    finally:
+        auth_routes.time.time = original_time
+        auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
 
 
 def test_change_password_rewraps_existing_dek_and_rotates_unlock_token() -> None:
@@ -165,11 +262,11 @@ def test_change_password_rejects_wrong_old_password() -> None:
 def test_register_blocked_after_provisioning() -> None:
     with managed_test_client("anima-auth-test-") as client:
         _register_user(client, username="owner",
-                       password="pw1234", name="Owner")
+                       password="pw123456", name="Owner")
 
         second = client.post(
             "/api/auth/register",
-            json={"username": "intruder", "password": "pw1234", "name": "Nope"},
+            json={"username": "intruder", "password": "pw123456", "name": "Nope"},
         )
         assert second.status_code == 403
         assert second.json() == {"error": "Core is already provisioned"}

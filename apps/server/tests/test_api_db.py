@@ -10,7 +10,7 @@ from conftest import managed_test_client
 def _register_user(client: TestClient) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
-        json={"username": "dbtest", "password": "pw1234", "name": "DB Test"},
+        json={"username": "dbtest", "password": "pw123456", "name": "DB Test"},
     )
     assert response.status_code == 201
     return response.json()
@@ -97,7 +97,7 @@ def test_run_select_query() -> None:
         resp = client.post(
             "/api/db/query",
             headers=headers,
-            json={"sql": "SELECT COUNT(*) as cnt FROM users"},
+            json={"sql": "SELECT COUNT(*) as cnt FROM tasks"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -132,6 +132,45 @@ def test_run_query_empty_sql() -> None:
         assert resp.status_code == 400
 
 
+def test_run_query_rejects_semicolons() -> None:
+    with managed_test_client("anima-db-test-") as client:
+        reg = _register_user(client)
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            "/api/db/query",
+            headers=headers,
+            json={"sql": "SELECT COUNT(*) as cnt FROM tasks;   \n"},
+        )
+        assert resp.status_code == 400
+
+
+def test_run_query_rejects_blocked_keywords() -> None:
+    with managed_test_client("anima-db-test-") as client:
+        reg = _register_user(client)
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            "/api/db/query",
+            headers=headers,
+            json={"sql": "SELECT load_extension('evil')"},
+        )
+        assert resp.status_code == 400
+
+
+def test_run_query_rejects_protected_tables() -> None:
+    with managed_test_client("anima-db-test-") as client:
+        reg = _register_user(client)
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            "/api/db/query",
+            headers=headers,
+            json={"sql": "SELECT COUNT(*) as cnt FROM users"},
+        )
+        assert resp.status_code == 403
+
+
 # --------------------------------------------------------------------------- #
 # DELETE /api/db/tables/{table_name}/rows
 # --------------------------------------------------------------------------- #
@@ -144,7 +183,7 @@ def test_delete_row_requires_conditions() -> None:
 
         resp = client.request(
             "DELETE",
-            "/api/db/tables/users/rows",
+            "/api/db/tables/tasks/rows",
             headers=headers,
             json={"conditions": {}},
         )
@@ -165,6 +204,20 @@ def test_delete_row_table_not_found() -> None:
         assert resp.status_code == 404
 
 
+def test_delete_row_rejects_protected_table() -> None:
+    with managed_test_client("anima-db-test-") as client:
+        reg = _register_user(client)
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.request(
+            "DELETE",
+            "/api/db/tables/users/rows",
+            headers=headers,
+            json={"conditions": {"id": 1}},
+        )
+        assert resp.status_code == 403
+
+
 # --------------------------------------------------------------------------- #
 # PUT /api/db/tables/{table_name}/rows
 # --------------------------------------------------------------------------- #
@@ -176,7 +229,7 @@ def test_update_row_requires_conditions() -> None:
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
         resp = client.put(
-            "/api/db/tables/users/rows",
+            "/api/db/tables/tasks/rows",
             headers=headers,
             json={"conditions": {}, "updates": {"name": "New"}},
         )
@@ -189,7 +242,7 @@ def test_update_row_requires_updates() -> None:
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
         resp = client.put(
-            "/api/db/tables/users/rows",
+            "/api/db/tables/tasks/rows",
             headers=headers,
             json={"conditions": {"id": 1}, "updates": {}},
         )
@@ -207,3 +260,16 @@ def test_update_row_table_not_found() -> None:
             json={"conditions": {"id": 1}, "updates": {"name": "New"}},
         )
         assert resp.status_code == 404
+
+
+def test_update_row_rejects_protected_table() -> None:
+    with managed_test_client("anima-db-test-") as client:
+        reg = _register_user(client)
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.put(
+            "/api/db/tables/users/rows",
+            headers=headers,
+            json={"conditions": {"id": 1}, "updates": {"name": "New"}},
+        )
+        assert resp.status_code == 403

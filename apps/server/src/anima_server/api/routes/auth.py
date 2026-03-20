@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import math
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import read_unlock_token
@@ -27,6 +31,43 @@ from anima_server.services.auth import (
 from anima_server.services.sessions import unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+_FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_RATE_LIMIT = 5
+_LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+def _prune_failed_login_attempts(now: float) -> None:
+    stale_before = now - _LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    for username, attempts in list(_FAILED_LOGIN_ATTEMPTS.items()):
+        recent_attempts = [ts for ts in attempts if ts > stale_before]
+        if recent_attempts:
+            _FAILED_LOGIN_ATTEMPTS[username] = recent_attempts
+        else:
+            _FAILED_LOGIN_ATTEMPTS.pop(username, None)
+
+
+def _get_login_retry_after(username: str, now: float) -> int | None:
+    _prune_failed_login_attempts(now)
+    attempts = _FAILED_LOGIN_ATTEMPTS.get(username, [])
+    if len(attempts) < _LOGIN_RATE_LIMIT:
+        return None
+    retry_after = attempts[0] + _LOGIN_RATE_LIMIT_WINDOW_SECONDS - now
+    return max(1, math.ceil(retry_after))
+
+
+def _record_failed_login_attempt(username: str, now: float) -> int | None:
+    attempts = _FAILED_LOGIN_ATTEMPTS.setdefault(username, [])
+    attempts.append(now)
+    return _get_login_retry_after(username, now)
+
+
+def _rate_limited_login_response(retry_after: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Too many failed login attempts. Try again later."},
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 @router.post("/create-ai/chat", response_model=CreateAIChatResponse)
@@ -106,11 +147,20 @@ def login(
     if not username:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    now = time.time()
+    retry_after = _get_login_retry_after(username, now)
+    if retry_after is not None:
+        return _rate_limited_login_response(retry_after)
+
     try:
         response, deks = authenticate_account(username, payload.password)
     except ValueError:
+        retry_after = _record_failed_login_attempt(username, now)
+        if retry_after is not None:
+            return _rate_limited_login_response(retry_after)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    _FAILED_LOGIN_ATTEMPTS.pop(username, None)
     return {
         **response,
         "unlockToken": unlock_session_store.create(int(response["id"]), deks),

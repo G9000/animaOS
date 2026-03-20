@@ -9,7 +9,7 @@ from conftest import managed_test_client
 def _register_user(client: TestClient) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
-        json={"username": "alice", "password": "pw123", "name": "Alice"},
+        json={"username": "alice", "password": "pw123456", "name": "Alice"},
     )
     assert response.status_code == 201
     return response.json()
@@ -79,6 +79,6 @@ def test_delete_user_removes_database_row_and_files() -> None:
 
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "alice", "password": "pw123"},
+            json={"username": "alice", "password": "pw123456"},
         )
         assert login_response.status_code == 401

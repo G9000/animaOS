@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +54,7 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
         nonce = settings.sidecar_nonce
         if nonce and request.url.path not in _NONCE_EXEMPT_PATHS:
             header_value = (request.headers.get("x-anima-nonce") or "").strip()
-            if header_value != nonce:
+            if not hmac.compare_digest(header_value, nonce):
                 return JSONResponse(
                     status_code=403,
                     content={"error": "Invalid or missing sidecar nonce."},

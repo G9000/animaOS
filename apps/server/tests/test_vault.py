@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import User
 from anima_server.services.storage import get_user_data_dir
+from anima_server.services.vault import decrypt_string, encrypt_string
 from conftest import managed_test_client
 
 
@@ -14,7 +16,7 @@ def _register_user(
     client: TestClient,
     *,
     username: str = "alice",
-    password: str = "pw123",
+    password: str = "pw123456",
     name: str = "Alice",
 ) -> dict[str, object]:
     response = client.post(
@@ -98,7 +100,7 @@ def test_export_and_import_vault_restores_auth_and_files() -> None:
 
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "alice", "password": "pw123"},
+            json={"username": "alice", "password": "pw123456"},
         )
         assert login_response.status_code == 200
 
@@ -126,3 +128,32 @@ def test_import_vault_rejects_wrong_passphrase() -> None:
         assert import_response.json() == {
             "error": "Failed to decrypt vault. Check the passphrase and payload.",
         }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("timeCost", 11, "Vault KDF timeCost exceeds maximum allowed value of 10."),
+        (
+            "memoryCostKiB",
+            2_097_153,
+            "Vault KDF memoryCostKiB exceeds maximum allowed value of 2097152.",
+        ),
+        (
+            "parallelism",
+            9,
+            "Vault KDF parallelism exceeds maximum allowed value of 8.",
+        ),
+        ("keyLength", 31, "Vault KDF keyLength must be exactly 32."),
+    ],
+)
+def test_decrypt_string_rejects_out_of_bounds_kdf_parameters(
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    envelope = encrypt_string("secret", "vault-pass")
+    envelope["kdf"][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        decrypt_string(envelope, "vault-pass")

@@ -12,9 +12,9 @@ from anima_server.services.crypto import (
 
 
 def test_create_wrapped_dek_roundtrip() -> None:
-    dek, record = create_wrapped_dek("pw123")
+    dek, record = create_wrapped_dek("pw123456")
 
-    assert unwrap_dek("pw123", record) == dek
+    assert unwrap_dek("pw123456", record) == dek
 
 
 def test_unwrap_dek_rejects_wrong_passphrase() -> None:
@@ -25,7 +25,7 @@ def test_unwrap_dek_rejects_wrong_passphrase() -> None:
 
 
 def test_encrypt_text_with_dek_roundtrip() -> None:
-    dek, _ = create_wrapped_dek("pw123")
+    dek, _ = create_wrapped_dek("pw123456")
     ciphertext = encrypt_text_with_dek("hello world", dek)
 
     assert decrypt_text_with_dek(ciphertext, dek) == "hello world"

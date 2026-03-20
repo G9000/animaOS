@@ -8,7 +8,7 @@ from conftest import managed_test_client
 def _register_user(client: TestClient) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
-        json={"username": "dashtest", "password": "pw1234", "name": "Dash Test"},
+        json={"username": "dashtest", "password": "pw123456", "name": "Dash Test"},
     )
     assert response.status_code == 201
     return response.json()
