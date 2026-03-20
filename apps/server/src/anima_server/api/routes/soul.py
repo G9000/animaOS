@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
 from anima_server.models import SelfModelBlock
+from anima_server.services.data_crypto import df, ef
+from anima_server.services.storage import get_user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,11 @@ def _set_user_directive_block(db: Session, user_id: int, content: str) -> SelfMo
     from datetime import UTC, datetime
 
     existing = _get_user_directive_block(db, user_id)
+    encrypted_content = ef(
+        user_id, content, table="self_model_blocks", field="content"
+    )
     if existing is not None:
-        existing.content = content
+        existing.content = encrypted_content
         existing.version += 1
         existing.updated_by = "user_edit"
         existing.updated_at = datetime.now(UTC)
@@ -59,7 +64,7 @@ def _set_user_directive_block(db: Session, user_id: int, content: str) -> SelfMo
     block = SelfModelBlock(
         user_id=user_id,
         section=USER_DIRECTIVE_SECTION,
-        content=content,
+        content=encrypted_content,
         version=1,
         updated_by="user_edit",
     )
@@ -78,7 +83,16 @@ async def get_user_directive(
 
     block = _get_user_directive_block(db, user_id)
     if block is not None:
-        return UserDirectiveResponse(content=block.content, source="database")
+        content = df(user_id, block.content, table="self_model_blocks", field="content")
+        return UserDirectiveResponse(content=content, source="database")
+
+    legacy_path = get_user_data_dir(user_id) / "soul.md"
+    if legacy_path.is_file():
+        content = legacy_path.read_text(encoding="utf-8")
+        _set_user_directive_block(db, user_id, content)
+        db.commit()
+        legacy_path.unlink(missing_ok=True)
+        return UserDirectiveResponse(content=content, source="database")
 
     return UserDirectiveResponse(content="", source="database")
 

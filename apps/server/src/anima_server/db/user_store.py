@@ -329,5 +329,8 @@ def _maybe_unwrap_sqlcipher_key(password: str) -> None:
         wrap_tag=str(wrapped_data["wrap_tag"]),
         wrapped_dek=str(wrapped_data["wrapped_key"]),
     )
-    raw_key = unwrap_dek(password, record)
+    try:
+        raw_key = unwrap_dek(password, record)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid credentials") from exc
     set_sqlcipher_key(raw_key)
