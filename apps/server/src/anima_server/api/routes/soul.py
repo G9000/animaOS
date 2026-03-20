@@ -7,7 +7,9 @@ The API path remains /api/soul for backward compatibility with existing clients.
 
 from __future__ import annotations
 
+import binascii
 import logging
+from base64 import b64decode
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
@@ -33,6 +35,30 @@ class UserDirectiveResponse(BaseModel):
 
 class UserDirectiveUpdateRequest(BaseModel):
     content: str = Field(min_length=1)
+
+
+def _looks_like_encrypted_field_payload(value: str) -> bool:
+    parts = value.split(":", 3)
+    if len(parts) != 4 or parts[0] not in {"enc1", "enc2"}:
+        return False
+    try:
+        for segment in parts[1:]:
+            b64decode(segment, validate=True)
+    except binascii.Error:
+        return False
+    return True
+
+
+def _read_user_directive_content(user_id: int, raw_content: str) -> str:
+    if not raw_content.startswith(("enc1:", "enc2:")):
+        return raw_content
+    if not _looks_like_encrypted_field_payload(raw_content):
+        logger.warning(
+            "Treating malformed encrypted-looking user directive as plaintext for user %s",
+            user_id,
+        )
+        return raw_content
+    return df(user_id, raw_content, table="self_model_blocks", field="content")
 
 
 def _get_user_directive_block(db: Session, user_id: int) -> SelfModelBlock | None:
@@ -83,7 +109,7 @@ async def get_user_directive(
 
     block = _get_user_directive_block(db, user_id)
     if block is not None:
-        content = df(user_id, block.content, table="self_model_blocks", field="content")
+        content = _read_user_directive_content(user_id, block.content)
         return UserDirectiveResponse(content=content, source="database")
 
     legacy_path = get_user_data_dir(user_id) / "soul.md"
