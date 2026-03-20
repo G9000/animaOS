@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from anima_server.services.agent.rules import (
@@ -9,7 +11,6 @@ from anima_server.services.agent.rules import (
     ConditionalToolRule,
     InitToolRule,
     PrerequisiteToolRule,
-    TerminalToolRule,
     ToolRulesSolver,
 )
 
@@ -225,23 +226,29 @@ class TestCycleDetection:
 
 
 class TestWarnUnknownTools:
-    def test_logs_warning_for_unknown_init_tool(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_logs_warning_for_unknown_init_tool(self) -> None:
         solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
-        with caplog.at_level("WARNING"):
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
             solver.warn_unknown_tools(["real_tool"])
-        assert "ghost_tool" in caplog.text
+        warning_mock.assert_called_once_with(
+            "InitToolRule references unknown tool %r",
+            "ghost_tool",
+        )
 
-    def test_no_warning_when_all_tools_known(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_no_warning_when_all_tools_known(self) -> None:
         solver = ToolRulesSolver([InitToolRule(tool_name="tool_a")])
-        with caplog.at_level("WARNING"):
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
             solver.warn_unknown_tools(["tool_a", "tool_b"])
-        assert caplog.text == ""
+        warning_mock.assert_not_called()
 
-    def test_logs_warning_for_unknown_prerequisite(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_logs_warning_for_unknown_prerequisite(self) -> None:
         solver = ToolRulesSolver([
             PrerequisiteToolRule(
                 prerequisite_tool="unknown_pre", dependent_tool="tool_a"),
         ])
-        with caplog.at_level("WARNING"):
+        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
             solver.warn_unknown_tools(["tool_a"])
-        assert "unknown_pre" in caplog.text
+        warning_mock.assert_called_once_with(
+            "PrerequisiteToolRule references unknown prerequisite tool %r",
+            "unknown_pre",
+        )
