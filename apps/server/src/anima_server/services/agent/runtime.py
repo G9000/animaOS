@@ -33,7 +33,7 @@ from anima_server.services.agent.runtime_types import (
     ToolCall,
     ToolExecutionResult,
 )
-from anima_server.services.agent.rules import ToolRule, ToolRulesSolver
+from anima_server.services.agent.rules import InitToolRule, ToolRule, ToolRulesSolver
 from anima_server.services.agent.messages import (
     build_conversation_messages,
     make_assistant_message,
@@ -226,6 +226,14 @@ class AgentRuntime:
         response = ""
         tools_used: list[str] = []
         step_traces: list[StepTrace] = []
+        deferred_tool_calls: list[ToolCall] = []
+
+        # Collect init tool names so we can identify them during deferral.
+        init_tool_names = {
+            rule.tool_name
+            for rule in self._tool_rules
+            if isinstance(rule, InitToolRule)
+        }
 
         for step_index in range(self._max_steps):
             # --- Cancellation check (step boundary) ---
@@ -377,6 +385,22 @@ class AgentRuntime:
                     self._tool_names,
                 )
                 if violation is not None:
+                    # If the blocked tool is neither terminal nor an init
+                    # tool, defer it for execution after the turn completes
+                    # instead of permanently discarding the model's intent.
+                    is_deferrable = (
+                        not rules_solver.is_terminal(tool_call.name)
+                        and tool_call.name not in init_tool_names
+                        and tool_call.name in self._tool_registry
+                    )
+                    if is_deferrable:
+                        deferred_tool_calls.append(tool_call)
+                        logger.info(
+                            "Step %d: deferring blocked tool call %r for "
+                            "post-turn execution (violation: %s)",
+                            step_index, tool_call.name, violation,
+                        )
+
                     tool_result = ToolExecutionResult(
                         call_id=tool_call.id,
                         name=tool_call.name,
@@ -488,6 +512,50 @@ class AgentRuntime:
             break
         else:
             stop_reason = StopReason.MAX_STEPS
+
+        # --- Execute deferred tool calls ---
+        # Tool calls that were blocked by rule violations (e.g. InitToolRule)
+        # but are valid non-terminal, non-init tools get executed now so the
+        # model's intent is preserved.
+        if deferred_tool_calls:
+            if stop_reason != StopReason.TERMINAL_TOOL:
+                logger.warning(
+                    "Turn ended with stop reason %r before %d deferred tool "
+                    "call(s) could run: %s",
+                    stop_reason.value,
+                    len(deferred_tool_calls),
+                    ", ".join(tc.name for tc in deferred_tool_calls),
+                )
+            else:
+                deferred_step_index = len(step_traces)
+                for dtc in deferred_tool_calls:
+                    try:
+                        deferred_result = await self._tool_executor.execute(
+                            dtc,
+                            is_terminal=False,
+                        )
+                        if dtc.name not in tools_used:
+                            tools_used.append(dtc.name)
+                        logger.info(
+                            "Deferred tool call %r executed successfully "
+                            "(call_id=%s, error=%s)",
+                            dtc.name, dtc.id, deferred_result.is_error,
+                        )
+                        if event_callback is not None:
+                            await event_callback(
+                                build_tool_call_event(deferred_step_index, dtc))
+                            await event_callback(
+                                build_tool_return_event(
+                                    deferred_step_index,
+                                    deferred_result,
+                                )
+                            )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "Deferred tool call %r failed",
+                            dtc.name,
+                            exc_info=True,
+                        )
 
         if not response:
             response = _default_response(stop_reason)
