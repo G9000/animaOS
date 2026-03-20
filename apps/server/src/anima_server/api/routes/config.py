@@ -37,7 +37,7 @@ class AgentConfigUpdateRequest(BaseModel):
 
 AVAILABLE_PROVIDERS: list[ProviderInfo] = [
     ProviderInfo(name="scaffold", defaultModel="scaffold", requiresApiKey=False),
-    ProviderInfo(name="ollama", defaultModel="qwen3.5-uncensored:35b", requiresApiKey=False),
+    ProviderInfo(name="ollama", defaultModel="vaultbox/qwen3.5-uncensored:35b", requiresApiKey=False),
     ProviderInfo(name="openrouter", defaultModel="google/gemma-3-27b-it", requiresApiKey=True),
     ProviderInfo(name="vllm", defaultModel="default", requiresApiKey=False),
 ]

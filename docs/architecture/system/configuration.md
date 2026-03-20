@@ -19,7 +19,7 @@ All settings use the `ANIMA_` env prefix, loaded from `.env` / `.env.local` via 
 | `ANIMA_DATA_DIR` | `.anima/dev` | Root data directory |
 | `ANIMA_DATABASE_URL` | `sqlite:///.anima/dev/anima.db` | DB connection string |
 | `ANIMA_AGENT_PROVIDER` | `ollama` | LLM provider (`ollama`, `openrouter`, `vllm`) |
-| `ANIMA_AGENT_MODEL` | `qwen3.5-uncensored:35b` | LLM model |
+| `ANIMA_AGENT_MODEL` | `vaultbox/qwen3.5-uncensored:35b` | LLM model |
 | `ANIMA_AGENT_MAX_STEPS` | `6` | Max tool-call steps per turn |
 | `ANIMA_AGENT_MAX_TOKENS` | `4096` | Context window budget |
 | `ANIMA_CORE_PASSPHRASE` | `""` | SQLCipher passphrase (empty = unified mode) |
