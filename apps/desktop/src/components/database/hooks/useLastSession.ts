@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { useLocalStorage } from "./useLocalStorage";
 
 interface LastSession {
@@ -10,13 +11,13 @@ interface LastSession {
 export function useLastSession() {
   const [session, setSession] = useLocalStorage<LastSession | null>("db-last-session", null);
 
-  const saveSession = (updates: Partial<LastSession>) => {
+  const saveSession = useCallback((updates: Partial<LastSession>) => {
     setSession((prev) => ({
       ...(prev || { lastView: "dashboard", timestamp: Date.now() }),
       ...updates,
       timestamp: Date.now(),
     }));
-  };
+  }, [setSession]);
 
   const clearSession = () => {
     setSession(null);
