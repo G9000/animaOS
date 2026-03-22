@@ -1,4 +1,4 @@
-"""Tests for guided inner monologue: think-first cognitive loop."""
+"""Tests for injected thinking kwarg: every tool call includes a `thinking` argument."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from collections import deque
 import pytest
 
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
+from anima_server.services.agent.executor import ToolExecutor, unpack_inner_thoughts_from_kwargs
 from anima_server.services.agent.rules import (
-    InitToolRule,
     TerminalToolRule,
     build_default_tool_rules,
 )
@@ -24,7 +24,7 @@ from anima_server.services.agent.tools import (
     continue_reasoning,
     get_tool_rules,
     get_tools,
-    inner_thought,
+    inject_inner_thoughts_into_tools,
     send_message,
     tool,
 )
@@ -46,226 +46,181 @@ class QueueAdapter(BaseLLMAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Tool registration
+# Schema injection
 # ---------------------------------------------------------------------------
 
 
-def test_inner_thought_in_default_tools() -> None:
-    """inner_thought is registered in the default tool list."""
+def test_thinking_injected_into_all_tool_schemas() -> None:
+    """Every tool from get_tools() has `thinking` as a required first param."""
+    tools = get_tools()
+    for t in tools:
+        schema = t.args_schema.model_json_schema()
+        assert "thinking" in schema.get("properties", {}), (
+            f"Tool {t.name} missing thinking property"
+        )
+        assert "thinking" in schema.get("required", []), (
+            f"Tool {t.name} missing thinking in required"
+        )
+        # Should be the first required param
+        assert schema["required"][0] == "thinking", (
+            f"Tool {t.name}: thinking should be first required param"
+        )
+
+
+def test_inject_inner_thoughts_idempotent() -> None:
+    """Calling inject_inner_thoughts_into_tools twice doesn't double-inject."""
+
+    @tool
+    def my_tool(msg: str) -> str:
+        """Test tool."""
+        return msg
+
+    inject_inner_thoughts_into_tools([my_tool])
+    schema1 = my_tool.args_schema.model_json_schema()
+    inject_inner_thoughts_into_tools([my_tool])
+    schema2 = my_tool.args_schema.model_json_schema()
+
+    assert schema1 == schema2
+    assert schema2["required"].count("thinking") == 1
+
+
+def test_inner_thought_not_in_default_tools() -> None:
+    """inner_thought tool no longer exists in the default tool list."""
     tools = get_tools()
     names = [getattr(t, "name", "") for t in tools]
-    assert "inner_thought" in names
+    assert "inner_thought" not in names
 
 
-def test_inner_thought_has_init_rule() -> None:
-    """build_default_tool_rules includes an InitToolRule for inner_thought."""
+def test_no_init_tool_rule() -> None:
+    """build_default_tool_rules has no InitToolRule (no inner_thought to gate)."""
+    from anima_server.services.agent.rules import InitToolRule
     tools = get_tools()
     rules = get_tool_rules(tools)
     init_rules = [r for r in rules if isinstance(r, InitToolRule)]
-    assert any(r.tool_name == "inner_thought" for r in init_rules)
-
-
-def test_inner_thought_is_not_terminal() -> None:
-    """inner_thought must not be terminal — it's always followed by action."""
-    tools = get_tools()
-    rules = get_tool_rules(tools)
-    terminal_names = {
-        r.tool_name for r in rules if isinstance(r, TerminalToolRule)
-    }
-    assert "inner_thought" not in terminal_names
-
-
-def test_inner_thought_description_requires_thought_argument() -> None:
-    assert "You MUST provide a thought string argument." in inner_thought.description
+    assert len(init_rules) == 0
 
 
 # ---------------------------------------------------------------------------
-# Runtime: think-first enforcement
+# Unpack thinking from kwargs
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_inner_thought_must_be_first_tool() -> None:
-    """If the agent tries to call send_message without thinking first,
-    it gets a rule violation and must think first."""
-    adapter = QueueAdapter([
-        # Step 1: agent tries to call send_message directly (rule violation)
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c1", name="send_message", arguments={"message": "hi"}),)
-        ),
-        # Step 2: agent calls inner_thought (correct)
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c2", name="inner_thought", arguments={"thought": "greeting"}),)
-        ),
-        # Step 3: agent sends message (terminal)
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c3", name="send_message", arguments={"message": "Hello!"}),)
-        ),
-    ])
-
-    runtime = AgentRuntime(
-        adapter=adapter,
-        tools=[inner_thought, send_message],
-        tool_rules=[
-            InitToolRule(tool_name="inner_thought"),
-            TerminalToolRule(tool_name="send_message"),
-        ],
-        max_steps=4,
+def test_unpack_inner_thoughts_from_kwargs() -> None:
+    """unpack_inner_thoughts_from_kwargs pops thinking from arguments."""
+    tc = ToolCall(
+        id="c1",
+        name="send_message",
+        arguments={"thinking": "reasoning here", "message": "hello"},
     )
+    thought = unpack_inner_thoughts_from_kwargs(tc)
+    assert thought == "reasoning here"
+    assert "thinking" not in tc.arguments
+    assert tc.arguments["message"] == "hello"
 
-    result = await runtime.invoke("hi", user_id=1, history=[])
 
-    assert result.response == "Hello!"
-    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
-    assert len(result.step_traces) == 3
-    # First step has rule violation
-    assert result.step_traces[0].tool_results[0].is_error is True
-    assert "first tool call must be one of: inner_thought" in result.step_traces[0].tool_results[0].output
-    # Only inner_thought is available on first call
-    assert adapter.requests[0].force_tool_call is True
+def test_unpack_inner_thoughts_missing() -> None:
+    """Returns None when thinking kwarg is absent."""
+    tc = ToolCall(id="c1", name="send_message", arguments={"message": "hello"})
+    thought = unpack_inner_thoughts_from_kwargs(tc)
+    assert thought is None
+
+
+# ---------------------------------------------------------------------------
+# Executor: thinking extracted before dispatch
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_think_then_respond_happy_path() -> None:
-    """Standard flow: think -> send_message."""
+async def test_executor_strips_thinking_before_dispatch() -> None:
+    """The executor should remove `thinking` from args before calling the tool."""
+
+    @tool
+    def echo_tool(msg: str) -> str:
+        """Echo."""
+        return msg
+
+    executor = ToolExecutor([echo_tool])
+    tc = ToolCall(
+        id="c1",
+        name="echo_tool",
+        arguments={"thinking": "private reasoning", "msg": "public"},
+    )
+    result = await executor.execute(tc)
+
+    assert result.is_error is False
+    assert result.output == "public"
+    assert result.inner_thinking == "private reasoning"
+
+
+# ---------------------------------------------------------------------------
+# Runtime: no InitToolRule needed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_direct_send_message_without_init_tool() -> None:
+    """Model can call send_message directly — no init tool gate."""
     adapter = QueueAdapter([
         StepExecutionResult(
-            tool_calls=(ToolCall(id="c1", name="inner_thought", arguments={"thought": "User said hello."}),)
-        ),
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c2", name="send_message", arguments={"message": "Hey there!"}),)
+            tool_calls=(ToolCall(
+                id="c1", name="send_message",
+                arguments={"thinking": "Simple greeting", "message": "Hey!"},
+            ),)
         ),
     ])
 
     runtime = AgentRuntime(
         adapter=adapter,
-        tools=[inner_thought, send_message],
-        tool_rules=[
-            InitToolRule(tool_name="inner_thought"),
-            TerminalToolRule(tool_name="send_message"),
-        ],
-        max_steps=4,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=2,
     )
 
     result = await runtime.invoke("hello", user_id=1, history=[])
 
-    assert result.response == "Hey there!"
+    assert result.response == "Hey!"
     assert result.stop_reason == StopReason.TERMINAL_TOOL.value
-    assert "inner_thought" in result.tools_used
-    assert "send_message" in result.tools_used
-    assert len(result.step_traces) == 2
+    assert len(result.step_traces) == 1
 
 
 @pytest.mark.asyncio
-async def test_think_then_tool_then_respond() -> None:
-    """Multi-step flow: think -> use a tool -> send_message."""
+async def test_tool_then_respond_with_thinking() -> None:
+    """Multi-step flow: tool with thinking → send_message with thinking."""
 
     @tool
     def lookup() -> str:
         """Look something up."""
         return "found it"
 
-    adapter = QueueAdapter([
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c1", name="inner_thought", arguments={"thought": "Need to look something up."}),)
-        ),
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c2", name="lookup", arguments={}),)
-        ),
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c3", name="send_message", arguments={"message": "I found it!"}),)
-        ),
-    ])
+    inject_inner_thoughts_into_tools([lookup])
 
-    runtime = AgentRuntime(
-        adapter=adapter,
-        tools=[inner_thought, lookup, send_message],
-        tool_rules=[
-            InitToolRule(tool_name="inner_thought"),
-            TerminalToolRule(tool_name="send_message"),
-        ],
-        max_steps=4,
-    )
-
-    result = await runtime.invoke("search for X", user_id=1, history=[])
-
-    assert result.response == "I found it!"
-    assert len(result.step_traces) == 3
-    assert result.tools_used == ["inner_thought", "lookup", "send_message"]
-
-
-@pytest.mark.asyncio
-async def test_think_then_continue_then_respond() -> None:
-    """Flow with continue_reasoning: think -> continue -> send_message."""
-    adapter = QueueAdapter([
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c1", name="inner_thought", arguments={"thought": "Complex question."}),)
-        ),
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c2", name="continue_reasoning", arguments={}),)
-        ),
-        StepExecutionResult(
-            tool_calls=(ToolCall(id="c3", name="send_message", arguments={"message": "Here's my analysis."}),)
-        ),
-    ])
-
-    runtime = AgentRuntime(
-        adapter=adapter,
-        tools=[inner_thought, continue_reasoning, send_message],
-        tool_rules=[
-            InitToolRule(tool_name="inner_thought"),
-            TerminalToolRule(tool_name="send_message"),
-        ],
-        max_steps=5,
-    )
-
-    result = await runtime.invoke("complex", user_id=1, history=[])
-
-    assert result.response == "Here's my analysis."
-    assert "continue_reasoning" in result.tools_used
-    assert len(result.step_traces) == 3
-
-
-@pytest.mark.asyncio
-async def test_inner_thought_content_not_in_response() -> None:
-    """The inner thought content is captured in step traces but NOT
-    sent as the response to the user."""
     adapter = QueueAdapter([
         StepExecutionResult(
             tool_calls=(ToolCall(
-                id="c1", name="inner_thought",
-                arguments={"thought": "SECRET INTERNAL REASONING"},
+                id="c1", name="lookup",
+                arguments={"thinking": "Need to search for this."},
             ),)
         ),
         StepExecutionResult(
             tool_calls=(ToolCall(
                 id="c2", name="send_message",
-                arguments={"message": "Public response."},
+                arguments={"thinking": "Got the answer.", "message": "Found it!"},
             ),)
         ),
     ])
 
     runtime = AgentRuntime(
         adapter=adapter,
-        tools=[inner_thought, send_message],
-        tool_rules=[
-            InitToolRule(tool_name="inner_thought"),
-            TerminalToolRule(tool_name="send_message"),
-        ],
-        max_steps=3,
+        tools=[lookup, send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=4,
     )
 
-    result = await runtime.invoke("test", user_id=1, history=[])
+    result = await runtime.invoke("search", user_id=1, history=[])
 
-    assert result.response == "Public response."
-    assert "SECRET INTERNAL REASONING" not in result.response
-    # But it IS in the step traces for observability
-    inner_traces = [
-        t for t in result.step_traces
-        if t.tool_calls and t.tool_calls[0].name == "inner_thought"
-    ]
-    assert len(inner_traces) == 1
-    assert inner_traces[0].tool_calls[0].arguments["thought"] == "SECRET INTERNAL REASONING"
+    assert result.response == "Found it!"
+    assert "lookup" in result.tools_used
+    assert "send_message" in result.tools_used
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +229,13 @@ async def test_inner_thought_content_not_in_response() -> None:
 
 
 def test_system_prompt_contains_cognitive_loop() -> None:
-    """The system prompt includes the cognitive loop instructions."""
+    """The system prompt includes the updated cognitive loop instructions."""
     from anima_server.services.agent.system_prompt import build_system_prompt
     prompt = build_system_prompt()
     assert "Cognitive Loop:" in prompt
-    assert "THINK" in prompt
-    assert "inner_thought" in prompt
+    assert "thinking" in prompt
     assert "send_message" in prompt
+    assert "inner_thought" not in prompt
 
 
 def test_system_prompt_contains_memory_architecture() -> None:
@@ -291,3 +246,112 @@ def test_system_prompt_contains_memory_architecture() -> None:
     assert "core_memory_append" in prompt
     assert "core_memory_replace" in prompt
     assert "save_to_memory" in prompt
+
+
+# ---------------------------------------------------------------------------
+# History re-injection round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_history_reinjection_round_trip() -> None:
+    """StoredMessage with content (inner thought) + non-terminal tool_calls
+    re-injects thinking into tool call args and clears content when replayed."""
+    from anima_server.services.agent.messages import to_runtime_message, AIMessage
+    from anima_server.services.agent.state import StoredMessage
+
+    stored = StoredMessage(
+        role="assistant",
+        content="User seems happy today.",
+        tool_calls=(ToolCall(
+            id="c1",
+            name="note_to_self",
+            arguments={"key": "mood", "value": "happy"},
+        ),),
+    )
+
+    result = to_runtime_message(stored)
+
+    assert isinstance(result, AIMessage)
+    # Content should be cleared (thought moved into tool call args)
+    assert result.content == ""
+    # Thinking should be re-injected as first key in args
+    assert result.tool_calls[0]["args"]["thinking"] == "User seems happy today."
+    # Original args preserved
+    assert result.tool_calls[0]["args"]["key"] == "mood"
+
+
+def test_history_no_reinjection_for_send_message() -> None:
+    """Assistant messages with send_message (terminal) keep content as-is.
+    The content is real assistant text, not inner thinking."""
+    from anima_server.services.agent.messages import to_runtime_message, AIMessage
+    from anima_server.services.agent.state import StoredMessage
+
+    stored = StoredMessage(
+        role="assistant",
+        content="Some assistant text",
+        tool_calls=(ToolCall(
+            id="c1",
+            name="send_message",
+            arguments={"message": "Hey!"},
+        ),),
+    )
+
+    result = to_runtime_message(stored)
+
+    assert isinstance(result, AIMessage)
+    # Content preserved — not re-injected because send_message is terminal
+    assert result.content == "Some assistant text"
+    assert "thinking" not in result.tool_calls[0]["args"]
+
+
+def test_history_no_reinjection_without_tool_calls() -> None:
+    """Assistant messages without tool_calls keep content as-is."""
+    from anima_server.services.agent.messages import to_runtime_message, AIMessage
+    from anima_server.services.agent.state import StoredMessage
+
+    stored = StoredMessage(
+        role="assistant",
+        content="Just a plain text response.",
+    )
+
+    result = to_runtime_message(stored)
+
+    assert isinstance(result, AIMessage)
+    assert result.content == "Just a plain text response."
+    assert result.tool_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Inner thought extraction for consolidation
+# ---------------------------------------------------------------------------
+
+
+def test_extract_inner_thoughts_from_thinking_kwarg() -> None:
+    """_extract_inner_thoughts extracts thinking from tool call arguments."""
+    from anima_server.services.agent.service import _extract_inner_thoughts
+    from anima_server.services.agent.runtime_types import StepTrace, ToolExecutionResult
+    from anima_server.services.agent.state import AgentResult
+
+    result = AgentResult(
+        response="Hello!",
+        model="test",
+        provider="test",
+        stop_reason="terminal_tool",
+        tools_used=["send_message"],
+        step_traces=[
+            StepTrace(
+                step_index=0,
+                tool_calls=(ToolCall(
+                    id="c1", name="send_message",
+                    arguments={"thinking": "User seems happy today.", "message": "Hey!"},
+                ),),
+                tool_results=(ToolExecutionResult(
+                    call_id="c1", name="send_message", output="Hey!",
+                    inner_thinking="User seems happy today.",
+                ),),
+            ),
+        ],
+    )
+
+    thoughts = _extract_inner_thoughts(result)
+    assert "User seems happy today." in thoughts

@@ -39,6 +39,7 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
     ProviderInfo(name="scaffold", defaultModel="scaffold", requiresApiKey=False),
     ProviderInfo(name="ollama", defaultModel="vaultbox/qwen3.5-uncensored:35b", requiresApiKey=False),
     ProviderInfo(name="openrouter", defaultModel="google/gemma-3-27b-it", requiresApiKey=True),
+    ProviderInfo(name="moonshot", defaultModel="kimi-k2-5", requiresApiKey=True),
     ProviderInfo(name="vllm", defaultModel="default", requiresApiKey=False),
 ]
 
@@ -92,8 +93,14 @@ async def update_config(
     settings.agent_model = payload.model
     if payload.apiKey is not None:
         settings.agent_api_key = payload.apiKey
-    if payload.ollamaUrl is not None:
+    # Only set base_url for ollama/vllm; clear for providers with fixed endpoints
+    if payload.provider == "ollama" and payload.ollamaUrl is not None:
         settings.agent_base_url = payload.ollamaUrl
+    elif payload.provider == "vllm" and payload.ollamaUrl is not None:
+        settings.agent_base_url = payload.ollamaUrl
+    else:
+        # Clear base_url for providers with fixed endpoints (openrouter, moonshot)
+        settings.agent_base_url = ""
 
     from anima_server.services.agent import invalidate_agent_runtime_cache
 

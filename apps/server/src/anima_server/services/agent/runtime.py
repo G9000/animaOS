@@ -13,6 +13,7 @@ from anima_server.services.agent.streaming import (
     build_reasoning_event,
     build_step_request_event,
     build_step_result_event,
+    build_thought_event,
     build_timing_event,
     build_tool_call_event,
     build_tool_return_event,
@@ -196,7 +197,8 @@ class AgentRuntime:
         if dry_run:
             request_messages = _snapshot_messages(messages)
             tool_schemas = tuple(
-                _tool_schema(self._tool_registry[name])
+                _strip_thinking_from_schema(
+                    _tool_schema(self._tool_registry[name]))
                 for name in allowed_tool_names
                 if name in self._tool_registry
             )
@@ -227,13 +229,6 @@ class AgentRuntime:
         tools_used: list[str] = []
         step_traces: list[StepTrace] = []
         deferred_tool_calls: list[ToolCall] = []
-
-        # Collect init tool names so we can identify them during deferral.
-        init_tool_names = {
-            rule.tool_name
-            for rule in self._tool_rules
-            if isinstance(rule, InitToolRule)
-        }
 
         for step_index in range(self._max_steps):
             # --- Cancellation check (step boundary) ---
@@ -323,6 +318,7 @@ class AgentRuntime:
                                 name=tc.name,
                             )
                         )
+                        rules_solver.update_state(tc.name, tr.output)
                     step_ctx.progression = StepProgression.TOOLS_COMPLETED
                     step_traces.append(
                         _build_step_trace(
@@ -344,8 +340,8 @@ class AgentRuntime:
                         )
                         stop_reason = StopReason.TERMINAL_TOOL
                         break
-                    # Non-terminal coerced calls (e.g. inner_thought) —
-                    # continue the loop so the model can proceed.
+                    # Non-terminal coerced calls — continue the loop
+                    # so the model can proceed.
                     continue
 
                 response = step_result.assistant_text or response
@@ -385,9 +381,16 @@ class AgentRuntime:
                     self._tool_names,
                 )
                 if violation is not None:
-                    # If the blocked tool is neither terminal nor an init
-                    # tool, defer it for execution after the turn completes
-                    # instead of permanently discarding the model's intent.
+                    # If the blocked tool is neither terminal nor an
+                    # init-only tool, defer it for execution after the
+                    # turn completes instead of permanently discarding
+                    # the model's intent.  Init tools are excluded
+                    # because deferring them would bypass sequencing.
+                    init_tool_names = {
+                        rule.tool_name
+                        for rule in self._tool_rules
+                        if isinstance(rule, InitToolRule)
+                    }
                     is_deferrable = (
                         not rules_solver.is_terminal(tool_call.name)
                         and tool_call.name not in init_tool_names
@@ -461,6 +464,8 @@ class AgentRuntime:
                 )
                 if event_callback is not None:
                     await event_callback(build_tool_return_event(step_index, tool_result))
+                if tool_result.inner_thinking and event_callback is not None:
+                    await event_callback(build_thought_event(step_index, tool_result.inner_thinking))
                 rules_solver.update_state(tool_call.name, tool_result.output)
                 if tool_call.name not in tools_used:
                     tools_used.append(tool_call.name)
@@ -558,6 +563,13 @@ class AgentRuntime:
                                     deferred_result,
                                 )
                             )
+                            if deferred_result.inner_thinking:
+                                await event_callback(
+                                    build_thought_event(
+                                        deferred_step_index,
+                                        deferred_result.inner_thinking,
+                                    )
+                                )
                     except Exception:  # noqa: BLE001
                         logger.warning(
                             "Deferred tool call %r failed",
@@ -651,6 +663,8 @@ class AgentRuntime:
         if event_callback is not None:
             await event_callback(build_tool_call_event(0, tool_call))
             await event_callback(build_tool_return_event(0, tool_result))
+            if tool_result.inner_thinking:
+                await event_callback(build_thought_event(0, tool_result.inner_thinking))
 
         step_ctx.progression = StepProgression.TOOLS_COMPLETED
         request_messages = _snapshot_messages(messages)
@@ -957,7 +971,7 @@ class AgentRuntime:
         """Detect and execute tool calls that the model output as plain text.
 
         Some models (especially smaller ones) emit tool calls like
-        ``inner_thought("thinking...")`` or ``send_message("hello")`` as
+        ``send_message("hello")`` or ``note_to_self("observation")`` as
         plain text instead of structured tool calls.  This method parses
         those patterns and executes them as if they were real tool calls,
         keeping the cognitive loop intact.
@@ -997,6 +1011,8 @@ class AgentRuntime:
             if event_callback is not None:
                 await event_callback(build_tool_call_event(step_index, tool_call))
                 await event_callback(build_tool_return_event(step_index, tool_result))
+                if tool_result.inner_thinking:
+                    await event_callback(build_thought_event(step_index, tool_result.inner_thinking))
             results.append((tool_call, tool_result))
 
         return results if results else None
@@ -1037,6 +1053,11 @@ _TEXT_TOOL_CALL_FUNCTION_TAG_RE = re.compile(
     r"<function=(?P<name>[a-z_][a-z0-9_]*)>",
 )
 
+# Matches Letta/MemGPT-style parameter tags: <parameter=name>value</parameter>
+_PARAMETER_TAG_RE = re.compile(
+    r"<parameter=(\w+)>\s*([\s\S]*?)\s*</parameter>",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _ParsedTextToolCall:
@@ -1070,7 +1091,7 @@ def _parse_text_tool_calls(
         results.append(parsed)
         return results
 
-    # Try line-by-line for consecutive tool calls (e.g. inner_thought then send_message).
+    # Try line-by-line for consecutive tool calls.
     for line in stripped.split("\n"):
         line = line.strip()
         if not line:
@@ -1125,6 +1146,16 @@ def _parse_function_tag_tool_calls(
                 continue
         except (json.JSONDecodeError, ValueError):
             pass
+
+        # Try parsing Letta/MemGPT-style <parameter=name>value</parameter> tags.
+        param_matches = _PARAMETER_TAG_RE.findall(content)
+        if param_matches:
+            results.append(_ParsedTextToolCall(
+                name=name,
+                arguments={k: v.strip() for k, v in param_matches},
+            ))
+            continue
+
         arg_name = _infer_first_arg_name(name)
         results.append(_ParsedTextToolCall(name=name, arguments={arg_name: content}))
     return results
@@ -1166,7 +1197,6 @@ def _try_parse_single_text_tool_call(
 # Map of known tool name -> first argument name for single-string-arg coercion.
 _FIRST_ARG_NAMES: dict[str, str] = {
     "send_message": "message",
-    "inner_thought": "thought",
     "continue_reasoning": "reasoning",
     "note_to_self": "note",
     "core_memory_append": "content",
@@ -1335,6 +1365,27 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Failed to extract schema for tool %s", _tool_name(tool))
+    return schema
+
+
+def _strip_thinking_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Remove the injected ``thinking`` parameter from a tool schema
+    so it doesn't leak in client-facing dry-run output."""
+    params = schema.get("parameters")
+    if not isinstance(params, dict):
+        return schema
+    props = params.get("properties")
+    if isinstance(props, dict) and "thinking" in props:
+        schema = dict(schema)
+        schema["parameters"] = dict(params)
+        schema["parameters"]["properties"] = {
+            k: v for k, v in props.items() if k != "thinking"
+        }
+        required = params.get("required", [])
+        if isinstance(required, list) and "thinking" in required:
+            schema["parameters"]["required"] = [
+                r for r in required if r != "thinking"
+            ]
     return schema
 
 

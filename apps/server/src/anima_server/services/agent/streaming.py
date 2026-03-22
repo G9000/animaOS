@@ -114,17 +114,33 @@ def build_warning_event(
     )
 
 
+def build_thought_event(step_index: int, thought: str) -> AgentStreamEvent:
+    return AgentStreamEvent(
+        event="thought",
+        data={
+            "stepIndex": step_index,
+            "content": thought,
+        },
+    )
+
+
 def build_tool_call_event(step_index: int, tool_call: ToolCall) -> AgentStreamEvent:
+    # Strip private ``thinking`` kwarg from the client-facing event —
+    # it is emitted separately via ``build_thought_event``.
+    args = {k: v for k, v in tool_call.arguments.items() if k != "thinking"}
     data: dict[str, object] = {
         "stepIndex": step_index,
         "id": tool_call.id,
         "name": tool_call.name,
-        "arguments": dict(tool_call.arguments),
+        "arguments": args,
     }
     if tool_call.parse_error is not None:
         data["parseError"] = tool_call.parse_error
     if tool_call.raw_arguments is not None:
-        data["rawArguments"] = tool_call.raw_arguments
+        # Redact ``thinking`` from raw JSON to avoid leaking private
+        # reasoning on malformed tool call responses.
+        data["rawArguments"] = _redact_thinking_from_raw(
+            tool_call.raw_arguments)
     return AgentStreamEvent(
         event="tool_call",
         data=data,
@@ -300,12 +316,37 @@ def _build_tool_events(trace: StepTrace) -> Iterator[AgentStreamEvent]:
 
     for tool_result in trace.tool_results:
         yield build_tool_return_event(trace.step_index, tool_result)
+        if tool_result.inner_thinking:
+            yield build_thought_event(trace.step_index, tool_result.inner_thinking)
 
 
 def _preview_text(text: str, *, limit: int = _TRACE_PREVIEW_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}..."
+
+
+def _redact_thinking_from_raw(raw: str) -> str:
+    """Remove ``thinking`` key from a raw JSON arguments string.
+
+    Tries JSON parse first (handles any value type), falls back to
+    regex for malformed JSON.
+    """
+    import json as _json
+    try:
+        parsed = _json.loads(raw)
+        if isinstance(parsed, dict) and "thinking" in parsed:
+            parsed.pop("thinking")
+            return _json.dumps(parsed)
+    except (ValueError, TypeError):
+        pass
+    # Regex fallback for unparseable JSON — strip string values only.
+    import re as _re
+    return _re.sub(
+        r'"thinking"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?\s*',
+        "",
+        raw,
+    )
 
 
 def _serialize_message_preview(message: MessageSnapshot) -> dict[str, object]:

@@ -42,6 +42,7 @@ class ToolExecutionResult:
     is_error: bool = False
     is_terminal: bool = False
     memory_modified: bool = False
+    inner_thinking: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

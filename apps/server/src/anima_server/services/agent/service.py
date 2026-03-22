@@ -394,9 +394,10 @@ async def _execute_agent_turn_locked(
                     run_id=run.id,
                     tool_name=pending_tc.name,
                     tool_call_id=pending_tc.id,
-                    tool_arguments=dict(pending_tc.arguments)
-                    if isinstance(pending_tc.arguments, dict)
-                    else {},
+                    tool_arguments={
+                        k: v for k, v in pending_tc.arguments.items()
+                        if k != "thinking"
+                    } if isinstance(pending_tc.arguments, dict) else {},
                 ))
             usage = summarize_usage(result)
             if usage is not None:
@@ -954,14 +955,24 @@ async def _persist_turn_result(
 
 
 def _extract_inner_thoughts(result: AgentResult) -> str:
-    """Extract inner_thought content from step traces for consolidation."""
+    """Extract thinking content from tool call arguments for consolidation.
+
+    With the injected ``thinking`` kwarg, every tool call may contain
+    private reasoning in its ``thinking`` argument.  We also check
+    ``inner_thinking`` on tool results (populated by the executor after
+    unpacking the kwarg).
+    """
     thoughts: list[str] = []
     for trace in result.step_traces:
-        if not trace.tool_calls:
-            continue
-        for tc in trace.tool_calls:
-            if tc.name == "inner_thought":
-                thought = tc.arguments.get("thought", "")
+        # Primary path: executor unpacks thinking and stores it on the result.
+        for tr in trace.tool_results:
+            if tr.inner_thinking:
+                thoughts.append(tr.inner_thinking.strip())
+        # Safety-net fallback: if thinking was not unpacked (e.g. synthetic
+        # tool calls from a future code path), check tool call args.
+        if not any(tr.inner_thinking for tr in trace.tool_results):
+            for tc in trace.tool_calls:
+                thought = tc.arguments.get("thinking", "")
                 if isinstance(thought, str) and thought.strip():
                     thoughts.append(thought.strip())
     return "\n".join(thoughts)

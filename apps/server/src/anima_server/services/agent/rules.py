@@ -58,7 +58,7 @@ ToolRule = (
 
 
 class ToolRulesSolver:
-    """Stateful solver for Letta-style tool orchestration rules."""
+    """Stateful solver for tool orchestration rules."""
 
     def __init__(self, tool_rules: Sequence[ToolRule] = ()) -> None:
         self._init_rules = tuple(
@@ -199,7 +199,7 @@ class ToolRulesSolver:
                 return set()
             return {rule.default_child} & available_tools if rule.default_child else None
 
-        # Try to parse JSON and extract message field (Letta convention)
+        # Try to parse JSON and extract message field
         output_value = response
         try:
             parsed = json.loads(response)
@@ -290,8 +290,6 @@ class ToolRulesSolver:
 def build_default_tool_rules(tool_names: Collection[str]) -> tuple[ToolRule, ...]:
     normalized_tools = _normalize_tool_names(tool_names)
     rules: list[ToolRule] = []
-    if "inner_thought" in normalized_tools:
-        rules.append(InitToolRule(tool_name="inner_thought"))
     if "send_message" in normalized_tools:
         rules.append(TerminalToolRule(tool_name="send_message"))
     return tuple(rules)

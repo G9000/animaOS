@@ -137,7 +137,7 @@ def test_stream_events_include_step_state_and_empty_warning() -> None:
                     MessageSnapshot(role="system", content="system prompt"),
                     MessageSnapshot(role="user", content="hello there"),
                 ),
-                allowed_tools=("inner_thought", "send_message"),
+                allowed_tools=("current_datetime", "send_message"),
                 force_tool_call=True,
                 timing=StepTiming(
                     step_duration_ms=100.0,
@@ -162,7 +162,7 @@ def test_stream_events_include_step_state_and_empty_warning() -> None:
         "stepIndex": 0,
         "phase": "request",
         "messageCount": 2,
-        "allowedTools": ["inner_thought", "send_message"],
+        "allowedTools": ["current_datetime", "send_message"],
         "forceToolCall": True,
         "messages": [
             {

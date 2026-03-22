@@ -67,9 +67,30 @@ def to_runtime_message(message: StoredMessage) -> Any:
     if message.role in {"summary", "system"}:
         return make_summary_message(message.content)
     if message.role == "assistant":
+        # Thinking re-injection: when a stored assistant message has
+        # both content (the inner thought) and non-terminal tool_calls,
+        # re-inject the content into the tool call args as ``thinking``
+        # and clear the message body so the model sees history consistent
+        # with the injected schema.
+        # Guard: only re-inject when tool_calls are present and none is
+        # the terminal ``send_message`` (whose content is real assistant
+        # text, not inner thinking).  This also protects legacy history
+        # rows written before the thinking kwarg was introduced.
+        has_non_terminal_tools = (
+            message.tool_calls
+            and not any(tc.name == "send_message" for tc in message.tool_calls)
+        )
+        inner = (
+            message.content.strip()
+            if has_non_terminal_tools
+            and message.content
+            and message.content.strip()
+            else None
+        )
         return make_assistant_message(
             message.content,
             tool_calls=message.tool_calls,
+            inner_thoughts=inner,
         )
     if message.role == "tool":
         return make_tool_message(
@@ -96,7 +117,19 @@ def make_assistant_message(
     content: str,
     *,
     tool_calls: Sequence[ToolCall] = (),
+    inner_thoughts: str | None = None,
 ) -> Any:
+    if inner_thoughts and tool_calls:
+        # Re-injection for history consistency: move the inner thought
+        # into each tool call's ``thinking`` kwarg and clear message
+        # content so the model sees history matching the injected schema.
+        return AIMessage(
+            content="",
+            tool_calls=[
+                to_tool_call_payload(tc, inner_thoughts=inner_thoughts)
+                for tc in tool_calls
+            ],
+        )
     return AIMessage(
         content=content,
         tool_calls=[to_tool_call_payload(tool_call)
@@ -185,11 +218,19 @@ def render_scaffold_response(
     )
 
 
-def to_tool_call_payload(tool_call: ToolCall) -> dict[str, object]:
+def to_tool_call_payload(
+    tool_call: ToolCall,
+    *,
+    inner_thoughts: str | None = None,
+) -> dict[str, object]:
+    args = dict(tool_call.arguments)
+    if inner_thoughts:
+        # Insert 'thinking' as the first key, matching the injected schema.
+        args = {"thinking": inner_thoughts, **args}
     payload: dict[str, object] = {
         "id": tool_call.id,
         "name": tool_call.name,
-        "args": dict(tool_call.arguments),
+        "args": args,
         "type": "tool_call",
     }
     if tool_call.parse_error is not None:
@@ -197,3 +238,5 @@ def to_tool_call_payload(tool_call: ToolCall) -> dict[str, object]:
     if tool_call.raw_arguments is not None:
         payload["raw_arguments"] = tool_call.raw_arguments
     return payload
+
+

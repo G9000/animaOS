@@ -13,6 +13,25 @@ from anima_server.services.agent.runtime_types import ToolCall, ToolExecutionRes
 logger = logging.getLogger(__name__)
 
 
+def unpack_inner_thoughts_from_kwargs(
+    tool_call: ToolCall,
+    inner_thoughts_key: str = "thinking",
+) -> str | None:
+    """Pop the ``thinking`` kwarg from *tool_call.arguments* (in-place).
+
+    Returns the extracted thought string, or ``None`` if absent.
+    The tool function never sees this parameter — it is consumed here.
+    """
+    if not isinstance(tool_call.arguments, dict):
+        return None
+    value = tool_call.arguments.pop(inner_thoughts_key, None)
+    if value is None:
+        return None
+    # Coerce non-string values (e.g. model emits object/array) to string
+    # so downstream .strip() calls never crash.
+    return str(value) if not isinstance(value, str) else value
+
+
 class ToolExecutor:
     def __init__(self, tools: list[Any]) -> None:
         self._tools = {
@@ -35,8 +54,23 @@ class ToolExecutor:
                 is_error=True,
             )
 
+        # Strip the injected `thinking` kwarg early — before any error
+        # path can echo it back in raw_arguments or error messages.
+        thinking = unpack_inner_thoughts_from_kwargs(tool_call)
+
         if tool_call.parse_error is not None:
+            # Redact thinking from raw_arguments string (the dict pop
+            # above only affects parsed args, not the raw JSON string).
             raw = tool_call.raw_arguments or ""
+            if raw and "thinking" in raw:
+                import json as _json
+                try:
+                    parsed_raw = _json.loads(raw)
+                    if isinstance(parsed_raw, dict):
+                        parsed_raw.pop("thinking", None)
+                        raw = _json.dumps(parsed_raw)
+                except (ValueError, TypeError):
+                    pass
             return ToolExecutionResult(
                 call_id=tool_call.id,
                 name=tool_call.name,
@@ -87,6 +121,7 @@ class ToolExecutor:
             output=_stringify_output(output),
             is_terminal=is_terminal,
             memory_modified=flags["memory_modified"],
+            inner_thinking=thinking,
         )
 
     async def execute_parallel(
@@ -174,14 +209,23 @@ def _check_memory_modified(flags: dict[str, bool]) -> None:
 def _validate_tool_arguments(
     tool: Any,
     arguments: dict[str, Any],
+    *,
+    ignore_keys: tuple[str, ...] = ("thinking",),
 ) -> str | None:
     required_arguments = _get_required_tool_arguments(tool)
     if not required_arguments:
         return None
 
+    # Skip injected keys (e.g. ``thinking``) that are stripped before dispatch.
+    effective_required = tuple(
+        name for name in required_arguments if name not in ignore_keys
+    )
+    if not effective_required:
+        return None
+
     payload = arguments if isinstance(arguments, dict) else {}
     missing = [
-        name for name in required_arguments
+        name for name in effective_required
         if name not in payload or payload[name] is None
     ]
     if not missing:

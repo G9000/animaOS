@@ -433,8 +433,8 @@ def test_chat_ollama_provider_uses_live_adapter_surface(monkeypatch) -> None:
     assert fake_client.tool_choice == "required"
     tool_names = [getattr(tool, "name", "")
                   for tool in fake_client.bound_tools]
-    # InitToolRule restricts the first step to inner_thought only
-    assert "inner_thought" in tool_names
+    # send_message is always available (terminal tool)
+    assert "send_message" in tool_names
 
 
 def test_chat_openrouter_without_api_key_returns_error() -> None:

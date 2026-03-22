@@ -89,7 +89,7 @@ def list_transcript_messages(
     # Filter out:
     # 1. Assistant rows that are tool-call wrappers (the actual response
     #    text lives in the paired "tool" row from send_message).
-    # 2. Tool-result rows from internal tools (inner_thought, note_to_self,
+    # 2. Tool-result rows from internal tools (note_to_self,
     #    etc.) — only send_message results are user-visible responses.
     return [
         row for row in rows
@@ -166,43 +166,62 @@ def persist_agent_result(
             prompt_budget=result.prompt_budget if trace_index == 0 else None,
         )
 
-        # Inner thought steps are persisted for observability but excluded
-        # from the in-context conversation window — they'd waste tokens
-        # replaying "Thought recorded. Proceed..." on every future turn.
-        is_inner_thought_step = (
-            trace.tool_calls
-            and len(trace.tool_calls) == 1
-            and trace.tool_calls[0].name == "inner_thought"
-        )
-
         if trace.assistant_text or trace.tool_calls:
             if sequence_id is None:
                 raise RuntimeError(
                     "Missing reserved message sequence for assistant output.")
-            msg = append_message(
+            # Use extracted inner thinking as content (thinking kwarg
+            # value stored as assistant message content), but only when
+            # the step contains exclusively non-terminal tool calls.
+            # If ANY tool result is terminal (send_message), skip
+            # thinking persistence entirely — to_runtime_message()
+            # won't re-inject for steps containing send_message, so
+            # stored thinking would leak as visible assistant text.
+            has_terminal = any(tr.is_terminal for tr in trace.tool_results)
+            inner_thinking: str | None = None
+            if not has_terminal:
+                inner_thinking = next(
+                    (
+                        tr.inner_thinking.strip()
+                        for tr in trace.tool_results
+                        if tr.inner_thinking
+                        and tr.inner_thinking.strip()
+                    ),
+                    None,
+                )
+            # When non-terminal tool calls exist but no inner_thinking
+            # was extracted, store None — not assistant_text, which may
+            # contain coerced tool syntax that would be wrongly
+            # re-injected as ``thinking`` on history replay.
+            # Terminal steps (send_message) keep assistant_text since
+            # to_runtime_message() won't re-inject for those.
+            if inner_thinking:
+                content_text = inner_thinking
+            elif has_terminal or not trace.tool_calls:
+                content_text = trace.assistant_text or None
+            else:
+                content_text = None
+            append_message(
                 db,
                 thread=thread,
                 run_id=run.id,
                 step_id=step.id,
                 sequence_id=sequence_id,
                 role="assistant",
-                content_text=trace.assistant_text or None,
+                content_text=content_text,
                 content_json={
                     "tool_calls": [asdict(tool_call) for tool_call in trace.tool_calls]
                 }
                 if trace.tool_calls
                 else None,
             )
-            if is_inner_thought_step:
-                msg.is_in_context = False
-                db.add(msg)
             sequence_id = sequence_id + 1
 
         for tool_result in trace.tool_results:
             if sequence_id is None:
                 raise RuntimeError(
                     "Missing reserved message sequence for tool output.")
-            msg = append_message(
+            append_message(
                 db,
                 thread=thread,
                 run_id=run.id,
@@ -213,9 +232,6 @@ def persist_agent_result(
                 tool_name=tool_result.name,
                 tool_call_id=tool_result.call_id,
             )
-            if is_inner_thought_step:
-                msg.is_in_context = False
-                db.add(msg)
             sequence_id = sequence_id + 1
 
     finalize_run(db, run=run, result=result)

@@ -63,6 +63,42 @@ def _should_run_expensive(
 
 # ── Task tracking ────────────────────────────────────────────────────
 
+_DB_LOCKED_RETRY_DELAYS = (1.0, 2.0, 4.0)
+
+
+async def _commit_with_retry(
+    db_session: Any,
+    *,
+    label: str = "commit",
+) -> bool:
+    """Try to commit, retrying on ``database is locked`` errors.
+
+    Returns True on success, False if all retries exhausted.
+    """
+    for attempt, delay in enumerate(_DB_LOCKED_RETRY_DELAYS, 1):
+        try:
+            db_session.commit()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "database is locked" not in str(exc):
+                raise
+            logger.debug(
+                "%s failed (attempt %d/%d, database locked), "
+                "retrying in %.1fs",
+                label, attempt, len(_DB_LOCKED_RETRY_DELAYS), delay,
+            )
+            db_session.rollback()
+            await asyncio.sleep(delay)
+    # Final attempt without catching
+    try:
+        db_session.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("%s failed after all retries", label)
+        db_session.rollback()
+        return False
+
+
 async def _issue_background_task(
     *,
     user_id: int,
@@ -78,13 +114,14 @@ async def _issue_background_task(
     3. Execute task_fn
     4. Update to 'completed' or 'failed' with result/error
     Uses finally-block to ensure state is always saved.
+    All DB writes retry on ``database is locked`` errors.
     """
     from anima_server.db.session import SessionLocal
     from anima_server.models import BackgroundTaskRun
 
     factory = db_factory or SessionLocal
 
-    # Create the task run record
+    # Create the task run record (with retry)
     with factory() as db:
         run = BackgroundTaskRun(
             user_id=user_id,
@@ -92,7 +129,8 @@ async def _issue_background_task(
             status="pending",
         )
         db.add(run)
-        db.commit()
+        if not await _commit_with_retry(db, label=f"{task_type}:create"):
+            raise RuntimeError(f"Could not create task run for {task_type}")
         run_id = run.id
 
     # Execute
@@ -107,7 +145,7 @@ async def _issue_background_task(
             if run is not None:
                 run.status = "running"
                 run.started_at = datetime.now(UTC)
-                db.commit()
+                await _commit_with_retry(db, label=f"{task_type}:running")
 
             # Execute the task function
             result = await task_fn(
@@ -126,7 +164,7 @@ async def _issue_background_task(
                 task_type, run_id, user_id,
             )
         finally:
-            # Always update final status
+            # Always update final status (with retry)
             try:
                 with factory() as db2:
                     run = db2.get(BackgroundTaskRun, run_id)
@@ -137,7 +175,8 @@ async def _issue_background_task(
                             run.result_json = result_json
                         if error_message is not None:
                             run.error_message = error_message
-                        db2.commit()
+                        await _commit_with_retry(
+                            db2, label=f"{task_type}:finalize")
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "Failed to update task run %d status", run_id)
@@ -177,52 +216,36 @@ async def run_sleeptime_agents(
     """
     run_ids: list[str] = []
 
-    # ── Parallel group (always run) ──────────────────────────────
+    # ── Sequential group (always run) ─────────────────────────────
+    # These run sequentially to avoid SQLite/SQLCipher write
+    # contention — the single-writer model doesn't tolerate
+    # concurrent commits even with WAL mode and busy_timeout.
 
-    parallel_results = await asyncio.gather(
-        _issue_background_task(
-            user_id=user_id,
-            task_type="consolidation",
-            task_fn=_task_consolidation,
-            db_factory=db_factory,
-            user_message=user_message,
-            assistant_response=assistant_response,
-            thread_id=thread_id,
-        ),
-        _issue_background_task(
-            user_id=user_id,
-            task_type="embedding_backfill",
-            task_fn=_task_embedding_backfill,
-            db_factory=db_factory,
-        ),
-        _issue_background_task(
-            user_id=user_id,
-            task_type="graph_ingestion",
-            task_fn=_task_graph_ingestion,
-            db_factory=db_factory,
-            user_message=user_message,
-            assistant_response=assistant_response,
-        ),
-        _issue_background_task(
-            user_id=user_id,
-            task_type="heat_decay",
-            task_fn=_task_heat_decay,
-            db_factory=db_factory,
-        ),
-        _issue_background_task(
-            user_id=user_id,
-            task_type="episode_gen",
-            task_fn=_task_episode_gen,
-            db_factory=db_factory,
-        ),
-        return_exceptions=True,
-    )
-
-    for r in parallel_results:
-        if isinstance(r, str):
+    for task_type, task_fn, extra_kwargs in [
+        ("consolidation", _task_consolidation, {
+            "user_message": user_message,
+            "assistant_response": assistant_response,
+            "thread_id": thread_id,
+        }),
+        ("embedding_backfill", _task_embedding_backfill, {}),
+        ("graph_ingestion", _task_graph_ingestion, {
+            "user_message": user_message,
+            "assistant_response": assistant_response,
+        }),
+        ("heat_decay", _task_heat_decay, {}),
+        ("episode_gen", _task_episode_gen, {}),
+    ]:
+        try:
+            r = await _issue_background_task(
+                user_id=user_id,
+                task_type=task_type,
+                task_fn=task_fn,
+                db_factory=db_factory,
+                **extra_kwargs,
+            )
             run_ids.append(r)
-        elif isinstance(r, BaseException):
-            logger.error("Parallel task failed: %s", r)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Background task %s failed: %s", task_type, exc)
 
     # ── Sequential group (heat-gated) ────────────────────────────
 

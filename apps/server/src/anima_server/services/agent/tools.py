@@ -6,6 +6,7 @@ The `get_tools()` list is bound to the loop runtime and exposed to the LLM.
 
 from __future__ import annotations
 
+import copy
 import inspect
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -60,23 +61,6 @@ def _build_args_schema(func: Callable[..., Any]) -> _SimpleSchema:
         "properties": properties,
         "required": required,
     })
-
-
-@tool
-def inner_thought(thought: str) -> str:
-    """Record your private reasoning before taking action. This is ALWAYS your
-    first step in every turn. The user never sees this — it is internal only.
-    You MUST provide a thought string argument.
-    Use it to:
-    - Interpret the user's intent and emotional tone
-    - Decide which tools to call (or whether to respond directly)
-    - Reflect on what you know and what you need to look up
-    - Plan multi-step actions before executing them
-    Keep thoughts concise (1-3 sentences). Example:
-    inner_thought("The user seems frustrated about their project deadline. I should
-    acknowledge the stress and ask what specific help they need.")
-    """
-    return "Thought recorded. Proceed with your next action or send_message."
 
 
 @tool
@@ -694,16 +678,56 @@ def continue_reasoning() -> str:
     return "Continuing reasoning. Use your tools or send_message when ready."
 
 
+def inject_inner_thoughts_into_tools(
+    tools: list[Any],
+    inner_thoughts_key: str = "thinking",
+) -> list[Any]:
+    """Inject a ``thinking`` required string parameter as the first argument
+    on every tool schema.  This forces the model to provide private reasoning
+    with every tool call — no separate ``inner_thought`` tool needed.
+
+    Deep-copies each schema before modification to avoid mutating the
+    original tool definitions.  Returns the same list with updated schemas.
+    """
+    description = (
+        "Deep inner monologue, private to you only. "
+        "Use this to reason about the current situation."
+    )
+    for t in tools:
+        schema_obj = getattr(t, "args_schema", None)
+        if schema_obj is None or not hasattr(schema_obj, "model_json_schema"):
+            continue
+        schema = copy.deepcopy(schema_obj.model_json_schema())
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            continue
+        if inner_thoughts_key in props:
+            continue  # already injected
+        # Prepend thinking as first property
+        new_props = {inner_thoughts_key: {"type": "string", "description": description}}
+        new_props.update(props)
+        schema["properties"] = new_props
+        # Add to required list (first position)
+        required = schema.get("required", [])
+        if inner_thoughts_key not in required:
+            schema["required"] = [inner_thoughts_key] + list(required)
+        # Replace the schema object
+        t.args_schema = _SimpleSchema(schema)
+    return tools
+
+
 def get_tools() -> list[Any]:
     """Return all tools available to the agent."""
-    return [
-        inner_thought, current_datetime, send_message, continue_reasoning,
+    tools = [
+        current_datetime, send_message, continue_reasoning,
         core_memory_append, core_memory_replace,
         note_to_self, dismiss_note, save_to_memory,
         set_intention, complete_goal,
         create_task, list_tasks, complete_task,
         recall_memory, recall_conversation, update_human_memory,
     ]
+    inject_inner_thoughts_into_tools(tools)
+    return tools
 
 
 def get_tool_summaries(tools: Sequence[Any] | None = None) -> list[str]:

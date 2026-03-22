@@ -11,10 +11,11 @@ from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleChatClient,
 )
 
-SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = ("ollama", "openrouter", "vllm")
+SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = ("ollama", "openrouter", "moonshot", "vllm")
 DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "ollama": "http://127.0.0.1:11434/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
     "vllm": "http://127.0.0.1:8000/v1",
 }
 
@@ -91,6 +92,16 @@ def build_provider_headers(provider: str) -> dict[str, str]:
         headers["X-Title"] = "ANIMA"
         return headers
 
+    if provider == "moonshot":
+        api_key = require_provider_api_key(provider)
+        # Log key prefix for debugging (never log full key)
+        key_preview = api_key[:10] + "..." if len(api_key) > 10 else "[too short]"
+        import logging
+        logging.getLogger(__name__).info(f"Moonshot auth header using key starting with: {key_preview}")
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["Content-Type"] = "application/json"
+        return headers
+
     if provider == "vllm" and api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -112,9 +123,9 @@ def validate_provider_configuration(provider: str) -> None:
 
 def require_provider_api_key(provider: str) -> str:
     api_key = settings.agent_api_key.strip()
-    if provider == "openrouter" and not api_key:
+    if provider in ("openrouter", "moonshot") and not api_key:
         raise LLMConfigError(
-            "ANIMA_AGENT_API_KEY is required when agent_provider='openrouter'"
+            f"ANIMA_AGENT_API_KEY is required when agent_provider='{provider}'"
         )
     return api_key
 

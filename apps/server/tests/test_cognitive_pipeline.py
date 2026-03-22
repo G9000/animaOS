@@ -1,5 +1,5 @@
 """Integration tests for the full cognitive pipeline:
-think → act → respond, with memory persistence and inner thought extraction."""
+act (with thinking) → respond, with memory persistence and thinking extraction."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from anima_server.models import SelfModelBlock, User
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.memory_blocks import MemoryBlock
-from anima_server.services.agent.rules import InitToolRule, TerminalToolRule
+from anima_server.services.agent.rules import TerminalToolRule
 from anima_server.services.agent.runtime import AgentRuntime
 from anima_server.services.agent.runtime_types import (
     LLMRequest,
@@ -33,7 +33,7 @@ from anima_server.services.agent.tool_context import ToolContext, clear_tool_con
 from anima_server.services.agent.tools import (
     core_memory_append,
     core_memory_replace,
-    inner_thought,
+    inject_inner_thoughts_into_tools,
     send_message,
     tool,
 )
@@ -84,13 +84,13 @@ def _db_session() -> Generator[Session, None, None]:
 
 
 # ---------------------------------------------------------------------------
-# Integration: think → core_memory_append → send_message
+# Integration: core_memory_append → send_message (with thinking kwarg)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_think_append_memory_respond_pipeline() -> None:
-    """Full pipeline: inner_thought → core_memory_append → send_message.
+async def test_append_memory_respond_pipeline() -> None:
+    """Full pipeline: core_memory_append (with thinking) → send_message.
     Verifies memory is actually written to DB and visible in the next step."""
 
     with _db_session() as db:
@@ -110,26 +110,26 @@ async def test_think_append_memory_respond_pipeline() -> None:
 
         set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=1))
         try:
-            # Step 1: think
-            # Step 2: core_memory_append
-            # Step 3: send_message
+            # Step 1: core_memory_append (with thinking)
+            # Step 2: send_message (with thinking)
             adapter = QueueAdapter([
                 StepExecutionResult(
                     tool_calls=(ToolCall(
-                        id="c1", name="inner_thought",
-                        arguments={"thought": "User mentioned they have a dog named Biscuit."},
+                        id="c1", name="core_memory_append",
+                        arguments={
+                            "thinking": "User mentioned they have a dog named Biscuit.",
+                            "label": "human",
+                            "content": "Has a dog named Biscuit.",
+                        },
                     ),)
                 ),
                 StepExecutionResult(
                     tool_calls=(ToolCall(
-                        id="c2", name="core_memory_append",
-                        arguments={"label": "human", "content": "Has a dog named Biscuit."},
-                    ),)
-                ),
-                StepExecutionResult(
-                    tool_calls=(ToolCall(
-                        id="c3", name="send_message",
-                        arguments={"message": "Biscuit sounds adorable!"},
+                        id="c2", name="send_message",
+                        arguments={
+                            "thinking": "Should acknowledge the dog warmly.",
+                            "message": "Biscuit sounds adorable!",
+                        },
                     ),)
                 ),
             ])
@@ -140,14 +140,16 @@ async def test_think_append_memory_respond_pipeline() -> None:
                     result = await super().execute(tool_call, is_terminal=is_terminal)
                     return result
 
+            tools = [core_memory_append, send_message]
+            inject_inner_thoughts_into_tools(tools)
+
             runtime = AgentRuntime(
                 adapter=adapter,
-                tools=[inner_thought, core_memory_append, send_message],
+                tools=tools,
                 tool_rules=[
-                    InitToolRule(tool_name="inner_thought"),
                     TerminalToolRule(tool_name="send_message"),
                 ],
-                tool_executor=RealToolExecutor([inner_thought, core_memory_append, send_message]),
+                tool_executor=RealToolExecutor(tools),
                 max_steps=5,
             )
 
@@ -182,7 +184,7 @@ async def test_think_append_memory_respond_pipeline() -> None:
             # Verify the response
             assert result.response == "Biscuit sounds adorable!"
             assert result.stop_reason == StopReason.TERMINAL_TOOL.value
-            assert len(result.step_traces) == 3
+            assert len(result.step_traces) == 2
 
             # Verify the memory was actually persisted to DB
             block = db.scalar(
@@ -195,17 +197,13 @@ async def test_think_append_memory_respond_pipeline() -> None:
             assert "Biscuit" in block.content
             assert "Alice" in block.content  # original content preserved
 
-            # Verify the inner thought is in the step traces
-            assert result.step_traces[0].tool_calls[0].name == "inner_thought"
-            assert "Biscuit" in result.step_traces[0].tool_calls[0].arguments["thought"]
-
         finally:
             clear_tool_context()
 
 
 @pytest.mark.asyncio
 async def test_core_memory_replace_pipeline() -> None:
-    """Pipeline: think → core_memory_replace → send_message."""
+    """Pipeline: core_memory_replace (with thinking) → send_message."""
 
     with _db_session() as db:
         user = User(username="replace", password_hash="x", display_name="Test")
@@ -226,14 +224,9 @@ async def test_core_memory_replace_pipeline() -> None:
             adapter = QueueAdapter([
                 StepExecutionResult(
                     tool_calls=(ToolCall(
-                        id="c1", name="inner_thought",
-                        arguments={"thought": "User switched jobs to Apple."},
-                    ),)
-                ),
-                StepExecutionResult(
-                    tool_calls=(ToolCall(
-                        id="c2", name="core_memory_replace",
+                        id="c1", name="core_memory_replace",
                         arguments={
+                            "thinking": "User switched jobs to Apple.",
                             "label": "human",
                             "old_text": "Works at Google",
                             "new_text": "Works at Apple (switched March 2026)",
@@ -242,17 +235,22 @@ async def test_core_memory_replace_pipeline() -> None:
                 ),
                 StepExecutionResult(
                     tool_calls=(ToolCall(
-                        id="c3", name="send_message",
-                        arguments={"message": "Congrats on the new role at Apple!"},
+                        id="c2", name="send_message",
+                        arguments={
+                            "thinking": "Congratulate on the new role.",
+                            "message": "Congrats on the new role at Apple!",
+                        },
                     ),)
                 ),
             ])
 
+            tools = [core_memory_replace, send_message]
+            inject_inner_thoughts_into_tools(tools)
+
             runtime = AgentRuntime(
                 adapter=adapter,
-                tools=[inner_thought, core_memory_replace, send_message],
+                tools=tools,
                 tool_rules=[
-                    InitToolRule(tool_name="inner_thought"),
                     TerminalToolRule(tool_name="send_message"),
                 ],
                 max_steps=5,
@@ -285,7 +283,7 @@ async def test_core_memory_replace_pipeline() -> None:
 
 
 def test_extract_inner_thoughts_from_traces() -> None:
-    """_extract_inner_thoughts pulls thought content from step traces."""
+    """_extract_inner_thoughts pulls thinking content from tool result inner_thinking."""
     from anima_server.services.agent.service import _extract_inner_thoughts
     from anima_server.services.agent.runtime_types import StepTrace
 
@@ -294,20 +292,17 @@ def test_extract_inner_thoughts_from_traces() -> None:
         model="test",
         provider="test",
         stop_reason="terminal_tool",
-        tools_used=["inner_thought", "send_message"],
+        tools_used=["send_message"],
         step_traces=[
             StepTrace(
                 step_index=0,
                 tool_calls=(ToolCall(
-                    id="c1", name="inner_thought",
-                    arguments={"thought": "User seems happy today."},
-                ),),
-            ),
-            StepTrace(
-                step_index=1,
-                tool_calls=(ToolCall(
-                    id="c2", name="send_message",
+                    id="c1", name="send_message",
                     arguments={"message": "Hey!"},
+                ),),
+                tool_results=(ToolExecutionResult(
+                    call_id="c1", name="send_message", output="Hey!",
+                    inner_thinking="User seems happy today.",
                 ),),
             ),
         ],
@@ -318,7 +313,7 @@ def test_extract_inner_thoughts_from_traces() -> None:
 
 
 def test_extract_inner_thoughts_empty_when_no_thoughts() -> None:
-    """No inner_thought calls means empty string."""
+    """No thinking content means empty string."""
     from anima_server.services.agent.service import _extract_inner_thoughts
     from anima_server.services.agent.runtime_types import StepTrace
 

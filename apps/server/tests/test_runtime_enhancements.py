@@ -24,7 +24,7 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
 )
 from anima_server.services.agent.streaming import AgentStreamEvent
-from anima_server.services.agent.tools import send_message, tool
+from anima_server.services.agent.tools import inject_inner_thoughts_into_tools, send_message, tool
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +376,7 @@ def test_core_memory_tools_registered() -> None:
     assert "core_memory_append" in tool_names
     assert "core_memory_replace" in tool_names
     assert "continue_reasoning" in tool_names
+    assert "inner_thought" not in tool_names  # removed in favor of thinking kwarg
 
 
 def test_continue_reasoning_tool_is_not_terminal() -> None:
@@ -388,3 +389,145 @@ def test_continue_reasoning_tool_is_not_terminal() -> None:
     }
     assert "continue_reasoning" not in terminal_names
     assert "send_message" in terminal_names
+
+
+# ---------------------------------------------------------------------------
+# Bug C1: rules_solver.update_state() on coerced tool-call path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_coerced_text_tool_call_as_send_message() -> None:
+    """When the model emits plain text (no native tool call), it should
+    be coerced into a send_message call."""
+    adapter = QueueAdapter([
+        StepExecutionResult(
+            assistant_text="Here is my answer.",
+        ),
+    ])
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[
+            TerminalToolRule(tool_name="send_message"),
+        ],
+        max_steps=4,
+    )
+
+    result = await runtime.invoke("What do you think?", user_id=1, history=[])
+
+    assert result.response == "Here is my answer."
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert "send_message" in result.tools_used
+
+
+@pytest.mark.asyncio
+async def test_coerced_function_tag_tool_call() -> None:
+    """When a model emits a <function=tool_name> tag, it should be
+    parsed and executed as a tool call."""
+
+    @tool
+    def lookup(query: str) -> str:
+        """Look something up."""
+        return f"found: {query}"
+
+    adapter = QueueAdapter([
+        StepExecutionResult(
+            assistant_text='<function=lookup>{"query": "test"}</function>',
+        ),
+        StepExecutionResult(
+            tool_calls=(ToolCall(id="c2", name="send_message", arguments={"message": "done"}),),
+        ),
+    ])
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[lookup, send_message],
+        tool_rules=[
+            TerminalToolRule(tool_name="send_message"),
+        ],
+        max_steps=4,
+    )
+
+    result = await runtime.invoke("test", user_id=1, history=[])
+
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert "lookup" in result.tools_used
+
+
+# ---------------------------------------------------------------------------
+# Bug C2: <parameter=name> tags inside <function=...> blocks
+# ---------------------------------------------------------------------------
+
+
+def test_parse_function_tag_with_parameter_tags() -> None:
+    """<parameter=name>value</parameter> tags inside <function=...> blocks
+    should be parsed into a proper argument dict."""
+    from anima_server.services.agent.runtime import _parse_function_tag_tool_calls
+
+    text = (
+        "<function=save_to_memory>\n"
+        "<parameter=category>\n"
+        "goal\n"
+        "</parameter>\n"
+        "<parameter=importance>\n"
+        "5\n"
+        "</parameter>\n"
+        "<parameter=text>\n"
+        "Finish memory module by end of week\n"
+        "</parameter>\n"
+        "</function>"
+    )
+
+    results = _parse_function_tag_tool_calls(text, {"save_to_memory"})
+
+    assert len(results) == 1
+    assert results[0].name == "save_to_memory"
+    assert results[0].arguments["category"] == "goal"
+    assert results[0].arguments["importance"] == "5"
+    assert results[0].arguments["text"] == "Finish memory module by end of week"
+
+
+def test_parse_function_tag_with_parameter_tags_no_closing_function() -> None:
+    """Parameter tags should parse even when </function> is absent."""
+    from anima_server.services.agent.runtime import _parse_function_tag_tool_calls
+
+    text = (
+        "<function=save_to_memory>\n"
+        "<parameter=key>goal_1</parameter>\n"
+        "<parameter=text>Save this goal</parameter>"
+    )
+
+    results = _parse_function_tag_tool_calls(text, {"save_to_memory"})
+
+    assert len(results) == 1
+    assert results[0].arguments["key"] == "goal_1"
+    assert results[0].arguments["text"] == "Save this goal"
+
+
+def test_parse_function_tag_json_still_preferred_over_parameter_tags() -> None:
+    """When content is valid JSON, it should be used even if parameter tags
+    could theoretically be parsed."""
+    from anima_server.services.agent.runtime import _parse_function_tag_tool_calls
+
+    text = '<function=note_to_self>{"key": "mood", "value": "happy"}</function>'
+
+    results = _parse_function_tag_tool_calls(text, {"note_to_self"})
+
+    assert len(results) == 1
+    assert results[0].arguments == {"key": "mood", "value": "happy"}
+
+
+def test_parse_function_tag_plain_text_fallback_still_works() -> None:
+    """Plain text content (no JSON, no parameter tags) should still fall
+    back to _infer_first_arg_name."""
+    from anima_server.services.agent.runtime import _parse_function_tag_tool_calls
+
+    text = "<function=send_message>Hello there!</function>"
+
+    results = _parse_function_tag_tool_calls(text, {"send_message"})
+
+    assert len(results) == 1
+    assert results[0].name == "send_message"
+    assert "Hello there!" in list(results[0].arguments.values())[0]
