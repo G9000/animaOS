@@ -133,53 +133,54 @@ async def _issue_background_task(
             raise RuntimeError(f"Could not create task run for {task_type}")
         run_id = run.id
 
-    # Execute
+    # Mark running (separate session — close before task_fn to avoid
+    # holding a connection while the task opens its own session, which
+    # causes "database is locked" on SQLite/SQLCipher).
     status = "running"
     result_json: dict | None = None
     error_message: str | None = None
 
     with factory() as db:
-        try:
-            # Mark running
+        run = db.get(BackgroundTaskRun, run_id)
+        if run is not None:
+            run.status = "running"
+            run.started_at = datetime.now(UTC)
+            await _commit_with_retry(db, label=f"{task_type}:running")
+
+    # Execute the task function (no session held open here)
+    try:
+        result = await task_fn(
+            user_id=user_id,
+            db_factory=db_factory,
+            **kwargs,
+        )
+        status = "completed"
+        if isinstance(result, dict):
+            result_json = result
+    except Exception as exc:
+        status = "failed"
+        error_message = str(exc)
+        logger.exception(
+            "Background task %s (run %s) failed for user %s",
+            task_type, run_id, user_id,
+        )
+
+    # Always update final status (with retry)
+    try:
+        with factory() as db:
             run = db.get(BackgroundTaskRun, run_id)
             if run is not None:
-                run.status = "running"
-                run.started_at = datetime.now(UTC)
-                await _commit_with_retry(db, label=f"{task_type}:running")
-
-            # Execute the task function
-            result = await task_fn(
-                user_id=user_id,
-                db_factory=db_factory,
-                **kwargs,
-            )
-            status = "completed"
-            if isinstance(result, dict):
-                result_json = result
-        except Exception as exc:
-            status = "failed"
-            error_message = str(exc)
-            logger.exception(
-                "Background task %s (run %d) failed for user %s",
-                task_type, run_id, user_id,
-            )
-        finally:
-            # Always update final status (with retry)
-            try:
-                with factory() as db2:
-                    run = db2.get(BackgroundTaskRun, run_id)
-                    if run is not None:
-                        run.status = status
-                        run.completed_at = datetime.now(UTC)
-                        if result_json is not None:
-                            run.result_json = result_json
-                        if error_message is not None:
-                            run.error_message = error_message
-                        await _commit_with_retry(
-                            db2, label=f"{task_type}:finalize")
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "Failed to update task run %d status", run_id)
+                run.status = status
+                run.completed_at = datetime.now(UTC)
+                if result_json is not None:
+                    run.result_json = result_json
+                if error_message is not None:
+                    run.error_message = error_message
+                await _commit_with_retry(
+                    db, label=f"{task_type}:finalize")
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to update task run %s status", run_id)
 
     return f"{task_type}:{run_id}"
 
