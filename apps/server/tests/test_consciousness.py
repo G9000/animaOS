@@ -524,6 +524,160 @@ def test_record_feedback_signals_to_growth_log() -> None:
         assert "correction" in block.content
 
 
+# --- Correction Extraction Tests ---
+
+
+def test_extract_correction_facts_actually_name_is() -> None:
+    from anima_server.services.agent.feedback_signals import extract_correction_facts
+
+    facts = extract_correction_facts("Actually, my name is Leo")
+    assert len(facts) >= 1
+    assert facts[0].right.lower() == "leo"
+    assert facts[0].topic == "name"
+
+
+def test_extract_correction_facts_not_x_but_y() -> None:
+    from anima_server.services.agent.feedback_signals import extract_correction_facts
+
+    facts = extract_correction_facts("not 25, it's 28")
+    assert len(facts) >= 1
+    assert facts[0].right == "28"
+    assert facts[0].wrong == "25"
+
+
+def test_extract_correction_facts_its_y_not_x() -> None:
+    from anima_server.services.agent.feedback_signals import extract_correction_facts
+
+    facts = extract_correction_facts("it's Berlin, not Paris")
+    assert len(facts) >= 1
+    assert facts[0].right.lower() == "berlin"
+    assert facts[0].wrong is not None
+    assert "paris" in facts[0].wrong.lower()
+
+
+def test_extract_correction_facts_no_match() -> None:
+    from anima_server.services.agent.feedback_signals import extract_correction_facts
+
+    facts = extract_correction_facts("Thanks, that's great!")
+    assert facts == []
+
+
+def test_apply_memory_correction_name() -> None:
+    """When user says 'actually my name is Leo', correct the stored Name memory."""
+    with _db_session() as db:
+        user, thread = _setup(db)
+        from anima_server.services.agent.feedback_signals import apply_memory_correction
+        from anima_server.services.agent.memory_store import add_memory_item, get_memory_items
+        from anima_server.services.data_crypto import df
+
+        # Seed a wrong name memory
+        add_memory_item(
+            db, user_id=user.id, content="Name: Alice",
+            category="fact", importance=5, source="extraction",
+        )
+        db.flush()
+
+        corrections = apply_memory_correction(
+            db,
+            user_id=user.id,
+            user_message="Actually, my name is Leo",
+            thread_id=thread.id,
+        )
+
+        assert len(corrections) == 1
+        assert corrections[0]["old_content"] == "Name: Alice"
+        assert "Leo" in corrections[0]["new_content"]
+
+        # The old memory should now be superseded
+        active = get_memory_items(db, user_id=user.id, category="fact", active_only=True)
+        active_texts = [
+            df(user.id, item.content, table="memory_items", field="content")
+            for item in active
+        ]
+        assert not any("Alice" in t for t in active_texts)
+        assert any("Leo" in t for t in active_texts)
+
+
+def test_apply_memory_correction_wrong_and_right() -> None:
+    """When user says 'not Paris, it's Berlin', replace Paris with Berlin in memory."""
+    with _db_session() as db:
+        user, thread = _setup(db)
+        from anima_server.services.agent.feedback_signals import apply_memory_correction
+        from anima_server.services.agent.memory_store import add_memory_item, get_memory_items
+        from anima_server.services.data_crypto import df
+
+        add_memory_item(
+            db, user_id=user.id, content="Lives in Paris",
+            category="fact", importance=4, source="extraction",
+        )
+        db.flush()
+
+        corrections = apply_memory_correction(
+            db,
+            user_id=user.id,
+            user_message="not Paris, it's Berlin",
+            thread_id=thread.id,
+        )
+
+        assert len(corrections) == 1
+        assert "Berlin" in corrections[0]["new_content"]
+
+        active = get_memory_items(db, user_id=user.id, category=None, active_only=True)
+        active_texts = [
+            df(user.id, item.content, table="memory_items", field="content")
+            for item in active
+        ]
+        assert any("Berlin" in t for t in active_texts)
+        assert not any(t == "Lives in Paris" for t in active_texts)
+
+
+def test_apply_memory_correction_no_match() -> None:
+    """When no memory matches the correction, nothing should be changed."""
+    with _db_session() as db:
+        user, thread = _setup(db)
+        from anima_server.services.agent.feedback_signals import apply_memory_correction
+        from anima_server.services.agent.memory_store import add_memory_item
+
+        add_memory_item(
+            db, user_id=user.id, content="Likes hiking",
+            category="preference", importance=3, source="extraction",
+        )
+        db.flush()
+
+        corrections = apply_memory_correction(
+            db,
+            user_id=user.id,
+            user_message="Actually, my name is Leo",
+            thread_id=thread.id,
+        )
+
+        # No memory about "name" exists, so no correction should be applied
+        assert corrections == []
+
+
+def test_apply_memory_correction_skips_already_correct() -> None:
+    """Don't correct a memory that already has the right value."""
+    with _db_session() as db:
+        user, thread = _setup(db)
+        from anima_server.services.agent.feedback_signals import apply_memory_correction
+        from anima_server.services.agent.memory_store import add_memory_item
+
+        add_memory_item(
+            db, user_id=user.id, content="Name: Leo",
+            category="fact", importance=5, source="extraction",
+        )
+        db.flush()
+
+        corrections = apply_memory_correction(
+            db,
+            user_id=user.id,
+            user_message="Actually, my name is Leo",
+            thread_id=thread.id,
+        )
+
+        assert corrections == []
+
+
 # --- Dynamic Identity in System Prompt Tests ---
 
 

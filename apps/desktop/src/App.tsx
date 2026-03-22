@@ -16,6 +16,7 @@ import Soul from "./pages/Soul";
 import Consciousness from "./pages/Consciousness";
 import Tasks from "./pages/Tasks";
 import Database from "./pages/Database";
+import KnowledgeGraph from "./pages/KnowledgeGraph";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import "./index.css";
@@ -75,6 +76,7 @@ function AppRoutes() {
       <Route path="/soul" element={withLayout(<Soul />)} />
       <Route path="/consciousness" element={withLayout(<Consciousness />)} />
       <Route path="/database" element={withLayout(<Database />)} />
+      <Route path="/graph" element={withLayout(<KnowledgeGraph />)} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="*" element={<Navigate to="/" replace />} />

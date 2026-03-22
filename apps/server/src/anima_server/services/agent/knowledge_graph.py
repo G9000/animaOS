@@ -41,6 +41,101 @@ def normalize_entity_name(name: str) -> str:
     return result.strip("_")
 
 
+# ── Token-level entity similarity ────────────────────────────────────
+
+_ABBREV_MAP: dict[str, str] = {}  # extensible later if needed
+
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _tokenize_name(name: str) -> set[str]:
+    """Split a name into lowercase alphanumeric tokens."""
+    return {t for t in _TOKEN_SPLIT_RE.split(name.lower()) if t}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    """Jaccard similarity between two token sets."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _substring_containment(short: str, long: str) -> bool:
+    """Check if the shorter name is wholly contained in the longer one (case-insensitive).
+
+    Only triggers when the shorter side has >= 3 characters (avoids matching
+    trivial substrings like "AI" inside "Maine").
+    """
+    s = short.lower().strip()
+    l = long.lower().strip()
+    if min(len(s), len(l)) < 3:
+        return False
+    return s in l or l in s
+
+
+def _find_similar_entity(
+    db: Session,
+    user_id: int,
+    name: str,
+    entity_type: str = "unknown",
+    threshold: float = 0.7,
+) -> KGEntity | None:
+    """Find the best fuzzy match among existing entities for *name*.
+
+    Uses token-level Jaccard similarity. If the best match scores above
+    *threshold*, return that entity; otherwise return None.  Only
+    considers entities with a compatible type (same type, or either
+    side is ``unknown``).
+
+    Also considers substring containment as a fallback signal — if one
+    name is fully contained inside the other and the Jaccard score is
+    above a lower threshold (0.5), the match is accepted.
+    """
+    entities = list(
+        db.scalars(
+            select(KGEntity).where(KGEntity.user_id == user_id)
+        ).all()
+    )
+    if not entities:
+        return None
+
+    new_tokens = _tokenize_name(name)
+    if not new_tokens:
+        return None
+
+    best_entity: KGEntity | None = None
+    best_score: float = 0.0
+
+    for entity in entities:
+        # Only match compatible types (same type or either is unknown)
+        if (
+            entity_type != "unknown"
+            and entity.entity_type != "unknown"
+            and entity.entity_type != entity_type
+        ):
+            continue
+        existing_tokens = _tokenize_name(entity.name)
+        score = _jaccard(new_tokens, existing_tokens)
+
+        # Boost for substring containment (catches "New York" vs "New York City"
+        # and other partial-overlap cases).
+        if score >= 0.5 and _substring_containment(name, entity.name):
+            score = max(score, threshold)  # promote to threshold
+
+        if score > best_score:
+            best_score = score
+            best_entity = entity
+
+    if best_score >= threshold and best_entity is not None:
+        logger.debug(
+            "Fuzzy entity match: '%s' -> '%s' (score=%.2f)",
+            name, best_entity.name, best_score,
+        )
+        return best_entity
+
+    return None
+
+
 # ── Entity / Relation CRUD ───────────────────────────────────────────
 
 def upsert_entity(
@@ -59,6 +154,10 @@ def upsert_entity(
             KGEntity.name_normalized == normalized,
         )
     )
+    # Fuzzy match: if no exact normalized match, look for token-similar names
+    if existing is None:
+        existing = _find_similar_entity(db, user_id, name, entity_type=entity_type)
+
     if existing is not None:
         existing.mentions = (existing.mentions or 1) + 1
         existing.updated_at = datetime.now(UTC)
@@ -235,6 +334,9 @@ def search_graph(
                 "destination": dst.name,
                 "source_type": src.entity_type,
                 "destination_type": dst.entity_type,
+                "source_mentions": src.mentions or 1,
+                "destination_mentions": dst.mentions or 1,
+                "relation_mentions": rel.mentions or 1,
             }
             if result_entry not in results:
                 results.append(result_entry)
@@ -250,14 +352,39 @@ def search_graph(
 
 # ── BM25 reranking ───────────────────────────────────────────────────
 
+def _mention_boost(result: dict[str, Any]) -> float:
+    """Compute a logarithmic mention boost for a graph result triple.
+
+    The boost is based on the combined mention counts of the source entity,
+    destination entity, and the relation itself.  Uses log2 scaling so
+    that mention counts provide a gentle signal rather than dominating
+    the BM25 text-relevance score.
+
+    A triple where every component has mentions=1 gets boost=1.0 (neutral).
+    A triple with 4 combined mentions beyond the baseline gets boost ~1.15.
+    """
+    import math
+
+    src_m = result.get("source_mentions", 1) or 1
+    dst_m = result.get("destination_mentions", 1) or 1
+    rel_m = result.get("relation_mentions", 1) or 1
+    # Sum of extra mentions beyond baseline (3 = one per component)
+    extra = (src_m - 1) + (dst_m - 1) + (rel_m - 1)
+    # log2(extra + 1): 0.0 for extra=1, ~1.58 for extra=2, ~2.32 for extra=4
+    # Scaled to a modest multiplier range: 1.0 .. ~1.3
+    return 1.0 + 0.1 * math.log2(extra + 1) if extra > 0 else 1.0
+
+
 def rerank_graph_results(
-    results: list[dict[str, str]],
+    results: list[dict[str, Any]],
     query: str,
     top_n: int = 10,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """BM25-rerank graph traversal results for query relevance.
 
     Tokenizes each triple as 'source relation destination', scores against query.
+    Applies a logarithmic mention-count boost so frequently-referenced
+    entities and relations are ranked slightly higher.
     """
     if not results or not query.strip():
         return results[:top_n]
@@ -265,8 +392,14 @@ def rerank_graph_results(
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
-        logger.debug("rank_bm25 not available, returning unranked results")
-        return results[:top_n]
+        logger.debug("rank_bm25 not available, sorting by mention boost only")
+        # Fall back to mention-only ordering
+        scored = sorted(
+            results,
+            key=lambda r: _mention_boost(r),
+            reverse=True,
+        )
+        return scored[:top_n]
 
     # Tokenize each triple as a document
     documents: list[list[str]] = []
@@ -288,8 +421,13 @@ def rerank_graph_results(
     bm25 = BM25Okapi(documents)
     scores = bm25.get_scores(query_tokens)
 
+    # Apply mention boost to BM25 scores
+    boosted_scores = [
+        score * _mention_boost(r) for r, score in zip(results, scores)
+    ]
+
     scored = sorted(
-        zip(results, scores),
+        zip(results, boosted_scores),
         key=lambda x: x[1],
         reverse=True,
     )
@@ -326,9 +464,12 @@ def graph_context_for_query(
     for r in ranked:
         src_desc = f" ({r['source_type']})" if r.get("source_type") and r["source_type"] != "unknown" else ""
         dst_desc = f" ({r['destination_type']})" if r.get("destination_type") and r["destination_type"] != "unknown" else ""
-        lines.append(
-            f"{r['source']}{src_desc} -> {r['relation']} -> {r['destination']}{dst_desc}"
-        )
+        line = f"{r['source']}{src_desc} -> {r['relation']} -> {r['destination']}{dst_desc}"
+        # Annotate frequently-mentioned triples so the LLM knows they are well-established
+        rel_m = r.get("relation_mentions", 1) or 1
+        if rel_m >= 3:
+            line += f" [mentioned {rel_m}x]"
+        lines.append(line)
 
     return lines
 

@@ -517,13 +517,23 @@ async def _prepare_turn_context(
     # Feedback signals (best-effort)
     try:
         from anima_server.services.agent.feedback_signals import (
-            collect_feedback_signals, record_feedback_signals,
+            apply_memory_correction,
+            collect_feedback_signals,
+            record_feedback_signals,
         )
         signals = collect_feedback_signals(
             db, user_id=user_id, user_message=user_message, thread_id=thread.id,
         )
         if signals:
             record_feedback_signals(db, user_id=user_id, signals=signals)
+            # When a correction is detected, fix the underlying memory
+            if any(s.signal_type == "correction" for s in signals):
+                apply_memory_correction(
+                    db,
+                    user_id=user_id,
+                    user_message=user_message,
+                    thread_id=thread.id,
+                )
     except Exception:  # noqa: BLE001
         pass
 

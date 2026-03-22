@@ -274,6 +274,67 @@ export interface MemoryOverviewData {
   episodeCount: number;
 }
 
+export interface GraphEntity {
+  id: number;
+  name: string;
+  normalized: string;
+  type: string;
+  description: string | null;
+  mentions: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface GraphRelationTarget {
+  id: number;
+  name: string;
+  type: string;
+}
+
+export interface GraphRelation {
+  id: number;
+  type: string;
+  mentions: number;
+  source?: GraphRelationTarget;
+  target?: GraphRelationTarget;
+}
+
+export interface GraphEntityDetail extends GraphEntity {
+  outgoingRelations: GraphRelation[];
+  incomingRelations: GraphRelation[];
+}
+
+export interface GraphPath {
+  source: string;
+  relation: string;
+  destination: string;
+  source_type: string;
+  destination_type: string;
+}
+
+export interface GraphOverviewData {
+  entityCount: number;
+  relationCount: number;
+  typeDistribution: Record<string, number>;
+  relationTypeDistribution: Record<string, number>;
+  topEntities: Array<{
+    id: number;
+    name: string;
+    type: string;
+    mentions: number;
+  }>;
+}
+
+export interface GraphSearchResult {
+  entities: Array<{
+    id: number;
+    name: string;
+    type: string;
+    mentions: number;
+  }>;
+  paths: GraphPath[];
+}
+
 function trimBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/$/, "");
 }
@@ -646,6 +707,56 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PUT",
           body: data,
         }),
+    },
+    graph: {
+      overview: (userId: number) =>
+        request<GraphOverviewData>(`/graph/${userId}/overview`),
+      entities: (
+        userId: number,
+        options?: {
+          type?: string;
+          search?: string;
+          limit?: number;
+          offset?: number;
+        },
+      ) => {
+        const params = new URLSearchParams();
+        if (options?.type) params.set("type", options.type);
+        if (options?.search) params.set("search", options.search);
+        if (options?.limit) params.set("limit", String(options.limit));
+        if (options?.offset) params.set("offset", String(options.offset));
+        const qs = params.toString();
+        return request<{ total: number; entities: GraphEntity[] }>(
+          `/graph/${userId}/entities${qs ? `?${qs}` : ""}`,
+        );
+      },
+      entity: (userId: number, entityId: number) =>
+        request<GraphEntityDetail>(`/graph/${userId}/entities/${entityId}`),
+      relations: (
+        userId: number,
+        options?: {
+          entityId?: number;
+          type?: string;
+          limit?: number;
+        },
+      ) => {
+        const params = new URLSearchParams();
+        if (options?.entityId) params.set("entity_id", String(options.entityId));
+        if (options?.type) params.set("type", options.type);
+        if (options?.limit) params.set("limit", String(options.limit));
+        const qs = params.toString();
+        return request<{ relations: GraphRelation[] }>(
+          `/graph/${userId}/relations${qs ? `?${qs}` : ""}`,
+        );
+      },
+      search: (userId: number, query: string, maxDepth = 2, limit = 20) =>
+        request<GraphSearchResult>(
+          `/graph/${userId}/search?q=${encodeURIComponent(query)}&max_depth=${maxDepth}&limit=${limit}`,
+        ),
+      context: (userId: number, query: string, limit = 10) =>
+        request<{ query: string; context: string[]; count: number }>(
+          `/graph/${userId}/context?q=${encodeURIComponent(query)}&limit=${limit}`,
+        ),
     },
     memory: {
       overview: (userId: number) =>

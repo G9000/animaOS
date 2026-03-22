@@ -17,6 +17,7 @@ from anima_server.models import KGEntity, KGRelation, User
 from anima_server.services.agent.knowledge_graph import (
     _map_ids_back,
     _map_ids_to_sequential,
+    _mention_boost,
     graph_context_for_query,
     normalize_entity_name,
     rerank_graph_results,
@@ -371,3 +372,202 @@ class TestFullGraphScenario:
             assert "Alice" in names_found
             assert "Bob" in names_found
             assert "Munich" in names_found
+
+
+# ── T9: mention counting in search results ────────────────────────────
+
+
+class TestMentionCountsInSearchResults:
+    def test_search_results_include_mention_counts(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(db, user_id=user.id, name="A", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="B", entity_type="person")
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="A", destination_name="B",
+                relation_type="knows",
+            )
+            db.flush()
+
+            results = search_graph(
+                db, user_id=user.id, entity_names=["A"], max_depth=1,
+            )
+            assert len(results) == 1
+            assert results[0]["source_mentions"] == 1
+            assert results[0]["destination_mentions"] == 1
+            assert results[0]["relation_mentions"] == 1
+
+    def test_mention_counts_reflect_upserts(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(db, user_id=user.id, name="A", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="B", entity_type="person")
+            # Upsert A again to bump mentions
+            upsert_entity(db, user_id=user.id, name="A", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="A", entity_type="person")
+            # Upsert relation twice
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="A", destination_name="B",
+                relation_type="knows",
+            )
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="A", destination_name="B",
+                relation_type="knows",
+            )
+            db.flush()
+
+            results = search_graph(
+                db, user_id=user.id, entity_names=["A"], max_depth=1,
+            )
+            assert len(results) == 1
+            assert results[0]["source_mentions"] == 3  # upserted 3 times
+            assert results[0]["destination_mentions"] == 1
+            assert results[0]["relation_mentions"] == 2  # upserted 2 times
+
+
+# ── T10: mention boost function ───────────────────────────────────────
+
+
+class TestMentionBoost:
+    def test_baseline_mentions_give_neutral_boost(self):
+        r = {"source_mentions": 1, "destination_mentions": 1, "relation_mentions": 1}
+        assert _mention_boost(r) == 1.0
+
+    def test_higher_mentions_give_positive_boost(self):
+        r = {"source_mentions": 5, "destination_mentions": 3, "relation_mentions": 2}
+        boost = _mention_boost(r)
+        assert boost > 1.0
+
+    def test_missing_mention_fields_default_to_neutral(self):
+        r = {"source": "A", "relation": "knows", "destination": "B"}
+        assert _mention_boost(r) == 1.0
+
+    def test_boost_is_monotonically_increasing(self):
+        boosts = []
+        for extra in range(10):
+            r = {"source_mentions": 1 + extra, "destination_mentions": 1, "relation_mentions": 1}
+            boosts.append(_mention_boost(r))
+        for i in range(1, len(boosts)):
+            assert boosts[i] >= boosts[i - 1]
+
+
+# ── T11: rerank with mention boost ────────────────────────────────────
+
+
+class TestRerankWithMentionBoost:
+    def test_mention_boost_promotes_high_mention_result(self):
+        """Among results with similar BM25 relevance, higher mention counts
+        should rank higher thanks to the mention boost multiplier.
+
+        A third unrelated document is included so that BM25 IDF is non-zero
+        for the matching terms (IDF is zero when all docs contain the term).
+        """
+        results = [
+            {
+                "source": "Alice", "relation": "knows", "destination": "Berlin",
+                "source_type": "person", "destination_type": "place",
+                "source_mentions": 1, "destination_mentions": 1, "relation_mentions": 1,
+            },
+            {
+                "source": "Alice", "relation": "knows", "destination": "Munich",
+                "source_type": "person", "destination_type": "place",
+                "source_mentions": 10, "destination_mentions": 5, "relation_mentions": 8,
+            },
+            {
+                "source": "Cat", "relation": "is_a", "destination": "Animal",
+                "source_type": "concept", "destination_type": "concept",
+                "source_mentions": 1, "destination_mentions": 1, "relation_mentions": 1,
+            },
+        ]
+        ranked = rerank_graph_results(results, "Alice knows", top_n=3)
+        # Both Alice triples match "Alice knows" equally via BM25, but the
+        # Munich triple has far more mentions and should be boosted ahead.
+        alice_results = [r for r in ranked if r["source"] == "Alice"]
+        assert len(alice_results) == 2
+        assert alice_results[0]["destination"] == "Munich"
+
+    def test_fallback_mention_ordering_without_bm25(self):
+        """When rank_bm25 is unavailable, results should be sorted purely
+        by mention boost (higher mentions first)."""
+        import importlib
+        import sys
+
+        # Temporarily hide rank_bm25
+        real_module = sys.modules.get("rank_bm25")
+        sys.modules["rank_bm25"] = None  # type: ignore[assignment]
+        try:
+            # Force reimport so the try/except picks up the None
+            results = [
+                {
+                    "source": "X", "relation": "r", "destination": "Y",
+                    "source_type": "", "destination_type": "",
+                    "source_mentions": 1, "destination_mentions": 1, "relation_mentions": 1,
+                },
+                {
+                    "source": "A", "relation": "r", "destination": "B",
+                    "source_type": "", "destination_type": "",
+                    "source_mentions": 5, "destination_mentions": 5, "relation_mentions": 5,
+                },
+            ]
+            ranked = rerank_graph_results(results, "some query", top_n=2)
+            assert ranked[0]["source"] == "A"
+        finally:
+            if real_module is not None:
+                sys.modules["rank_bm25"] = real_module
+            else:
+                sys.modules.pop("rank_bm25", None)
+
+
+# ── T12: graph context annotation ─────────────────────────────────────
+
+
+class TestGraphContextAnnotation:
+    def test_high_mention_relation_is_annotated(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(db, user_id=user.id, name="Alice", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="Google", entity_type="organization")
+            # Create the relation 3 times to reach the annotation threshold
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="Alice", destination_name="Google",
+                relation_type="works_at",
+            )
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="Alice", destination_name="Google",
+                relation_type="works_at",
+            )
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="Alice", destination_name="Google",
+                relation_type="works_at",
+            )
+            db.flush()
+
+            lines = graph_context_for_query(
+                db, user_id=user.id, query="tell me about Alice",
+            )
+            assert len(lines) >= 1
+            assert "[mentioned 3x]" in lines[0]
+
+    def test_low_mention_relation_not_annotated(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(db, user_id=user.id, name="Bob", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="Berlin", entity_type="place")
+            upsert_relation(
+                db, user_id=user.id,
+                source_name="Bob", destination_name="Berlin",
+                relation_type="lives_in",
+            )
+            db.flush()
+
+            lines = graph_context_for_query(
+                db, user_id=user.id, query="tell me about Bob",
+            )
+            assert len(lines) >= 1
+            assert "[mentioned" not in lines[0]

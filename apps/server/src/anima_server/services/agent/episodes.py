@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -105,7 +105,14 @@ async def maybe_generate_episode(
                         today=today,
                     )
                     db.commit()
-                    return episodes[0] if episodes else None
+                    # Try merging each new episode with a recent one
+                    result_episode = episodes[0] if episodes else None
+                    for ep in episodes:
+                        merged_into = _try_merge_episode(db, user_id, ep)
+                        if merged_into is not None and ep is result_episode:
+                            result_episode = merged_into
+                    db.commit()
+                    return result_episode
             except Exception:  # noqa: BLE001
                 logger.exception("Batch segmentation failed, falling back to sequential")
 
@@ -130,7 +137,112 @@ async def maybe_generate_episode(
             )
 
         db.commit()
+        # Try merging with a recent episode on the same topic
+        merged_into = _try_merge_episode(db, user_id, episode)
+        if merged_into is not None:
+            episode = merged_into
+        db.commit()
         return episode
+
+
+def _try_merge_episode(
+    db: Session,
+    user_id: int,
+    new_episode: MemoryEpisode,
+) -> bool:
+    """Try to merge *new_episode* into a recent episode with overlapping topics.
+
+    Uses Jaccard similarity on the topic lists.  If overlap > 50 %, the older
+    episode absorbs the new one (summaries concatenated, topics unioned, higher
+    significance kept, turn counts summed) and the new episode is deleted.
+
+    Returns the merged-into episode if a merge happened, None otherwise.
+    """
+    new_topics: list[str] = new_episode.topics_json or []
+    if not new_topics:
+        return False
+
+    new_set = {t.lower().strip() for t in new_topics}
+    if not new_set:
+        return False
+
+    # Look back 7 days for merge candidates
+    cutoff = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
+
+    candidates = list(
+        db.scalars(
+            select(MemoryEpisode)
+            .where(
+                MemoryEpisode.user_id == user_id,
+                MemoryEpisode.id != new_episode.id,
+                MemoryEpisode.date >= cutoff,
+            )
+            .order_by(MemoryEpisode.id.desc())
+        ).all()
+    )
+
+    for candidate in candidates:
+        cand_topics: list[str] = candidate.topics_json or []
+        if not cand_topics:
+            continue
+        cand_set = {t.lower().strip() for t in cand_topics}
+        if not cand_set:
+            continue
+
+        intersection = new_set & cand_set
+        union = new_set | cand_set
+        jaccard = len(intersection) / len(union) if union else 0.0
+
+        if jaccard <= 0.5:
+            continue
+
+        # --- Merge into *candidate* (the older episode) ---
+        # Combine summaries
+        existing_summary = df(
+            user_id, candidate.summary,
+            table="memory_episodes", field="summary",
+        )
+        new_summary = df(
+            user_id, new_episode.summary,
+            table="memory_episodes", field="summary",
+        )
+        merged_summary = f"{existing_summary}\n\n{new_summary}"
+        candidate.summary = ef(
+            user_id, merged_summary,
+            table="memory_episodes", field="summary",
+        )
+
+        # Union topics (preserve original casing from both sides, deduplicate)
+        seen_lower: set[str] = set()
+        merged_topics: list[str] = []
+        for t in cand_topics + new_topics:
+            key = t.lower().strip()
+            if key not in seen_lower:
+                seen_lower.add(key)
+                merged_topics.append(t)
+        candidate.topics_json = merged_topics[:10]  # cap at 10
+
+        # Keep higher significance
+        new_sig = new_episode.significance_score or 3
+        cand_sig = candidate.significance_score or 3
+        candidate.significance_score = max(new_sig, cand_sig)
+
+        # Sum turn counts
+        cand_turns = candidate.turn_count or 0
+        new_turns = new_episode.turn_count or 0
+        candidate.turn_count = cand_turns + new_turns
+
+        # Delete the new (duplicate) episode
+        db.delete(new_episode)
+        db.flush()
+
+        logger.info(
+            "Merged episode %d into episode %d (jaccard=%.2f, topics=%s)",
+            new_episode.id, candidate.id, jaccard, merged_topics,
+        )
+        return candidate
+
+    return None
 
 
 def _create_fallback_episode(

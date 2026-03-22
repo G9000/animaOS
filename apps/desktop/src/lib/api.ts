@@ -25,6 +25,12 @@ import {
   type DbTableInfo,
   type DbTableData,
   type DbQueryResult,
+  type GraphEntity,
+  type GraphEntityDetail,
+  type GraphRelation,
+  type GraphPath,
+  type GraphOverviewData,
+  type GraphSearchResult,
 } from "@anima/api-client";
 import { API_BASE } from "./runtime";
 
@@ -104,4 +110,10 @@ export type {
   TaskItem,
   TraceEvent,
   User,
+  GraphEntity,
+  GraphEntityDetail,
+  GraphRelation,
+  GraphPath,
+  GraphOverviewData,
+  GraphSearchResult,
 };

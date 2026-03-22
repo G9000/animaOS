@@ -472,6 +472,98 @@ class HybridSearchResult:
     query_embedding: list[float] | None
 
 
+def _tokenize(text: str) -> list[str]:
+    """Simple whitespace tokenizer with lowercasing and minimum length filter."""
+    return [w for w in text.lower().split() if len(w) > 1]
+
+
+def _bm25_rerank(
+    results: list[tuple[MemoryItem, float]],
+    query: str,
+    user_id: int,
+    *,
+    rrf_weight: float = 0.7,
+    bm25_weight: float = 0.3,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[tuple[MemoryItem, float]]:
+    """Re-rank search results by combining existing RRF scores with BM25 relevance.
+
+    Computes BM25 scores for each result's content against the query, normalises
+    both score distributions to [0, 1], then returns results sorted by the
+    weighted combination: ``rrf_weight * norm_rrf + bm25_weight * norm_bm25``.
+
+    This adds a lexical-precision boost on top of the hybrid (semantic + keyword)
+    RRF merge, similar to the reranker stage in Mem0's retrieval pipeline but
+    without requiring any external model — pure BM25 in ~30 lines.
+    """
+    if len(results) <= 1:
+        return results
+
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return results
+
+    # Decrypt and tokenize each document
+    doc_tokens: list[list[str]] = []
+    for item, _score in results:
+        plaintext = df(item.user_id, item.content,
+                       table="memory_items", field="content")
+        doc_tokens.append(_tokenize(plaintext))
+
+    n = len(doc_tokens)
+    # Average document length
+    total_len = sum(len(dt) for dt in doc_tokens)
+    avgdl = total_len / n if total_len > 0 else 1.0
+
+    # Document frequency for each query term
+    doc_freq: dict[str, int] = {}
+    for qt in query_tokens:
+        doc_freq[qt] = sum(1 for dt in doc_tokens if qt in dt)
+
+    # Compute BM25 score for each document
+    bm25_scores: list[float] = []
+    for dt in doc_tokens:
+        dl = len(dt) if dt else 1
+        score = 0.0
+        for qt in query_tokens:
+            tf = dt.count(qt)
+            if tf == 0:
+                continue
+            df_val = doc_freq.get(qt, 0)
+            # IDF: log((N - df + 0.5) / (df + 0.5) + 1)
+            idf = math.log((n - df_val + 0.5) / (df_val + 0.5) + 1.0)
+            # BM25 term score
+            numerator = tf * (k1 + 1.0)
+            denominator = tf + k1 * (1.0 - b + b * dl / avgdl)
+            score += idf * numerator / denominator
+        bm25_scores.append(score)
+
+    # Normalise BM25 scores to [0, 1]
+    max_bm25 = max(bm25_scores) if bm25_scores else 0.0
+    if max_bm25 > 0.0:
+        norm_bm25 = [s / max_bm25 for s in bm25_scores]
+    else:
+        norm_bm25 = [0.0] * n
+
+    # Normalise RRF scores to [0, 1]
+    rrf_scores = [score for _, score in results]
+    max_rrf = max(rrf_scores) if rrf_scores else 0.0
+    if max_rrf > 0.0:
+        norm_rrf = [s / max_rrf for s in rrf_scores]
+    else:
+        norm_rrf = [0.0] * n
+
+    # Combine and re-sort
+    combined: list[tuple[MemoryItem, float]] = []
+    for i, (item, _original_score) in enumerate(results):
+        final = rrf_weight * norm_rrf[i] + bm25_weight * norm_bm25[i]
+        combined.append((item, final))
+
+    combined.sort(key=lambda pair: pair[1], reverse=True)
+    return combined
+
+
 def _reciprocal_rank_fusion(
     semantic_ranked: list[tuple[int, float]],
     keyword_ranked: list[tuple[int, float]],
@@ -612,6 +704,10 @@ async def hybrid_search(
             if item.heat not in (None, 0.0) and item.heat < HEAT_VISIBILITY_FLOOR:
                 continue
             results.append((item, rrf_score))
+
+    # --- BM25 rerank stage ---
+    if results:
+        results = _bm25_rerank(results, query, user_id)
 
     return HybridSearchResult(items=results, query_embedding=query_embedding)
 

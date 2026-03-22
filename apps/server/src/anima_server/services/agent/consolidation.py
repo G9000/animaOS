@@ -72,6 +72,20 @@ Respond with exactly one word: UPDATE or DIFFERENT
 EXISTING: {existing}
 NEW: {new_content}"""
 
+BATCH_CONFLICT_CHECK_PROMPT = """Given a list of EXISTING memories and a NEW memory about the same user, determine which (if any) existing memory the new one updates/replaces.
+
+EXISTING MEMORIES (by ID):
+{existing_memories}
+
+NEW: {new_content}
+
+If the new memory updates/replaces one of the existing memories, respond with exactly: UPDATE <id>
+If the new memory is different from all existing memories, respond with exactly: DIFFERENT
+
+Examples:
+- "UPDATE 0" means the new memory replaces existing memory 0
+- "DIFFERENT" means it is a new, distinct memory"""
+
 
 @dataclass(frozen=True, slots=True)
 class ExtractedTurnMemory:
@@ -397,12 +411,18 @@ async def consolidate_turn_memory_with_llm(
                 continue
 
             if write_result.action == "similar" and write_result.similar_items:
-                resolution = await resolve_conflict(
-                    existing_content=df(user_id, write_result.similar_items[0].content, table="memory_items", field="content"),
+                batch_result = await resolve_conflict_batch(
+                    similar_items=write_result.similar_items,
                     new_content=content,
+                    user_id=user_id,
                 )
-                if resolution == "UPDATE":
-                    old_similar_id = write_result.similar_items[0].id
+                if batch_result.action == "UPDATE" and batch_result.matched_id is not None:
+                    old_similar_id = batch_result.matched_id
+                    # Find the matched item for logging
+                    matched_item = next(
+                        (it for it in write_result.similar_items if it.id == old_similar_id),
+                        write_result.similar_items[0],
+                    )
                     updated_item = supersede_memory_item(
                         db,
                         old_item_id=old_similar_id,
@@ -423,7 +443,7 @@ async def consolidate_turn_memory_with_llm(
                         except Exception:  # noqa: BLE001
                             logger.debug("Suppression failed for similar-update item")
                         result.conflicts_resolved.append(
-                            f"{df(user_id, write_result.similar_items[0].content, table='memory_items', field='content')} -> {content}"
+                            f"{df(user_id, matched_item.content, table='memory_items', field='content')} -> {content}"
                         )
                         result.llm_items_added.append(content)
                         try:
@@ -441,7 +461,7 @@ async def consolidate_turn_memory_with_llm(
                         except Exception:  # noqa: BLE001
                             logger.debug(
                                 "Claim dual-write (update) failed for: %s", content)
-                elif resolution == "DIFFERENT":
+                elif batch_result.action == "DIFFERENT":
                     create_result = store_memory_item(
                         db,
                         user_id=user_id,
@@ -557,6 +577,100 @@ async def resolve_conflict(
     except Exception:  # noqa: BLE001
         logger.exception("LLM conflict resolution failed")
         return "DIFFERENT"
+
+
+@dataclass(frozen=True, slots=True)
+class BatchConflictResult:
+    """Result of batch conflict resolution: UPDATE with a real DB id, or DIFFERENT."""
+    action: str  # "UPDATE" or "DIFFERENT"
+    matched_id: int | None = None  # real DB id of the existing memory to update
+
+
+async def resolve_conflict_batch(
+    *,
+    similar_items: Sequence[Any],
+    new_content: str,
+    user_id: int,
+) -> BatchConflictResult:
+    """Compare new content against multiple existing memories using integer-remapped IDs.
+
+    Maps real database IDs to sequential integers (0, 1, 2...) before
+    sending to the LLM, then maps the LLM's chosen integer back to the
+    real ID.  This prevents the LLM from hallucinating or garbling UUIDs
+    / large integer IDs.
+
+    Falls back to single-item ``resolve_conflict()`` when there is only
+    one similar item.
+    """
+    if not similar_items:
+        return BatchConflictResult(action="DIFFERENT")
+
+    # --- Single item: delegate to the simpler prompt ---
+    if len(similar_items) == 1:
+        item = similar_items[0]
+        plaintext = df(user_id, item.content, table="memory_items", field="content")
+        verdict = await resolve_conflict(
+            existing_content=plaintext,
+            new_content=new_content,
+        )
+        if verdict == "UPDATE":
+            return BatchConflictResult(action="UPDATE", matched_id=item.id)
+        return BatchConflictResult(action="DIFFERENT")
+
+    # --- Multiple items: batch with integer-remapped IDs ---
+    # Build the id mapping: sequential int -> real DB id
+    int_to_real: dict[int, int] = {}
+    lines: list[str] = []
+    for idx, item in enumerate(similar_items):
+        int_to_real[idx] = item.id
+        plaintext = df(user_id, item.content, table="memory_items", field="content")
+        lines.append(f"[{idx}] {plaintext}")
+
+    existing_memories_block = "\n".join(lines)
+
+    if settings.agent_provider == "scaffold":
+        return BatchConflictResult(action="DIFFERENT")
+
+    try:
+        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+        from anima_server.services.agent.llm import create_llm
+
+        llm = create_llm()
+        prompt = BATCH_CONFLICT_CHECK_PROMPT.format(
+            existing_memories=existing_memories_block,
+            new_content=new_content,
+        )
+        response = await llm.ainvoke([
+            SystemMessage(
+                content="Respond with exactly: UPDATE <id> or DIFFERENT"),
+            HumanMessage(content=prompt),
+        ])
+        content = getattr(response, "content", "").strip().upper()
+
+        # Parse "UPDATE <int>"
+        m = re.match(r"UPDATE\s+(\d+)", content)
+        if m:
+            chosen_int = int(m.group(1))
+            real_id = int_to_real.get(chosen_int)
+            if real_id is not None:
+                return BatchConflictResult(action="UPDATE", matched_id=real_id)
+            # LLM returned an integer outside our range — treat as DIFFERENT
+            logger.warning(
+                "LLM returned out-of-range id %d (max %d) in batch conflict resolution",
+                chosen_int, len(int_to_real) - 1,
+            )
+            return BatchConflictResult(action="DIFFERENT")
+
+        if content.startswith("DIFFERENT"):
+            return BatchConflictResult(action="DIFFERENT")
+
+        # Unrecognised response — safe default
+        logger.debug("Unrecognised batch conflict response: %s", content)
+        return BatchConflictResult(action="DIFFERENT")
+
+    except Exception:  # noqa: BLE001
+        logger.exception("LLM batch conflict resolution failed")
+        return BatchConflictResult(action="DIFFERENT")
 
 
 from anima_server.services.agent.json_utils import (  # noqa: E302
