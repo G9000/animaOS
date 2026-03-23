@@ -60,6 +60,12 @@ export interface Mod {
    * Routes will be mounted at /{modId}/*
    */
   getRouter?(): AnyElysia;
+
+  /** Config schema for schema-driven UI. Desktop renders settings forms from this. */
+  configSchema?: ModConfigSchema;
+
+  /** Optional setup wizard steps. If present, desktop shows wizard for first-time setup. */
+  setupGuide?: SetupStep[];
 }
 
 /** Logger interface */
@@ -202,4 +208,30 @@ export interface ModConfig {
   id: string;
   path: string;
   config: Record<string, unknown>;
+}
+
+/** Config field types for schema-driven UI */
+export type FieldType = "string" | "number" | "boolean" | "enum" | "secret";
+
+/** Single config field definition */
+export interface ConfigField {
+  type: FieldType;
+  label: string;
+  required?: boolean;
+  default?: unknown;
+  options?: string[];
+  showWhen?: Record<string, unknown>;
+  description?: string;
+}
+
+/** Schema for mod configuration — desktop renders forms from this */
+export type ModConfigSchema = Record<string, ConfigField>;
+
+/** Setup wizard step */
+export interface SetupStep {
+  step: number;
+  title: string;
+  instructions?: string;
+  field?: string;
+  action?: "healthcheck";
 }
