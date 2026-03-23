@@ -107,8 +107,8 @@ def invalidate_agent_runtime_cache() -> None:
     invalidate_system_prompt_template_cache()
 
 
-async def run_agent(user_message: str, user_id: int, db: Session) -> AgentResult:
-    return await _execute_agent_turn(user_message, user_id, db)
+async def run_agent(user_message: str, user_id: int, db: Session, *, source: str | None = None) -> AgentResult:
+    return await _execute_agent_turn(user_message, user_id, db, source=source)
 
 
 async def cancel_agent_run(run_id: int, user_id: int, db: Session) -> AgentRun | None:
@@ -346,6 +346,7 @@ async def _execute_agent_turn(
     db: Session,
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    source: str | None = None,
 ) -> AgentResult:
     user_lock = get_user_lock(user_id)
     async with user_lock:
@@ -354,6 +355,7 @@ async def _execute_agent_turn(
             user_id,
             db,
             event_callback=event_callback,
+            source=source,
         )
 
 
@@ -363,6 +365,7 @@ async def _execute_agent_turn_locked(
     db: Session,
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    source: str | None = None,
 ) -> AgentResult:
     # Stage 1: Prepare turn context
     thread, run, user_msg, initial_sequence_id, turn_ctx = await _prepare_turn_context(
@@ -370,6 +373,7 @@ async def _execute_agent_turn_locked(
         user_id,
         db,
         event_callback=event_callback,
+        source=source,
     )
 
     # Stage 1b: Proactive context management — compact before the LLM call
@@ -478,6 +482,7 @@ async def _prepare_turn_context(
     db: Session,
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    source: str | None = None,
 ) -> tuple[AgentThread, AgentRun, AgentMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
@@ -511,6 +516,7 @@ async def _prepare_turn_context(
         run_id=run.id,
         content=user_message,
         sequence_id=initial_sequence_id,
+        source=source,
     )
     conversation_turn_count = count_messages_by_role(db, thread.id, "user")
 
@@ -1086,6 +1092,8 @@ async def stream_agent(
     user_message: str,
     user_id: int,
     db: Session,
+    *,
+    source: str | None = None,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
     queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
         maxsize=settings.agent_stream_queue_max_size,
@@ -1101,6 +1109,7 @@ async def stream_agent(
                 user_id,
                 db,
                 event_callback=emit,
+                source=source,
             )
         except Exception as exc:
             await queue.put(build_error_event(str(exc)))

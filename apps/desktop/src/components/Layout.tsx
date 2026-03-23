@@ -12,6 +12,7 @@ const STATIC_NAV_ITEMS = [
   { to: "/graph", label: "GRAPH", icon: "\u25C9" },
   { to: "/soul", label: "DIR", icon: "\u2261" },
   { to: "/consciousness", label: "MIND", icon: "\u25CE" },
+  { to: "/mods", label: "MODS", icon: "\u2726" },
   { to: "/settings", label: "CFG", icon: "\u2699" },
 ];
 

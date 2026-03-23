@@ -1,37 +1,24 @@
 /**
  * Module Store Tests
+ *
+ * Uses the shared Drizzle DB singleton (in-memory for tests).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { ModStoreImpl } from "../../src/core/store.js";
-import { unlink, mkdir, rmdir } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-
-const TEST_DB_PATH = join(tmpdir(), "anima-mod-test.db");
+import { getDb, closeDb } from "../../src/db/index.js";
 
 describe("ModStoreImpl", () => {
   let store: ModStoreImpl;
 
-  beforeEach(async () => {
-    // Clean up
-    try {
-      await unlink(TEST_DB_PATH);
-    } catch {
-      // Ignore
-    }
-    
-    store = new ModStoreImpl("test-mod", TEST_DB_PATH);
-    await store.init();
+  beforeEach(() => {
+    // Ensure the shared DB is initialized (uses default path, creates tables)
+    getDb();
+    store = new ModStoreImpl("test-mod");
   });
 
-  afterEach(async () => {
-    store.close();
-    try {
-      await unlink(TEST_DB_PATH);
-    } catch {
-      // Ignore
-    }
+  afterAll(() => {
+    closeDb();
   });
 
   it("should store and retrieve values", async () => {
@@ -61,7 +48,7 @@ describe("ModStoreImpl", () => {
   it("should delete keys", async () => {
     await store.set("todelete", "value");
     expect(await store.has("todelete")).toBe(true);
-    
+
     await store.delete("todelete");
     expect(await store.has("todelete")).toBe(false);
     expect(await store.get("todelete")).toBeNull();
@@ -75,15 +62,12 @@ describe("ModStoreImpl", () => {
   });
 
   it("should isolate namespaces between modules", async () => {
-    const store2 = new ModStoreImpl("other-mod", TEST_DB_PATH);
-    await store2.init();
+    const store2 = new ModStoreImpl("other-mod");
 
     await store.set("shared", "value1");
     await store2.set("shared", "value2");
 
     expect(await store.get("shared")).toBe("value1");
     expect(await store2.get("shared")).toBe("value2");
-
-    store2.close();
   });
 });

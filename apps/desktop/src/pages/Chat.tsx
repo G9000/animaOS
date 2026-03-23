@@ -592,6 +592,11 @@ function MessageBubble({
               {timestamp}
             </span>
           )}
+          {message.source && (
+            <span className="font-mono text-[7px] text-text-muted/25 ml-1">
+              via {message.source}
+            </span>
+          )}
         </div>
       </div>
       {isUser && (

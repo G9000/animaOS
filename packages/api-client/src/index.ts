@@ -109,6 +109,7 @@ export interface ChatMessage {
   createdAt?: string;
   reasoning?: string;
   traceEvents?: TraceEvent[];
+  source?: string | null;
 }
 
 export interface AgentResponse {

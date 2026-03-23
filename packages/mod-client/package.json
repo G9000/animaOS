@@ -1,0 +1,12 @@
+{
+  "name": "@anima/mod-client",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@elysiajs/eden": "^1.2.0"
+  },
+  "peerDependencies": {
+    "elysia": "^1.2.0"
+  }
+}

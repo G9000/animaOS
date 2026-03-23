@@ -58,7 +58,7 @@ async def send_message(
 
     if not payload.stream:
         try:
-            result = await run_agent(payload.message, payload.userId, db)
+            result = await run_agent(payload.message, payload.userId, db, source=payload.source)
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -81,7 +81,7 @@ async def send_message(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            async for event in stream_agent(payload.message, payload.userId, db):
+            async for event in stream_agent(payload.message, payload.userId, db, source=payload.source):
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client
                 yield _format_sse_event(event.event, event.data)
@@ -119,6 +119,7 @@ async def get_chat_history(
             role="assistant" if row.role == "tool" else row.role,
             content=df(userId, row.content_text, table="agent_messages", field="content_text"),
             createdAt=row.created_at,
+            source=getattr(row, "source", None),
         )
         for row in rows
     ]

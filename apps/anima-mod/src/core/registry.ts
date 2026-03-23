@@ -1,6 +1,6 @@
 /**
  * a-mod: Module Registry
- * 
+ *
  * Loads, initializes, and manages module lifecycle.
  */
 
@@ -12,10 +12,14 @@ import { createLogger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { getDb } from "../db/index.js";
+import { ConfigService } from "../management/config-service.js";
+import { StateService } from "../management/state-service.js";
+import { EventService } from "../management/event-service.js";
 
 const logger = createLogger("registry");
 
-interface LoadedMod {
+export interface LoadedMod {
   config: ModConfig;
   manifest?: ModManifest;
   mod?: Mod;
@@ -26,15 +30,26 @@ interface LoadedMod {
 export class ModRegistry {
   private mods = new Map<string, LoadedMod>();
   private app = new Elysia();
+  private configService?: ConfigService;
+  private stateService?: StateService;
+  private eventService?: EventService;
+
+  /** Initialize management services (call before loadFromConfig) */
+  initServices(): void {
+    const db = getDb();
+    this.configService = new ConfigService(db);
+    this.stateService = new StateService(db);
+    this.eventService = new EventService(db);
+  }
 
   /**
    * Load all modules from anima-mod.config.yaml
    */
   async loadFromConfig(): Promise<void> {
     const config = await loadConfig();
-    
-    logger.info("Loading modules from config", { 
-      count: config.modules?.length ?? 0 
+
+    logger.info("Loading modules from config", {
+      count: config.modules?.length ?? 0
     });
 
     for (const modConfig of config.modules ?? []) {
@@ -79,11 +94,87 @@ export class ModRegistry {
 
       logger.info("Module registered", { id, version: mod.version });
     } catch (err) {
-      logger.error(`Failed to register module ${id}`, { 
-        error: err instanceof Error ? err.message : String(err) 
+      logger.error(`Failed to register module ${id}`, {
+        error: err instanceof Error ? err.message : String(err)
       });
       throw err;
     }
+  }
+
+  /** Initialize a single module by ID */
+  async initMod(id: string): Promise<void> {
+    const loaded = this.mods.get(id);
+    if (!loaded?.mod) throw new Error(`Module ${id} not registered`);
+
+    // Get config: DB first, fall back to YAML
+    let config = loaded.config.config;
+    if (this.configService && await this.configService.hasConfig(id)) {
+      config = await this.configService.getConfig(id);
+    }
+
+    const ctx = await createModContext(id, config);
+    loaded.ctx = ctx;
+    await loaded.mod.init(ctx);
+
+    if (loaded.mod.getRouter) {
+      loaded.router = loaded.mod.getRouter();
+    }
+
+    logger.info("Module initialized", { id });
+  }
+
+  /** Start a single module by ID */
+  async startMod(id: string): Promise<void> {
+    const loaded = this.mods.get(id);
+    if (!loaded?.mod) throw new Error(`Module ${id} not registered`);
+
+    await loaded.mod.start();
+    await this.stateService?.setState(id, {
+      enabled: true,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      lastError: null,
+    });
+    await this.eventService?.logEvent(id, "started");
+    logger.info("Module started", { id });
+  }
+
+  /** Stop a single module by ID */
+  async stopMod(id: string): Promise<void> {
+    const loaded = this.mods.get(id);
+    if (!loaded?.mod?.stop) return;
+
+    await loaded.mod.stop();
+    await this.stateService?.setState(id, {
+      enabled: false,
+      status: "stopped",
+    });
+    await this.eventService?.logEvent(id, "stopped");
+    logger.info("Module stopped", { id });
+  }
+
+  /** Restart a single module */
+  async restartMod(id: string): Promise<void> {
+    await this.stopMod(id);
+    await this.initMod(id);
+    await this.startMod(id);
+  }
+
+  /** Get all loaded mods with their metadata for the management API */
+  getAll(): Map<string, LoadedMod> {
+    return this.mods;
+  }
+
+  getConfigService(): ConfigService | undefined {
+    return this.configService;
+  }
+
+  getStateService(): StateService | undefined {
+    return this.stateService;
+  }
+
+  getEventService(): EventService | undefined {
+    return this.eventService;
   }
 
   /**
@@ -91,28 +182,13 @@ export class ModRegistry {
    */
   async initAll(): Promise<void> {
     logger.info("Initializing modules", { count: this.mods.size });
-
-    // Sort by dependencies (simple version - no complex DAG for now)
     const sortedIds = this.sortByDependencies();
-
     for (const id of sortedIds) {
-      const loaded = this.mods.get(id)!;
-      
       try {
-        const ctx = await createModContext(id, loaded.config.config);
-        loaded.ctx = ctx;
-        
-        await loaded.mod!.init(ctx);
-        
-        // Get router if provided
-        if (loaded.mod!.getRouter) {
-          loaded.router = loaded.mod!.getRouter();
-        }
-
-        logger.info("Module initialized", { id });
+        await this.initMod(id);
       } catch (err) {
-        logger.error(`Failed to initialize module ${id}`, { 
-          error: err instanceof Error ? err.message : String(err) 
+        logger.error(`Failed to initialize module ${id}`, {
+          error: err instanceof Error ? err.message : String(err)
         });
         throw err;
       }
@@ -127,15 +203,16 @@ export class ModRegistry {
 
     for (const [id, loaded] of this.mods) {
       if (!loaded.mod) continue;
-
       try {
-        await loaded.mod.start();
-        logger.info("Module started", { id });
+        await this.startMod(id);
       } catch (err) {
-        logger.error(`Failed to start module ${id}`, { 
-          error: err instanceof Error ? err.message : String(err) 
+        logger.error(`Failed to start module ${id}`, {
+          error: err instanceof Error ? err.message : String(err)
         });
-        // Continue starting other modules
+        await this.stateService?.setState(id, {
+          status: "error",
+          lastError: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }
@@ -146,17 +223,32 @@ export class ModRegistry {
   async stopAll(): Promise<void> {
     logger.info("Stopping modules");
 
-    for (const [id, loaded] of this.mods) {
-      if (!loaded.mod?.stop) continue;
-
+    for (const [id] of this.mods) {
       try {
-        await loaded.mod.stop();
-        logger.info("Module stopped", { id });
+        await this.stopMod(id);
       } catch (err) {
-        logger.error(`Error stopping module ${id}`, { 
-          error: err instanceof Error ? err.message : String(err) 
+        logger.error(`Error stopping module ${id}`, {
+          error: err instanceof Error ? err.message : String(err)
         });
       }
+    }
+  }
+
+  /** One-time migration: seed DB config from YAML values for mods that have no DB config yet */
+  async migrateYamlConfig(): Promise<void> {
+    if (!this.configService) return;
+
+    for (const [id, loaded] of this.mods) {
+      const yamlConfig = loaded.config.config;
+      if (!yamlConfig || Object.keys(yamlConfig).length === 0) continue;
+
+      const hasDbConfig = await this.configService.hasConfig(id);
+      if (hasDbConfig) continue;
+
+      // Seed DB from YAML
+      const schema = loaded.mod?.configSchema;
+      await this.configService.setConfig(id, yamlConfig, schema);
+      logger.warn(`Migrated config for mod '${id}' from YAML to database`);
     }
   }
 

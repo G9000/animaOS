@@ -1,12 +1,14 @@
 /**
  * anima-mod: Elysia Server
- * 
+ *
  * Creates and configures the Elysia server with all module routes.
  */
 
 import { Elysia } from "elysia";
 import { ModRegistry } from "./core/registry.js";
 import { createLogger } from "./core/logger.js";
+import { createManagementRouter } from "./management/router.js";
+import { createWsRouter } from "./management/ws.js";
 
 const logger = createLogger("server");
 
@@ -33,12 +35,31 @@ export async function createServer(opts: ServerOptions): Promise<Elysia> {
 
   // Load and register modules
   const registry = new ModRegistry();
-  
+  registry.initServices();
+
   logger.info("Loading modules...");
   await registry.loadFromConfig();
-  
+
+  // Migrate YAML config to DB on first boot
+  await registry.migrateYamlConfig();
+
   logger.info("Initializing modules...");
   await registry.initAll();
+
+  // Mount management API
+  const managementRouter = createManagementRouter({
+    mods: registry.getAll(),
+    configService: registry.getConfigService()!,
+    stateService: registry.getStateService()!,
+    eventService: registry.getEventService()!,
+    onRestart: (id) => registry.restartMod(id),
+    onEnable: (id) => registry.initMod(id).then(() => registry.startMod(id)),
+    onDisable: (id) => registry.stopMod(id),
+  });
+  app.use(managementRouter);
+
+  // Mount WebSocket events
+  app.use(createWsRouter());
 
   // Mount module routes
   const modServer = registry.getServer();
@@ -60,3 +81,6 @@ export async function createServer(opts: ServerOptions): Promise<Elysia> {
 
   return app;
 }
+
+// Export the App type for Eden Treaty
+export type App = Awaited<ReturnType<typeof createServer>>;

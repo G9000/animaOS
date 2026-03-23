@@ -31,8 +31,7 @@ export async function createModContext(
     password: animaConfig.password ?? "",
   });
 
-  const store = new ModStoreImpl(modId, coreConfig.core?.store?.path ?? "./data/anima-mod.db");
-  await store.init();
+  const store = new ModStoreImpl(modId);
 
   const dispatch = DispatchBusImpl.getInstance();
 

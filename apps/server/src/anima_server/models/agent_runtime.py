@@ -170,6 +170,7 @@ class AgentMessage(Base):
     tool_args_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     is_in_context: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     token_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

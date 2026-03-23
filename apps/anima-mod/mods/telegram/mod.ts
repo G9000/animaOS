@@ -125,6 +125,21 @@ export default {
   id: "telegram",
   version: "1.0.0",
 
+  configSchema: {
+    token:         { type: "secret",  label: "Bot Token", required: true, description: "Token from @BotFather" },
+    mode:          { type: "enum",    label: "Connection Mode", options: ["polling", "webhook"], default: "polling" },
+    webhookUrl:    { type: "string",  label: "Webhook URL", showWhen: { mode: "webhook" } },
+    webhookSecret: { type: "secret",  label: "Webhook Secret", showWhen: { mode: "webhook" } },
+    linkSecret:    { type: "secret",  label: "Link Secret", description: "Optional secret for /link command" },
+  },
+
+  setupGuide: [
+    { step: 1, title: "Create Bot",       instructions: "Open Telegram, search @BotFather, send /newbot, follow the prompts to create your bot." },
+    { step: 2, title: "Paste Token",      field: "token" },
+    { step: 3, title: "Connection Mode",  field: "mode" },
+    { step: 4, title: "Verify",           action: "healthcheck" },
+  ],
+
   getRouter() {
     const router = new Elysia();
     

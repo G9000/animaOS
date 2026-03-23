@@ -30,3 +30,5 @@ main().catch((err) => {
   logger.error("Fatal error", { error: err.message });
   process.exit(1);
 });
+
+export type { App } from "./server.js";

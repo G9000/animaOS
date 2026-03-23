@@ -1,91 +1,65 @@
 /**
  * a-mod: Module Store
- * 
- * SQLite-backed KV store for module-private data.
+ *
+ * Drizzle-backed KV store for module-private data.
+ * Uses the shared DB singleton from db/index.ts.
  */
 
 import type { ModStore } from "./types.js";
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { eq, and } from "drizzle-orm";
+import { modStore } from "../db/schema.js";
+import { getDb } from "../db/index.js";
 
 export class ModStoreImpl implements ModStore {
-  private db: Database | null = null;
   private namespace: string;
-  private dbPath: string;
 
-  constructor(modId: string, dbPath: string) {
+  constructor(modId: string) {
     this.namespace = modId;
-    this.dbPath = dbPath;
-  }
-
-  async init(): Promise<void> {
-    // Ensure directory exists
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    
-    this.db = new Database(this.dbPath);
-    
-    // Create table if not exists
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS mod_store (
-        namespace TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (namespace, key)
-      )
-    `);
-  }
-
-  private getDb(): Database {
-    if (!this.db) throw new Error("Store not initialized");
-    return this.db;
   }
 
   async get<T>(key: string): Promise<T | null> {
-    const db = this.getDb();
-    const stmt = db.prepare(
-      "SELECT value FROM mod_store WHERE namespace = ? AND key = ?"
-    );
-    const row = stmt.get(this.namespace, key) as { value: string } | undefined;
-    
-    if (!row) return null;
-    return JSON.parse(row.value) as T;
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(modStore)
+      .where(and(eq(modStore.namespace, this.namespace), eq(modStore.key, key)))
+      .all();
+    if (rows.length === 0) return null;
+    return JSON.parse(rows[0].value) as T;
   }
 
   async set<T>(key: string, value: T): Promise<void> {
-    const db = this.getDb();
-    const stmt = db.prepare(
-      `INSERT INTO mod_store (namespace, key, value, updated_at) 
-       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(namespace, key) 
-       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    );
-    stmt.run(this.namespace, key, JSON.stringify(value));
+    const db = getDb();
+    db.insert(modStore)
+      .values({
+        namespace: this.namespace,
+        key,
+        value: JSON.stringify(value),
+      })
+      .onConflictDoUpdate({
+        target: [modStore.namespace, modStore.key],
+        set: {
+          value: JSON.stringify(value),
+          updatedAt: new Date().toISOString(),
+        },
+      })
+      .run();
   }
 
   async delete(key: string): Promise<void> {
-    const db = this.getDb();
-    const stmt = db.prepare(
-      "DELETE FROM mod_store WHERE namespace = ? AND key = ?"
-    );
-    stmt.run(this.namespace, key);
+    const db = getDb();
+    db.delete(modStore)
+      .where(and(eq(modStore.namespace, this.namespace), eq(modStore.key, key)))
+      .run();
   }
 
   async has(key: string): Promise<boolean> {
-    const db = this.getDb();
-    const stmt = db.prepare(
-      "SELECT 1 FROM mod_store WHERE namespace = ? AND key = ?"
-    );
-    const row = stmt.get(this.namespace, key);
-    return row != null;
-  }
-
-  /**
-   * Close database connection
-   */
-  close(): void {
-    this.db?.close();
-    this.db = null;
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(modStore)
+      .where(and(eq(modStore.namespace, this.namespace), eq(modStore.key, key)))
+      .all();
+    return rows.length > 0;
   }
 }

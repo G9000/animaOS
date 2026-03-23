@@ -233,6 +233,17 @@ export default {
   id: "discord",
   version: "1.0.0",
 
+  configSchema: {
+    token:   { type: "secret",  label: "Bot Token", required: true, description: "Token from Discord Developer Portal" },
+    intents: { type: "number",  label: "Gateway Intents", default: 51351, description: "Bitfield for gateway intents" },
+  },
+
+  setupGuide: [
+    { step: 1, title: "Create App",    instructions: "Go to discord.com/developers, create a new application, go to Bot tab, copy the token." },
+    { step: 2, title: "Paste Token",   field: "token" },
+    { step: 3, title: "Verify",        action: "healthcheck" },
+  ],
+
   getRouter() {
     return new Elysia()
       .get("/", () => ({

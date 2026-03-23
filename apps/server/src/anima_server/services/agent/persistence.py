@@ -133,6 +133,7 @@ def append_user_message(
     run_id: int,
     content: str,
     sequence_id: int,
+    source: str | None = None,
 ) -> AgentMessage:
     return append_message(
         db,
@@ -142,6 +143,7 @@ def append_user_message(
         sequence_id=sequence_id,
         role="user",
         content_text=content,
+        source=source,
     )
 
 
@@ -373,6 +375,7 @@ def append_message(
     tool_name: str | None = None,
     tool_call_id: str | None = None,
     tool_args_json: dict[str, object] | None = None,
+    source: str | None = None,
 ) -> AgentMessage:
     timestamp = datetime.now(UTC)
     uid = thread.user_id
@@ -393,6 +396,7 @@ def append_message(
             content_json=content_json,
             tool_name=tool_name,
         ),
+        source=source,
     )
     db.add(message)
 

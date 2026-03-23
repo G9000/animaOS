@@ -12,6 +12,10 @@ export default {
   id: "echo",
   version: "1.0.0",
 
+  configSchema: {
+    prefix: { type: "string", label: "Echo Prefix", default: "echo:", description: "Prefix prepended to echoed messages" },
+  },
+
   async init(ctx: ModContext) {
     ctx.logger.info("Echo module initialized", { 
       prefix: ctx.config.prefix ?? "Echo:" 

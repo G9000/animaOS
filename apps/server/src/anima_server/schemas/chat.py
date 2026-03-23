@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     userId: int = Field(ge=0)
     stream: bool = False
+    source: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -34,6 +35,7 @@ class ChatHistoryMessage(BaseModel):
     model: str | None = None
     provider: str | None = None
     createdAt: datetime | None = None
+    source: str | None = None
 
 
 class ChatHistoryClearResponse(BaseModel):
