@@ -6,7 +6,8 @@ import type {
   ServerMessage,
   ToolSchema,
 } from "./protocol";
-import type { AnimusConfig } from "./auth";
+import { type AnimusConfig, getConfigPath } from "./auth";
+import { unlinkSync } from "node:fs";
 
 export type ConnectionStatus =
   | "disconnected"
@@ -68,6 +69,21 @@ export class ConnectionManager {
           this.reconnectAttempt = 0;
           // Register tools with the server
           this.send({ type: "tool_schemas", tools: this.toolSchemas });
+        }
+
+        // Auth failure — stop reconnecting, delete stale config
+        if (
+          msg.type === "error" &&
+          (msg.code === "AUTH_FAILED" || msg.code === "AUTH_REQUIRED")
+        ) {
+          this.intentionallyClosed = true;
+          try {
+            unlinkSync(getConfigPath());
+          } catch {}
+          this.events.onError(
+            new Error(`${msg.message}. Saved config cleared — restart to re-login.`),
+          );
+          return;
         }
 
         this.events.onMessage(msg);
