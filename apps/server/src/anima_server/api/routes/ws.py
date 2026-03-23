@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -123,7 +124,7 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
             websocket=ws,
             user_id=session.user_id,
             username=resolved_username,
-            connected_at=asyncio.get_event_loop().time(),
+            connected_at=time.monotonic(),
         )
 
     # Try username/password auth
@@ -136,12 +137,20 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
                 websocket=ws,
                 user_id=user_id,
                 username=str(response.get("username", username)),
-                connected_at=asyncio.get_event_loop().time(),
+                connected_at=time.monotonic(),
             )
         except ValueError:
             await ws.send_json({
                 "type": "error",
                 "message": "Invalid credentials",
+                "code": "AUTH_FAILED",
+            })
+            return None
+        except Exception:
+            logger.exception("Unexpected error during password authentication")
+            await ws.send_json({
+                "type": "error",
+                "message": "Authentication error",
                 "code": "AUTH_FAILED",
             })
             return None
