@@ -462,31 +462,29 @@ def test_chat_openrouter_without_api_key_returns_error() -> None:
 
 def test_chat_invalid_persona_template_returns_error() -> None:
     original_provider = settings.agent_provider
-    original_persona_template = settings.agent_persona_template
 
     try:
         settings.agent_provider = "scaffold"
-        settings.agent_persona_template = "../broken"
         invalidate_agent_runtime_cache()
 
         with _client() as client:
-            # Persona template is validated at registration time now
-            # (persona is seeded into the DB during create_user)
+            # Persona template is validated at registration time via create_user.
+            # Pass an invalid template name directly in the request body.
             response = client.post(
                 "/api/auth/register",
                 json={
                     "username": "bad-persona",
                     "password": "pw123456",
                     "name": "BadPersona",
+                    "personaTemplate": "../broken",
                 },
             )
     finally:
         settings.agent_provider = original_provider
-        settings.agent_persona_template = original_persona_template
         invalidate_agent_runtime_cache()
 
-    assert response.status_code == 503
-    assert "Invalid persona template name" in response.json()["error"]
+    assert response.status_code == 422
+    assert "Invalid persona template" in response.json()["error"]
 
 
 def test_chat_compacts_thread_context_into_summary() -> None:

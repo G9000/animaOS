@@ -269,11 +269,13 @@ class TestPredictCalibratePipeline:
             )
 
         # Mock predict: return a prediction string
-        async def mock_predict(*, existing_facts, conversation_summary):
+        async def mock_predict(*, existing_facts, conversation_summary, prompt_loader=None):
             return "User will likely mention their job at Google."
 
         # Mock delta extraction: return a new fact not in existing
-        async def mock_extract_delta(*, user_message, assistant_response, prediction):
+        async def mock_extract_delta(
+            *, user_message, assistant_response, prediction, prompt_loader=None
+        ):
             return [
                 {
                     "content": "User is moving from Munich to Berlin next month",
@@ -323,7 +325,7 @@ class TestPredictCalibratePipeline:
                 query_embedding=[0.1] * 10,
             )
 
-        async def mock_predict(*, existing_facts, conversation_summary):
+        async def mock_predict(*, existing_facts, conversation_summary, prompt_loader=None):
             raise RuntimeError("LLM unavailable")
 
         direct_called = []
@@ -381,10 +383,12 @@ class TestPredictCalibratePipeline:
                 query_embedding=[0.1] * 10,
             )
 
-        async def mock_predict(*, existing_facts, conversation_summary):
+        async def mock_predict(*, existing_facts, conversation_summary, prompt_loader=None):
             return "User will mention their work."
 
-        async def mock_extract_delta(*, user_message, assistant_response, prediction):
+        async def mock_extract_delta(
+            *, user_message, assistant_response, prediction, prompt_loader=None
+        ):
             return [
                 {
                     "content": "User is frustrated with their manager at work",

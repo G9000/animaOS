@@ -380,8 +380,14 @@ def test_deep_monologue_result_tracks_persona() -> None:
 
 def test_deep_monologue_prompt_includes_persona() -> None:
     """The deep monologue prompt template includes a persona section."""
-    from anima_server.services.agent.inner_monologue import DEEP_MONOLOGUE_PROMPT
+    from pathlib import Path
 
-    assert "{persona}" in DEEP_MONOLOGUE_PROMPT
-    assert "persona_update" in DEEP_MONOLOGUE_PROMPT
-    assert "EVOLVE" in DEEP_MONOLOGUE_PROMPT
+    template_path = (
+        Path(__file__).parent.parent
+        / "src/anima_server/services/agent/templates/prompts/deep_monologue.md.j2"
+    )
+    content = template_path.read_text(encoding="utf-8")
+
+    assert "{{ persona }}" in content
+    assert "persona_update" in content
+    assert "EVOLVE" in content

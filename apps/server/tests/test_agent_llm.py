@@ -7,32 +7,28 @@ from anima_server.services.agent.llm import LLMConfigError, build_provider_heade
 
 
 @pytest.mark.asyncio
-async def test_generate_embedding_skips_openrouter_without_api_key(
+async def test_generate_embedding_skips_openrouter_when_ollama_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # OpenRouter has no embeddings endpoint; it falls back to local Ollama.
+    # When Ollama is also unavailable the function should return None.
     original_provider = settings.agent_provider
-    original_api_key = settings.agent_api_key
-    embed_calls: list[str] = []
 
-    async def fake_embed(text: str) -> list[float]:
-        embed_calls.append(text)
-        return [0.1, 0.2, 0.3]
+    async def ollama_unavailable(text: str) -> list[float] | None:
+        raise RuntimeError("Ollama not reachable")
 
     try:
         settings.agent_provider = "openrouter"
-        settings.agent_api_key = ""
         monkeypatch.setattr(
-            "anima_server.services.agent.embeddings._embed_openai_compatible",
-            fake_embed,
+            "anima_server.services.agent.embeddings._embed_ollama",
+            ollama_unavailable,
         )
 
         result = await generate_embedding("hello")
     finally:
         settings.agent_provider = original_provider
-        settings.agent_api_key = original_api_key
 
     assert result is None
-    assert embed_calls == []
 
 
 def test_build_provider_headers_rejects_openrouter_without_api_key() -> None:

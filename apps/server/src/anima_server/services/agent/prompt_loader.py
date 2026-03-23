@@ -30,6 +30,8 @@ class PromptLoader:
     @classmethod
     def from_db(cls, db_session, user_id: int) -> PromptLoader:
         """Create a PromptLoader with agent_name from the user's AgentProfile."""
+        if db_session is None:
+            return cls()
         profile = db_session.get(AgentProfile, user_id)
         agent_name = profile.agent_name if profile else "Anima"
         return cls(agent_name=agent_name)

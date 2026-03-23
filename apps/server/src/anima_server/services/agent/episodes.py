@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from anima_server.config import settings
 from anima_server.models import MemoryDailyLog, MemoryEpisode
 from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef
@@ -15,6 +16,7 @@ from anima_server.services.data_crypto import df, ef
 logger = logging.getLogger(__name__)
 
 EPISODE_MIN_TURNS = 3
+EPISODE_SEQUENTIAL_MAX_TURNS = 6
 
 
 async def maybe_generate_episode(
@@ -63,7 +65,46 @@ async def maybe_generate_episode(
         return None
 
     # ── Phase 2: LLM call — no session held open ────────────
-    parsed = await _call_llm_for_episode_safe(available_logs, user_id=user_id)
+    from anima_server.services.agent import batch_segmenter as _bs
+
+    if _bs.should_batch_segment(len(available_logs)):
+        # Batch path: LLM groups messages into topic-coherent segments.
+        messages = [
+            (
+                df(user_id, log.user_message, table="memory_daily_logs", field="user_message")
+                or "",
+                df(
+                    user_id,
+                    log.assistant_response,
+                    table="memory_daily_logs",
+                    field="assistant_response",
+                )
+                or "",
+            )
+            for log in available_logs
+        ]
+        try:
+            groups_1based = await _bs.segment_messages_batch(messages, user_id=user_id)
+            segments_0based = _bs.indices_to_0based(groups_1based)
+        except Exception:
+            segments_0based = []
+
+        if segments_0based:
+            with factory() as db:
+                episodes = await _bs.generate_episodes_from_segments(
+                    db,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    logs=available_logs,
+                    segments=segments_0based,
+                    today=today,
+                )
+                db.commit()
+                return episodes[-1] if episodes else None
+
+    # Sequential path (below BATCH_THRESHOLD or batch segmentation failed).
+    sequential_logs = available_logs[:EPISODE_SEQUENTIAL_MAX_TURNS]
+    parsed = await _call_llm_for_episode_safe(sequential_logs, user_id=user_id)
 
     # ── Phase 3: Write — short-lived session for DB updates ──
     with factory() as db:
@@ -72,7 +113,7 @@ async def maybe_generate_episode(
             parsed=parsed,
             user_id=user_id,
             thread_id=thread_id,
-            logs=available_logs,
+            logs=sequential_logs,
             today=today,
         )
         db.commit()

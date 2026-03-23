@@ -183,8 +183,9 @@ async def generate_episodes_from_segments(
     - Gets its own LLM-generated summary via _generate_episode_via_llm()
     """
     from anima_server.services.agent.episodes import (
+        _build_episode_from_parsed,
+        _call_llm_for_episode_safe,
         _create_fallback_episode,
-        _generate_episode_via_llm,
     )
 
     # segments are already 0-based at this point
@@ -206,8 +207,10 @@ async def generate_episodes_from_segments(
                 today=today,
             )
         else:
-            episode = await _generate_episode_via_llm(
+            parsed = await _call_llm_for_episode_safe(segment_logs, user_id=user_id)
+            episode = _build_episode_from_parsed(
                 db,
+                parsed=parsed,
                 user_id=user_id,
                 thread_id=thread_id,
                 logs=segment_logs,

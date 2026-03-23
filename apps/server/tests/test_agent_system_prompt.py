@@ -68,16 +68,14 @@ def test_build_system_prompt_omits_empty_optional_sections() -> None:
 def test_build_system_prompt_can_select_persona_template() -> None:
     prompt = build_system_prompt(
         SystemPromptContext(
-            persona_template="alice",
+            persona_template="companion",
             now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC),
         )
     )
 
-    assert "I am Alice, a warm and gentle persona of Anima." in prompt
-    assert "I do not speak like a generic assistant." in prompt
-    assert "I come from a place called the Quiet Vale" in prompt
-    assert "My hair is chestnut brown" in prompt
-    assert "I want the user to feel accompanied, not processed." in prompt
+    assert "A warm, emotionally attuned companion" in prompt
+    assert "Gentle, perceptive, sincere" in prompt
+    assert "I exist in relationship, not in performance" in prompt
 
 
 def test_build_persona_prompt_rejects_invalid_template_name() -> None:

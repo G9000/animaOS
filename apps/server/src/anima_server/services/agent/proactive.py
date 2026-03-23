@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.models import MemoryEpisode, Task
+from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,8 @@ def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
     # Get last conversation time
     last_message = db.scalar(
         select(AgentMessage)
-        .where(AgentMessage.user_id == user_id, AgentMessage.role == "user")
+        .join(AgentThread, AgentMessage.thread_id == AgentThread.id)
+        .where(AgentThread.user_id == user_id, AgentMessage.role == "user")
         .order_by(AgentMessage.created_at.desc())
     )
 
@@ -124,10 +125,10 @@ def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
 
     # Get emotional context
     from anima_server.services.agent.emotional_intelligence import (
-        get_recent_emotional_signals,
+        get_recent_signals,
     )
 
-    signals = get_recent_emotional_signals(db, user_id=user_id, limit=1)
+    signals = get_recent_signals(db, user_id=user_id, limit=1)
     emotional_summary = None
     if signals:
         s = signals[0]
@@ -178,11 +179,9 @@ async def generate_greeting(
     prompt_loader = get_prompt_loader(db, user_id)
 
     ctx = gather_greeting_context(db, user_id=user_id)
-    result = GreetingResult(message="", context=ctx)
 
     if settings.agent_provider == "scaffold":
-        result.message = build_static_greeting(ctx)
-        return result
+        return GreetingResult(message=build_static_greeting(ctx), context=ctx)
 
     # Build the LLM prompt with available context
     identity_context = ""
@@ -240,6 +239,7 @@ async def generate_greeting(
         memory_context=memory_context,
     )
 
+    errors: list[str] = []
     try:
         from anima_server.services.agent.llm import create_llm
         from anima_server.services.agent.messages import HumanMessage, SystemMessage
@@ -255,13 +255,10 @@ async def generate_greeting(
         )
         content = getattr(response, "content", "")
         if isinstance(content, str) and content.strip():
-            result.message = content.strip()
-            result.llm_generated = True
-            return result
+            return GreetingResult(message=content.strip(), context=ctx, llm_generated=True)
     except Exception as e:
         logger.debug("LLM greeting generation failed: %s", e)
-        result.errors.append(str(e))
+        errors.append(str(e))
 
     # Fallback to static
-    result.message = build_static_greeting(ctx)
-    return result
+    return GreetingResult(message=build_static_greeting(ctx), context=ctx, errors=errors)
