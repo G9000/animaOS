@@ -73,7 +73,7 @@ All messages are JSON with a `type` field for routing.
 
 | Type | Fields | Purpose |
 |---|---|---|
-| `auth` | username, password OR token | Authenticate connection |
+| `auth` | username, password OR unlockToken | Authenticate connection (uses same `unlockToken` from `POST /api/auth/login`, sent via `x-anima-unlock` header in REST) |
 | `user_message` | message | User sends a chat message |
 | `tool_result` | tool_call_id, status, result, stdout?, stderr? | Result of locally executed tool |
 | `tool_schemas` | tools[] | Register available action tools on connect |
@@ -89,6 +89,7 @@ New FastAPI WebSocket route at `/ws/agent`:
 - Server validates, sends `auth_ok` with user context
 - Client sends `tool_schemas` to register available action tools
 - Server maintains a connection registry per user (multiple clients can connect)
+- When multiple clients are connected, `tool_execute` is routed to the client that registered the requested tool. If multiple clients registered the same tool, the most recently connected client receives the request
 
 ### 2. Tool Delegation in Agent Runtime (`services/agent/runtime.py`)
 
@@ -105,7 +106,8 @@ else:
 ```
 
 When delegating:
-- Send `tool_execute` message over WebSocket
+- The server strips `thinking` and `request_heartbeat` from args before sending (it already does this for server-side tools via `unpack_inner_thoughts_from_kwargs` / `unpack_heartbeat_from_kwargs` in executor.py — the same stripping applies before delegation, so the CLI receives clean args)
+- Send `tool_execute` message over WebSocket with clean args
 - Await response via `asyncio.Event` or `asyncio.Future`
 - Timeout after configurable duration (default 300s for long-running commands)
 - Return result to the loop as if it were a server-side execution
@@ -213,7 +215,7 @@ anima --server <url>           # Connect to remote server
 // ~/.animus/config.json
 {
   "serverUrl": "ws://localhost:3031",
-  "token": "unlock_token_here",
+  "unlockToken": "unlock_token_here",
   "username": "leo"
 }
 ```
