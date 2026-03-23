@@ -16,5 +16,6 @@ __pycache__/
 *.pyc
 .local-docs/
 .claude/settings.local.json
+.claude/worktrees/
 .anima-cli-session
 .worktrees/
