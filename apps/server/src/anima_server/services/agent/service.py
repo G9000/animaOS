@@ -108,7 +108,9 @@ def invalidate_agent_runtime_cache() -> None:
     invalidate_system_prompt_template_cache()
 
 
-async def run_agent(user_message: str, user_id: int, db: Session, *, source: str | None = None) -> AgentResult:
+async def run_agent(
+    user_message: str, user_id: int, db: Session, *, source: str | None = None
+) -> AgentResult:
     return await _execute_agent_turn(user_message, user_id, db, source=source)
 
 

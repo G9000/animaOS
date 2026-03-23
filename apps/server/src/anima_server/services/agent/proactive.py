@@ -14,11 +14,11 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.models import AgentThread, MemoryEpisode, Task
+from anima_server.models import MemoryEpisode, Task
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -110,9 +110,7 @@ def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
         else None
     )
 
-    working_memory_block = get_self_model_block(
-        db, user_id=user_id, section="working_memory"
-    )
+    working_memory_block = get_self_model_block(db, user_id=user_id, section="working_memory")
     working_memory_summary = (
         df(
             user_id,

@@ -6,7 +6,6 @@ The agent_name is automatically fetched from AgentProfile.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,7 @@ class PromptLoader:
         )
 
     @classmethod
-    def from_db(cls, db_session, user_id: int) -> "PromptLoader":
+    def from_db(cls, db_session, user_id: int) -> PromptLoader:
         """Create a PromptLoader with agent_name from the user's AgentProfile."""
         profile = db_session.get(AgentProfile, user_id)
         agent_name = profile.agent_name if profile else "Anima"
@@ -45,7 +44,7 @@ class PromptLoader:
 
     def render(self, template_name: str, **context: Any) -> str:
         """Render a prompt template with the given context.
-        
+
         The agent_name is automatically added to the context.
         """
         template = self._load_template(template_name)

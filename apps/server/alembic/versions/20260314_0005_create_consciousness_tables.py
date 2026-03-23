@@ -5,8 +5,8 @@ Revises: 20260314_0004
 Create Date: 2026-03-14
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260314_0005"
 down_revision = "20260314_0004"
@@ -24,8 +24,12 @@ def upgrade() -> None:
         sa.Column("version", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("updated_by", sa.String(32), nullable=False, server_default="system"),
         sa.Column("metadata_json", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
     )
@@ -43,7 +47,9 @@ def upgrade() -> None:
         sa.Column("previous_emotion", sa.String(32), nullable=True),
         sa.Column("topic", sa.String(255), nullable=False, server_default=""),
         sa.Column("acted_on", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["thread_id"], ["agent_threads.id"], ondelete="SET NULL"),

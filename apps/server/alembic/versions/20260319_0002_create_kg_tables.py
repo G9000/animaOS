@@ -4,10 +4,11 @@ Revision ID: 20260319_0002
 Revises: 20260319_0001
 Create Date: 2026-03-19
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260319_0002"
 down_revision = "20260319_0001"
@@ -48,13 +49,9 @@ def upgrade():
             nullable=False,
             server_default=sa.func.now(),
         ),
-        sa.UniqueConstraint(
-            "user_id", "name_normalized", name="uq_kg_entities_user_name"
-        ),
+        sa.UniqueConstraint("user_id", "name_normalized", name="uq_kg_entities_user_name"),
     )
-    op.create_index(
-        "ix_kg_entities_user_type", "kg_entities", ["user_id", "entity_type"]
-    )
+    op.create_index("ix_kg_entities_user_type", "kg_entities", ["user_id", "entity_type"])
 
     op.create_table(
         "kg_relations",

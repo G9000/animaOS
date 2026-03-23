@@ -887,8 +887,7 @@ def prepare_action_tool_schemas(
     native tool objects.
     """
     thinking_desc = (
-        "Deep inner monologue, private to you only. "
-        "Use this to reason about the current situation."
+        "Deep inner monologue, private to you only. Use this to reason about the current situation."
     )
     result: list[dict[str, Any]] = []
     for schema in schemas:
@@ -915,14 +914,16 @@ def prepare_action_tool_schemas(
                 "description": _HEARTBEAT_DESCRIPTION,
             }
 
-        result.append({
-            "type": "function",
-            "function": {
-                "name": s["name"],
-                "description": s.get("description", ""),
-                "parameters": params,
-            },
-        })
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": s["name"],
+                    "description": s.get("description", ""),
+                    "parameters": params,
+                },
+            }
+        )
     return result
 
 

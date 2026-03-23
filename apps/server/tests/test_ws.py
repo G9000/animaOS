@@ -69,9 +69,12 @@ class TestWebSocketAuth:
                 auth_resp = ws.receive_json()
                 assert auth_resp["type"] == "auth_ok"
 
-                ws.send_json({"type": "tool_schemas", "tools": [
-                    {"name": "bash", "description": "Run shell", "parameters": {}}
-                ]})
+                ws.send_json(
+                    {
+                        "type": "tool_schemas",
+                        "tools": [{"name": "bash", "description": "Run shell", "parameters": {}}],
+                    }
+                )
                 # No response expected for tool_schemas — verify no error by
                 # sending another message and confirming the connection is still alive.
                 ws.send_json({"type": "ping"})

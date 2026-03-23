@@ -325,10 +325,10 @@ def test_nonce_middleware_uses_compare_digest() -> None:
             patch.object(main_module.hmac, "compare_digest", return_value=True) as compare_digest,
             TestClient(app) as client,
         ):
-                resp = client.get(
-                    "/api/config/providers",
-                    headers={"x-anima-nonce": " test-nonce-enforce "},
-                )
+            resp = client.get(
+                "/api/config/providers",
+                headers={"x-anima-nonce": " test-nonce-enforce "},
+            )
         assert resp.status_code == 200
         compare_digest.assert_called_once_with("test-nonce-enforce", "test-nonce-enforce")
     finally:

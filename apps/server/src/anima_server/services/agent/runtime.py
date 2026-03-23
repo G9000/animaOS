@@ -927,15 +927,12 @@ class AgentRuntime:
         )
         # Server-side tools (LangChain tool objects)
         server_tools: list[Any] = [
-            self._tool_registry[name]
-            for name in allowed_tool_names
-            if name in self._tool_registry
+            self._tool_registry[name] for name in allowed_tool_names if name in self._tool_registry
         ]
         # Client-side action tools (OpenAI function-call dicts) — only
         # include those that are in the allowed set for this step.
         action_tools: list[dict[str, Any]] = [
-            s for s in extra_tool_schemas
-            if s.get("function", {}).get("name") in allowed_tool_names
+            s for s in extra_tool_schemas if s.get("function", {}).get("name") in allowed_tool_names
         ]
         if action_tools:
             action_names = [s.get("function", {}).get("name") for s in action_tools]

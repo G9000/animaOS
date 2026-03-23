@@ -177,7 +177,8 @@ class OpenAICompatibleChatClient:
             payload["max_tokens"] = self._max_tokens
         if self._tools:
             payload["tools"] = [
-                tool if isinstance(tool, dict) and "type" in tool and "function" in tool
+                tool
+                if isinstance(tool, dict) and "type" in tool and "function" in tool
                 else _serialize_tool(tool)
                 for tool in self._tools
             ]

@@ -3,12 +3,10 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-
+from anima_server import models  # noqa: F401
 from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.url import ensure_database_directory
-from anima_server import models  # noqa: F401
 
 config = context.config
 

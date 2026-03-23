@@ -43,11 +43,8 @@ async def register(client: httpx.AsyncClient) -> dict:
     username = input("Username: ").strip()
     name = input("Your name: ").strip()
     password = input("Password: ").strip()
-    agent_name = input(
-        "Name your companion (default: Anima): ").strip() or "Anima"
-    user_directive = (
-        input("Any instructions for your companion? (optional): ").strip() or ""
-    )
+    agent_name = input("Name your companion (default: Anima): ").strip() or "Anima"
+    user_directive = input("Any instructions for your companion? (optional): ").strip() or ""
 
     resp = await client.post(
         f"{BASE_URL}/api/auth/register",
@@ -117,9 +114,7 @@ async def authenticate(client: httpx.AsyncClient) -> dict:
     return await login(client)
 
 
-async def send_message_stream(
-    client: httpx.AsyncClient, session: dict, message: str
-) -> str:
+async def send_message_stream(client: httpx.AsyncClient, session: dict, message: str) -> str:
     """Send a message and stream the response."""
     headers = {"x-anima-unlock": session["token"]}
     full_response = ""
@@ -127,8 +122,7 @@ async def send_message_stream(
     async with client.stream(
         "POST",
         f"{BASE_URL}/api/chat",
-        json={"message": message,
-              "userId": session["user_id"], "stream": True},
+        json={"message": message, "userId": session["user_id"], "stream": True},
         headers=headers,
         timeout=120.0,
     ) as resp:
@@ -140,17 +134,17 @@ async def send_message_stream(
         async for line in resp.aiter_lines():
             line = line.strip()
             if DEBUG:
-                print(f"  [SSE] {repr(line)}", flush=True)
+                print(f"  [SSE] {line!r}", flush=True)
             if not line:
                 current_event = ""
                 continue
             if line.startswith("event:"):
-                current_event = line[len("event:"):].strip()
+                current_event = line[len("event:") :].strip()
                 continue
             if not line.startswith("data:"):
                 continue
 
-            data_str = line[len("data:"):].strip()
+            data_str = line[len("data:") :].strip()
             try:
                 event_data = json.loads(data_str)
             except json.JSONDecodeError:
@@ -182,15 +176,12 @@ async def send_message_stream(
     return full_response
 
 
-async def send_message_sync(
-    client: httpx.AsyncClient, session: dict, message: str
-) -> str:
+async def send_message_sync(client: httpx.AsyncClient, session: dict, message: str) -> str:
     """Send a message and wait for complete response."""
     headers = {"x-anima-unlock": session["token"]}
     resp = await client.post(
         f"{BASE_URL}/api/chat",
-        json={"message": message,
-              "userId": session["user_id"], "stream": False},
+        json={"message": message, "userId": session["user_id"], "stream": False},
         headers=headers,
         timeout=120.0,
     )
@@ -240,8 +231,11 @@ async def main() -> None:
                     params={"userId": session["user_id"]},
                     headers=headers,
                 )
-                print("New conversation started." if resp.status_code ==
-                      200 else f"Error: {resp.text}")
+                print(
+                    "New conversation started."
+                    if resp.status_code == 200
+                    else f"Error: {resp.text}"
+                )
                 continue
 
             if user_input == "/memory":
@@ -274,8 +268,7 @@ async def main() -> None:
                     data = resp.json()
                     if isinstance(data, list):
                         for block in data:
-                            name = block.get(
-                                "block_name", block.get("name", "?"))
+                            name = block.get("block_name", block.get("name", "?"))
                             content = block.get("content", "")
                             print(f"\n— {name} —")
                             print(content[:500])
@@ -297,8 +290,7 @@ async def main() -> None:
                     episodes = resp.json()
                     if isinstance(episodes, list):
                         for ep in episodes[:10]:
-                            title = ep.get("title", ep.get(
-                                "summary", "untitled"))
+                            title = ep.get("title", ep.get("summary", "untitled"))
                             date = ep.get("created_at", ep.get("date", ""))
                             print(f"  [{date}] {title}")
                     else:

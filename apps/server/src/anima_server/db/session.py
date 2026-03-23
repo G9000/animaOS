@@ -99,8 +99,7 @@ def _make_engine(database_url: str | None = None) -> Engine:
                     "ANIMA_CORE_REQUIRE_ENCRYPTION is enabled but sqlcipher3 is not installed. "
                     "Install sqlcipher3 to enable database encryption: pip install sqlcipher3"
                 ) from None
-            logger.warning(
-                "sqlcipher3 not installed - falling back to unencrypted SQLite.")
+            logger.warning("sqlcipher3 not installed - falling back to unencrypted SQLite.")
             raw_key = None
 
     if raw_key is not None:

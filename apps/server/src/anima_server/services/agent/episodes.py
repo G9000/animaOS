@@ -1,5 +1,4 @@
 from __future__ import annotations
-from anima_server.services.agent.json_utils import parse_json_object
 
 import logging
 from collections.abc import Callable
@@ -9,8 +8,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.config import settings
 from anima_server.models import MemoryDailyLog, MemoryEpisode
+from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
@@ -154,12 +153,8 @@ def _merge_episodes(
         overlap = new_topics & prev_topics
         if len(overlap) >= min(2, len(new_topics), len(prev_topics)):
             # Merge: update previous episode
-            prev_summary = df(
-                user_id, prev.summary, table="memory_episodes", field="summary"
-            )
-            new_summary = df(
-                user_id, new_episode.summary, table="memory_episodes", field="summary"
-            )
+            prev_summary = df(user_id, prev.summary, table="memory_episodes", field="summary")
+            new_summary = df(user_id, new_episode.summary, table="memory_episodes", field="summary")
 
             merged_summary = f"{prev_summary} Later: {new_summary}"
             prev.summary = ef(
@@ -233,8 +228,7 @@ def _build_episode_from_parsed(
         date=today,
         summary=ef(user_id, summary, table="memory_episodes", field="summary"),
         topics_json=topics if topics else None,
-        emotional_arc=ef(user_id, emotional_arc,
-                         table="memory_episodes", field="emotional_arc"),
+        emotional_arc=ef(user_id, emotional_arc, table="memory_episodes", field="emotional_arc"),
         significance_score=significance,
         turn_count=len(logs),
     )
@@ -259,15 +253,14 @@ async def _call_llm_for_episode(
         f"User: {df(user_id, log.user_message, table='memory_daily_logs', field='user_message')}\nAssistant: {df(user_id, log.assistant_response, table='memory_daily_logs', field='assistant_response')}"
         for log in logs
     )
-    
+
     # Use templated prompt
     prompt = prompt_loader.episode_generation(turns=turns_text)
 
     llm = create_llm()
     response = await llm.ainvoke(
         [
-            SystemMessage(
-                content="You generate episode summaries. Respond only with JSON."),
+            SystemMessage(content="You generate episode summaries. Respond only with JSON."),
             HumanMessage(content=prompt),
         ]
     )

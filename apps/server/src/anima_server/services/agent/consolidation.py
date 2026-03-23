@@ -443,7 +443,6 @@ async def extract_memories_via_llm(
     try:
         from anima_server.services.agent.llm import create_llm
         from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
         from anima_server.services.agent.prompt_loader import PromptLoader
 
         llm = create_llm()
@@ -495,7 +494,6 @@ async def resolve_conflict(
     try:
         from anima_server.services.agent.llm import create_llm
         from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
         from anima_server.services.agent.prompt_loader import PromptLoader
 
         llm = create_llm()
@@ -575,7 +573,6 @@ async def resolve_conflict_batch(
     try:
         from anima_server.services.agent.llm import create_llm
         from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
         from anima_server.services.agent.prompt_loader import PromptLoader
 
         llm = create_llm()

@@ -8,7 +8,6 @@ Two modes:
 """
 
 from __future__ import annotations
-from anima_server.services.agent.json_utils import parse_json_object as _parse_json
 
 import logging
 from collections.abc import Callable
@@ -18,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryEpisode
+from anima_server.services.agent.json_utils import parse_json_object as _parse_json
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,11 @@ async def run_quick_reflection(
 
     try:
         from anima_server.db.session import get_db_session_context
+        from anima_server.services.agent.prompt_loader import get_prompt_loader
         from anima_server.services.agent.self_model import (
             get_self_model_block,
             set_self_model_block,
         )
-        from anima_server.services.agent.prompt_loader import get_prompt_loader
 
         factory = db_factory or get_db_session_context
 
@@ -83,8 +83,7 @@ async def run_quick_reflection(
             # Load prompt loader with agent name
             prompt_loader = get_prompt_loader(db, user_id)
 
-            inner_state_block = get_self_model_block(
-                db, user_id=user_id, section="inner_state")
+            inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
             working_memory_block = get_self_model_block(
                 db, user_id=user_id, section="working_memory"
             )
@@ -236,10 +235,10 @@ async def run_deep_monologue(
         return result
 
     from anima_server.db.session import get_db_session_context
+    from anima_server.services.agent.prompt_loader import get_prompt_loader
     from anima_server.services.agent.self_model import (
         get_all_self_model_blocks,
     )
-    from anima_server.services.agent.prompt_loader import get_prompt_loader
 
     factory = db_factory or get_db_session_context
 
@@ -258,9 +257,7 @@ async def run_deep_monologue(
                 db, user_id=user_id, query="important facts about the user", limit=20
             )
             facts_text = (
-                "\n".join(f"- {m.content}" for m in facts)
-                if facts
-                else "No stored facts yet."
+                "\n".join(f"- {m.content}" for m in facts) if facts else "No stored facts yet."
             )
 
             # Gather recent episodes
@@ -316,8 +313,7 @@ async def run_deep_monologue(
                 )
             )
             persona_text = (
-                df(user_id, persona_block.content,
-                   table="self_model_blocks", field="content")
+                df(user_id, persona_block.content, table="self_model_blocks", field="content")
                 if persona_block
                 else "Default persona — not yet customized."
             )
@@ -546,9 +542,7 @@ async def _get_recent_conversation(
     lines = []
     for msg in reversed(messages):
         role = "User" if msg.role == "user" else "Assistant"
-        text = df(
-            user_id, msg.content_text or "", table="agent_messages", field="content_text"
-        )
+        text = df(user_id, msg.content_text or "", table="agent_messages", field="content_text")
         lines.append(f"{role}: {text[:500]}")
     return "\n\n".join(lines)
 

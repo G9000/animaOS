@@ -1,6 +1,7 @@
 import asyncio
+
 import pytest
-from anima_server.services.agent.delegation import ToolDelegator, DelegationTimeout
+from anima_server.services.agent.delegation import DelegationTimeout, ToolDelegator
 
 
 @pytest.mark.asyncio
@@ -14,9 +15,7 @@ async def test_delegate_resolves_on_result():
     delegator = ToolDelegator(send_fn=mock_send)
 
     # Start delegation in background
-    task = asyncio.create_task(
-        delegator.delegate("tc_1", "bash", {"command": "ls"})
-    )
+    task = asyncio.create_task(delegator.delegate("tc_1", "bash", {"command": "ls"}))
     await asyncio.sleep(0.01)  # Let it send
 
     assert len(sent_messages) == 1

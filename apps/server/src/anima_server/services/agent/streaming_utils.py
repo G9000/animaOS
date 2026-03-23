@@ -153,10 +153,7 @@ class ThinkingExtractor:
 
         # Check if this non-whitespace char matches the expected position
         # in the key pattern.
-        if (
-            self._match_pos < len(self._key_pattern)
-            and ch == self._key_pattern[self._match_pos]
-        ):
+        if self._match_pos < len(self._key_pattern) and ch == self._key_pattern[self._match_pos]:
             self._match_pos += 1
             # Full match?
             if self._match_pos == len(self._key_pattern):

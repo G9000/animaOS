@@ -75,9 +75,7 @@ class ConnectionRegistry:
 
     def get_action_tool_names(self, user_id: int) -> frozenset[str]:
         """Get names of all action tools registered by a user's connections."""
-        return frozenset(
-            s.get("name", "") for s in self.get_action_tool_schemas(user_id)
-        )
+        return frozenset(s.get("name", "") for s in self.get_action_tool_schemas(user_id))
 
 
 # Global singleton
@@ -88,15 +86,17 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
     """Wait for auth message, validate, return connection or None."""
     try:
         raw = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
-    except (asyncio.TimeoutError, WebSocketDisconnect):
+    except (TimeoutError, WebSocketDisconnect):
         return None
 
     if raw.get("type") != "auth":
-        await ws.send_json({
-            "type": "error",
-            "message": "Expected auth message first",
-            "code": "AUTH_REQUIRED",
-        })
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Expected auth message first",
+                "code": "AUTH_REQUIRED",
+            }
+        )
         return None
 
     unlock_token = raw.get("unlockToken")
@@ -107,11 +107,13 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
     if unlock_token:
         session = unlock_session_store.resolve(unlock_token)
         if session is None:
-            await ws.send_json({
-                "type": "error",
-                "message": "Invalid unlock token",
-                "code": "AUTH_FAILED",
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Invalid unlock token",
+                    "code": "AUTH_FAILED",
+                }
+            )
             return None
         # Look up username from DB
         db = get_user_session_factory(session.user_id)()
@@ -140,26 +142,32 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
                 connected_at=time.monotonic(),
             )
         except ValueError:
-            await ws.send_json({
-                "type": "error",
-                "message": "Invalid credentials",
-                "code": "AUTH_FAILED",
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Invalid credentials",
+                    "code": "AUTH_FAILED",
+                }
+            )
             return None
         except Exception:
             logger.exception("Unexpected error during password authentication")
-            await ws.send_json({
-                "type": "error",
-                "message": "Authentication error",
-                "code": "AUTH_FAILED",
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Authentication error",
+                    "code": "AUTH_FAILED",
+                }
+            )
             return None
 
-    await ws.send_json({
-        "type": "error",
-        "message": "Provide unlockToken or username/password",
-        "code": "AUTH_REQUIRED",
-    })
+    await ws.send_json(
+        {
+            "type": "error",
+            "message": "Provide unlockToken or username/password",
+            "code": "AUTH_REQUIRED",
+        }
+    )
     return None
 
 
@@ -172,10 +180,12 @@ async def ws_agent(websocket: WebSocket) -> None:
         return
 
     registry.add(conn)
-    await websocket.send_json({
-        "type": "auth_ok",
-        "user": {"id": conn.user_id, "username": conn.username},
-    })
+    await websocket.send_json(
+        {
+            "type": "auth_ok",
+            "user": {"id": conn.user_id, "username": conn.username},
+        }
+    )
 
     logger.info("WebSocket client connected: user_id=%d", conn.user_id)
 
@@ -199,11 +209,13 @@ async def ws_agent(websocket: WebSocket) -> None:
                 # Reject if a turn is already in progress — the reader
                 # loop must stay free to receive tool_result messages.
                 if turn_task is not None and not turn_task.done():
-                    await conn.websocket.send_json({
-                        "type": "error",
-                        "message": "Turn already in progress",
-                        "code": "BUSY",
-                    })
+                    await conn.websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Turn already in progress",
+                            "code": "BUSY",
+                        }
+                    )
                     continue
                 turn_task = asyncio.create_task(
                     _handle_user_message(conn, data),
@@ -259,11 +271,13 @@ async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
                 await conn.websocket.send_json(ws_msg)
     except Exception as exc:
         logger.exception("Agent error for user_id=%d", conn.user_id)
-        await conn.websocket.send_json({
-            "type": "error",
-            "message": str(exc),
-            "code": "AGENT_ERROR",
-        })
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": str(exc),
+                "code": "AGENT_ERROR",
+            }
+        )
     finally:
         db.close()
         conn._delegator = None

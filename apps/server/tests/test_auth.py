@@ -318,9 +318,11 @@ def test_create_ai_chat_hides_provider_error_details() -> None:
     async def _raise_provider_error(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise LLMInvocationError("provider leaked details")
 
-    with managed_test_client("anima-auth-test-") as client, patch(
-        "anima_server.services.creation_agent.handle_creation_turn", _raise_provider_error
-    ), patch.object(auth_routes.logger, "exception") as log_exception:
+    with (
+        managed_test_client("anima-auth-test-") as client,
+        patch("anima_server.services.creation_agent.handle_creation_turn", _raise_provider_error),
+        patch.object(auth_routes.logger, "exception") as log_exception,
+    ):
         response = client.post(
             "/api/auth/create-ai/chat",
             json={

@@ -7,8 +7,8 @@ Create Date: 2026-03-16
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260316_0003"
 down_revision = "20260316_0002"
@@ -49,37 +49,28 @@ def upgrade() -> None:
             name=op.f("fk_memory_item_tags_user_id_users"),
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint(
-            "item_id", "tag", name="uq_memory_item_tags_item_tag"),
+        sa.UniqueConstraint("item_id", "tag", name="uq_memory_item_tags_item_tag"),
     )
     op.create_index("ix_memory_item_tags_tag", "memory_item_tags", ["tag"])
-    op.create_index("ix_memory_item_tags_item_id",
-                    "memory_item_tags", ["item_id"])
-    op.create_index("ix_memory_item_tags_user_id",
-                    "memory_item_tags", ["user_id"])
+    op.create_index("ix_memory_item_tags_item_id", "memory_item_tags", ["item_id"])
+    op.create_index("ix_memory_item_tags_user_id", "memory_item_tags", ["user_id"])
 
     # --- memory_claims ---
     op.create_table(
         "memory_claims",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
-        sa.Column("subject_type", sa.String(24),
-                  nullable=False, server_default="user"),
+        sa.Column("subject_type", sa.String(24), nullable=False, server_default="user"),
         sa.Column("namespace", sa.String(24), nullable=False),
         sa.Column("slot", sa.String(64), nullable=False),
         sa.Column("value_text", sa.Text(), nullable=False),
         sa.Column("value_json", sa.JSON(), nullable=True),
-        sa.Column("polarity", sa.String(12), nullable=False,
-                  server_default="positive"),
-        sa.Column("confidence", sa.Float(), nullable=False,
-                  server_default=sa.text("0.8")),
-        sa.Column("status", sa.String(16), nullable=False,
-                  server_default="active"),
+        sa.Column("polarity", sa.String(12), nullable=False, server_default="positive"),
+        sa.Column("confidence", sa.Float(), nullable=False, server_default=sa.text("0.8")),
+        sa.Column("status", sa.String(16), nullable=False, server_default="active"),
         sa.Column("canonical_key", sa.String(255), nullable=False),
-        sa.Column("source_kind", sa.String(24),
-                  nullable=False, server_default="extraction"),
-        sa.Column("extractor", sa.String(32),
-                  nullable=False, server_default="regex"),
+        sa.Column("source_kind", sa.String(24), nullable=False, server_default="extraction"),
+        sa.Column("extractor", sa.String(32), nullable=False, server_default="regex"),
         sa.Column("memory_item_id", sa.Integer(), nullable=True),
         sa.Column("superseded_by_id", sa.Integer(), nullable=True),
         sa.Column(
@@ -142,8 +133,7 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
     )
-    op.create_index("ix_memory_claim_evidence_claim_id",
-                    "memory_claim_evidence", ["claim_id"])
+    op.create_index("ix_memory_claim_evidence_claim_id", "memory_claim_evidence", ["claim_id"])
 
 
 def downgrade() -> None:

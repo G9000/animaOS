@@ -81,7 +81,9 @@ async def send_message(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            async for event in stream_agent(payload.message, payload.userId, db, source=payload.source):
+            async for event in stream_agent(
+                payload.message, payload.userId, db, source=payload.source
+            ):
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client
                 yield _format_sse_event(event.event, event.data)

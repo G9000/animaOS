@@ -4,10 +4,11 @@ Revision ID: 20260319_0001
 Revises: 20260316_0003
 Create Date: 2026-03-19
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260319_0001"
 down_revision = "20260316_0003"
@@ -21,7 +22,9 @@ def upgrade():
         sa.Column("heat", sa.Float, nullable=False, server_default="0.0"),
     )
     op.create_index(
-        "ix_memory_items_user_heat", "memory_items", ["user_id", "heat"],
+        "ix_memory_items_user_heat",
+        "memory_items",
+        ["user_id", "heat"],
     )
 
 

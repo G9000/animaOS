@@ -4,10 +4,11 @@ Revision ID: 20260319_0004
 Revises: 20260319_0003
 Create Date: 2026-03-19
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260319_0004"
 down_revision = "20260319_0003"
@@ -39,7 +40,9 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="CASCADE",
+            ["user_id"],
+            ["users.id"],
+            ondelete="CASCADE",
         ),
     )
     op.create_index(

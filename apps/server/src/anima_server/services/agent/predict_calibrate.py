@@ -85,8 +85,6 @@ _MIN_WORD_COUNT = 3
 # Use PromptLoader.prediction() and PromptLoader.delta_extraction() instead.
 
 
-
-
 # ---------------------------------------------------------------------------
 # ID hallucination protection (F3.11)
 # ---------------------------------------------------------------------------
@@ -187,7 +185,6 @@ async def predict_episode_knowledge(
     """
     from anima_server.services.agent.llm import create_llm
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
     from anima_server.services.agent.prompt_loader import PromptLoader
 
     if prompt_loader is None:
@@ -231,7 +228,6 @@ async def extract_knowledge_delta(
     """
     from anima_server.services.agent.llm import create_llm
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
     from anima_server.services.agent.prompt_loader import PromptLoader
 
     if prompt_loader is None:

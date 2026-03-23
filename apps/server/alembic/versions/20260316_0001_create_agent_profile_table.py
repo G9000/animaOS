@@ -7,8 +7,8 @@ Create Date: 2026-03-16
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260316_0001"
 down_revision = "20260314_0006"
@@ -21,12 +21,11 @@ def upgrade() -> None:
         "agent_profile",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
-        sa.Column("agent_name", sa.String(length=50),
-                  nullable=False, server_default="Anima"),
-        sa.Column("creator_name", sa.String(length=100),
-                  nullable=False, server_default=""),
-        sa.Column("relationship", sa.String(length=100),
-                  nullable=False, server_default="companion"),
+        sa.Column("agent_name", sa.String(length=50), nullable=False, server_default="Anima"),
+        sa.Column("creator_name", sa.String(length=100), nullable=False, server_default=""),
+        sa.Column(
+            "relationship", sa.String(length=100), nullable=False, server_default="companion"
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

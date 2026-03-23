@@ -461,7 +461,11 @@ def run_query(
     _validate_query_sql(sql)
     result = _execute_read_only_query(db, sql)
     columns = list(result.keys()) if result.returns_rows else []
-    rows = [dict(zip(columns, row, strict=False)) for row in result.fetchall()] if result.returns_rows else []
+    rows = (
+        [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+        if result.returns_rows
+        else []
+    )
 
     # Best-effort extract table name from simple "SELECT ... FROM table" queries
     # so we can reconstruct AAD for decryption.

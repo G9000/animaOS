@@ -4,10 +4,11 @@ Revision ID: 20260319_0003
 Revises: 20260319_0002
 Create Date: 2026-03-19
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260319_0003"
 down_revision = "20260319_0002"
@@ -34,13 +35,9 @@ def upgrade():
         sa.Column("trigger", sa.String(32), nullable=False),
         sa.Column("scope", sa.String(255), nullable=False),
         sa.Column("items_forgotten", sa.Integer, nullable=False, server_default="0"),
-        sa.Column(
-            "derived_refs_affected", sa.Integer, nullable=False, server_default="0"
-        ),
+        sa.Column("derived_refs_affected", sa.Integer, nullable=False, server_default="0"),
     )
-    op.create_index(
-        "ix_forget_audit_log_user_id", "forget_audit_log", ["user_id"]
-    )
+    op.create_index("ix_forget_audit_log_user_id", "forget_audit_log", ["user_id"])
 
     op.add_column(
         "memory_episodes",

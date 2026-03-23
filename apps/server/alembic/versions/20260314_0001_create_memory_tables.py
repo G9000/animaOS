@@ -7,8 +7,8 @@ Create Date: 2026-03-14
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260314_0001"
 down_revision = "623075d8d13e"
@@ -42,9 +42,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(
-            ["superseded_by"], ["memory_items.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["superseded_by"], ["memory_items.id"], ondelete="SET NULL"),
     )
 
     op.create_table(
@@ -67,9 +65,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(
-            ["thread_id"], ["agent_threads.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["thread_id"], ["agent_threads.id"], ondelete="SET NULL"),
     )
 
     op.create_table(

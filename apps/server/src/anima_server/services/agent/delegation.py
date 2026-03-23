@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ class ToolDelegator:
 
         try:
             return await asyncio.wait_for(future, timeout=self._timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(tool_call_id, None)
             raise DelegationTimeout(
                 f"Tool {tool_name} (call_id={tool_call_id}) timed out after {self._timeout}s"
@@ -99,9 +100,7 @@ class ToolDelegator:
         """
         future = self._pending.pop(tool_call_id, None)
         if future is None:
-            logger.warning(
-                "Received tool_result for unknown call_id: %s", tool_call_id
-            )
+            logger.warning("Received tool_result for unknown call_id: %s", tool_call_id)
             return
         if future.done():
             return
