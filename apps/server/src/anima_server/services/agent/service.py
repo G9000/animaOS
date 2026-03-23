@@ -710,8 +710,13 @@ async def _invoke_turn_runtime(
         # Set per-turn delegation on the executor so delegated tools
         # are forwarded to the connected client instead of running
         # server-side.
+        prepared_action_schemas: list[dict[str, Any]] = []
         if tool_delegate:
             runner._tool_executor.set_delegation(tool_delegate, delegated_tool_names)
+            if extra_tool_schemas:
+                from anima_server.services.agent.tools import prepare_action_tool_schemas
+
+                prepared_action_schemas = prepare_action_tool_schemas(extra_tool_schemas)
         try:
             return await runner.invoke(
                 user_message,
@@ -722,6 +727,7 @@ async def _invoke_turn_runtime(
                 event_callback=event_callback,
                 cancel_event=cancel_event,
                 memory_refresher=_refresh_memory,
+                extra_tool_schemas=prepared_action_schemas,
             )
         except StepFailedError as exc:
             if not _should_retry_after_compaction(exc):

@@ -183,6 +183,7 @@ class AgentRuntime:
         dry_run: bool = False,
         cancel_event: asyncio.Event | None = None,
         memory_refresher: MemoryRefresher | None = None,
+        extra_tool_schemas: Sequence[dict[str, Any]] = (),
     ) -> AgentResult | DryRunResult:
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
             memory_blocks=memory_blocks,
@@ -242,6 +243,14 @@ class AgentRuntime:
 
             request_messages = _snapshot_messages(messages)
             allowed_set = rules_solver.get_allowed_tools(self._tool_names)
+            # Action tools from connected clients bypass the rules solver
+            # — they are always allowed when registered.
+            extra_tool_names = frozenset(
+                s.get("function", {}).get("name", "")
+                for s in extra_tool_schemas
+                if s.get("function", {}).get("name")
+            )
+            allowed_set = allowed_set | extra_tool_names
             # Exclude a tool only if it failed twice consecutively —
             # give the model one retry chance (matching the sandwich
             # message guidance) before blocking it.
@@ -276,6 +285,7 @@ class AgentRuntime:
                     force_tool_call=force_tool_call,
                     event_callback=event_callback,
                     cancel_event=cancel_event,
+                    extra_tool_schemas=extra_tool_schemas,
                 )
             except _CancelledDuringStream:
                 stop_reason = StopReason.CANCELLED
@@ -887,12 +897,25 @@ class AgentRuntime:
         force_tool_call: bool,
         event_callback: StreamEventCallback | None = None,
         cancel_event: asyncio.Event | None = None,
+        extra_tool_schemas: Sequence[dict[str, Any]] = (),
     ) -> tuple[StepExecutionResult, bool, StepContext]:
         ctx = StepContext(
             step_index=step_index,
             progression=StepProgression.START,
             start_time=time.monotonic(),
         )
+        # Server-side tools (LangChain tool objects)
+        server_tools: list[Any] = [
+            self._tool_registry[name]
+            for name in allowed_tool_names
+            if name in self._tool_registry
+        ]
+        # Client-side action tools (OpenAI function-call dicts) — only
+        # include those that are in the allowed set for this step.
+        action_tools: list[dict[str, Any]] = [
+            s for s in extra_tool_schemas
+            if s.get("function", {}).get("name") in allowed_tool_names
+        ]
         request = LLMRequest(
             messages=tuple(messages),
             user_id=user_id,
@@ -900,11 +923,7 @@ class AgentRuntime:
             step_index=step_index,
             max_steps=self._max_steps,
             system_prompt=system_prompt,
-            available_tools=tuple(
-                self._tool_registry[name]
-                for name in allowed_tool_names
-                if name in self._tool_registry
-            ),
+            available_tools=tuple(server_tools) + tuple(action_tools),
             force_tool_call=force_tool_call,
         )
         streamed_assistant_text = False

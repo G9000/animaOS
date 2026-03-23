@@ -179,6 +179,8 @@ async def ws_agent(websocket: WebSocket) -> None:
 
     logger.info("WebSocket client connected: user_id=%d", conn.user_id)
 
+    turn_task: asyncio.Task[None] | None = None
+
     try:
         while True:
             data = await websocket.receive_json()
@@ -192,7 +194,18 @@ async def ws_agent(websocket: WebSocket) -> None:
                 )
 
             elif msg_type == "user_message":
-                await _handle_user_message(conn, data)
+                # Reject if a turn is already in progress — the reader
+                # loop must stay free to receive tool_result messages.
+                if turn_task is not None and not turn_task.done():
+                    await conn.websocket.send_json({
+                        "type": "error",
+                        "message": "Turn already in progress",
+                        "code": "BUSY",
+                    })
+                    continue
+                turn_task = asyncio.create_task(
+                    _handle_user_message(conn, data),
+                )
 
             elif msg_type == "tool_result":
                 _handle_tool_result(conn, data)
@@ -206,6 +219,8 @@ async def ws_agent(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected: user_id=%d", conn.user_id)
     finally:
+        if turn_task is not None and not turn_task.done():
+            turn_task.cancel()
         if conn._delegator:
             conn._delegator.cancel_all("Client disconnected")
         registry.remove(conn)

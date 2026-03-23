@@ -83,21 +83,15 @@ class ToolExecutor:
         *,
         is_terminal: bool = False,
     ) -> ToolExecutionResult:
-        tool = self._tools.get(tool_call.name)
-        if tool is None:
-            return ToolExecutionResult(
-                call_id=tool_call.id,
-                name=tool_call.name,
-                output=f"Unknown tool: {tool_call.name}",
-                is_error=True,
-            )
-
         # Strip injected kwargs early — before any error path can
         # echo them back in raw_arguments or error messages.
         thinking = unpack_inner_thoughts_from_kwargs(tool_call)
         heartbeat = unpack_heartbeat_from_kwargs(tool_call)
 
-        # Check if this tool should be delegated to a connected client
+        # Check if this tool should be delegated to a connected client.
+        # This MUST happen before the local tool lookup so that action
+        # tools (bash, read_file, etc.) which aren't in self._tools
+        # are forwarded to the client instead of erroring.
         if self._tool_delegate and tool_call.name in self._delegated_tool_names:
             clean_args = dict(tool_call.arguments) if tool_call.arguments else {}
             try:
@@ -124,6 +118,15 @@ class ToolExecutor:
                     inner_thinking=thinking,
                     heartbeat_requested=heartbeat,
                 )
+
+        tool = self._tools.get(tool_call.name)
+        if tool is None:
+            return ToolExecutionResult(
+                call_id=tool_call.id,
+                name=tool_call.name,
+                output=f"Unknown tool: {tool_call.name}",
+                is_error=True,
+            )
 
         if tool_call.parse_error is not None:
             # Redact thinking from raw_arguments string (the dict pop
