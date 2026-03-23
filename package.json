@@ -23,6 +23,8 @@
     "test:server": "node ./scripts/run-uv.cjs run --project apps/server pytest apps/server/tests",
     "test:anima-mod": "cd apps/anima-mod && bun test",
     "start:anima-mod": "cd apps/anima-mod && bun run start",
+    "dev:animus": "cd apps/animus && bun run dev",
+    "test:animus": "cd apps/animus && bun test",
     "python:sync": "uv sync --all-packages",
     "python:lock": "uv lock",
     "db:server:up": "docker compose up -d postgres",
