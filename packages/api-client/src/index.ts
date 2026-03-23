@@ -611,6 +611,7 @@ export function createApiClient(options: ApiClientOptions) {
         personaTemplate: PersonaTemplate = "default",
         agentName: string = "Anima",
         userDirective: string = "",
+        relationship: string = "companion",
       ) =>
         request<AuthResponse>("/auth/register", {
           method: "POST",
@@ -621,6 +622,7 @@ export function createApiClient(options: ApiClientOptions) {
             personaTemplate,
             agentName,
             userDirective,
+            relationship,
           },
         }),
       createAiChat: (

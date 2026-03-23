@@ -4,7 +4,7 @@ Mixed monorepo for ANIMA:
 
 - `apps/server`: Python + FastAPI backend managed with `uv`
 - `apps/desktop`: Tauri + React desktop client orchestrated via `nx`
-- `apps/api`: legacy Bun + Hono backend kept during migration
+- `apps/anima-mod`: Elysia + Bun module system for external integrations (Telegram, Discord, etc.)
 - `docs/`: project docs
 - `memory/`: local user memory data (git-ignored)
 
@@ -33,7 +33,6 @@ Run app-specific dev tasks:
 ```bash
 bun run dev:server
 bun run dev:desktop
-bun run dev:api:legacy
 ```
 
 ## Common Commands
@@ -52,19 +51,14 @@ From repo root unless noted:
 - `bun run db:server:heads`: show Alembic heads for `apps/server`
 - `bun run db:server:current`: show current Alembic revision for `apps/server`
 - `bun run db:server:upgrade`: apply server migrations to head
-- `bun run db:push`: apply legacy API DB migrations
-- `bun run db:studio`: open legacy Drizzle Studio
 
 ## Repository Notes
 
 - `memory/` is intentionally local-only and fully git-ignored.
-- The Python backend migration starts in `apps/server`; `apps/api` remains available until feature parity is reached.
 - The Python backend defaults to SQLite at `.anima/dev/anima.db`. Set
   `ANIMA_DATABASE_URL` to use Postgres instead.
 - Auth is local-owner bootstrap (no mandatory email identity flow).
 - User backup/sync uses encrypted vault export/import with a user passphrase (argon2id + AES-256-GCM).
-- Keep prompts in `apps/api/prompts/*.md` and load via `renderPromptTemplate(...)`.
-- Use `apps/api/src/lib/task-date.ts` as the shared due-date logic source.
 
 ## Docs
 

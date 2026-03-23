@@ -37,17 +37,6 @@ import { API_BASE } from "./runtime";
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
 let unlockTokenCache: string | null = null;
 
-/** Sidecar nonce discovered from the /health endpoint at boot. */
-let sidecarNonce: string | null = null;
-
-export function getSidecarNonce(): string | null {
-  return sidecarNonce;
-}
-
-export function setSidecarNonce(nonce: string): void {
-  sidecarNonce = nonce;
-}
-
 export function getUnlockToken(): string | null {
   return unlockTokenCache;
 }
@@ -69,7 +58,6 @@ export function clearUnlockToken(): void {
 const baseApi = createApiClient({
   baseUrl: API_BASE,
   getUnlockToken,
-  getNonce: getSidecarNonce,
 });
 
 export const api: ApiClient & {

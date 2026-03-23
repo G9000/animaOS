@@ -25,8 +25,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
   const [dockVisible, setDockVisible] = useState(true);
   const [pinned, setPinned] = useState(() => {
-    try { return localStorage.getItem(DOCK_STORAGE_KEY) === "true"; }
-    catch { return false; }
+    try {
+      return localStorage.getItem(DOCK_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
   });
   const [showUser, setShowUser] = useState(false);
   const [theme, setTheme] = useState<Theme>(getTheme);
@@ -69,7 +72,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const scheduleDockHide = useCallback(() => {
     if (pinned) return;
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setDockVisible(false), DOCK_HIDE_DELAY);
+    hideTimer.current = setTimeout(
+      () => setDockVisible(false),
+      DOCK_HIDE_DELAY,
+    );
   }, [pinned]);
 
   // Auto-hide on route change (unless pinned)
@@ -86,7 +92,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative h-screen bg-bg text-text overflow-hidden">
-      {/* Main — full width */}
       <main className="h-full overflow-hidden">{children}</main>
 
       {/* Bottom trigger zone — invisible, activates dock on hover */}
@@ -165,7 +170,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 onMouseLeave={() => setShowUser(false)}
               >
                 <button
-                  onClick={() => { navigate("/profile"); setShowUser(false); }}
+                  onClick={() => {
+                    navigate("/profile");
+                    setShowUser(false);
+                  }}
                   className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-text-muted hover:text-text hover:bg-bg-input/50 tracking-wider transition-colors"
                 >
                   PROFILE
@@ -188,7 +196,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {/* Theme toggle */}
           <button
             onClick={() => setTheme(toggleTheme())}
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={
+              theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+            }
             className="flex items-center justify-center w-7 h-9 font-mono text-[11px] text-text-muted/50 hover:text-text-muted transition-colors"
           >
             {theme === "dark" ? "\u2600" : "\u263E"}
