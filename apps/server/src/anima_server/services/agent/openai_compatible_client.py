@@ -176,7 +176,11 @@ class OpenAICompatibleChatClient:
         if self._max_tokens is not None:
             payload["max_tokens"] = self._max_tokens
         if self._tools:
-            payload["tools"] = [_serialize_tool(tool) for tool in self._tools]
+            payload["tools"] = [
+                tool if isinstance(tool, dict) and "type" in tool and "function" in tool
+                else _serialize_tool(tool)
+                for tool in self._tools
+            ]
         if self._tool_choice is not None:
             payload["tool_choice"] = self._tool_choice
         if self._temperature is not None:
@@ -429,6 +433,12 @@ def _serialize_tool(tool: Any) -> dict[str, object]:
 
 
 def _tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        # Already-serialized OpenAI format: {"type": "function", "function": {"name": ...}}
+        fn = tool.get("function", {})
+        if isinstance(fn, dict):
+            return str(fn.get("name", "")).strip()
+        return str(tool.get("name", "")).strip()
     return (getattr(tool, "name", "") or getattr(tool, "__name__", "")).strip()
 
 
