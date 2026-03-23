@@ -4,6 +4,7 @@ import type { StateService } from "./state-service.js";
 import type { EventService } from "./event-service.js";
 import type { Mod, ModConfig } from "../core/types.js";
 import { broadcastModEvent } from "./ws.js";
+import { installMod, uninstallMod } from "./installer.js";
 
 interface LoadedMod {
   config: ModConfig;
@@ -111,6 +112,30 @@ export function createManagementRouter(deps: ManagementDeps): Elysia {
       }
 
       return { status: "updated" };
+    })
+
+    // Install mod from GitHub
+    .post("/api/mods/install", async ({ body }) => {
+      const { source } = body as { source: string };
+      if (!source) throw new Error("Missing 'source' field");
+      const result = await installMod(source);
+      return result;
+    })
+
+    // Uninstall mod
+    .post("/api/mods/:id/uninstall", async ({ params }) => {
+      const loaded = mods.get(params.id);
+      if (!loaded) throw new Error(`Module ${params.id} not found`);
+
+      // Stop if running
+      if (deps.onDisable) {
+        try { await deps.onDisable(params.id); } catch { /* may not be running */ }
+      }
+
+      await uninstallMod(params.id, loaded.config.path);
+      mods.delete(params.id);
+
+      return { status: "uninstalled" };
     })
 
     // Health check
