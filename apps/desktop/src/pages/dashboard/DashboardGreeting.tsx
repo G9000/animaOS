@@ -1,4 +1,5 @@
-import type { Greeting } from "../../lib/api";
+import type { Greeting } from "@anima/api-client";
+import { useAnimaSymbol } from "@anima/standard-templates";
 
 interface DashboardGreetingProps {
   userName?: string;
@@ -7,34 +8,54 @@ interface DashboardGreetingProps {
   brief: Greeting | null;
 }
 
+function getSymbolSpeed(briefLoading: boolean): number {
+  return briefLoading ? 2 : 0.6;
+}
+
 export function DashboardGreeting({
   userName,
   tod,
   briefLoading,
   brief,
 }: DashboardGreetingProps) {
+  const symbol = useAnimaSymbol(getSymbolSpeed(briefLoading));
+  const firstName = userName?.split(" ")[0];
+
+  const fallback = `Good ${tod}${firstName ? `, ${firstName}` : ""}`;
+
   return (
-    <div className="text-center space-y-4 pt-6 pb-2">
-      <div className="space-y-3">
-        <p className="font-mono text-[10px] text-text-muted/30 tracking-[0.4em]">
-          GOOD {tod.toUpperCase()}
-          {userName ? ` // ${userName.split(" ")[0].toUpperCase()}` : ""}
-        </p>
+    <div className="flex flex-col items-center">
+      {/* Living symbol */}
+      <div className="relative mb-8">
+        <pre className="text-[12px] leading-[12px] whitespace-pre text-foreground/30 select-none scale-[0.6] sm:scale-100 origin-center">
+          {symbol.base}
+        </pre>
+        {/* Glow */}
+        <div
+          className="absolute inset-0 pointer-events-none -z-10 blur-xl"
+          style={{
+            background: "radial-gradient(ellipse at center, var(--color-primary)/0.08, transparent 60%)",
+          }}
+        />
+      </div>
+
+      {/* Greeting */}
+      <div className="min-h-[3rem] flex items-center justify-center">
         {briefLoading && (
-          <div className="flex justify-center gap-2 py-2">
-            <span className="w-6 h-px bg-text-muted/20 animate-pulse" />
-            <span className="w-6 h-px bg-text-muted/20 animate-pulse [animation-delay:150ms]" />
-            <span className="w-6 h-px bg-text-muted/20 animate-pulse [animation-delay:300ms]" />
+          <div className="flex gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-primary/20 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-primary/20 animate-pulse [animation-delay:150ms]" />
+            <span className="w-1.5 h-1.5 rounded-full bg-primary/20 animate-pulse [animation-delay:300ms]" />
           </div>
         )}
         {brief && !briefLoading && (
-          <p className="text-[14px] text-text/80 leading-relaxed max-w-md mx-auto">
+          <p className="text-xl text-foreground/80 font-sans text-center leading-relaxed max-w-md animate-fade-in">
             {brief.message}
           </p>
         )}
         {!brief && !briefLoading && (
-          <p className="text-[14px] text-text-muted/40">
-            What's on your mind?
+          <p className="text-xl text-foreground/50 font-sans animate-fade-in">
+            {fallback}
           </p>
         )}
       </div>

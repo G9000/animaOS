@@ -1,9 +1,9 @@
 const STATUS_STYLES: Record<string, string> = {
   running: "text-success",
   connected: "text-success",
-  stopped: "text-text-muted/40",
-  disabled: "text-text-muted/40",
-  error: "text-danger",
+  stopped: "text-muted-foreground/40",
+  disabled: "text-muted-foreground/40",
+  error: "text-destructive",
 };
 
 export default function StatusBadge({ status }: { status: string }) {

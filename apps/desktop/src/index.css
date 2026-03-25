@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "@anima/standard-templates/tokens.css";
+
 @import "@fontsource/space-grotesk/400.css";
 @import "@fontsource/space-grotesk/500.css";
 @import "@fontsource/space-grotesk/700.css";
@@ -6,7 +8,7 @@
 @import "@fontsource/space-mono/700.css";
 @import "@fontsource/playfair-display/400.css";
 @import "@fontsource/playfair-display/400-italic.css";
-@source "../../../packages/ui/src";
+@source "../../../packages/standard-templates/src";
 @plugin "@tailwindcss/typography";
 
 @theme {
@@ -48,6 +50,16 @@ html[data-theme="light"] {
   --color-warning: #7a5a18;
   --color-accent: #267080;
 }
+
+/* ── Type scale ── */
+.text-micro   { font-size: 0.5rem; }
+.text-label   { font-size: 0.5625rem; }
+.text-caption { font-size: 0.625rem; }
+.text-detail  { font-size: 0.6875rem; }
+.text-body    { font-size: 0.75rem; }
+.text-ui      { font-size: 0.875rem; }
+.text-title   { font-size: 1rem; }
+
 
 body {
   @apply bg-bg text-text font-sans antialiased min-h-screen leading-relaxed;

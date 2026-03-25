@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 const isTauriDev = Boolean(host);
+// Use port 1420 for Tauri, default 5173 for standalone web dev
 const port = isTauriDev ? 1420 : 5173;
 
 // https://vite.dev/config/

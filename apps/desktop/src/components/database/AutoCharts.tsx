@@ -140,7 +140,7 @@ export function AutoCharts({ columns, rows }: AutoChartsProps) {
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text transition-colors"
+        className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <Icons.ChartBar />
         Charts
@@ -148,11 +148,11 @@ export function AutoCharts({ columns, rows }: AutoChartsProps) {
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-[800px] max-h-[80vh] bg-bg-card border border-border rounded-lg flex flex-col">
+          <div className="w-[800px] max-h-[80vh] bg-card border border-border rounded-lg flex flex-col">
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">
               <h3 className="text-sm font-medium">Auto Charts</h3>
-              <button onClick={() => setIsOpen(false)} className="p-1 text-text-muted/50 hover:text-text">
+              <button onClick={() => setIsOpen(false)} className="p-1 text-muted-foreground/50 hover:text-foreground">
                 <Icons.X />
               </button>
             </div>
@@ -162,7 +162,7 @@ export function AutoCharts({ columns, rows }: AutoChartsProps) {
               <select
                 value={selectedColumn || ""}
                 onChange={(e) => setSelectedColumn(e.target.value || null)}
-                className="bg-bg-input border border-border rounded px-3 py-1.5 text-sm"
+                className="bg-input border border-border rounded px-3 py-1.5 text-sm"
               >
                 <option value="">Select column...</option>
                 {numericColumns.length > 0 && (
@@ -197,7 +197,7 @@ export function AutoCharts({ columns, rows }: AutoChartsProps) {
                       className={`px-2 py-1 text-xs rounded capitalize ${
                         chartType === type
                           ? "bg-primary/20 text-primary"
-                          : "bg-bg-input text-text-muted hover:text-text"
+                          : "bg-input text-muted-foreground hover:text-foreground"
                       }`}
                     >
                       {type}
@@ -210,7 +210,7 @@ export function AutoCharts({ columns, rows }: AutoChartsProps) {
             {/* Chart */}
             <div className="flex-1 p-4 overflow-auto">
               {!chartData ? (
-                <div className="h-64 flex items-center justify-center text-text-muted/50">
+                <div className="h-64 flex items-center justify-center text-muted-foreground/50">
                   Select a column to visualize
                 </div>
               ) : (
@@ -252,10 +252,10 @@ function BarChart({ data, maxValue }: { data: ChartData; maxValue: number }) {
         const percentage = maxValue > 0 ? (value / maxValue) * 100 : 0;
         return (
           <div key={i} className="flex items-center gap-2">
-            <div className="w-24 text-xs text-text-muted truncate" title={data.labels[i]}>
+            <div className="w-24 text-xs text-muted-foreground truncate" title={data.labels[i]}>
               {data.labels[i]}
             </div>
-            <div className="flex-1 h-5 bg-bg-input rounded overflow-hidden">
+            <div className="flex-1 h-5 bg-input rounded overflow-hidden">
               <div
                 className="h-full bg-primary/60 rounded transition-all duration-300"
                 style={{ width: `${percentage}%` }}
@@ -325,7 +325,7 @@ function PieChart({ data }: { data: ChartData }) {
             <span className="truncate max-w-[150px]" title={label}>
               {label}
             </span>
-            <span className="text-text-muted">
+            <span className="text-muted-foreground">
               {((data.values[i] / total) * 100).toFixed(1)}%
             </span>
           </div>
@@ -337,8 +337,8 @@ function PieChart({ data }: { data: ChartData }) {
 
 function StatCard({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="p-3 bg-bg-input rounded border border-border/50 text-center">
-      <div className="text-[10px] text-text-muted uppercase">{label}</div>
+    <div className="p-3 bg-input rounded border border-border/50 text-center">
+      <div className="text-[10px] text-muted-foreground uppercase">{label}</div>
       <div className="text-lg font-semibold mt-1">{value}</div>
     </div>
   );

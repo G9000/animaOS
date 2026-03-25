@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
-import { api, type TaskItem } from "../lib/api";
+import type { TaskItem } from "@anima/api-client";
+import { api } from "../lib/api";
 
 function formatDueDate(iso: string): string {
   const due = new Date(iso);
@@ -52,7 +53,7 @@ const PRIORITY_LABELS: Record<number, string> = {
 const PRIORITY_DOTS: Record<number, string> = {
   0: "",
   1: "bg-warning",
-  2: "bg-danger",
+  2: "bg-destructive",
 };
 
 type ViewFilter = "open" | "done" | "all";
@@ -193,11 +194,11 @@ export default function Tasks() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="font-mono text-sm tracking-wider text-text">TASKS</h1>
-            <p className="font-mono text-[9px] text-text-muted/40 mt-0.5 tracking-wider">
+            <h1 className="font-mono text-sm tracking-wider text-foreground">TASKS</h1>
+            <p className="font-mono text-[9px] text-muted-foreground/40 mt-0.5 tracking-wider">
               {openCount} OPEN
               {overdueCount > 0 && (
-                <span className="text-danger ml-1.5">
+                <span className="text-destructive ml-1.5">
                   | {overdueCount} OVERDUE
                 </span>
               )}
@@ -212,7 +213,7 @@ export default function Tasks() {
               if (!showCreate)
                 setTimeout(() => createInputRef.current?.focus(), 50);
             }}
-            className="font-mono px-3 py-1.5 text-[9px] tracking-wider border border-border text-text-muted hover:text-primary hover:border-primary/30 transition-colors"
+            className="font-mono px-3 py-1.5 text-[9px] tracking-wider border border-border text-muted-foreground hover:text-primary hover:border-primary/30 transition-colors"
           >
             {showCreate ? "CANCEL" : "+ NEW"}
           </button>
@@ -222,7 +223,7 @@ export default function Tasks() {
         {showCreate && (
           <form
             onSubmit={handleCreate}
-            className="bg-bg-card border border-border p-4 space-y-3"
+            className="bg-card border border-border p-4 space-y-3"
           >
             <input
               ref={createInputRef}
@@ -230,11 +231,11 @@ export default function Tasks() {
               value={newText}
               onChange={(e) => setNewText(e.target.value)}
               placeholder='E.g. "Buy groceries tomorrow at 5pm"'
-              className="w-full bg-transparent border border-border px-3 py-2 text-sm text-text placeholder:text-text-muted/20 outline-none focus:border-text-muted/30 transition-colors"
+              className="w-full bg-transparent border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/20 outline-none focus:border-text-muted/30 transition-colors"
             />
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[9px] text-text-muted/40 tracking-wider">
+                <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
                   PRI:
                 </span>
                 {[0, 1, 2].map((p) => (
@@ -245,11 +246,11 @@ export default function Tasks() {
                     className={`font-mono px-2 py-0.5 text-[9px] tracking-wider transition-colors ${
                       newPriority === p
                         ? p === 2
-                          ? "bg-danger/10 text-danger border border-danger/30"
+                          ? "bg-destructive/10 text-destructive border border-destructive/30"
                           : p === 1
                             ? "bg-warning/10 text-warning border border-warning/30"
-                            : "bg-bg-input text-text border border-border"
-                        : "text-text-muted/30 hover:text-text-muted/60 border border-transparent"
+                            : "bg-input text-foreground border border-border"
+                        : "text-muted-foreground/30 hover:text-muted-foreground/60 border border-transparent"
                     }`}
                   >
                     {PRIORITY_LABELS[p]}
@@ -265,7 +266,7 @@ export default function Tasks() {
                 ADD TASK
               </button>
             </div>
-            <p className="font-mono text-[8px] text-text-muted/20 tracking-wider">
+            <p className="font-mono text-[8px] text-muted-foreground/20 tracking-wider">
               TIP: INCLUDE TIME LIKE "IN 30 MIN", "AT 3PM", "NEXT MONDAY" — REMINDERS AUTO-SET
             </p>
           </form>
@@ -279,8 +280,8 @@ export default function Tasks() {
               onClick={() => setFilter(f)}
               className={`font-mono px-3 py-1.5 text-[9px] tracking-wider transition-colors border-b-2 -mb-px ${
                 filter === f
-                  ? "border-primary text-text"
-                  : "border-transparent text-text-muted/30 hover:text-text-muted/60"
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground/30 hover:text-muted-foreground/60"
               }`}
             >
               {f.toUpperCase()}
@@ -293,13 +294,13 @@ export default function Tasks() {
         {/* Task list */}
         {loading ? (
           <div className="flex justify-center py-12">
-            <span className="font-mono text-[10px] text-text-muted/30 animate-pulse tracking-wider">
+            <span className="font-mono text-[10px] text-muted-foreground/30 animate-pulse tracking-wider">
               LOADING...
             </span>
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
-            <p className="font-mono text-[10px] text-text-muted/30 tracking-wider">
+            <p className="font-mono text-[10px] text-muted-foreground/30 tracking-wider">
               {filter === "open"
                 ? "NO OPEN TASKS"
                 : filter === "done"
@@ -312,9 +313,9 @@ export default function Tasks() {
             {filtered.map((task) => (
               <div
                 key={task.id}
-                className={`group flex items-start gap-3 px-4 py-3 hover:bg-bg-card/60 transition-colors ${
+                className={`group flex items-start gap-3 px-4 py-3 hover:bg-card/60 transition-colors ${
                   editingId === task.id
-                    ? "bg-bg-card border border-border"
+                    ? "bg-card border border-border"
                     : ""
                 }`}
               >
@@ -341,11 +342,11 @@ export default function Tasks() {
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
                       onKeyDown={handleEditKeyDown}
-                      className="w-full bg-transparent border border-border px-3 py-1.5 text-sm text-text outline-none focus:border-text-muted/30"
+                      className="w-full bg-transparent border border-border px-3 py-1.5 text-sm text-foreground outline-none focus:border-text-muted/30"
                     />
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-[8px] text-text-muted/30 tracking-wider">
+                        <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
                           PRI:
                         </span>
                         {[0, 1, 2].map((p) => (
@@ -356,11 +357,11 @@ export default function Tasks() {
                             className={`font-mono px-1.5 py-0.5 text-[8px] tracking-wider transition-colors ${
                               editPriority === p
                                 ? p === 2
-                                  ? "bg-danger/10 text-danger"
+                                  ? "bg-destructive/10 text-destructive"
                                   : p === 1
                                     ? "bg-warning/10 text-warning"
-                                    : "bg-bg-input text-text"
-                                : "text-text-muted/20 hover:text-text-muted/40"
+                                    : "bg-input text-foreground"
+                                : "text-muted-foreground/20 hover:text-muted-foreground/40"
                             }`}
                           >
                             {PRIORITY_LABELS[p]}
@@ -368,7 +369,7 @@ export default function Tasks() {
                         ))}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-[8px] text-text-muted/30 tracking-wider">
+                        <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
                           DUE:
                         </span>
                         <input
@@ -377,7 +378,7 @@ export default function Tasks() {
                           onChange={(e) => setEditDueDate(e.target.value)}
                           onKeyDown={handleEditKeyDown}
                           placeholder="e.g. tomorrow at 3pm"
-                          className="bg-transparent border border-border px-2 py-0.5 font-mono text-[10px] text-text placeholder:text-text-muted/20 outline-none w-44 focus:border-text-muted/30"
+                          className="bg-transparent border border-border px-2 py-0.5 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/20 outline-none w-44 focus:border-text-muted/30"
                         />
                       </div>
                     </div>
@@ -390,14 +391,14 @@ export default function Tasks() {
                       </button>
                       <button
                         onClick={cancelEdit}
-                        className="font-mono px-3 py-1 text-[9px] tracking-wider text-text-muted/40 hover:text-text-muted transition-colors"
+                        className="font-mono px-3 py-1 text-[9px] tracking-wider text-muted-foreground/40 hover:text-muted-foreground transition-colors"
                       >
                         CANCEL
                       </button>
                       {editDueDate && (
                         <button
                           onClick={() => setEditDueDate("")}
-                          className="font-mono px-2 py-1 text-[8px] tracking-wider text-text-muted/20 hover:text-danger transition-colors"
+                          className="font-mono px-2 py-1 text-[8px] tracking-wider text-muted-foreground/20 hover:text-destructive transition-colors"
                         >
                           CLEAR DUE
                         </button>
@@ -414,7 +415,7 @@ export default function Tasks() {
                         />
                       )}
                       <span
-                        className={`text-sm ${task.done ? "line-through text-text-muted/30" : "text-text/80"}`}
+                        className={`text-sm ${task.done ? "line-through text-muted-foreground/30" : "text-foreground/80"}`}
                       >
                         {task.text}
                       </span>
@@ -423,10 +424,10 @@ export default function Tasks() {
                       <p
                         className={`font-mono text-[9px] mt-0.5 tracking-wider ${
                           task.done
-                            ? "text-text-muted/20"
+                            ? "text-muted-foreground/20"
                             : isOverdue(task.dueDate)
-                              ? "text-danger/70"
-                              : "text-text-muted/30"
+                              ? "text-destructive/70"
+                              : "text-muted-foreground/30"
                         }`}
                       >
                         {task.done
@@ -440,7 +441,7 @@ export default function Tasks() {
                       </p>
                     )}
                     {task.done && task.completedAt && (
-                      <p className="font-mono text-[8px] text-text-muted/15 mt-0.5 tracking-wider">
+                      <p className="font-mono text-[8px] text-muted-foreground/15 mt-0.5 tracking-wider">
                         COMPLETED{" "}
                         {new Date(task.completedAt).toLocaleDateString(
                           "en-US",
@@ -457,7 +458,7 @@ export default function Tasks() {
                     {!task.done && (
                       <button
                         onClick={() => startEdit(task)}
-                        className="font-mono px-1.5 py-0.5 text-[8px] tracking-wider text-text-muted/30 hover:text-text-muted transition-colors"
+                        className="font-mono px-1.5 py-0.5 text-[8px] tracking-wider text-muted-foreground/30 hover:text-muted-foreground transition-colors"
                         title="Edit"
                       >
                         EDIT
@@ -465,7 +466,7 @@ export default function Tasks() {
                     )}
                     <button
                       onClick={() => handleDelete(task.id)}
-                      className="font-mono px-1.5 py-0.5 text-[8px] tracking-wider text-text-muted/30 hover:text-danger transition-colors"
+                      className="font-mono px-1.5 py-0.5 text-[8px] tracking-wider text-muted-foreground/30 hover:text-destructive transition-colors"
                       title="Delete"
                     >
                       DEL

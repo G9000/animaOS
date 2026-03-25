@@ -13,7 +13,7 @@ export function RelationsView({
       <div className="flex items-center gap-3">
         <button
           onClick={() => onSetView("rows")}
-          className="text-xs text-text-muted hover:text-text"
+          className="text-xs text-muted-foreground hover:text-foreground"
         >
           ← Back
         </button>
@@ -24,11 +24,11 @@ export function RelationsView({
 
       {/* Foreign Keys From This Table */}
       <div>
-        <h3 className="text-xs font-medium mb-3 text-text-muted uppercase tracking-wide">
+        <h3 className="text-xs font-medium mb-3 text-muted-foreground uppercase tracking-wide">
           Foreign Keys
         </h3>
         {foreignKeys.length === 0 ? (
-          <div className="text-center py-8 text-text-muted/50 bg-bg-card border border-border rounded-lg">
+          <div className="text-center py-8 text-muted-foreground/50 bg-card border border-border rounded-lg">
             <Icons.Network />
             <p className="mt-2">No foreign key relations detected</p>
             <p className="text-xs mt-1">
@@ -40,10 +40,10 @@ export function RelationsView({
             {foreignKeys.map((fk, i) => (
               <div
                 key={i}
-                className="p-4 bg-bg-card border border-border rounded-lg"
+                className="p-4 bg-card border border-border rounded-lg"
               >
                 <div className="flex items-center gap-3 text-sm">
-                  <span className="font-mono text-text-muted">
+                  <span className="font-mono text-muted-foreground">
                     {fk.fromTable}
                   </span>
                   <span className="font-mono">{fk.fromColumn}</span>
@@ -54,7 +54,7 @@ export function RelationsView({
                   >
                     {fk.toTable}
                   </button>
-                  <span className="font-mono text-text-muted">
+                  <span className="font-mono text-muted-foreground">
                     {fk.toColumn}
                   </span>
                 </div>
@@ -66,7 +66,7 @@ export function RelationsView({
 
       {/* Tables That Might Reference This */}
       <div>
-        <h3 className="text-xs font-medium mb-3 text-text-muted uppercase tracking-wide">
+        <h3 className="text-xs font-medium mb-3 text-muted-foreground uppercase tracking-wide">
           Potentially Related Tables
         </h3>
         <div className="grid gap-2">
@@ -77,11 +77,11 @@ export function RelationsView({
               <button
                 key={t.name}
                 onClick={() => onOpenTable(t.name)}
-                className="flex items-center justify-between p-3 bg-bg-card border border-border rounded-lg hover:border-primary/30 transition-colors"
+                className="flex items-center justify-between p-3 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors"
               >
                 <span className="font-mono text-sm">{t.name}</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-muted">
+                  <span className="text-xs text-muted-foreground">
                     {t.rowCount.toLocaleString()} rows
                   </span>
                   <Icons.Link />

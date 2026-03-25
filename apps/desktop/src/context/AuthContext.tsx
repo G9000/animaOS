@@ -5,12 +5,8 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
-import {
-  api,
-  clearUnlockToken,
-  getUnlockToken,
-  type User,
-} from "../lib/api";
+import type { User } from "@anima/api-client";
+import { api, clearUnlockToken, getUnlockToken } from "../lib/api";
 
 interface AuthContextType {
   user: User | null;

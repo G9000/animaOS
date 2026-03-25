@@ -123,6 +123,10 @@ def create_user(
     )
 
     # Seed immutable origin block
+    # Note: stored as plaintext at registration time. Field-level encryption
+    # is applied later when blocks are updated via set_self_model_block()
+    # (which calls ef()). The vault export handles both plaintext and
+    # encrypted content transparently.
     soul_content = render_origin_block(
         agent_name=agent_name, creator_name=display_name)
     db.add(
@@ -145,7 +149,7 @@ def create_user(
         raise ValueError(
             f"Invalid persona template: {persona_template!r}") from exc
 
-    persona_content = render_persona_seed(persona_template)
+    persona_content = render_persona_seed(persona_template, agent_name=agent_name)
     db.add(
         SelfModelBlock(
             user_id=user.id,

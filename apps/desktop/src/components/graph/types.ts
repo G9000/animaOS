@@ -1,4 +1,4 @@
-import type { GraphEntity, GraphEntityDetail, GraphOverviewData } from "../../lib/api";
+import type { GraphEntity, GraphEntityDetail, GraphOverviewData } from "@anima/api-client";
 
 export interface SearchResults {
   entities: Array<{

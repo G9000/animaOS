@@ -1,4 +1,4 @@
-import type { DbTableInfo, DbTableData, DbQueryResult } from "../../lib/api";
+import type { DbTableInfo, DbTableData, DbQueryResult } from "@anima/api-client";
 
 export type View = "tables" | "rows" | "query" | "schema" | "dashboard" | "relations";
 export type RowViewMode = "list" | "cards" | "compact";

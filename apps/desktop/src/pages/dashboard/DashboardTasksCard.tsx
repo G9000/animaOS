@@ -1,5 +1,5 @@
 import type { FormEvent } from "react";
-import type { HomeData, TaskItem } from "../../lib/api";
+import type { HomeData, TaskItem } from "@anima/api-client";
 import { formatDueDate, PRIORITY_INDICATOR } from "./helpers";
 
 interface DashboardTasksCardProps {
@@ -24,13 +24,13 @@ export function DashboardTasksCard({
   onDeleteTask,
 }: DashboardTasksCardProps) {
   return (
-    <div className="bg-bg-card border border-border p-5 space-y-4">
+    <div className="bg-card border border-border p-5 space-y-4">
       {home?.currentFocus && (
         <div>
-          <p className="font-mono text-[9px] tracking-wider text-text-muted/40 mb-1.5">
+          <p className="font-mono text-[9px] tracking-wider text-muted-foreground/40 mb-1.5">
             FOCUS
           </p>
-          <p className="text-sm text-text">{home.currentFocus}</p>
+          <p className="text-sm text-foreground">{home.currentFocus}</p>
         </div>
       )}
 
@@ -45,7 +45,7 @@ export function DashboardTasksCard({
             value={newTask}
             onChange={(e) => onNewTaskChange(e.target.value)}
             placeholder="Add a task..."
-            className="flex-1 bg-transparent border border-border px-3 py-1.5 text-sm text-text placeholder:text-text-muted/20 outline-none focus:border-text-muted/30 transition-colors"
+            className="flex-1 bg-transparent border border-border px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/20 outline-none focus:border-text-muted/30 transition-colors"
           />
           {newTask.trim() && (
             <button
@@ -72,14 +72,14 @@ export function DashboardTasksCard({
                       title={PRIORITY_INDICATOR[task.priority]?.label}
                     />
                   )}
-                  <span className="text-sm text-text/80 truncate">{task.text}</span>
+                  <span className="text-sm text-foreground/80 truncate">{task.text}</span>
                 </div>
                 {task.dueDate && (
                   <p
                     className={`font-mono text-[9px] mt-0.5 tracking-wider ${
                       new Date(task.dueDate).getTime() < Date.now()
-                        ? "text-danger/70"
-                        : "text-text-muted/30"
+                        ? "text-destructive/70"
+                        : "text-muted-foreground/30"
                     }`}
                   >
                     {formatDueDate(task.dueDate)}
@@ -88,7 +88,7 @@ export function DashboardTasksCard({
               </div>
               <button
                 onClick={() => onDeleteTask(task.id)}
-                className="font-mono text-[9px] text-transparent group-hover:text-text-muted/30 hover:!text-text-muted transition-colors tracking-wider"
+                className="font-mono text-[9px] text-transparent group-hover:text-muted-foreground/30 hover:!text-muted-foreground transition-colors tracking-wider"
               >
                 DEL
               </button>
@@ -105,14 +105,14 @@ export function DashboardTasksCard({
               <span className="text-sm line-through flex-1 truncate">{task.text}</span>
               <button
                 onClick={() => onDeleteTask(task.id)}
-                className="font-mono text-[9px] text-transparent group-hover:text-text-muted/30 hover:!text-text-muted transition-colors tracking-wider"
+                className="font-mono text-[9px] text-transparent group-hover:text-muted-foreground/30 hover:!text-muted-foreground transition-colors tracking-wider"
               >
                 DEL
               </button>
             </div>
           ))}
           {doneTasks.length > 3 && (
-            <p className="font-mono text-[9px] text-text-muted/20 pl-6 tracking-wider">
+            <p className="font-mono text-[9px] text-muted-foreground/20 pl-6 tracking-wider">
               +{doneTasks.length - 3} COMPLETED
             </p>
           )}

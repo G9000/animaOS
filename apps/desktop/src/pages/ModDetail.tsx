@@ -12,7 +12,7 @@ export default function ModDetail() {
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
-        <span className="font-mono text-[10px] text-text-muted/40 tracking-widest">
+        <span className="font-mono text-[10px] text-muted-foreground/40 tracking-widest">
           LOADING...
         </span>
       </div>
@@ -22,10 +22,10 @@ export default function ModDetail() {
   if (error || !mod) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3">
-        <span className="font-mono text-[10px] text-danger">{error || "Module not found"}</span>
+        <span className="font-mono text-[10px] text-destructive">{error || "Module not found"}</span>
         <button
           onClick={() => navigate("/mods")}
-          className="font-mono text-[9px] text-text-muted/40 hover:text-text"
+          className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground"
         >
           BACK TO MODULES
         </button>
@@ -68,15 +68,15 @@ export default function ModDetail() {
         <div className="flex items-center gap-3 mb-6">
           <button
             onClick={() => navigate("/mods")}
-            className="font-mono text-[10px] text-text-muted/40 hover:text-text"
+            className="font-mono text-[10px] text-muted-foreground/40 hover:text-foreground"
           >
             &larr;
           </button>
-          <h1 className="font-mono text-[11px] tracking-widest uppercase text-text">
+          <h1 className="font-mono text-[11px] tracking-widest uppercase text-foreground">
             {mod.id}
           </h1>
           <StatusBadge status={mod.status} />
-          <span className="font-mono text-[8px] text-text-muted/30 ml-auto">
+          <span className="font-mono text-[8px] text-muted-foreground/30 ml-auto">
             v{mod.version}
           </span>
         </div>
@@ -94,19 +94,19 @@ export default function ModDetail() {
           <div className="space-y-6">
             {/* Status Section */}
             <div className="border border-border p-4">
-              <div className="font-mono text-[9px] tracking-widest text-text-muted/60 mb-3">
+              <div className="font-mono text-[9px] tracking-widest text-muted-foreground/60 mb-3">
                 STATUS
               </div>
               <div className="flex items-center gap-4">
                 <StatusBadge status={mod.status} />
                 {mod.health?.uptime && (
-                  <span className="font-mono text-[8px] text-text-muted/30">
+                  <span className="font-mono text-[8px] text-muted-foreground/30">
                     since {new Date(mod.health.uptime).toLocaleString()}
                   </span>
                 )}
               </div>
               {mod.health?.lastError && (
-                <p className="font-mono text-[8px] text-danger mt-2">
+                <p className="font-mono text-[8px] text-destructive mt-2">
                   {mod.health.lastError}
                 </p>
               )}
@@ -115,13 +115,13 @@ export default function ModDetail() {
                   <>
                     <button
                       onClick={() => handleAction("restart")}
-                      className="font-mono text-[8px] text-text-muted/40 border border-border px-2 py-0.5 hover:text-text hover:border-text-muted/30 transition-colors"
+                      className="font-mono text-[8px] text-muted-foreground/40 border border-border px-2 py-0.5 hover:text-foreground hover:border-text-muted/30 transition-colors"
                     >
                       RESTART
                     </button>
                     <button
                       onClick={() => handleAction("disable")}
-                      className="font-mono text-[8px] text-danger/60 border border-border px-2 py-0.5 hover:text-danger hover:border-danger/30 transition-colors"
+                      className="font-mono text-[8px] text-destructive/60 border border-border px-2 py-0.5 hover:text-destructive hover:border-destructive/30 transition-colors"
                     >
                       DISABLE
                     </button>
@@ -140,7 +140,7 @@ export default function ModDetail() {
             {/* Config Form */}
             {mod.configSchema && (
               <div className="border border-border p-4">
-                <div className="font-mono text-[9px] tracking-widest text-text-muted/60 mb-3">
+                <div className="font-mono text-[9px] tracking-widest text-muted-foreground/60 mb-3">
                   CONFIGURATION
                 </div>
                 <ConfigForm

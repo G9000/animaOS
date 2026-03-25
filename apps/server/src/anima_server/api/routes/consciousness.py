@@ -84,15 +84,15 @@ async def get_self_model_section(
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.self_model import (
-        SECTIONS,
+        ALL_SECTIONS,
         ensure_self_model_exists,
         get_self_model_block,
     )
 
-    if section not in SECTIONS:
+    if section not in ALL_SECTIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid section: {section}. Valid: {', '.join(SECTIONS)}",
+            detail=f"Invalid section: {section}. Valid: {', '.join(ALL_SECTIONS)}",
         )
 
     ensure_self_model_exists(db, user_id=user_id)
@@ -121,16 +121,16 @@ async def update_self_model_section(
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.self_model import (
-        SECTIONS,
+        ALL_SECTIONS,
         append_growth_log_entry,
         ensure_self_model_exists,
         set_self_model_block,
     )
 
-    if section not in SECTIONS:
+    if section not in ALL_SECTIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid section: {section}. Valid: {', '.join(SECTIONS)}",
+            detail=f"Invalid section: {section}. Valid: {', '.join(ALL_SECTIONS)}",
         )
 
     ensure_self_model_exists(db, user_id=user_id)
@@ -159,6 +159,131 @@ async def update_self_model_section(
         updatedBy=block.updated_by,
         updatedAt=block.updated_at.isoformat() if block.updated_at else None,
     )
+
+
+# --- Agent Profile Endpoints ---
+
+
+class AgentProfileUpdateRequest(BaseModel):
+    agentName: str | None = None
+    relationship: str | None = None
+    personaTemplate: str | None = None
+
+
+@router.get("/{user_id}/agent-profile")
+async def get_agent_profile(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Get the agent profile for this user."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.models import AgentProfile
+
+    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
+    if profile is None:
+        return {
+            "agentName": "Anima",
+            "relationship": "companion",
+            "personaTemplate": "default",
+            "setupComplete": False,
+        }
+    return {
+        "agentName": profile.agent_name,
+        "relationship": profile.relationship,
+        "personaTemplate": "default",
+        "setupComplete": profile.setup_complete,
+    }
+
+
+@router.patch("/{user_id}/agent-profile")
+async def update_agent_profile(
+    user_id: int,
+    payload: AgentProfileUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Update the agent's profile — name, relationship, persona template."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.models import AgentProfile
+    from anima_server.services.agent.self_model import get_self_model_block, set_self_model_block
+    from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
+
+    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+
+    name_changed = False
+    if payload.agentName is not None:
+        profile.agent_name = payload.agentName.strip() or "Anima"
+        name_changed = True
+
+    relationship_changed = False
+    if payload.relationship is not None:
+        profile.relationship = payload.relationship.strip()
+        relationship_changed = True
+
+    profile.setup_complete = True
+
+    # Regenerate soul/origin block if agent name changed
+    if name_changed:
+        origin_content = render_origin_block(
+            agent_name=profile.agent_name,
+            creator_name=profile.creator_name,
+        )
+        set_self_model_block(
+            db,
+            user_id=user_id,
+            section="soul",
+            content=origin_content,
+            updated_by="agent_setup",
+        )
+
+    # Update human block with relationship
+    if relationship_changed:
+        human_block = get_self_model_block(db, user_id=user_id, section="human")
+        if human_block:
+            content = df(user_id, human_block.content, table="self_model_blocks", field="content")
+            lines = content.split("\n")
+            new_lines = [l for l in lines if not l.startswith("Relationship:")]
+            if profile.relationship:
+                new_lines.append(f"Relationship: {profile.relationship}")
+            set_self_model_block(
+                db,
+                user_id=user_id,
+                section="human",
+                content="\n".join(new_lines),
+                updated_by="agent_setup",
+            )
+
+    # Update persona if provided
+    if payload.personaTemplate is not None:
+        from anima_server.services.agent.system_prompt import PromptTemplateError
+
+        try:
+            persona_content = render_persona_seed(payload.personaTemplate, agent_name=profile.agent_name)
+        except PromptTemplateError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        set_self_model_block(
+            db,
+            user_id=user_id,
+            section="persona",
+            content=persona_content,
+            updated_by="agent_setup",
+        )
+
+    db.commit()
+
+    return {
+        "agentName": profile.agent_name,
+        "relationship": profile.relationship,
+        "setupComplete": True,
+    }
 
 
 # --- Emotional State Endpoints ---

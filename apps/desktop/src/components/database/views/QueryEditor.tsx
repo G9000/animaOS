@@ -37,14 +37,14 @@ export function QueryEditor({
       <div className="flex items-center gap-3">
         <button
           onClick={() => onSetView("tables")}
-          className="text-xs text-text-muted hover:text-text"
+          className="text-xs text-muted-foreground hover:text-foreground"
         >
           ← Tables
         </button>
         <h2 className="text-sm font-medium">SQL Query</h2>
       </div>
 
-      <div className="bg-bg-card border border-border rounded-lg p-4">
+      <div className="bg-card border border-border rounded-lg p-4">
         <textarea
           ref={queryRef}
           value={sql}
@@ -52,17 +52,17 @@ export function QueryEditor({
           onKeyDown={handleKeyDown}
           placeholder="SELECT * FROM users LIMIT 10"
           rows={5}
-          className="w-full px-3 py-2.5 rounded-md bg-bg-input border border-border text-[13px] font-mono resize-y placeholder:text-text-muted/40 focus:outline-none focus:border-primary/40 transition-colors"
+          className="w-full px-3 py-2.5 rounded-md bg-input border border-border text-[13px] font-mono resize-y placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
         />
         <div className="flex items-center justify-between mt-3">
           <div className="flex items-center gap-3">
-            <span className="text-[11px] text-text-muted/50">
+            <span className="text-[11px] text-muted-foreground/50">
               Ctrl+Enter to run
             </span>
             <QueryFavorites onSelectQuery={onSetSql} currentSql={sql} />
             <button
               onClick={() => onSetShowHistory(!showHistory)}
-              className="text-[11px] text-text-muted hover:text-text flex items-center gap-1"
+              className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1"
             >
               <Icons.History /> {showHistory ? "Hide" : "Show"} history (
               {queryHistory.length})
@@ -86,7 +86,7 @@ export function QueryEditor({
                 className={`text-[11px] flex items-center gap-1 ${
                   isBookmarked("query", sql)
                     ? "text-primary"
-                    : "text-text-muted hover:text-text"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {isBookmarked("query", sql) ? (
@@ -101,7 +101,7 @@ export function QueryEditor({
           <div className="flex gap-2">
             <button
               onClick={() => onSetSql("")}
-              className="px-3 py-1.5 text-xs rounded-md text-text-muted hover:text-text border border-transparent hover:border-border transition-colors"
+              className="px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:text-foreground border border-transparent hover:border-border transition-colors"
             >
               Clear
             </button>
@@ -118,12 +118,12 @@ export function QueryEditor({
 
       {/* Query History */}
       {showHistory && queryHistory.length > 0 && (
-        <div className="bg-bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-3 py-2 bg-bg-input border-b border-border text-[11px] text-text-muted flex items-center justify-between">
+        <div className="bg-card border border-border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-input border-b border-border text-[11px] text-muted-foreground flex items-center justify-between">
             <span>Recent Queries</span>
             <button
               onClick={() => onSetQueryHistory([])}
-              className="text-text-muted/50 hover:text-danger"
+              className="text-muted-foreground/50 hover:text-destructive"
             >
               Clear all
             </button>
@@ -132,7 +132,7 @@ export function QueryEditor({
             {queryHistory.map((item, i) => (
               <div
                 key={i}
-                className="flex items-center gap-2 px-3 py-2 hover:bg-bg-input border-b border-border/50 last:border-0 group"
+                className="flex items-center gap-2 px-3 py-2 hover:bg-input border-b border-border/50 last:border-0 group"
               >
                 <button
                   onClick={() => {
@@ -141,7 +141,7 @@ export function QueryEditor({
                   }}
                   className="flex-1 text-left text-[11px] font-mono truncate"
                 >
-                  <span className="text-text-muted/40 w-12 inline-block">
+                  <span className="text-muted-foreground/40 w-12 inline-block">
                     {item.rowCount ?? "?"} rows
                   </span>
                   {item.sql}
@@ -150,7 +150,7 @@ export function QueryEditor({
                   onClick={() =>
                     onAddBookmark("query", item.sql.slice(0, 30), item.sql)
                   }
-                  className="opacity-0 group-hover:opacity-100 p-1 text-text-muted/50 hover:text-primary"
+                  className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground/50 hover:text-primary"
                   title="Bookmark"
                 >
                   <Icons.Bookmark />
@@ -165,7 +165,7 @@ export function QueryEditor({
       {queryResult && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-text-muted">
+            <span className="text-xs text-muted-foreground">
               {queryResult.rowCount.toLocaleString()} rows returned
             </span>
             <div className="flex gap-2">
@@ -174,7 +174,7 @@ export function QueryEditor({
                   const csv = convertToCsv(queryResult);
                   downloadFile(csv, "query-result.csv", "text/csv");
                 }}
-                className="text-[11px] text-text-muted hover:text-primary flex items-center gap-1 transition-colors"
+                className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
                 <Icons.Download /> CSV
               </button>
@@ -186,7 +186,7 @@ export function QueryEditor({
                     "application/json"
                   )
                 }
-                className="text-[11px] text-text-muted hover:text-primary flex items-center gap-1 transition-colors"
+                className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
                 <Icons.Download /> JSON
               </button>
@@ -206,12 +206,12 @@ export function QueryEditor({
           <div className="border border-border rounded-lg overflow-hidden">
             <div className="overflow-auto max-h-[400px]">
               <table className="w-full text-[11px] font-mono">
-                <thead className="sticky top-0 bg-bg-card border-b border-border">
+                <thead className="sticky top-0 bg-card border-b border-border">
                   <tr>
                     {queryResult.columns.map((col) => (
                       <th
                         key={col}
-                        className="px-3 py-2 text-left text-text-muted font-medium whitespace-nowrap"
+                        className="px-3 py-2 text-left text-muted-foreground font-medium whitespace-nowrap"
                       >
                         {col}
                       </th>
@@ -222,7 +222,7 @@ export function QueryEditor({
                   {queryResult.rows.map((row, i) => (
                     <tr
                       key={i}
-                      className="border-b border-border/30 hover:bg-bg-card/30"
+                      className="border-b border-border/30 hover:bg-card/30"
                     >
                       {queryResult.columns.map((col) => (
                         <td
@@ -253,7 +253,7 @@ function QueryCell({ value }: { value: unknown }) {
       </span>
     );
   }
-  if (value === null) return <span className="text-text-muted/40">NULL</span>;
+  if (value === null) return <span className="text-muted-foreground/40">NULL</span>;
   const str = String(value);
   if (str.length > 50) return str.slice(0, 50) + "…";
   return str;

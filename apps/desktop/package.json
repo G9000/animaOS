@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tauri dev",
+    "dev:web": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -14,8 +15,7 @@
   },
   "dependencies": {
     "@anima/api-client": "workspace:*",
-    "@anima/mod-client": "workspace:*",
-    "@anima/ui": "workspace:*",
+    "@anima/standard-templates": "workspace:*",
     "@fontsource/playfair-display": "^5.2.8",
     "@fontsource/space-grotesk": "^5.2.10",
     "@fontsource/space-mono": "^5.2.9",

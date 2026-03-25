@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.leoca.anima",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "vite --port 1420 --strictPort",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "bun run prepare:release && bun run build",
     "frontendDist": "../dist"
@@ -25,11 +25,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": {
-      "bin/": "bin/",
-      "../../api/prompts/": "prompts/",
-      "../../api/drizzle/": "drizzle/"
-    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

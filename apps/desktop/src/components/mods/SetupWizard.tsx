@@ -57,7 +57,7 @@ export default function SetupWizard({ steps, schema, modId, onComplete, onHealth
                     ? "bg-success text-black"
                     : isActive
                     ? "border-2 border-primary text-primary"
-                    : "border border-border text-text-muted/40"
+                    : "border border-border text-muted-foreground/40"
                 }`}
               >
                 {isDone ? "\u2713" : step.step}
@@ -69,14 +69,14 @@ export default function SetupWizard({ steps, schema, modId, onComplete, onHealth
 
             {/* Step content */}
             <div className={`flex-1 pb-6 ${isDone ? "opacity-50" : ""}`}>
-              <div className="font-mono text-[9px] tracking-widest text-text-muted/60 uppercase mb-1">
+              <div className="font-mono text-[9px] tracking-widest text-muted-foreground/60 uppercase mb-1">
                 STEP {step.step} — {step.title}
               </div>
 
               {isActive && (
                 <div className="mt-2 space-y-3">
                   {step.instructions && (
-                    <p className="font-mono text-[10px] text-text-muted/50 leading-relaxed">
+                    <p className="font-mono text-[10px] text-muted-foreground/50 leading-relaxed">
                       {step.instructions}
                     </p>
                   )}
@@ -89,7 +89,7 @@ export default function SetupWizard({ steps, schema, modId, onComplete, onHealth
                           placeholder={field.label}
                           value={String(values[step.field!] ?? "")}
                           onChange={(e) => set(step.field!, e.target.value)}
-                          className="w-full bg-bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-text focus:border-primary/50 outline-none"
+                          className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
                         />
                       ) : field.type === "enum" ? (
                         <div className="flex gap-1">
@@ -100,7 +100,7 @@ export default function SetupWizard({ steps, schema, modId, onComplete, onHealth
                               className={`font-mono text-[9px] px-2 py-1 border transition-colors ${
                                 values[step.field!] === opt
                                   ? "border-primary text-primary"
-                                  : "border-border text-text-muted/40 hover:text-text"
+                                  : "border-border text-muted-foreground/40 hover:text-foreground"
                               }`}
                             >
                               {opt.toUpperCase()}
@@ -113,7 +113,7 @@ export default function SetupWizard({ steps, schema, modId, onComplete, onHealth
                           placeholder={field.label}
                           value={String(values[step.field!] ?? "")}
                           onChange={(e) => set(step.field!, e.target.value)}
-                          className="w-full bg-bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-text focus:border-primary/50 outline-none"
+                          className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
                         />
                       )}
                     </div>
@@ -127,7 +127,7 @@ export default function SetupWizard({ steps, schema, modId, onComplete, onHealth
                         healthStatus === "checking" ? "checking" : "stopped"
                       } />
                       {healthStatus === "fail" && (
-                        <span className="font-mono text-[8px] text-danger">
+                        <span className="font-mono text-[8px] text-destructive">
                           Connection failed. Check your token.
                         </span>
                       )}

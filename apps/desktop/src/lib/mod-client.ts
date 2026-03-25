@@ -1,4 +1,11 @@
-import { createModClient, type ModClient } from "@anima/mod-client";
+import { treaty } from "@elysiajs/eden";
+import type { App } from "anima-mod";
+
+function createModClient(baseUrl: string) {
+  return treaty<App>(baseUrl);
+}
+
+type ModClient = ReturnType<typeof createModClient>;
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const MOD_URL_KEY = "anima-mod-url";

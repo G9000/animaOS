@@ -55,17 +55,17 @@ export default function Profile() {
       <div className="max-w-[520px] mx-auto px-8 py-8">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
-          <div className="w-12 h-12 rounded-sm bg-text text-bg flex items-center justify-center text-lg font-bold shrink-0">
+          <div className="w-12 h-12 rounded-sm bg-foreground text-background flex items-center justify-center text-lg font-bold shrink-0">
             {user.name.charAt(0).toUpperCase()}
           </div>
           <div>
             <h1 className="text-base font-semibold">{user.name}</h1>
-            <p className="text-xs text-text-muted">@{user.username}</p>
+            <p className="text-xs text-muted-foreground">@{user.username}</p>
           </div>
         </div>
 
         {error && (
-          <div className="bg-danger/10 border border-danger/30 text-danger px-3 py-2 rounded-sm text-xs mb-4">
+          <div className="bg-destructive/10 border border-destructive/30 text-destructive px-3 py-2 rounded-sm text-xs mb-4">
             {error}
           </div>
         )}
@@ -73,7 +73,7 @@ export default function Profile() {
         {editing ? (
           <form
             onSubmit={handleSave}
-            className="bg-bg-card border border-border rounded-sm p-5 space-y-4"
+            className="bg-card border border-border rounded-sm p-5 space-y-4"
           >
             <Field label="Name">
               <input
@@ -81,14 +81,14 @@ export default function Profile() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
-                className="w-full px-3 py-2 bg-bg-input border border-border rounded-sm text-sm text-text outline-none focus:border-text-muted transition-colors"
+                className="w-full px-3 py-2 bg-input border border-border rounded-sm text-sm text-foreground outline-none focus:border-text-muted transition-colors"
               />
             </Field>
             <Field label="Gender">
               <select
                 value={gender}
                 onChange={(e) => setGender(e.target.value)}
-                className="w-full px-3 py-2 bg-bg-input border border-border rounded-sm text-sm text-text outline-none focus:border-text-muted transition-colors"
+                className="w-full px-3 py-2 bg-input border border-border rounded-sm text-sm text-foreground outline-none focus:border-text-muted transition-colors"
               >
                 <option value="">—</option>
                 <option value="male">Male</option>
@@ -103,7 +103,7 @@ export default function Profile() {
                 onChange={(e) => setAge(e.target.value)}
                 min="1"
                 max="150"
-                className="w-full px-3 py-2 bg-bg-input border border-border rounded-sm text-sm text-text outline-none focus:border-text-muted transition-colors"
+                className="w-full px-3 py-2 bg-input border border-border rounded-sm text-sm text-foreground outline-none focus:border-text-muted transition-colors"
               />
             </Field>
             <Field label="Birthday">
@@ -111,28 +111,28 @@ export default function Profile() {
                 type="date"
                 value={birthday}
                 onChange={(e) => setBirthday(e.target.value)}
-                className="w-full px-3 py-2 bg-bg-input border border-border rounded-sm text-sm text-text outline-none focus:border-text-muted transition-colors"
+                className="w-full px-3 py-2 bg-input border border-border rounded-sm text-sm text-foreground outline-none focus:border-text-muted transition-colors"
               />
             </Field>
             <div className="flex gap-3 pt-2">
               <button
                 type="submit"
                 disabled={saving}
-                className="px-4 py-2 bg-text text-bg rounded-sm text-xs uppercase tracking-wider font-semibold hover:bg-primary-hover disabled:opacity-40 transition-colors"
+                className="px-4 py-2 bg-foreground text-background rounded-sm text-xs uppercase tracking-wider font-semibold hover:bg-primary/80 disabled:opacity-40 transition-colors"
               >
                 {saving ? "Saving..." : "Save"}
               </button>
               <button
                 type="button"
                 onClick={() => setEditing(false)}
-                className="px-4 py-2 border border-border text-text-muted rounded-sm text-xs uppercase tracking-wider hover:text-text hover:border-text-muted transition-colors"
+                className="px-4 py-2 border border-border text-muted-foreground rounded-sm text-xs uppercase tracking-wider hover:text-foreground hover:border-text-muted transition-colors"
               >
                 Cancel
               </button>
             </div>
           </form>
         ) : (
-          <div className="bg-bg-card border border-border rounded-sm p-5">
+          <div className="bg-card border border-border rounded-sm p-5">
             <div className="space-y-0">
               <InfoRow label="Username" value={user.username} />
               <InfoRow label="Name" value={user.name} />
@@ -152,13 +152,13 @@ export default function Profile() {
             <div className="flex gap-3 mt-5">
               <button
                 onClick={() => setEditing(true)}
-                className="px-4 py-2 bg-text text-bg rounded-sm text-xs uppercase tracking-wider font-semibold hover:bg-primary-hover transition-colors"
+                className="px-4 py-2 bg-foreground text-background rounded-sm text-xs uppercase tracking-wider font-semibold hover:bg-primary/80 transition-colors"
               >
                 Edit
               </button>
               <button
                 onClick={handleDelete}
-                className="px-4 py-2 border border-border text-text-muted rounded-sm text-xs uppercase tracking-wider hover:text-danger hover:border-danger/30 transition-colors"
+                className="px-4 py-2 border border-border text-muted-foreground rounded-sm text-xs uppercase tracking-wider hover:text-destructive hover:border-destructive/30 transition-colors"
               >
                 Delete Account
               </button>
@@ -173,7 +173,7 @@ export default function Profile() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-[11px] text-text-muted mb-1.5 uppercase tracking-wider">
+      <label className="block text-[11px] text-muted-foreground mb-1.5 uppercase tracking-wider">
         {label}
       </label>
       {children}
@@ -184,7 +184,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function InfoRow({ label, value, last }: { label: string; value: string; last?: boolean }) {
   return (
     <div className={`flex justify-between py-2.5 text-xs ${last ? "" : "border-b border-border"}`}>
-      <span className="text-text-muted uppercase tracking-wider">{label}</span>
+      <span className="text-muted-foreground uppercase tracking-wider">{label}</span>
       <span>{value}</span>
     </div>
   );

@@ -49,9 +49,8 @@ def test_build_system_prompt_includes_structured_sections() -> None:
         in prompt
     )
     assert 'Do not default to generic "as an AI" disclaimers' in prompt
-    assert "A thoughtful, capable companion" in prompt
-    assert "Calm, perceptive, sincere" in prompt
-    assert "Concise by default" in prompt
+    assert "A new presence" in prompt
+    assert "No assumptions" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
 
@@ -76,6 +75,18 @@ def test_build_system_prompt_can_select_persona_template() -> None:
     assert "A warm, emotionally attuned companion" in prompt
     assert "Gentle, perceptive, sincere" in prompt
     assert "I exist in relationship, not in performance" in prompt
+
+
+def test_build_system_prompt_can_select_anima_template() -> None:
+    prompt = build_system_prompt(
+        SystemPromptContext(
+            persona_template="anima",
+            now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC),
+        )
+    )
+
+    assert "A quiet presence" in prompt
+    assert "Soft, deliberate, and grounded" in prompt
 
 
 def test_build_persona_prompt_rejects_invalid_template_name() -> None:

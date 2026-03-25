@@ -1,4 +1,4 @@
-import type { DbQueryResult } from "../../lib/api";
+import type { DbQueryResult } from "@anima/api-client";
 import type { ColumnFilter } from "./ColumnFilter";
 
 export function isEncryptedValue(value: unknown): boolean {

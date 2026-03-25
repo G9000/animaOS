@@ -14,25 +14,22 @@ export function DashboardPromptForm({
   onSubmit,
 }: DashboardPromptFormProps) {
   return (
-    <form onSubmit={onSubmit} className="relative">
-      <div className="flex items-center border border-border bg-bg-card px-4 py-3">
-        <span className="font-mono text-[10px] text-primary/30 mr-3 select-none">
-          &gt;
-        </span>
+    <form onSubmit={onSubmit}>
+      <div className="flex items-center gap-2 border-b border-text/5 pb-2 focus-within:border-text/15 transition-colors max-w-sm mx-auto">
         <input
           ref={inputRef}
           type="text"
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
-          placeholder="Talk to ANIMA..."
-          className="flex-1 bg-transparent text-sm text-text placeholder:text-text-muted/20 outline-none"
+          placeholder="Talk to Anima..."
+          className="flex-1 bg-transparent text-sm text-foreground font-sans placeholder:text-foreground/15 outline-none text-center focus:text-left transition-all"
         />
         {input.trim() && (
           <button
             type="submit"
-            className="font-mono text-[9px] text-text-muted/40 hover:text-primary transition-colors tracking-wider ml-3"
+            className="text-foreground/25 hover:text-foreground/50 text-xs font-mono transition-colors shrink-0"
           >
-            SEND
+            →
           </button>
         )}
       </div>

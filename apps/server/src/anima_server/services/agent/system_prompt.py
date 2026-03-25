@@ -112,18 +112,18 @@ def render_memory_blocks_template(memory_blocks: list[dict[str, object]]) -> str
     )
 
 
-def build_persona_prompt(template_name: str) -> str:
+def build_persona_prompt(template_name: str, agent_name: str = "Anima") -> str:
     template_path = resolve_persona_template_path(template_name)
-    return render_template(template_path, {})
+    return render_template(template_path, {"agent_name": agent_name})
 
 
-def render_persona_seed(template_name: str) -> str:
+def render_persona_seed(template_name: str, agent_name: str = "Anima") -> str:
     """Render a persona template into content to be stored in the DB.
 
     Used once at provisioning time. The stored content becomes the living
     persona block that evolves through reflection.
     """
-    return build_persona_prompt(template_name)
+    return build_persona_prompt(template_name, agent_name=agent_name)
 
 
 def render_origin_block(

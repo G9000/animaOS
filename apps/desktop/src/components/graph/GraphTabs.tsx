@@ -21,7 +21,7 @@ export function GraphTabs({ tab, onTabChange }: GraphTabsProps) {
           className={`font-mono text-[9px] px-2.5 py-1.5 tracking-wider transition-colors ${
             tab === t.key
               ? "bg-primary/[0.08] text-primary border-b-2 border-primary"
-              : "text-text-muted/50 hover:text-text-muted"
+              : "text-muted-foreground/50 hover:text-muted-foreground"
           }`}
         >
           {t.label}

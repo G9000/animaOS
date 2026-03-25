@@ -62,9 +62,9 @@ export default function Soul() {
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-5 py-2.5 border-b border-border bg-bg-card/40">
+      <div className="flex items-center justify-between px-5 py-2.5 border-b border-border bg-card/40">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] text-text-muted tracking-wider">
+          <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
             DIRECTIVE
           </span>
           {hasChanges && (
@@ -80,7 +80,7 @@ export default function Soul() {
           <button
             onClick={handleReset}
             disabled={!hasChanges || saving}
-            className="font-mono text-[9px] text-text-muted/40 hover:text-text disabled:opacity-15 tracking-wider transition-colors"
+            className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground disabled:opacity-15 tracking-wider transition-colors"
           >
             RESET
           </button>
@@ -96,10 +96,10 @@ export default function Soul() {
 
       {/* Description */}
       <div className="px-5 py-2 border-b border-border/50">
-        <p className="font-mono text-[10px] text-text-muted/40 leading-relaxed max-w-lg tracking-wider">
+        <p className="font-mono text-[10px] text-muted-foreground/40 leading-relaxed max-w-lg tracking-wider">
           YOUR INSTRUCTIONS TO ANIMA. CHANGES TAKE EFFECT NEXT CONVERSATION.
         </p>
-        <p className="font-mono text-[8px] text-text-muted/20 mt-0.5 tracking-wider">
+        <p className="font-mono text-[8px] text-muted-foreground/20 mt-0.5 tracking-wider">
           CMD+S SAVE
         </p>
       </div>
@@ -108,7 +108,7 @@ export default function Soul() {
       <div className="flex-1 p-4 min-h-0">
         {loading ? (
           <div className="flex items-center justify-center h-full">
-            <span className="font-mono text-[10px] text-text-muted/30 animate-pulse tracking-wider">
+            <span className="font-mono text-[10px] text-muted-foreground/30 animate-pulse tracking-wider">
               LOADING...
             </span>
           </div>
@@ -119,7 +119,7 @@ export default function Soul() {
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={handleKeyDown}
             spellCheck={false}
-            className="w-full h-full bg-bg-input border border-border px-5 py-4 text-sm text-text outline-none focus:border-primary/30 transition-colors resize-none leading-relaxed font-mono"
+            className="w-full h-full bg-input border border-border px-5 py-4 text-sm text-foreground outline-none focus:border-primary/30 transition-colors resize-none leading-relaxed font-mono"
           />
         )}
       </div>
@@ -132,11 +132,11 @@ export default function Soul() {
           </span>
         )}
         {error && (
-          <span className="font-mono text-[9px] text-danger tracking-wider">
+          <span className="font-mono text-[9px] text-destructive tracking-wider">
             {error}
           </span>
         )}
-        <span className="ml-auto font-mono text-[8px] text-text-muted/20 tracking-wider">
+        <span className="ml-auto font-mono text-[8px] text-muted-foreground/20 tracking-wider">
           {content.length} CHARS | {content.split("\n").length} LINES
         </span>
       </div>

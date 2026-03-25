@@ -11,7 +11,7 @@ export function SchemaView({
       <div className="flex items-center gap-3">
         <button
           onClick={() => onSetView("rows")}
-          className="text-xs text-text-muted hover:text-text"
+          className="text-xs text-muted-foreground hover:text-foreground"
         >
           ← Back
         </button>
@@ -21,14 +21,14 @@ export function SchemaView({
       </div>
 
       {/* Columns */}
-      <div className="bg-bg-card border border-border rounded-lg overflow-hidden">
-        <div className="px-4 py-2 bg-bg-input border-b border-border text-xs font-medium">
+      <div className="bg-card border border-border rounded-lg overflow-hidden">
+        <div className="px-4 py-2 bg-input border-b border-border text-xs font-medium">
           Columns ({schemaColumns.length})
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-[12px]">
-            <thead className="bg-bg-card">
-              <tr className="text-text-muted">
+            <thead className="bg-card">
+              <tr className="text-muted-foreground">
                 <th className="px-4 py-2 text-left">Name</th>
                 <th className="px-4 py-2 text-left">Type</th>
                 <th className="px-4 py-2 text-left">Nullable</th>
@@ -40,11 +40,11 @@ export function SchemaView({
               {schemaColumns.map((col) => (
                 <tr key={col.name} className="border-t border-border/50">
                   <td className="px-4 py-2 font-mono">{col.name}</td>
-                  <td className="px-4 py-2 text-text-muted">{col.type}</td>
-                  <td className="px-4 py-2 text-text-muted">
+                  <td className="px-4 py-2 text-muted-foreground">{col.type}</td>
+                  <td className="px-4 py-2 text-muted-foreground">
                     {col.nullable ? "YES" : "NO"}
                   </td>
-                  <td className="px-4 py-2 text-text-muted">
+                  <td className="px-4 py-2 text-muted-foreground">
                     {col.default ?? "—"}
                   </td>
                   <td className="px-4 py-2 text-center">
@@ -63,7 +63,7 @@ export function SchemaView({
 
       {/* Indexes */}
       {schemaIndexes.length > 0 && (
-        <div className="bg-bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-xs font-medium mb-3">
             Indexes ({schemaIndexes.length})
           </h3>
@@ -71,7 +71,7 @@ export function SchemaView({
             {schemaIndexes.map((idx) => (
               <span
                 key={idx}
-                className="px-2 py-1 text-[11px] bg-bg-input border border-border rounded"
+                className="px-2 py-1 text-[11px] bg-input border border-border rounded"
               >
                 {idx}
               </span>
@@ -82,7 +82,7 @@ export function SchemaView({
 
       {/* Primary Keys Info */}
       {tableData.primaryKeys.length > 0 && (
-        <div className="bg-bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-xs font-medium mb-2">Primary Key</h3>
           <p className="text-sm font-mono text-primary">
             {tableData.primaryKeys.join(", ")}

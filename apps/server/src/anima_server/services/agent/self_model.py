@@ -1,6 +1,14 @@
 """Self-model management: the agent's understanding of itself per user.
 
-Manages five sections stored in self_model_blocks:
+Manages sections stored in self_model_blocks:
+
+Core identity (seeded at registration):
+- soul: immutable origin block (agent name, creator, birth date)
+- persona: voice and personality (mutable — evolves through reflection)
+- human: the agent's understanding of the user (mutable)
+- user_directive: user-provided instructions (optional)
+
+Self-model (seeded lazily on first conversation):
 - identity: who the agent is in this relationship (profile-pattern, full rewrite)
 - inner_state: current cognitive/emotional processing state (mutable)
 - working_memory: cross-session buffer with expiring items (mutable)
@@ -22,6 +30,13 @@ from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
 
+# All valid section names for self_model_blocks
+ALL_SECTIONS = (
+    "soul", "persona", "human", "user_directive",
+    "identity", "inner_state", "working_memory", "growth_log", "intentions",
+)
+
+# Sections that get lazily seeded via seed_self_model()
 SECTIONS = ("identity", "inner_state", "working_memory", "growth_log", "intentions")
 
 _SEED_IDENTITY = """# Who I Am
@@ -94,7 +109,7 @@ def get_self_model_block(
     section: str,
 ) -> SelfModelBlock | None:
     """Get a single self-model section."""
-    if section not in SECTIONS:
+    if section not in ALL_SECTIONS:
         return None
     return db.scalar(
         select(SelfModelBlock).where(
@@ -138,7 +153,7 @@ def set_self_model_block(
       Before that, automated rewrites are logged to growth_log instead.
     - growth_log: append-only (use append_growth_log_entry instead).
     """
-    if section not in SECTIONS:
+    if section not in ALL_SECTIONS:
         raise ValueError(f"Invalid section: {section}")
 
     existing = get_self_model_block(db, user_id=user_id, section=section)

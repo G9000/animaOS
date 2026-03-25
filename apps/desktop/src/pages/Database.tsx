@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { api, type DbTableInfo, type DbTableData, type DbQueryResult } from "../lib/api";
+import type { DbTableInfo, DbTableData, DbQueryResult } from "@anima/api-client";
+import { api } from "../lib/api";
 import { Icons } from "../components/database/Icons";
 import { NavButton } from "../components/database/components";
 import { useLocalStorage, useColumnStats, useVirtualList, useLastSession, useQueryDraft, useColumnVisibility } from "../components/database/hooks";
@@ -544,7 +545,7 @@ export default function Database() {
               <Icons.Schema />
             </div>
             <h1 className="text-lg font-semibold">Database Viewer</h1>
-            <p className="text-xs text-text-muted">Enter your password to view decrypted data</p>
+            <p className="text-xs text-muted-foreground">Enter your password to view decrypted data</p>
           </div>
           <form
             onSubmit={(e) => {
@@ -559,9 +560,9 @@ export default function Database() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Password"
               autoFocus
-              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors"
+              className="w-full bg-input border border-border rounded-lg px-4 py-3 text-sm placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors"
             />
-            {verifyError && <p className="text-xs text-danger px-1">{verifyError}</p>}
+            {verifyError && <p className="text-xs text-destructive px-1">{verifyError}</p>}
             <button
               type="submit"
               disabled={verifying || !password}
@@ -578,7 +579,7 @@ export default function Database() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="shrink-0 px-6 py-3 border-b border-border bg-bg-card/50">
+      <header className="shrink-0 px-6 py-3 border-b border-border bg-card/50">
         <div className="flex items-center justify-between">
           {/* Left: Logo & Title */}
           <div className="flex items-center gap-3">
@@ -587,14 +588,14 @@ export default function Database() {
             </div>
             <div>
               <h1 className="text-base font-semibold">Database Viewer</h1>
-              <p className="text-[11px] text-text-muted">
+              <p className="text-[11px] text-muted-foreground">
                 {tables.length} tables • {stats?.totalRows?.toLocaleString() ?? "—"} rows
               </p>
             </div>
           </div>
 
           {/* Center: Main Navigation */}
-          <nav className="flex items-center gap-1 bg-bg-input/50 p-1 rounded-lg">
+          <nav className="flex items-center gap-1 bg-input/50 p-1 rounded-lg">
             <NavButton 
               active={view === "dashboard"} 
               onClick={() => setView("dashboard")} 
@@ -624,7 +625,7 @@ export default function Database() {
             <button
               onClick={loadTables}
               disabled={loading}
-              className="p-2 text-text-muted hover:text-text hover:bg-bg-input rounded-lg transition-colors disabled:opacity-50"
+              className="p-2 text-muted-foreground hover:text-foreground hover:bg-input rounded-lg transition-colors disabled:opacity-50"
               title="Refresh tables"
             >
               <Icons.Refresh />
@@ -637,7 +638,7 @@ export default function Database() {
 
             {/* Settings/Menu placeholder */}
             <button
-              className="p-2 text-text-muted hover:text-text hover:bg-bg-input rounded-lg transition-colors"
+              className="p-2 text-muted-foreground hover:text-foreground hover:bg-input rounded-lg transition-colors"
               title="Settings"
             >
               <Icons.Settings />
@@ -650,7 +651,7 @@ export default function Database() {
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/50">
             <button
               onClick={() => setView("tables")}
-              className="text-xs text-text-muted hover:text-text"
+              className="text-xs text-muted-foreground hover:text-foreground"
             >
               Tables
             </button>
@@ -659,13 +660,13 @@ export default function Database() {
             {view === "schema" && (
               <>
                 <Icons.ChevronRight />
-                <span className="text-xs text-text-muted">Schema</span>
+                <span className="text-xs text-muted-foreground">Schema</span>
               </>
             )}
             {view === "relations" && (
               <>
                 <Icons.ChevronRight />
-                <span className="text-xs text-text-muted">Relations</span>
+                <span className="text-xs text-muted-foreground">Relations</span>
               </>
             )}
           </div>
@@ -675,7 +676,7 @@ export default function Database() {
       {/* Content */}
       <div className="flex-1 overflow-auto px-6 py-5">
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-danger/10 border border-danger/20 text-danger text-sm flex items-center gap-2">
+          <div className="mb-4 px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
             <Icons.Warning />
             {error}
           </div>
@@ -683,7 +684,7 @@ export default function Database() {
 
         {loading && view === "tables" && tables.length === 0 ? (
           <div className="flex items-center justify-center h-32">
-            <div className="animate-pulse text-text-muted">Loading database…</div>
+            <div className="animate-pulse text-muted-foreground">Loading database…</div>
           </div>
         ) : (
           <>

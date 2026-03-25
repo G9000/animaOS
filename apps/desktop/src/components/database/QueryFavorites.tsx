@@ -68,8 +68,8 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
           onClick={() => setIsOpen(!isOpen)}
           className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
             savedQueries.length > 0
-              ? "text-text-muted hover:text-text"
-              : "text-text-muted/50"
+              ? "text-muted-foreground hover:text-foreground"
+              : "text-muted-foreground/50"
           }`}
         >
           <Icons.Bookmark />
@@ -89,16 +89,16 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1 w-80 bg-bg-card border border-border rounded-lg shadow-lg z-50 max-h-96 overflow-hidden flex flex-col">
-          <div className="px-3 py-2 bg-bg-input border-b border-border flex items-center justify-between">
+        <div className="absolute left-0 top-full mt-1 w-80 bg-card border border-border rounded-lg shadow-lg z-50 max-h-96 overflow-hidden flex flex-col">
+          <div className="px-3 py-2 bg-input border-b border-border flex items-center justify-between">
             <span className="text-xs font-medium">Saved Queries</span>
-            <button onClick={() => setIsOpen(false)} className="p-1 text-text-muted/50 hover:text-text">
+            <button onClick={() => setIsOpen(false)} className="p-1 text-muted-foreground/50 hover:text-foreground">
               <Icons.X />
             </button>
           </div>
           
           {savedQueries.length === 0 ? (
-            <div className="p-4 text-center text-text-muted/50 text-sm">
+            <div className="p-4 text-center text-muted-foreground/50 text-sm">
               No saved queries yet
             </div>
           ) : (
@@ -106,7 +106,7 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
               {savedQueries.map((query) => (
                 <div
                   key={query.id}
-                  className="px-3 py-2 border-b border-border/50 last:border-0 hover:bg-bg-input group"
+                  className="px-3 py-2 border-b border-border/50 last:border-0 hover:bg-input group"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <button
@@ -115,11 +115,11 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
                     >
                       <div className="text-sm font-medium truncate">{query.name}</div>
                       {query.description && (
-                        <div className="text-[10px] text-text-muted/70 truncate">
+                        <div className="text-[10px] text-muted-foreground/70 truncate">
                           {query.description}
                         </div>
                       )}
-                      <div className="flex items-center gap-2 mt-1 text-[10px] text-text-muted/50">
+                      <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground/50">
                         <span>{new Date(query.createdAt).toLocaleDateString()}</span>
                         {query.runCount > 0 && (
                           <span>• Run {query.runCount} times</span>
@@ -128,7 +128,7 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
                     </button>
                     <button
                       onClick={() => handleDelete(query.id)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-text-muted/50 hover:text-danger transition-opacity"
+                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground/50 hover:text-destructive transition-opacity"
                     >
                       <Icons.Trash />
                     </button>
@@ -143,37 +143,37 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
       {/* Save Dialog */}
       {showSaveDialog && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-96 bg-bg-card border border-border rounded-lg p-4">
+          <div className="w-96 bg-card border border-border rounded-lg p-4">
             <h3 className="text-sm font-medium mb-3">Save Query</h3>
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-text-muted block mb-1">Name</label>
+                <label className="text-xs text-muted-foreground block mb-1">Name</label>
                 <input
                   type="text"
                   value={newQueryName}
                   onChange={(e) => setNewQueryName(e.target.value)}
                   placeholder="e.g., Recent Messages"
-                  className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm"
+                  className="w-full bg-input border border-border rounded px-3 py-2 text-sm"
                   autoFocus
                 />
               </div>
               <div>
-                <label className="text-xs text-text-muted block mb-1">Description (optional)</label>
+                <label className="text-xs text-muted-foreground block mb-1">Description (optional)</label>
                 <input
                   type="text"
                   value={newQueryDesc}
                   onChange={(e) => setNewQueryDesc(e.target.value)}
                   placeholder="What does this query do?"
-                  className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm"
+                  className="w-full bg-input border border-border rounded px-3 py-2 text-sm"
                 />
               </div>
-              <div className="text-xs text-text-muted/50 font-mono truncate">
+              <div className="text-xs text-muted-foreground/50 font-mono truncate">
                 {currentSql.slice(0, 60)}{currentSql.length > 60 ? "..." : ""}
               </div>
               <div className="flex gap-2 justify-end">
                 <button
                   onClick={() => setShowSaveDialog(false)}
-                  className="px-3 py-1.5 text-xs text-text-muted hover:text-text"
+                  className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
                 >
                   Cancel
                 </button>

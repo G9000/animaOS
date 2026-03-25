@@ -7,12 +7,21 @@ export function getTheme(): Theme {
 }
 
 export function initTheme() {
-  document.documentElement.setAttribute("data-theme", getTheme());
+  const theme = getTheme();
+  if (theme === "dark") {
+    document.documentElement.classList.add("dark");
+  } else {
+    document.documentElement.classList.remove("dark");
+  }
 }
 
 export function toggleTheme(): Theme {
   const next = getTheme() === "dark" ? "light" : "dark";
   localStorage.setItem(THEME_KEY, next);
-  document.documentElement.setAttribute("data-theme", next);
+  if (next === "dark") {
+    document.documentElement.classList.add("dark");
+  } else {
+    document.documentElement.classList.remove("dark");
+  }
   return next;
 }

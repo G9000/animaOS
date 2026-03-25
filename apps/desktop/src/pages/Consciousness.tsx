@@ -1,11 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
-import {
-  api,
-  type SelfModelData,
-  type SelfModelSection,
-  type EmotionalContextData,
-} from "../lib/api";
+import type { SelfModelData, SelfModelSection, EmotionalContextData } from "@anima/api-client";
+import { api } from "../lib/api";
 
 type Tab = "identity" | "inner_state" | "working_memory" | "growth_log" | "intentions" | "emotions";
 
@@ -165,16 +161,16 @@ export default function Consciousness() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-5 py-2.5 border-b border-border bg-bg-card/40">
+      <div className="px-5 py-2.5 border-b border-border bg-card/40">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="font-mono text-[10px] text-text-muted tracking-wider">
+            <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
               MIND
             </span>
             {selfModel && (
               <>
                 <div className="w-px h-3 bg-border" />
-                <span className="font-mono text-[9px] text-text-muted/40 tracking-wider">
+                <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
                   {Object.keys(selfModel.sections).length} SECTIONS
                 </span>
               </>
@@ -182,21 +178,21 @@ export default function Consciousness() {
           </div>
           <div className="flex items-center gap-3">
             {actionMessage && (
-              <span className="font-mono text-[9px] text-text-muted/60 tracking-wider">
+              <span className="font-mono text-[9px] text-muted-foreground/60 tracking-wider">
                 {actionMessage}
               </span>
             )}
             <button
               onClick={handleReflect}
               disabled={reflecting || sleeping}
-              className="font-mono text-[9px] text-text-muted/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
+              className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
             >
               {reflecting ? "REFLECTING..." : "REFLECT"}
             </button>
             <button
               onClick={handleSleep}
               disabled={sleeping || reflecting}
-              className="font-mono text-[9px] text-text-muted/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
+              className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
             >
               {sleeping ? "RUNNING..." : "SLEEP"}
             </button>
@@ -206,7 +202,7 @@ export default function Consciousness() {
               </span>
             )}
             {error && (
-              <span className="font-mono text-[9px] text-danger tracking-wider">
+              <span className="font-mono text-[9px] text-destructive tracking-wider">
                 {error}
               </span>
             )}
@@ -214,7 +210,7 @@ export default function Consciousness() {
               <>
                 <button
                   onClick={cancelEdit}
-                  className="font-mono text-[9px] text-text-muted/40 hover:text-text tracking-wider transition-colors"
+                  className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground tracking-wider transition-colors"
                 >
                   CANCEL
                 </button>
@@ -230,7 +226,7 @@ export default function Consciousness() {
             {!editing && isEditable && currentSection && (
               <button
                 onClick={startEdit}
-                className="font-mono text-[9px] text-text-muted/40 hover:text-text tracking-wider transition-colors"
+                className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground tracking-wider transition-colors"
               >
                 EDIT
               </button>
@@ -251,7 +247,7 @@ export default function Consciousness() {
             className={`font-mono text-[9px] px-2.5 py-1.5 tracking-wider transition-colors ${
               tab === t.key
                 ? "bg-primary/[0.08] text-primary border-b-2 border-primary"
-                : "text-text-muted/40 hover:text-text-muted"
+                : "text-muted-foreground/40 hover:text-muted-foreground"
             }`}
           >
             {t.label}
@@ -261,11 +257,11 @@ export default function Consciousness() {
 
       {/* Description */}
       <div className="px-5 py-2 border-b border-border/50">
-        <p className="font-mono text-[10px] text-text-muted/40 leading-relaxed max-w-lg tracking-wider">
+        <p className="font-mono text-[10px] text-muted-foreground/40 leading-relaxed max-w-lg tracking-wider">
           {SECTION_DESCRIPTIONS[tab]}
         </p>
         {editing && (
-          <p className="font-mono text-[8px] text-text-muted/20 mt-0.5 tracking-wider">
+          <p className="font-mono text-[8px] text-muted-foreground/20 mt-0.5 tracking-wider">
             CMD+S SAVE | ESC CANCEL
           </p>
         )}
@@ -275,7 +271,7 @@ export default function Consciousness() {
       <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
         {loading && (
           <div className="flex items-center justify-center h-full">
-            <span className="font-mono text-[10px] text-text-muted/30 animate-pulse tracking-wider">
+            <span className="font-mono text-[10px] text-muted-foreground/30 animate-pulse tracking-wider">
               LOADING...
             </span>
           </div>
@@ -289,7 +285,7 @@ export default function Consciousness() {
             onChange={(e) => setEditContent(e.target.value)}
             onKeyDown={handleKeyDown}
             spellCheck={false}
-            className="w-full h-full bg-bg-input border border-border px-5 py-4 text-sm text-text outline-none focus:border-primary/30 transition-colors resize-none leading-relaxed font-mono"
+            className="w-full h-full bg-input border border-border px-5 py-4 text-sm text-foreground outline-none focus:border-primary/30 transition-colors resize-none leading-relaxed font-mono"
             autoFocus
           />
         )}
@@ -302,7 +298,7 @@ export default function Consciousness() {
       {/* Footer */}
       {currentSection && !editing && (
         <div className="px-5 py-2 border-t border-border flex items-center gap-4">
-          <span className="font-mono text-[8px] text-text-muted/20 tracking-wider">
+          <span className="font-mono text-[8px] text-muted-foreground/20 tracking-wider">
             V{currentSection.version} | {currentSection.updatedBy?.toUpperCase()}
             {currentSection.updatedAt &&
               ` | ${new Date(currentSection.updatedAt).toLocaleDateString()}`}
@@ -316,7 +312,7 @@ export default function Consciousness() {
 function SectionView({ section }: { section: SelfModelSection | null }) {
   if (!section || !section.content.trim()) {
     return (
-      <div className="font-mono text-[10px] text-text-muted/40 tracking-wider">
+      <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
         NO CONTENT YET. POPULATED AS ANIMA LEARNS FROM CONVERSATIONS.
       </div>
     );
@@ -330,7 +326,7 @@ function SectionView({ section }: { section: SelfModelSection | null }) {
         return (
           <p
             key={i}
-            className={`text-sm text-text/85 leading-relaxed ${
+            className={`text-sm text-foreground/85 leading-relaxed ${
               isBullet ? "pl-3 border-l border-border" : ""
             }`}
           >
@@ -345,7 +341,7 @@ function SectionView({ section }: { section: SelfModelSection | null }) {
 function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
   if (!emotions) {
     return (
-      <div className="font-mono text-[10px] text-text-muted/40 tracking-wider">
+      <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
         NO EMOTIONAL DATA AVAILABLE.
       </div>
     );
@@ -355,11 +351,11 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
     <div className="max-w-2xl space-y-6">
       {/* Dominant emotion */}
       {emotions.dominantEmotion && (
-        <div className="bg-bg-card border-l-2 border-primary/30 px-4 py-3">
-          <span className="font-mono text-[9px] text-text-muted/40 tracking-wider">
+        <div className="bg-card border-l-2 border-primary/30 px-4 py-3">
+          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
             DOMINANT
           </span>
-          <p className="text-lg text-text mt-1 capitalize">
+          <p className="text-lg text-foreground mt-1 capitalize">
             {emotions.dominantEmotion}
           </p>
         </div>
@@ -368,10 +364,10 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Synthesized context */}
       {emotions.synthesizedContext && (
         <div>
-          <span className="font-mono text-[9px] text-text-muted/40 tracking-wider">
+          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
             CONTEXT
           </span>
-          <p className="text-sm text-text/70 leading-relaxed mt-1">
+          <p className="text-sm text-foreground/70 leading-relaxed mt-1">
             {emotions.synthesizedContext}
           </p>
         </div>
@@ -380,17 +376,17 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Recent signals */}
       {emotions.recentSignals.length > 0 && (
         <div>
-          <span className="font-mono text-[9px] text-text-muted/40 tracking-wider">
+          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
             SIGNALS
           </span>
           <div className="mt-2 space-y-px">
             {emotions.recentSignals.map((signal, i) => (
               <div
                 key={i}
-                className="bg-bg-card border-l-2 border-border px-4 py-2.5 hover:border-primary/20 transition-colors"
+                className="bg-card border-l-2 border-border px-4 py-2.5 hover:border-primary/20 transition-colors"
               >
                 <div className="flex items-center gap-3">
-                  <span className="text-sm text-text capitalize">
+                  <span className="text-sm text-foreground capitalize">
                     {signal.emotion}
                   </span>
                   <div className="flex gap-px">
@@ -405,22 +401,22 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
                       />
                     ))}
                   </div>
-                  <span className="font-mono text-[8px] text-text-muted/30 tracking-wider">
+                  <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
                     {signal.trajectory?.toUpperCase()}
                   </span>
                 </div>
                 {signal.topic && (
-                  <p className="font-mono text-[10px] text-text-muted/40 mt-1">
+                  <p className="font-mono text-[10px] text-muted-foreground/40 mt-1">
                     re: {signal.topic}
                   </p>
                 )}
                 {signal.evidence && (
-                  <p className="text-[11px] text-text-muted/30 mt-0.5 italic">
+                  <p className="text-[11px] text-muted-foreground/30 mt-0.5 italic">
                     "{signal.evidence}"
                   </p>
                 )}
                 {signal.createdAt && (
-                  <span className="font-mono text-[8px] text-text-muted/20 mt-1 block tracking-wider">
+                  <span className="font-mono text-[8px] text-muted-foreground/20 mt-1 block tracking-wider">
                     {new Date(signal.createdAt).toLocaleString()}
                   </span>
                 )}
@@ -431,7 +427,7 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       )}
 
       {emotions.recentSignals.length === 0 && !emotions.dominantEmotion && (
-        <div className="font-mono text-[10px] text-text-muted/40 tracking-wider">
+        <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
           NO SIGNALS DETECTED. EMERGE FROM CONVERSATIONS.
         </div>
       )}

@@ -50,7 +50,7 @@ export function Dashboard({
 
       <div className="grid md:grid-cols-2 gap-6">
         {/* Top Tables */}
-        <div className="bg-bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Icons.Table />
             Largest Tables
@@ -60,16 +60,16 @@ export function Dashboard({
               <div
                 key={table.name}
                 onClick={() => onOpenTable(table.name)}
-                className="flex items-center justify-between p-2 rounded hover:bg-bg-input cursor-pointer transition-colors group"
+                className="flex items-center justify-between p-2 rounded hover:bg-input cursor-pointer transition-colors group"
               >
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-text-muted w-5">#{i + 1}</span>
+                  <span className="text-xs text-muted-foreground w-5">#{i + 1}</span>
                   <span className="font-mono text-sm group-hover:text-primary transition-colors">
                     {table.name}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <div className="w-24 h-1.5 bg-bg-input rounded-full overflow-hidden">
+                  <div className="w-24 h-1.5 bg-input rounded-full overflow-hidden">
                     <div
                       className="h-full bg-primary/50 rounded-full"
                       style={{
@@ -80,7 +80,7 @@ export function Dashboard({
                       }}
                     />
                   </div>
-                  <span className="text-xs text-text-muted w-16 text-right">
+                  <span className="text-xs text-muted-foreground w-16 text-right">
                     {table.rowCount.toLocaleString()}
                   </span>
                 </div>
@@ -90,20 +90,20 @@ export function Dashboard({
         </div>
 
         {/* Recent Tables */}
-        <div className="bg-bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Icons.History />
             Recent Tables
           </h3>
           {recentTables.length === 0 ? (
-            <p className="text-sm text-text-muted/50 italic">No recent tables</p>
+            <p className="text-sm text-muted-foreground/50 italic">No recent tables</p>
           ) : (
             <div className="space-y-1">
               {recentTables.slice(0, 8).map((name) => (
                 <button
                   key={name}
                   onClick={() => onOpenTable(name)}
-                  className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-input text-sm font-mono transition-colors"
+                  className="w-full text-left px-2 py-1.5 rounded hover:bg-input text-sm font-mono transition-colors"
                 >
                   {name}
                 </button>
@@ -114,7 +114,7 @@ export function Dashboard({
       </div>
 
       {/* Quick Actions */}
-      <div className="bg-bg-card border border-border rounded-lg p-4">
+      <div className="bg-card border border-border rounded-lg p-4">
         <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
           <Icons.Eye />
           Quick Actions
@@ -126,7 +126,7 @@ export function Dashboard({
 
       {/* Bookmarks */}
       {bookmarks.length > 0 && (
-        <div className="bg-bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-lg p-4">
           <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Icons.Bookmark />
             Bookmarks
@@ -142,7 +142,7 @@ export function Dashboard({
                     // SQL will be set by parent
                   }
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-bg-input border border-border rounded-lg hover:border-primary/50 transition-colors text-sm"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-input border border-border rounded-lg hover:border-primary/50 transition-colors text-sm"
               >
                 {bm.type === "table" ? <Icons.Table /> : <Icons.Eye />}
                 <span className="font-mono">{bm.name}</span>
@@ -151,7 +151,7 @@ export function Dashboard({
                     e.stopPropagation();
                     onRemoveBookmark(bm.timestamp);
                   }}
-                  className="ml-1 text-text-muted/50 hover:text-danger"
+                  className="ml-1 text-muted-foreground/50 hover:text-destructive"
                 >
                   ×
                 </button>
@@ -162,7 +162,7 @@ export function Dashboard({
       )}
 
       {/* All Tables Preview */}
-      <div className="bg-bg-card border border-border rounded-lg p-4">
+      <div className="bg-card border border-border rounded-lg p-4">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-medium flex items-center gap-2">
             <Icons.Grid />
@@ -170,7 +170,7 @@ export function Dashboard({
           </h3>
           <button
             onClick={() => onSetView("tables")}
-            className="text-xs text-primary hover:text-primary-hover"
+            className="text-xs text-primary hover:text-primary/80"
           >
             View All →
           </button>
@@ -180,13 +180,13 @@ export function Dashboard({
             <button
               key={table.name}
               onClick={() => onOpenTable(table.name)}
-              className="p-3 rounded-lg bg-bg-input hover:bg-bg-input/80 border border-border hover:border-primary/30 transition-all text-left group"
+              className="p-3 rounded-lg bg-input hover:bg-input/80 border border-border hover:border-primary/30 transition-all text-left group"
             >
               <div className="flex items-center justify-between mb-1">
                 <span className="font-mono text-xs truncate">{table.name}</span>
                 {isBookmarked("table", table.name) && <Icons.BookmarkSolid />}
               </div>
-              <div className="text-[10px] text-text-muted">
+              <div className="text-[10px] text-muted-foreground">
                 {table.rowCount.toLocaleString()} rows
               </div>
             </button>

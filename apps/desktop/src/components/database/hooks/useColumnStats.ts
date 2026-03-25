@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { DbTableData } from "../../../lib/api";
+import type { DbTableData } from "@anima/api-client";
 
 export interface ColumnStats {
   name: string;

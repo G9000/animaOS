@@ -17,12 +17,12 @@ export default function AdvancedSettings() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-5">
+      <section className="rounded-sm border border-border bg-card p-5 space-y-5">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
+          <h2 className="text-[11px] text-muted-foreground uppercase tracking-wider">
             Debug
           </h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-muted-foreground">
             Advanced tools for inspecting application internals. Use with
             caution.
           </p>
@@ -30,10 +30,10 @@ export default function AdvancedSettings() {
 
         <label className="flex items-center justify-between gap-4 cursor-pointer group">
           <div>
-            <p className="text-sm text-text group-hover:text-primary transition-colors">
+            <p className="text-sm text-foreground group-hover:text-primary transition-colors">
               Database Viewer
             </p>
-            <p className="text-xs text-text-muted">
+            <p className="text-xs text-muted-foreground">
               Show the DB inspector in the sidebar. Lets you browse tables, run
               queries, and edit or delete rows.
             </p>

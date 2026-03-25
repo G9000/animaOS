@@ -21,21 +21,21 @@ export default function ModCard({ id, version, status, enabled, hasConfigSchema,
       }`}
     >
       <div className="flex items-center justify-between mb-2">
-        <span className="font-mono text-[10px] tracking-widest uppercase text-text">
+        <span className="font-mono text-[10px] tracking-widest uppercase text-foreground">
           {id}
         </span>
         <StatusBadge status={status} />
       </div>
 
       <div className="flex items-center justify-between mt-3">
-        <span className="font-mono text-[8px] text-text-muted/40">v{version}</span>
+        <span className="font-mono text-[8px] text-muted-foreground/40">v{version}</span>
         <button
           onClick={(e) => {
             e.stopPropagation();
             onToggle(id, !enabled);
           }}
           className={`w-7 h-4 rounded-full transition-colors relative ${
-            enabled ? "bg-primary/30" : "bg-bg-input"
+            enabled ? "bg-primary/30" : "bg-input"
           }`}
         >
           <div

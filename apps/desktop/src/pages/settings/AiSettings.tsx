@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { api, type AgentConfig, type ProviderInfo } from "../../lib/api";
+import type { AgentConfig, ProviderInfo } from "@anima/api-client";
+import { api } from "../../lib/api";
 
 const SUGGESTED_MODELS: Record<string, string[]> = {
   ollama: [
@@ -35,7 +36,7 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
 ];
 
 const INPUT_CLASS =
-  "w-full bg-bg-input border border-border rounded-sm px-3 py-2 text-sm text-text placeholder:text-text-muted/50 outline-none focus:border-primary transition-colors";
+  "w-full bg-input border border-border rounded-sm px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors";
 
 export default function AiSettings() {
   const { user } = useAuth();
@@ -133,12 +134,12 @@ export default function AiSettings() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-sm border border-border bg-bg-card p-5 space-y-5">
+      <section className="rounded-sm border border-border bg-card p-5 space-y-5">
         <header className="space-y-1">
-          <h2 className="text-[11px] text-text-muted uppercase tracking-wider">
+          <h2 className="text-[11px] text-muted-foreground uppercase tracking-wider">
             Inference Provider
           </h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-muted-foreground">
             Choose the runtime that powers chat, summarization, and agent orchestration.
           </p>
         </header>
@@ -150,8 +151,8 @@ export default function AiSettings() {
               onClick={() => handleProviderChange(item.name)}
               className={`px-3 py-2 text-xs uppercase tracking-wider rounded-sm border transition-colors ${
                 provider === item.name
-                  ? "border-primary text-text bg-bg-input"
-                  : "border-border text-text-muted hover:border-text-muted"
+                  ? "border-primary text-foreground bg-input"
+                  : "border-border text-muted-foreground hover:border-text-muted"
               }`}
             >
               {item.name}
@@ -175,8 +176,8 @@ export default function AiSettings() {
                   onClick={() => setModel(suggestion)}
                   className={`text-[10px] px-2 py-0.5 rounded-sm border transition-colors ${
                     model === suggestion
-                      ? "border-primary text-text"
-                      : "border-border text-text-muted hover:text-text"
+                      ? "border-primary text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   {suggestion}
@@ -198,7 +199,7 @@ export default function AiSettings() {
               }
             />
             {config?.hasApiKey && !apiKey && (
-              <p className="mt-1 text-[10px] text-text-muted">Key stored</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Key stored</p>
             )}
           </Field>
         )}
@@ -228,12 +229,12 @@ export default function AiSettings() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-bg-input border border-primary text-text text-xs uppercase tracking-wider rounded-sm hover:bg-bg disabled:opacity-50 transition-colors"
+            className="px-5 py-2 bg-input border border-primary text-foreground text-xs uppercase tracking-wider rounded-sm hover:bg-background disabled:opacity-50 transition-colors"
           >
             {saving ? "Saving..." : "Save AI Settings"}
           </button>
           {saved && <span className="text-xs text-primary tracking-wider">Saved</span>}
-          {error && <span className="text-xs text-danger tracking-wider">{error}</span>}
+          {error && <span className="text-xs text-destructive tracking-wider">{error}</span>}
         </div>
       </section>
     </div>
@@ -243,7 +244,7 @@ export default function AiSettings() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="space-y-2">
-      <h3 className="text-[11px] text-text-muted uppercase tracking-wider">
+      <h3 className="text-[11px] text-muted-foreground uppercase tracking-wider">
         {label}
       </h3>
       {children}

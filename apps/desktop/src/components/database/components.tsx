@@ -15,19 +15,19 @@ export function StatCard({
 }) {
   return (
     <div
-      className={`bg-bg-card border ${color} rounded-lg p-4 hover:border-primary/30 transition-colors`}
+      className={`bg-card border ${color} rounded-lg p-4 hover:border-primary/30 transition-colors`}
     >
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-[11px] text-text-muted uppercase tracking-wide">
+          <p className="text-[11px] text-muted-foreground uppercase tracking-wide">
             {title}
           </p>
           <p className="text-2xl font-semibold mt-1">{value}</p>
           {subtitle && (
-            <p className="text-[11px] text-text-muted/60 mt-0.5">{subtitle}</p>
+            <p className="text-[11px] text-muted-foreground/60 mt-0.5">{subtitle}</p>
           )}
         </div>
-        <div className="text-text-muted/40">{icon}</div>
+        <div className="text-muted-foreground/40">{icon}</div>
       </div>
     </div>
   );
@@ -47,8 +47,8 @@ export function TabButton({
       onClick={onClick}
       className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
         active
-          ? "bg-bg-card border-border text-text"
-          : "border-transparent text-text-muted hover:text-text"
+          ? "bg-card border-border text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground"
       }`}
     >
       {children}
@@ -73,7 +73,7 @@ export function NavButton({
       className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-all ${
         active
           ? "bg-primary/15 text-primary border border-primary/20"
-          : "text-text-muted hover:text-text hover:bg-bg-input border border-transparent"
+          : "text-muted-foreground hover:text-foreground hover:bg-input border border-transparent"
       }`}
     >
       {icon}
@@ -99,7 +99,7 @@ export function ViewModeButton<T extends string>({
       className={`p-1.5 rounded transition-colors ${
         current === mode
           ? "bg-primary/20 text-primary"
-          : "text-text-muted hover:text-text hover:bg-bg-input"
+          : "text-muted-foreground hover:text-foreground hover:bg-input"
       }`}
       title={`${mode} view`}
     >
@@ -127,10 +127,10 @@ export function Button({
     "rounded-md transition-colors disabled:opacity-30 flex items-center gap-1.5";
 
   const variants = {
-    default: "bg-bg-card border border-border hover:bg-bg-input text-text",
+    default: "bg-card border border-border hover:bg-input text-foreground",
     primary: "bg-primary text-white hover:bg-primary/90 border border-transparent",
-    danger: "bg-danger/20 text-danger hover:bg-danger/30 border border-transparent",
-    ghost: "bg-transparent hover:bg-bg-input text-text-muted hover:text-text border border-transparent",
+    danger: "bg-destructive/20 text-destructive hover:bg-destructive/30 border border-transparent",
+    ghost: "bg-transparent hover:bg-input text-muted-foreground hover:text-foreground border border-transparent",
   };
 
   const sizes = {

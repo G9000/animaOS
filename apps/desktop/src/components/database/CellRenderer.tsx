@@ -31,7 +31,7 @@ export function CellRenderer({
         type="text"
         value={editValue ?? ""}
         onChange={(e) => onEditChange?.(e.target.value)}
-        className="w-full min-w-[60px] bg-bg-input border border-border rounded px-1.5 py-0.5 text-[12px] outline-none focus:border-primary/40"
+        className="w-full min-w-[60px] bg-input border border-border rounded px-1.5 py-0.5 text-[12px] outline-none focus:border-primary/40"
         autoFocus
       />
     );
@@ -40,14 +40,14 @@ export function CellRenderer({
   // Null/undefined/empty handling
   if (value === null)
     return (
-      <span className="text-text-muted/40 italic text-[11px]">NULL</span>
+      <span className="text-muted-foreground/40 italic text-[11px]">NULL</span>
     );
   if (value === undefined)
     return (
-      <span className="text-text-muted/40 italic text-[11px]">undefined</span>
+      <span className="text-muted-foreground/40 italic text-[11px]">undefined</span>
     );
   if (value === "")
-    return <span className="text-text-muted/30 text-[11px]">(empty)</span>;
+    return <span className="text-muted-foreground/30 text-[11px]">(empty)</span>;
 
   const str = String(value);
 
@@ -82,7 +82,7 @@ export function CellRenderer({
               {isExpanded ? "▼" : "▶"} JSON
             </span>
             {isExpanded ? (
-              <pre className="mt-1 text-[10px] text-text-muted/80 whitespace-pre-wrap break-all font-mono">
+              <pre className="mt-1 text-[10px] text-muted-foreground/80 whitespace-pre-wrap break-all font-mono">
                 {formatted}
               </pre>
             ) : (
@@ -107,7 +107,7 @@ export function CellRenderer({
           className="text-left hover:text-primary transition-colors truncate"
         >
           {str.slice(0, 80)}…
-          <span className="text-text-muted/50 text-[10px] ml-1">
+          <span className="text-muted-foreground/50 text-[10px] ml-1">
             [+{str.length - 80}]
           </span>
         </button>
@@ -122,7 +122,7 @@ export function CellRenderer({
         {str}
         <button
           onClick={onToggleExpand}
-          className="text-text-muted/50 text-[10px] ml-2 hover:text-primary"
+          className="text-muted-foreground/50 text-[10px] ml-2 hover:text-primary"
         >
           collapse
         </button>
@@ -153,7 +153,7 @@ function CopyButton({
         e.stopPropagation();
         onCopy();
       }}
-      className="opacity-0 group-hover/cell:opacity-100 p-0.5 text-text-muted/50 hover:text-primary transition-opacity"
+      className="opacity-0 group-hover/cell:opacity-100 p-0.5 text-muted-foreground/50 hover:text-primary transition-opacity"
       title="Copy"
     >
       {copied ? <Icons.Check /> : <Icons.Copy />}

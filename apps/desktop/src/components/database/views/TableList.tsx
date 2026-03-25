@@ -20,7 +20,7 @@ export function TableList({
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted/50">
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50">
             <Icons.Search />
           </div>
           <input
@@ -28,12 +28,12 @@ export function TableList({
             value={tableSearch}
             onChange={(e) => onSetTableSearch(e.target.value)}
             placeholder="Search tables..."
-            className="w-full bg-bg-input border border-border rounded-md pl-9 pr-3 py-2 text-sm placeholder:text-text-muted/40 focus:outline-none focus:border-primary/40"
+            className="w-full bg-input border border-border rounded-md pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
           />
           {tableSearch && (
             <button
               onClick={() => onSetTableSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted/50 hover:text-text"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground"
             >
               ×
             </button>
@@ -41,14 +41,14 @@ export function TableList({
         </div>
         <button
           onClick={onLoadTables}
-          className="p-2 text-text-muted hover:text-text transition-colors"
+          className="p-2 text-muted-foreground hover:text-foreground transition-colors"
           title="Refresh"
         >
           <Icons.Refresh />
         </button>
       </div>
 
-      <div className="text-sm text-text-muted">
+      <div className="text-sm text-muted-foreground">
         {filteredTables.length} of {tables.length} tables
       </div>
 
@@ -72,7 +72,7 @@ export function TableList({
             <div
               key={t.name}
               onClick={() => onOpenTable(t.name)}
-              className="flex items-center justify-between p-3 rounded-lg bg-bg-card/50 hover:bg-bg-card border border-border/50 hover:border-border transition-all cursor-pointer group"
+              className="flex items-center justify-between p-3 rounded-lg bg-card/50 hover:bg-card border border-border/50 hover:border-border transition-all cursor-pointer group"
             >
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded bg-primary/10 flex items-center justify-center text-primary">
@@ -82,7 +82,7 @@ export function TableList({
                   <div className="font-mono text-sm group-hover:text-primary transition-colors">
                     {t.name}
                   </div>
-                  <div className="text-[11px] text-text-muted">
+                  <div className="text-[11px] text-muted-foreground">
                     {t.rowCount.toLocaleString()} rows
                   </div>
                 </div>
@@ -103,7 +103,7 @@ export function TableList({
                   className={`p-1.5 rounded ${
                     isBookmarked("table", t.name)
                       ? "text-primary"
-                      : "text-text-muted hover:text-primary"
+                      : "text-muted-foreground hover:text-primary"
                   }`}
                   title={
                     isBookmarked("table", t.name)
@@ -123,7 +123,7 @@ export function TableList({
                     onSetSql(`SELECT * FROM "${t.name}" LIMIT 100`);
                     onSetView("query");
                   }}
-                  className="px-2 py-1 text-[10px] bg-bg-input border border-border rounded hover:border-primary/50"
+                  className="px-2 py-1 text-[10px] bg-input border border-border rounded hover:border-primary/50"
                 >
                   Query
                 </button>

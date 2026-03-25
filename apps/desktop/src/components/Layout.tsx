@@ -92,7 +92,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     : STATIC_NAV_ITEMS;
 
   return (
-    <div className="relative h-screen bg-bg text-text overflow-hidden">
+    <div className="relative h-screen bg-background text-foreground overflow-hidden">
       <main className="h-full overflow-hidden">{children}</main>
 
       {/* Bottom trigger zone — invisible, activates dock on hover */}
@@ -113,7 +113,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             : "translate-y-[calc(100%+20px)] opacity-0 pointer-events-none"
         }`}
       >
-        <div className="flex items-center gap-px bg-bg-card/90 backdrop-blur-md border border-border p-1">
+        <div className="flex items-center gap-px bg-card/90 backdrop-blur-md border border-border p-1">
           {/* Status dot */}
           <div className="px-2 flex items-center">
             <div className="w-1 h-1 bg-success" />
@@ -131,7 +131,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 `group relative flex flex-col items-center justify-center w-10 h-9 font-mono transition-all duration-100 ${
                   isActive
                     ? "text-primary bg-primary/[0.08]"
-                    : "text-text-muted/50 hover:text-text hover:bg-bg-input/50"
+                    : "text-muted-foreground/50 hover:text-foreground hover:bg-input/50"
                 }`
               }
             >
@@ -157,9 +157,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="relative">
             <button
               onClick={() => setShowUser((v) => !v)}
-              className="flex items-center justify-center w-9 h-9 font-mono text-[9px] text-text-muted/50 hover:text-text transition-colors"
+              className="flex items-center justify-center w-9 h-9 font-mono text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
             >
-              <span className="w-5 h-5 bg-bg-input border border-border flex items-center justify-center text-[8px] uppercase">
+              <span className="w-5 h-5 bg-input border border-border flex items-center justify-center text-[8px] uppercase">
                 {user?.name?.charAt(0) || "?"}
               </span>
             </button>
@@ -167,7 +167,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {/* User dropdown */}
             {showUser && (
               <div
-                className="absolute bottom-full right-0 mb-2 bg-bg-card border border-border p-1 min-w-[120px]"
+                className="absolute bottom-full right-0 mb-2 bg-card border border-border p-1 min-w-[120px]"
                 onMouseLeave={() => setShowUser(false)}
               >
                 <button
@@ -175,7 +175,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     navigate("/profile");
                     setShowUser(false);
                   }}
-                  className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-text-muted hover:text-text hover:bg-bg-input/50 tracking-wider transition-colors"
+                  className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-muted-foreground hover:text-foreground hover:bg-input/50 tracking-wider transition-colors"
                 >
                   PROFILE
                 </button>
@@ -184,7 +184,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     setShowUser(false);
                     void logout().then(() => navigate("/login"));
                   }}
-                  className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-text-muted/40 hover:text-danger tracking-wider transition-colors"
+                  className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
                 >
                   LOGOUT
                 </button>
@@ -200,7 +200,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             title={
               theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
             }
-            className="flex items-center justify-center w-7 h-9 font-mono text-[11px] text-text-muted/50 hover:text-text-muted transition-colors"
+            className="flex items-center justify-center w-7 h-9 font-mono text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
           >
             {theme === "dark" ? "\u2600" : "\u263E"}
           </button>
@@ -219,7 +219,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             className={`flex items-center justify-center w-7 h-9 font-mono text-[10px] transition-colors ${
               pinned
                 ? "text-primary/60 hover:text-primary"
-                : "text-text-muted/20 hover:text-text-muted/50"
+                : "text-muted-foreground/20 hover:text-muted-foreground/50"
             }`}
           >
             {pinned ? "\u25A0" : "\u25A1"}

@@ -1,55 +1,34 @@
-import {
-  createApiClient,
-  type AgentConfig,
-  type AgentResponse,
-  type ApiClient,
-  type AuthResponse,
-  type ChatMessage,
-  type DailyBrief,
-  type EmotionalContextData,
-  type Greeting,
-  type HomeData,
-  type LoginResponse,
-  type MemoryEpisodeData,
-  type MemoryItemData,
-  type MemoryOverviewData,
-  type MemorySearchResult,
-  type Nudge,
-  type PersonaTemplate,
-  type ProviderInfo,
-  type SelfModelData,
-  type SelfModelSection,
-  type TaskItem,
-  type TraceEvent,
-  type User,
-  type DbTableInfo,
-  type DbTableData,
-  type DbQueryResult,
-  type GraphEntity,
-  type GraphEntityDetail,
-  type GraphRelation,
-  type GraphPath,
-  type GraphOverviewData,
-  type GraphSearchResult,
-} from "@anima/api-client";
+import { createApiClient, type ApiClient } from "@anima/api-client";
 import { API_BASE } from "./runtime";
 
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
 let unlockTokenCache: string | null = null;
 
 export function getUnlockToken(): string | null {
+  if (unlockTokenCache) return unlockTokenCache;
+  try {
+    const stored = sessionStorage.getItem(UNLOCK_TOKEN_KEY);
+    if (stored) unlockTokenCache = stored;
+  } catch {
+    // Ignore storage failures.
+  }
   return unlockTokenCache;
 }
 
 export function setUnlockToken(token: string): void {
   unlockTokenCache = token;
+  try {
+    sessionStorage.setItem(UNLOCK_TOKEN_KEY, token);
+  } catch {
+    // Ignore storage failures.
+  }
 }
 
 export function clearUnlockToken(): void {
   unlockTokenCache = null;
-  // Purge any token that may have been persisted by an older version.
   try {
-    localStorage.removeItem(UNLOCK_TOKEN_KEY);
+    sessionStorage.removeItem(UNLOCK_TOKEN_KEY);
+    localStorage.removeItem(UNLOCK_TOKEN_KEY); // purge legacy
   } catch {
     // Ignore storage failures.
   }
@@ -73,35 +52,3 @@ export const api: ApiClient & {
   },
 };
 
-export type {
-  DbTableInfo,
-  DbTableData,
-  DbQueryResult,
-  AgentConfig,
-  AgentResponse,
-  AuthResponse,
-  ChatMessage,
-  DailyBrief,
-  EmotionalContextData,
-  Greeting,
-  HomeData,
-  LoginResponse,
-  MemoryEpisodeData,
-  MemoryItemData,
-  MemoryOverviewData,
-  MemorySearchResult,
-  Nudge,
-  PersonaTemplate,
-  ProviderInfo,
-  SelfModelData,
-  SelfModelSection,
-  TaskItem,
-  TraceEvent,
-  User,
-  GraphEntity,
-  GraphEntityDetail,
-  GraphRelation,
-  GraphPath,
-  GraphOverviewData,
-  GraphSearchResult,
-};

@@ -152,7 +152,7 @@ export function ERDiagram({ tables: _tables, onOpenTable }: ERDiagramProps) {
     <div className="relative">
       <button
         onClick={() => setIsOpen(true)}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text transition-colors"
+        className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <Icons.Sitemap />
         ER Diagram
@@ -160,41 +160,41 @@ export function ERDiagram({ tables: _tables, onOpenTable }: ERDiagramProps) {
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-[900px] h-[600px] bg-bg-card border border-border rounded-lg flex flex-col">
+          <div className="w-[900px] h-[600px] bg-card border border-border rounded-lg flex flex-col">
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-medium">Database Schema (ER Diagram)</h3>
-                <p className="text-[10px] text-text-muted">Drag to pan • Scroll to zoom</p>
+                <p className="text-[10px] text-muted-foreground">Drag to pan • Scroll to zoom</p>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
-                  className="p-1 text-text-muted hover:text-text"
+                  className="p-1 text-muted-foreground hover:text-foreground"
                 >
                   -
                 </button>
                 <span className="text-xs w-12 text-center">{(zoom * 100).toFixed(0)}%</span>
                 <button
                   onClick={() => setZoom((z) => Math.min(2, z + 0.1))}
-                  className="p-1 text-text-muted hover:text-text"
+                  className="p-1 text-muted-foreground hover:text-foreground"
                 >
                   +
                 </button>
                 <button
                   onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
-                  className="px-2 py-1 text-xs text-text-muted hover:text-text"
+                  className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
                 >
                   Reset
                 </button>
-                <button onClick={() => setIsOpen(false)} className="p-1 text-text-muted/50 hover:text-text ml-2">
+                <button onClick={() => setIsOpen(false)} className="p-1 text-muted-foreground/50 hover:text-foreground ml-2">
                   <Icons.X />
                 </button>
               </div>
             </div>
 
             {/* Diagram */}
-            <div className="flex-1 overflow-hidden bg-bg-input relative">
+            <div className="flex-1 overflow-hidden bg-input relative">
               <svg
                 ref={svgRef}
                 className="w-full h-full cursor-grab active:cursor-grabbing"
@@ -323,7 +323,7 @@ export function ERDiagram({ tables: _tables, onOpenTable }: ERDiagramProps) {
               </svg>
 
               {/* Legend */}
-              <div className="absolute bottom-4 left-4 p-3 bg-bg-card border border-border rounded-lg text-xs space-y-2">
+              <div className="absolute bottom-4 left-4 p-3 bg-card border border-border rounded-lg text-xs space-y-2">
                 <div className="flex items-center gap-2">
                   <span>🔑</span>
                   <span>Primary Key</span>

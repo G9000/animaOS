@@ -34,20 +34,20 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
 
         return (
           <div key={key}>
-            <label className="block font-mono text-[9px] tracking-wider text-text-muted/60 mb-1">
+            <label className="block font-mono text-[9px] tracking-wider text-muted-foreground/60 mb-1">
               {field.label}
-              {field.required && <span className="text-danger ml-1">*</span>}
+              {field.required && <span className="text-destructive ml-1">*</span>}
             </label>
 
             {field.description && (
-              <p className="font-mono text-[8px] text-text-muted/30 mb-1">{field.description}</p>
+              <p className="font-mono text-[8px] text-muted-foreground/30 mb-1">{field.description}</p>
             )}
 
             {field.type === "boolean" ? (
               <button
                 onClick={() => set(key, !values[key])}
                 className={`w-7 h-4 rounded-full transition-colors relative ${
-                  values[key] ? "bg-primary/30" : "bg-bg-input"
+                  values[key] ? "bg-primary/30" : "bg-input"
                 }`}
               >
                 <div
@@ -65,7 +65,7 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
                     className={`font-mono text-[9px] px-2 py-1 border transition-colors ${
                       values[key] === opt
                         ? "border-primary text-primary"
-                        : "border-border text-text-muted/40 hover:text-text"
+                        : "border-border text-muted-foreground/40 hover:text-foreground"
                     }`}
                   >
                     {opt.toUpperCase()}
@@ -78,21 +78,21 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
                 value={values[key] === "***" ? "" : String(values[key] ?? "")}
                 placeholder={values[key] === "***" ? "saved" : ""}
                 onChange={(e) => set(key, e.target.value)}
-                className="w-full bg-bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-text focus:border-primary/50 outline-none"
+                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
               />
             ) : field.type === "number" ? (
               <input
                 type="number"
                 value={String(values[key] ?? field.default ?? "")}
                 onChange={(e) => set(key, Number(e.target.value))}
-                className="w-full bg-bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-text focus:border-primary/50 outline-none"
+                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
               />
             ) : (
               <input
                 type="text"
                 value={String(values[key] ?? field.default ?? "")}
                 onChange={(e) => set(key, e.target.value)}
-                className="w-full bg-bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-text focus:border-primary/50 outline-none"
+                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
               />
             )}
           </div>

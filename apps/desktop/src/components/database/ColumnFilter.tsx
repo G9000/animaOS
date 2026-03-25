@@ -74,7 +74,7 @@ export function ColumnFilterPanel({
         className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
           activeFilters.length > 0
             ? "bg-primary/20 text-primary border border-primary/30"
-            : "text-text-muted hover:text-text border border-transparent hover:border-border"
+            : "text-muted-foreground hover:text-foreground border border-transparent hover:border-border"
         }`}
       >
         <Icons.Filter />
@@ -87,24 +87,24 @@ export function ColumnFilterPanel({
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1 w-72 bg-bg-card border border-border rounded-lg shadow-lg z-50 p-3">
+        <div className="absolute left-0 top-full mt-1 w-72 bg-card border border-border rounded-lg shadow-lg z-50 p-3">
           {/* Active Filters */}
           {activeFilters.length > 0 && (
             <div className="mb-3 space-y-1.5">
-              <div className="text-[10px] text-text-muted uppercase tracking-wide">Active</div>
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Active</div>
               {activeFilters.map((filter, idx) => (
                 <div
                   key={idx}
-                  className="flex items-center justify-between px-2 py-1.5 bg-bg-input rounded text-[11px]"
+                  className="flex items-center justify-between px-2 py-1.5 bg-input rounded text-[11px]"
                 >
                   <span className="truncate">
                     <span className="font-mono">{filter.column}</span>{" "}
-                    <span className="text-text-muted">{operatorLabels[filter.operator]}</span>{" "}
+                    <span className="text-muted-foreground">{operatorLabels[filter.operator]}</span>{" "}
                     {filter.value && <span className="font-mono">"{filter.value}"</span>}
                   </span>
                   <button
                     onClick={() => onRemoveFilter(idx)}
-                    className="ml-2 p-0.5 text-text-muted/50 hover:text-danger"
+                    className="ml-2 p-0.5 text-muted-foreground/50 hover:text-destructive"
                   >
                     <Icons.X />
                   </button>
@@ -112,7 +112,7 @@ export function ColumnFilterPanel({
               ))}
               <button
                 onClick={onClearFilters}
-                className="w-full mt-2 px-2 py-1 text-[10px] text-text-muted hover:text-danger border border-dashed border-text-muted/30 rounded"
+                className="w-full mt-2 px-2 py-1 text-[10px] text-muted-foreground hover:text-destructive border border-dashed border-text-muted/30 rounded"
               >
                 Clear all filters
               </button>
@@ -121,12 +121,12 @@ export function ColumnFilterPanel({
 
           {/* Add New Filter */}
           <div className="space-y-2">
-            <div className="text-[10px] text-text-muted uppercase tracking-wide">Add Filter</div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Add Filter</div>
             
             <select
               value={selectedColumn}
               onChange={(e) => setSelectedColumn(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded px-2 py-1.5 text-xs"
+              className="w-full bg-input border border-border rounded px-2 py-1.5 text-xs"
             >
               {columns.map((col) => (
                 <option key={col} value={col}>
@@ -138,7 +138,7 @@ export function ColumnFilterPanel({
             <select
               value={selectedOperator}
               onChange={(e) => setSelectedOperator(e.target.value as FilterOperator)}
-              className="w-full bg-bg-input border border-border rounded px-2 py-1.5 text-xs"
+              className="w-full bg-input border border-border rounded px-2 py-1.5 text-xs"
             >
               {Object.entries(operatorLabels).map(([op, label]) => (
                 <option key={op} value={op}>
@@ -153,7 +153,7 @@ export function ColumnFilterPanel({
                 value={filterValue}
                 onChange={(e) => setFilterValue(e.target.value)}
                 placeholder="Value..."
-                className="w-full bg-bg-input border border-border rounded px-2 py-1.5 text-xs"
+                className="w-full bg-input border border-border rounded px-2 py-1.5 text-xs"
                 onKeyDown={(e) => e.key === "Enter" && handleAdd()}
               />
             )}

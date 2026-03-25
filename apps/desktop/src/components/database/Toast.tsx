@@ -20,7 +20,7 @@ interface ToastItemProps extends Toast {
 
 const toastStyles: Record<ToastType, string> = {
   success: "bg-green-500/10 border-green-500/30 text-green-400",
-  error: "bg-danger/10 border-danger/30 text-danger",
+  error: "bg-destructive/10 border-destructive/30 text-destructive",
   warning: "bg-amber-500/10 border-amber-500/30 text-amber-400",
   info: "bg-primary/10 border-primary/30 text-primary",
 };

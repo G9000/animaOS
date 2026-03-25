@@ -44,7 +44,7 @@ export function KeyboardShortcutsHelp() {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="p-2 text-text-muted/50 hover:text-text-muted transition-colors"
+        className="p-2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
         title="Keyboard shortcuts (Ctrl+?)"
       >
         <Icons.Keyboard />
@@ -54,10 +54,10 @@ export function KeyboardShortcutsHelp() {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="w-[500px] max-h-[80vh] bg-bg-card border border-border rounded-lg overflow-hidden">
+      <div className="w-[500px] max-h-[80vh] bg-card border border-border rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-medium">Keyboard Shortcuts</h3>
-          <button onClick={() => setIsOpen(false)} className="p-1 text-text-muted/50 hover:text-text">
+          <button onClick={() => setIsOpen(false)} className="p-1 text-muted-foreground/50 hover:text-foreground">
             <Icons.X />
           </button>
         </div>
@@ -66,22 +66,22 @@ export function KeyboardShortcutsHelp() {
             {shortcuts.map((shortcut, i) => (
               <div
                 key={i}
-                className="flex items-center justify-between py-2 px-3 hover:bg-bg-input rounded"
+                className="flex items-center justify-between py-2 px-3 hover:bg-input rounded"
               >
                 <div>
                   <div className="text-sm">{shortcut.action}</div>
-                  <div className="text-[10px] text-text-muted/60">{shortcut.scope}</div>
+                  <div className="text-[10px] text-muted-foreground/60">{shortcut.scope}</div>
                 </div>
-                <kbd className="px-2 py-1 bg-bg-input border border-border rounded text-xs font-mono">
+                <kbd className="px-2 py-1 bg-input border border-border rounded text-xs font-mono">
                   {shortcut.key}
                 </kbd>
               </div>
             ))}
           </div>
         </div>
-        <div className="px-4 py-3 bg-bg-input border-t border-border text-[11px] text-text-muted/60">
-          Press <kbd className="px-1 py-0.5 bg-bg-card border border-border rounded">Ctrl</kbd> +{" "}
-          <kbd className="px-1 py-0.5 bg-bg-card border border-border rounded">?</kbd> to show this help
+        <div className="px-4 py-3 bg-input border-t border-border text-[11px] text-muted-foreground/60">
+          Press <kbd className="px-1 py-0.5 bg-card border border-border rounded">Ctrl</kbd> +{" "}
+          <kbd className="px-1 py-0.5 bg-card border border-border rounded">?</kbd> to show this help
         </div>
       </div>
     </div>

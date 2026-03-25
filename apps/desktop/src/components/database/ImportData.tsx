@@ -162,7 +162,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-text transition-colors"
+        className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <Icons.Upload />
         Import
@@ -170,11 +170,11 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-[600px] max-h-[80vh] bg-bg-card border border-border rounded-lg flex flex-col">
+          <div className="w-[600px] max-h-[80vh] bg-card border border-border rounded-lg flex flex-col">
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">
               <h3 className="text-sm font-medium">Import Data into {tableName}</h3>
-              <button onClick={() => { setIsOpen(false); reset(); }} className="p-1 text-text-muted/50 hover:text-text">
+              <button onClick={() => { setIsOpen(false); reset(); }} className="p-1 text-muted-foreground/50 hover:text-foreground">
                 <Icons.X />
               </button>
             </div>
@@ -185,13 +185,13 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
               <div className="flex gap-2 mb-4">
                 <button
                   onClick={() => { setFormat("csv"); reset(); }}
-                  className={`px-3 py-1.5 text-xs rounded ${format === "csv" ? "bg-primary/20 text-primary" : "bg-bg-input text-text-muted"}`}
+                  className={`px-3 py-1.5 text-xs rounded ${format === "csv" ? "bg-primary/20 text-primary" : "bg-input text-muted-foreground"}`}
                 >
                   CSV
                 </button>
                 <button
                   onClick={() => { setFormat("json"); reset(); }}
-                  className={`px-3 py-1.5 text-xs rounded ${format === "json" ? "bg-primary/20 text-primary" : "bg-bg-input text-text-muted"}`}
+                  className={`px-3 py-1.5 text-xs rounded ${format === "json" ? "bg-primary/20 text-primary" : "bg-input text-muted-foreground"}`}
                 >
                   JSON
                 </button>
@@ -214,10 +214,10 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
                   }`}
                 >
                   <Icons.Upload />
-                  <p className="mt-2 text-sm text-text-muted">
+                  <p className="mt-2 text-sm text-muted-foreground">
                     Drop file here or click to browse
                   </p>
-                  <p className="text-xs text-text-muted/50 mt-1">
+                  <p className="text-xs text-muted-foreground/50 mt-1">
                     Supports {format.toUpperCase()} format
                   </p>
                   <input
@@ -234,8 +234,8 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
               )}
 
               {/* Column Info */}
-              <div className="mt-4 p-3 bg-bg-input rounded text-xs">
-                <span className="text-text-muted">Expected columns: </span>
+              <div className="mt-4 p-3 bg-input rounded text-xs">
+                <span className="text-muted-foreground">Expected columns: </span>
                 <span className="font-mono">{columns.join(", ")}</span>
               </div>
 
@@ -248,13 +248,13 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
                     </span>
                     <div className="flex gap-3 text-xs">
                       <span className="text-green-500">{validCount} valid</span>
-                      {invalidCount > 0 && <span className="text-danger">{invalidCount} invalid</span>}
+                      {invalidCount > 0 && <span className="text-destructive">{invalidCount} invalid</span>}
                     </div>
                   </div>
 
                   <div className="border border-border rounded overflow-hidden max-h-48 overflow-auto">
                     <table className="w-full text-[11px]">
-                      <thead className="bg-bg-input sticky top-0">
+                      <thead className="bg-input sticky top-0">
                         <tr>
                           <th className="px-2 py-1 text-left w-16">Status</th>
                           {columns.slice(0, 4).map(col => (
@@ -269,7 +269,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
                               {row.valid ? (
                                 <span className="text-green-500">✓</span>
                               ) : (
-                                <span className="text-danger" title={row.errors.join(", ")}>✗</span>
+                                <span className="text-destructive" title={row.errors.join(", ")}>✗</span>
                               )}
                             </td>
                             {columns.slice(0, 4).map(col => (
@@ -287,7 +287,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
 
               {/* Result */}
               {importResult && (
-                <div className={`mt-4 p-3 rounded text-sm ${importResult.failed === 0 ? "bg-green-500/10 text-green-500" : "bg-danger/10 text-danger"}`}>
+                <div className={`mt-4 p-3 rounded text-sm ${importResult.failed === 0 ? "bg-green-500/10 text-green-500" : "bg-destructive/10 text-destructive"}`}>
                   Imported {importResult.success} rows
                   {importResult.failed > 0 && `, ${importResult.failed} failed`}
                 </div>
@@ -299,7 +299,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
               <div className="px-4 py-3 border-t border-border flex justify-end gap-2">
                 <button
                   onClick={reset}
-                  className="px-3 py-1.5 text-xs text-text-muted hover:text-text"
+                  className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
                 >
                   Clear
                 </button>
