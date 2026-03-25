@@ -1,6 +1,6 @@
 import { useId, type ComponentProps } from "react";
-import { Input } from "./Input";
-import { Label } from "./Label";
+import { Input } from "../primitives/Input";
+import { Label } from "../primitives/Label";
 
 export interface FieldProps extends ComponentProps<"input"> {
   /** Text shown above the input. */

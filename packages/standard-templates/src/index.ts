@@ -1,16 +1,22 @@
 export { cn } from "./utils/cn";
 
-export { Alert, type AlertProps, type AlertVariant } from "./components/Alert";
-export { Badge, type BadgeProps } from "./components/Badge";
-export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./components/Button";
-export { buttonVariants } from "./components/Button";
-export { DotLoader, type DotLoaderProps } from "./components/DotLoader";
-export { Field, type FieldProps } from "./components/Field";
-export { Input, type InputProps } from "./components/Input";
-export { Label, type LabelProps } from "./components/Label";
-export { LoadingText, type LoadingTextProps } from "./components/LoadingText";
-export { PageHeader, type PageHeaderProps } from "./components/PageHeader";
-export { TabBar, type TabBarProps, type Tab } from "./components/TabBar";
+// ── Primitives ─────────────────────────────────────────────────────────────
+export { Alert, type AlertProps, type AlertVariant } from "./primitives/Alert";
+export { Badge, type BadgeProps } from "./primitives/Badge";
+export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./primitives/Button";
+export { buttonVariants } from "./primitives/Button";
+export { DotLoader, type DotLoaderProps } from "./primitives/DotLoader";
+export { Input, type InputProps } from "./primitives/Input";
+export { Label, type LabelProps } from "./primitives/Label";
+export { LoadingText, type LoadingTextProps } from "./primitives/LoadingText";
+export { Toggle, type ToggleProps } from "./primitives/Toggle";
+
+// ── Composed ───────────────────────────────────────────────────────────────
+export { AttachMenu, type AttachMenuProps } from "./composed/AttachMenu";
+export { Field, type FieldProps } from "./composed/Field";
+export { PageHeader, type PageHeaderProps } from "./composed/PageHeader";
+export { PromptInput, type PromptInputProps } from "./composed/PromptInput";
+export { TabBar, type TabBarProps, type Tab } from "./composed/TabBar";
 export {
   ToastContainer,
   showToast,
@@ -20,8 +26,12 @@ export {
   showInfo,
   type ToastData,
   type ToastType,
-} from "./components/Toast";
-export { Toggle, type ToggleProps } from "./components/Toggle";
+} from "./composed/Toast";
+export {
+  PlusIcon, ImageIcon, FileIcon, DocumentIcon,
+  MicIcon, SendIcon, EyeIcon, EyeOffIcon,
+  ArrowRightIcon, ArrowLeftIcon, ChevronRightIcon, XIcon,
+} from "./icons";
 
 export {
   useAnimaSymbol,

@@ -255,6 +255,39 @@
   animation: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ── Icon glitch effect ──────────────────────────────────────── */
+
+@keyframes icon-glitch {
+  0%, 90%, 100% {
+    opacity: 0;
+    transform: translate(0, 0);
+  }
+  92% {
+    opacity: 0.8;
+    transform: translate(-1px, 0);
+  }
+  94% {
+    opacity: 0.6;
+    transform: translate(2px, 0);
+  }
+  96% {
+    opacity: 0.8;
+    transform: translate(-1px, 0);
+  }
+  98% {
+    opacity: 0;
+    transform: translate(0, 0);
+  }
+}
+
+.icon-glitch .glitch-layer {
+  animation: icon-glitch 4s ease-in-out infinite;
+}
+
+.icon-glitch:hover .glitch-layer {
+  animation: icon-glitch 0.3s ease-in-out infinite;
+}
+
 /* ── Base layer ──────────────────────────────────────────────── */
 
 @layer base {

@@ -24,7 +24,7 @@ export function PersonaTemplateCards({
   onHoverChange,
   disabled,
 }: PersonaTemplateCardsProps) {
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [, setHovered] = useState<string | null>(null);
 
   const setHover = (id: string | null) => {
     setHovered(id);
