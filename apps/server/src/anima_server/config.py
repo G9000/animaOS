@@ -14,12 +14,17 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     database_echo: bool = False
     data_dir: Path = DEFAULT_DATA_DIR
+    runtime_database_url: str = ""
+    runtime_pg_data_dir: str = ""
     agent_provider: str = "ollama"
     agent_model: str = "vaultbox/qwen3.5-uncensored:35b"
     agent_persona_template: str = "default"
     agent_base_url: str = ""
     agent_api_key: str = ""
     agent_max_steps: int = 6
+    agent_max_concurrent_spawns: int = 10
+    agent_spawn_timeout: float = 300.0
+    agent_spawn_max_steps: int = 4
     agent_max_tokens: int = 4096
     agent_compaction_trigger_ratio: float = 0.8
     agent_compaction_keep_last_messages: int = 8
@@ -46,6 +51,8 @@ class Settings(BaseSettings):
     agent_emotional_context_budget: int = 500
     agent_emotional_signal_buffer_size: int = 20
     agent_emotional_confidence_threshold: float = 0.4
+    message_ttl_days: int = 30
+    consolidation_health_threshold_minutes: int = 30
     sidecar_nonce: str = ""
 
     model_config = SettingsConfigDict(

@@ -464,7 +464,7 @@ No new database models are created in this phase. The `RuntimeBase` class is def
 
 | Package | Version | License | Why |
 |---------|---------|---------|-----|
-| `pgserver` | `>=0.2.0` | MIT | Embedded PostgreSQL -- bundles PG binaries, manages process lifecycle |
+| `pgserver` | `>=0.1.4` | MIT | Embedded PostgreSQL -- bundles PG binaries, manages process lifecycle |
 | `asyncpg` | `>=0.30.0` | Apache 2.0 | Async PostgreSQL driver for SQLAlchemy async engine |
 | `sqlalchemy[asyncio]` | (already present) | MIT | Async session support; the `asyncio` extra pulls in `greenlet` |
 

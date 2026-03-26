@@ -1,5 +1,9 @@
 import hmac
+import importlib.util
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -25,6 +29,8 @@ from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import settings
+from .db.pg_lifecycle import EmbeddedPG
+from .db.runtime import dispose_runtime_engine, init_runtime_engine
 from .db.user_store import ensure_per_user_databases_ready
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
 
@@ -48,6 +54,55 @@ def get_cors_origins() -> list[str]:
 # Paths exempt from sidecar-nonce validation.
 _NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health"})
 logger = logging.getLogger(__name__)
+
+
+def _start_embedded_pg() -> EmbeddedPG | None:
+    """Start embedded PostgreSQL unless an explicit runtime URL is configured."""
+    if settings.runtime_database_url:
+        return None
+    if importlib.util.find_spec("pgserver") is None:
+        logger.warning(
+            "pgserver is not installed; skipping embedded runtime PostgreSQL startup."
+        )
+        return None
+
+    pg_data_dir = (
+        Path(settings.runtime_pg_data_dir)
+        if settings.runtime_pg_data_dir
+        else settings.data_dir / "runtime" / "pg_data"
+    )
+
+    pg = EmbeddedPG(data_dir=pg_data_dir)
+    pg.start()
+    return pg
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    embedded_pg = _start_embedded_pg()
+    runtime_url = embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
+
+    try:
+        if runtime_url:
+            init_runtime_engine(runtime_url, echo=settings.database_echo)
+    except Exception:
+        if embedded_pg is not None:
+            embedded_pg.stop()
+        raise
+
+    try:
+        yield
+    finally:
+        from .services.agent.consolidation import drain_background_memory_tasks
+        from .services.agent.reflection import cancel_pending_reflection
+
+        try:
+            await cancel_pending_reflection()
+            await drain_background_memory_tasks()
+        finally:
+            await dispose_runtime_engine()
+            if embedded_pg is not None:
+                embedded_pg.stop()
 
 
 class SidecarNonceMiddleware(BaseHTTPMiddleware):
@@ -94,7 +149,7 @@ def create_app() -> FastAPI:
     ensure_core_manifest()
     acquire_core_lock()
     ensure_per_user_databases_ready()
-    app = FastAPI(title=settings.app_name)
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
     # Sidecar nonce enforcement — added before CORSMiddleware so that
     # Starlette's reverse-add ordering makes CORS the outermost layer,
@@ -152,14 +207,6 @@ def create_app() -> FastAPI:
             "environment": settings.app_env,
             "provisioned": is_provisioned(),
         }
-
-    @app.on_event("shutdown")
-    async def _drain_background_tasks() -> None:
-        from .services.agent.consolidation import drain_background_memory_tasks
-        from .services.agent.reflection import cancel_pending_reflection
-
-        await cancel_pending_reflection()
-        await drain_background_memory_tasks()
 
     app.include_router(auth_router)
     app.include_router(chat_router)
