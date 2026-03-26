@@ -19,7 +19,7 @@ export function useWaitlist() {
           Authorization: `Bearer ${import.meta.env.PUBLIC_AIRTABLE_TOKEN}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ records: [{ fields: { Email: email } }] }),
+        body: JSON.stringify({ records: [{ fields: { Emails: email } }] }),
       }
     );
 
