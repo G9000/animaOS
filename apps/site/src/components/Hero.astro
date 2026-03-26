@@ -3,8 +3,9 @@ import AnimaSymbolSpinning from "./AnimaSymbolSpinning.tsx";
 import WaitlistForm from "./WaitlistForm.tsx";
 ---
 
-<section class="min-h-[90vh] flex flex-col items-center justify-center px-6 text-center">
-  <div class="mb-6">
+<section class="min-h-screen flex flex-col items-center justify-center px-6 text-center relative overflow-hidden">
+  <!-- Symbol takes center stage -->
+  <div class="mb-8">
     <AnimaSymbolSpinning client:load />
   </div>
 
@@ -12,11 +13,11 @@ import WaitlistForm from "./WaitlistForm.tsx";
     A mind that remains.<br />A soul that remembers.
   </h1>
 
-  <p class="mt-4 font-sans text-sm text-text-muted max-w-sm leading-relaxed">
-    Local-first. Encrypted. Yours to keep, yours to carry, yours to destroy.
+  <p class="mt-4 font-mono text-[10px] tracking-[0.2em] uppercase text-text-muted">
+    Local-first &middot; Encrypted &middot; Sovereign
   </p>
 
-  <div class="mt-8 w-full">
+  <div class="mt-10 w-full">
     <WaitlistForm client:load />
   </div>
 </section>
