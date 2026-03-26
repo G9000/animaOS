@@ -13,7 +13,7 @@ export default function GitHubCallout() {
         </p>
       </div>
       <a
-        href="https://github.com/juliocaesar/animaOS"
+        href="https://github.com/G9000/animaOS"
         target="_blank"
         rel="noopener noreferrer"
         className="relative inline-flex overflow-hidden border border-border bg-card px-6 py-3 font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground
