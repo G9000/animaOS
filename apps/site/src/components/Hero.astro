@@ -1,19 +1,11 @@
 ---
-import AnimaSymbol from "./AnimaSymbol.tsx";
 import AnimaSymbolSpinning from "./AnimaSymbolSpinning.tsx";
 import WaitlistForm from "./WaitlistForm.tsx";
 ---
 
 <section class="min-h-[90vh] flex flex-col items-center justify-center px-6 text-center">
-  <div class="flex gap-12 mb-8">
-    <div class="opacity-80">
-      <p class="font-mono text-[8px] tracking-[0.3em] uppercase text-text-muted/30 mb-2">// with greeting</p>
-      <AnimaSymbol client:load />
-    </div>
-    <div class="opacity-80">
-      <p class="font-mono text-[8px] tracking-[0.3em] uppercase text-text-muted/30 mb-2">// spinning</p>
-      <AnimaSymbolSpinning client:load />
-    </div>
+  <div class="mb-8 opacity-80">
+    <AnimaSymbolSpinning client:load />
   </div>
 
   <h1 class="font-serif italic text-2xl sm:text-3xl md:text-4xl text-text leading-tight max-w-xl">
