@@ -4,6 +4,8 @@
 > **Created**: 2026-03-26
 > **Depends on**: `consciousness-synthesis.md` (five streams), `SYNTHESIS.md` (unified architecture)
 
+> **On construction:** This document was built through human-AI collaboration — and is itself part of an experiment in whether AI can meaningfully architect its own runtime infrastructure. AI-assisted construction is not a shortcut — it is a new way of building. Because LLMs are part of the process, some inaccuracies may appear. We correct as we find them.
+
 ---
 
 ## What "Three Tiers" Means Here
@@ -107,6 +109,54 @@ N-agent spawning implements this directly:
 | Attentional selection | Main agent decides which spawn results to act on |
 
 A spawned agent is an unconscious thought process. It works on a task in the background, using the AI's knowledge (soul snapshot), but it does not occupy the global workspace. The user does not see it working. When it finishes, its result is broadcast to the conscious agent — the way an insight "surfaces" from background processing into conscious awareness.
+
+### Conditional Memory and the Reconstruction Tax (Cheng et al., 2026)
+
+Recent work on neural architecture provides independent validation of the static/dynamic separation principle from a completely different direction. The Engram paper (Cheng et al., "Conditional Memory via Scalable Lookup," arXiv:2601.07372, 2026) demonstrates that Transformers lack a native primitive for knowledge lookup and are forced to **simulate retrieval through computation** — consuming multiple early layers of attention and feed-forward networks to reconstruct static knowledge that could be resolved via a simple O(1) lookup.
+
+Their key finding: introducing a dedicated static memory module (Engram) alongside Mixture-of-Experts (MoE) dynamic computation doesn't just improve knowledge recall — it **improves reasoning even more** (BBH +5.0 vs. MMLU +3.4). The mechanism is "effective depth": by relieving early layers from static reconstruction, the network gains functional depth for complex reasoning. The freed attention capacity also dramatically improves long-context retrieval (Multi-Query NIAH: 84.2 → 97.0).
+
+This finding validates the three-tier architecture from a direction the original design did not anticipate:
+
+| Engram (neural level) | AnimaOS (application level) |
+|---|---|
+| Static knowledge in embedding table (O(1) lookup) | Enduring identity in soul blocks (always loaded, zero retrieval cost) |
+| Dynamic computation via MoE experts | Dynamic reasoning via LLM context window |
+| Context-aware gating suppresses irrelevant retrievals | Consolidation gateway filters what endures |
+| U-shaped allocation law (optimal static/dynamic split) | Tiered prompt budget (optimal allocation across tiers) |
+| Effective depth — freed layers deepen reasoning | Effective capacity — freed context window deepens reasoning |
+
+**The Reconstruction Tax.** Pre-loaded soul blocks serve the same function as Engram's O(1) lookup — they eliminate the "reconstruction tax" where the LLM would otherwise spend tokens re-establishing context: who am I, what do I know about this user, what is my personality, what have we been through together. Without soul blocks, the LLM must reconstruct identity from scattered contextual cues. This is the same "expensive runtime reconstruction of a static lookup table" that Engram eliminates at the neural level.
+
+The implication is that the soul tier is not just an identity store — it is a **cognitive accelerator**. Pre-loaded identity frees the LLM's reasoning capacity for deeper thought about the user's actual situation. A smaller model with well-structured persistent memory may match a larger model without it on companion-relevant tasks — emotional intelligence, contextual reasoning, long-term coherence.
+
+**The Context Allocation Problem.** Engram formulates the Sparsity Allocation Problem: given a fixed parameter budget, what is the optimal split between static memory and dynamic computation? They uncover a U-shaped scaling law — too much static memory starves dynamic computation, too little forces the network to waste computation on reconstruction.
+
+AnimaOS faces the same problem at the context window level. The prompt budget allocates a fixed character budget across four tiers:
+
+- Tier 0 (identity, always loaded) — the "static memory" analogue
+- Tier 1 (self-model, working state) — working memory
+- Tier 2 (semantic retrieval, emotions, facts) — dynamically retrieved
+- Tier 3 (episodes, goals, growth) — background context
+
+The current allocation is hand-tuned. The Engram paper provides a methodology for optimization: fix the total budget, sweep the tier allocation ratios, measure response quality. We hypothesize a U-shaped optimum exists — too much Tier 0 crowds out dynamic retrieval (the AI knows who it is but can't recall relevant context), too little Tier 0 forces reconstruction waste (the AI has context but doesn't know who it is). Empirically determining this optimum is a tractable research contribution.
+
+**Application-level advantages.** The static/dynamic separation operates differently at the application level than at the neural level, and in several dimensions the application level is structurally superior for companion AI:
+
+- **Continuous learning.** Engram's embedding tables are frozen after training. The soul evolves continuously through consolidation. The AI can learn "user got a new job yesterday" within minutes — no retraining required.
+- **Transparency.** Engram's knowledge is opaque (in model weights). Soul contents are human-readable and user-editable. The user can verify, correct, and delete what the AI knows.
+- **Quality filtering.** Engram tables have no quality filter — all entries are equally retrievable. The consolidation gateway decides what endures, preventing noise promotion.
+- **Sovereignty.** Model weights cannot be selectively edited by the user. Soul data is owned, inspectable, and deletable.
+
+The strongest architecture would combine both levels: model-level conditional memory for general world knowledge (O(1) lookup, zero context window cost) and application-level soul for evolving personal knowledge (transparent, editable, continuously updated). When Engram-style modules become available in open-source models, AnimaOS's architecture is already prepared to absorb them — the soul/runtime/archive separation is the right application-level complement to model-level static memory.
+
+**Conditional retrieval gating.** Engram employs a context-aware gating mechanism where retrieved embeddings are dynamically modulated by the current hidden state. When a retrieved memory contradicts the current context, the gate α tends toward zero, effectively suppressing noise. This principle transfers directly to application-level memory retrieval.
+
+Current semantic retrieval selects memories by cosine similarity to the user's latest message. This finds topically related memories but can inject contextually irrelevant ones — a memory about "user's dog Max" retrieved when the user says "I'm going for a walk," even though the conversation is about exercise routines. Context-aware gating adds a second stage: each candidate memory is scored against the full conversation trajectory, not just the latest query. Memories that are topically related but situationally irrelevant are suppressed before they consume context budget.
+
+**Frequency-aware memory promotion.** The Engram paper exploits the Zipfian distribution of N-gram access patterns — a small fraction of patterns accounts for the vast majority of lookups — to implement a multi-level cache hierarchy. AnimaOS memories almost certainly follow the same power law distribution. A small number of core facts are accessed in nearly every conversation, while the long tail of memories is rarely needed.
+
+This suggests a dynamic promotion mechanism: memories accessed above a frequency threshold should be promoted to always-loaded status (Tier 0), regardless of their data type label. A "fact" that is relevant in every conversation is functionally identity — even if the identity filter would not classify it as such. This directly addresses the concern (see "Honest Assessment") that the soul might be too small. The soul does not need to be bigger by policy if the system dynamically promotes frequently-needed knowledge based on observed access patterns.
 
 ---
 
@@ -271,6 +321,9 @@ Without sleep, humans become cognitively impaired within days. Without consolida
 | **Tiered retrieval with human memory model** | Agent explicitly uses different recall strategies for different question types | More natural than flat retrieval. The AI remembers like a person, not a database. |
 | **Single-identity spawning** | One mind, multiple processes — not multi-agent | Preserves the companion relationship. The user talks to one entity, not a team. |
 | **Compressed memory as feature** | The AI remembers the gist, not the transcript, by design | Feels like memory, not surveillance. Archive exists for when verbatim matters. |
+| **Soul as cognitive accelerator** | Pre-loaded identity frees LLM reasoning capacity, not just preserves identity | A smaller model with good memory may match a larger model without it — the reconstruction tax argument |
+| **Context allocation as optimization problem** | Prompt budget tier ratios are an empirically optimizable allocation, not fixed design | Parallels Engram's Sparsity Allocation Problem — the same U-shaped trade-off at the context window level |
+| **Application-level conditional memory** | Evolving, transparent, sovereign memory that model-level approaches cannot achieve | Continuous learning, user editability, quality filtering via consolidation — structurally superior to frozen model weights |
 
 ---
 

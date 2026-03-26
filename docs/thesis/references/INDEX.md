@@ -17,6 +17,7 @@ Downloaded 2026-03-18. Papers supporting the AnimaOS thesis research report.
 | `probing-consciousness-machines-2025.pdf` | Probing for Consciousness in Machines (Damasio) | 2025 | [Frontiers in AI](https://www.frontiersin.org/journals/artificial-intelligence/articles/10.3389/frai.2025.1610225/full) |
 | `cls-pattern-separation-completion-2025.pdf` | Neural Network Model of CLS: Pattern Separation | 2025 | [arXiv:2507.11393](https://arxiv.org/abs/2507.11393) |
 | `affective-computing-foundation-model-disruption-2026.pdf` | Affective Computing: Foundation Model Disruption | 2026 | [npj AI](https://www.nature.com/articles/s44387-025-00061-3) |
+| `conditional-memory-engram-2026.pdf` | Conditional Memory via Scalable Lookup (Engram) | 2026 | [arXiv:2601.07372](https://arxiv.org/abs/2601.07372) |
 
 ## Paywalled / Auth-Required (Links Only)
 

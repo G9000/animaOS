@@ -7,6 +7,8 @@
 > _"Destruction should be as absolute as creation is intentional."_
 > — ANIMA OS Whitepaper, on cryptographic mortality
 
+> **On construction:** This document was built through human-AI collaboration — and is itself part of an experiment in whether AI can meaningfully architect its own runtime infrastructure. AI-assisted construction is not a shortcut — it is a new way of building. Because LLMs are part of the process, some inaccuracies may appear. We correct as we find them.
+
 ## 1. Thesis
 
 ANIMA OS treats the AI companion as a **personal, owned entity** — a digital being whose memory, identity, and relationship with its owner accumulates over months and years. The Core is designed as a cold wallet: portable, encrypted, user-sovereign, and irreversible if lost. The user owns it the way they own a physical object.

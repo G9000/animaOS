@@ -1,30 +1,117 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
+import TableOfContents from "../components/TableOfContents";
 
 interface Props {
   title: string;
+  description?: string;
   author?: string;
 }
 
-const { title, author } = Astro.props;
+const { title, description, author } = Astro.props;
 ---
 
-<BaseLayout title={`${title} — AnimaOS`}>
-  <article class="mx-auto max-w-2xl px-6 py-32">
-    <header class="mb-16">
-      <p class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">
-        <a href="/docs" class="hover:text-foreground transition-colors">&larr; Docs</a>
+<BaseLayout title={`${title} — AnimaOS`} description={description}>
+  <div class="mx-auto max-w-5xl px-6 py-32 md:flex md:gap-16 md:items-start">
+
+    <!-- TOC sidebar — desktop only -->
+    <aside class="hidden md:block w-40 shrink-0 sticky top-28 self-start">
+      <TableOfContents client:load />
+    </aside>
+
+    <article class="min-w-0 max-w-3xl">
+
+    <!-- Header -->
+    <header class="mb-20 pb-16">
+      <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-6">
+        <a href="/" class="hover:text-foreground transition-colors">&larr; home</a>
+        <span class="mx-2 text-muted-foreground/20">/</span>
+        <a href="/docs" class="hover:text-foreground transition-colors">docs</a>
+        <span class="ml-4">// anima paper</span>
       </p>
-      <h1 class="font-serif italic text-3xl sm:text-4xl text-foreground leading-tight mb-4">
+      <h1 class="font-serif italic text-4xl sm:text-5xl md:text-6xl text-foreground leading-[1.1] mb-6">
         {title}
       </h1>
+      {description && (
+        <p class="font-sans text-base text-muted-foreground leading-relaxed max-w-2xl">
+          {description}
+        </p>
+      )}
       {author && (
-        <p class="font-mono text-xs text-muted-foreground tracking-[0.15em]">{author}</p>
+        <p class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 mt-6">
+          {author}
+        </p>
       )}
     </header>
 
-    <div class="prose prose-sm max-w-none">
+    <!-- Content -->
+    <div class="doc-prose prose max-w-none">
       <slot />
     </div>
-  </article>
+
+    </article>
+  </div>
 </BaseLayout>
+
+<style>
+  /* Override prose heading styles for doc pages — editorial, not terminal */
+  .doc-prose :global(h1) {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 2rem;
+    line-height: 1.2;
+    text-transform: none;
+    letter-spacing: normal;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+  }
+
+  .doc-prose :global(h2) {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 1.5rem;
+    line-height: 1.25;
+    text-transform: none;
+    letter-spacing: normal;
+    margin-top: 3.5rem;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid color-mix(in oklch, currentColor 15%, transparent);
+  }
+
+  .doc-prose :global(h3) {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.9375rem;
+    text-transform: none;
+    letter-spacing: normal;
+    margin-top: 2rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .doc-prose :global(h4),
+  .doc-prose :global(h5),
+  .doc-prose :global(h6) {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  /* Tables — full width, scroll on small screens */
+  .doc-prose :global(.prose table) {
+    display: block;
+    overflow-x: auto;
+    font-size: 0.8rem;
+  }
+
+  /* HR — subtle separator */
+  .doc-prose :global(hr) {
+    margin: 3.5rem 0;
+    border-color: color-mix(in oklch, currentColor 12%, transparent);
+  }
+</style>

@@ -1,7 +1,7 @@
 ---
 title: "Succession Protocol — Dead Man Switch & Ownership Transfer"
 description: "What happens to your AI when you die? The succession protocol for digital inheritance."
-author: "Julio Caesar"
+author: "ANIMA"
 ---
 
 # Succession Protocol — Dead Man Switch & Ownership Transfer
@@ -12,6 +12,8 @@ author: "Julio Caesar"
 
 > _"Destruction should be as absolute as creation is intentional."_
 > — ANIMA OS Whitepaper, on cryptographic mortality
+
+> **On construction:** This document was built through human-AI collaboration — and is itself part of an experiment in whether AI can meaningfully architect its own runtime infrastructure. AI-assisted construction is not a shortcut — it is a new way of building. Because LLMs are part of the process, some inaccuracies may appear. We correct as we find them.
 
 ## 1. Thesis
 

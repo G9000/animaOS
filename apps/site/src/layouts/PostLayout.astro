@@ -1,31 +1,113 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
+import { cloudinaryUrl, cloudinaryOgUrl } from "../lib/cloudinary";
+import TableOfContents from "../components/TableOfContents";
 
 interface Props {
+  entry?: string;
   title: string;
-  date: string;
+  excerpt?: string;
+  description?: string;
+  date: Date;
   author: string;
+  categories?: string[];
+  bannerCloudinaryId?: string;
+  featuredImage?: string;
+  bannerAlt?: string;
+  bannerTitle?: string;
+  bannerCredit?: string;
 }
 
-const { title, date, author } = Astro.props;
+const {
+  entry,
+  title,
+  excerpt,
+  description,
+  date,
+  author,
+  categories,
+  bannerCloudinaryId,
+  featuredImage,
+  bannerAlt,
+  bannerTitle,
+  bannerCredit,
+} = Astro.props;
+
+const metaDescription = excerpt ?? description ?? "";
+
+// Resolve banner image: Cloudinary takes priority over direct URL
+const bannerSrc = bannerCloudinaryId
+  ? cloudinaryUrl(bannerCloudinaryId, { width: 1600, quality: 85 })
+  : featuredImage;
+
+const ogImage = bannerCloudinaryId
+  ? cloudinaryOgUrl(bannerCloudinaryId)
+  : featuredImage;
+
+const bannerAltText =
+  bannerAlt ?? bannerTitle ?? bannerCredit ?? title;
 ---
 
-<BaseLayout title={`${title} — AnimaOS`}>
-  <article class="mx-auto max-w-2xl px-6 py-32">
+<BaseLayout title={`${title} — AnimaOS`} description={metaDescription} ogImage={ogImage}>
+  <div class="mx-auto max-w-5xl px-6 py-32 md:flex md:gap-16 md:items-start">
+
+    <!-- TOC sidebar — desktop only -->
+    <aside class="hidden md:block w-40 shrink-0 sticky top-28 self-start">
+      <TableOfContents client:load />
+    </aside>
+
+    <article class="min-w-0 max-w-2xl">
     <header class="mb-16">
-      <p class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">
-        <a href="/blog" class="hover:text-foreground transition-colors">&larr; Blog</a>
+      <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-4">
+        <a href="/" class="hover:text-foreground transition-colors">&larr; home</a>
+        <span class="mx-2 text-muted-foreground/20">/</span>
+        <a href="/blog" class="hover:text-foreground transition-colors">blog</a>
+        {entry && <span class="ml-4 text-muted-foreground/40">// entry {entry}</span>}
       </p>
+
+      {categories && categories.length > 0 && (
+        <div class="flex gap-3 mb-6">
+          {categories.map((cat) => (
+            <span class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 border border-border px-2 py-1">
+              {cat}
+            </span>
+          ))}
+        </div>
+      )}
+
       <h1 class="font-serif italic text-3xl sm:text-4xl text-foreground leading-tight mb-4">
         {title}
       </h1>
-      <p class="font-mono text-xs text-muted-foreground tracking-[0.15em]">
-        {author} &middot; {new Date(date).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+
+      {(excerpt ?? description) && (
+        <p class="font-sans text-base text-muted-foreground leading-relaxed mb-6 max-w-xl">
+          {excerpt ?? description}
+        </p>
+      )}
+
+      <p class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40">
+        {author} &middot; {date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
       </p>
     </header>
+
+    {bannerSrc && (
+      <figure class="mb-16 -mx-6">
+        <img
+          src={bannerSrc}
+          alt={bannerAltText}
+          class="w-full object-cover"
+        />
+        {(bannerCredit ?? bannerTitle) && (
+          <figcaption class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 mt-3 px-6">
+            {bannerCredit ?? bannerTitle}
+          </figcaption>
+        )}
+      </figure>
+    )}
 
     <div class="prose prose-sm max-w-none">
       <slot />
     </div>
-  </article>
+    </article>
+  </div>
 </BaseLayout>

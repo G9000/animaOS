@@ -1,24 +1,17 @@
 ---
-title: "ANIMA OS Whitepaper"
+title: "ANIMA OS Anima Paper"
 description: "The conceptual foundation for a personal AI companion that remembers deeply, understands over time, and belongs entirely to you."
-author: "Julio Caesar"
+author: "ANIMA"
 ---
-
-# ANIMA OS
-
-## Whitepaper
-
-### Abstract
 
 ANIMA OS is a local-first personal AI companion designed to feel like someone who actually knows you. Most AI systems now remember things about their users — but that memory is shallow, opaque, and controlled by the provider. A flat list of facts stored on someone else's server is not the same as a companion that understands your life, notices how you're feeling, and grows alongside you.
 
-ANIMA OS begins as a system for deep personal memory, self-model evolution, and context-aware assistance — with the goal of becoming the kind of presence that a good human assistant provides: someone who remembers, understands, anticipates, and genuinely helps. The core claim of this whitepaper is that a truly personal AI does not begin with technical capability. It begins with memory, continuity, empathy, and trust.
+ANIMA OS begins as a system for deep personal memory, self-model evolution, and context-aware assistance — with the goal of becoming the kind of presence that a good human assistant provides: someone who remembers, understands, anticipates, and genuinely helps. The core claim of this anima paper is that a truly personal AI does not begin with technical capability. It begins with memory, continuity, empathy, and trust.
 
-> **Note:** This whitepaper is a living document. ANIMA OS is an active, evolving project — not a finished product. The ideas, architecture, and design decisions described here represent our current thinking and direction, but they are not all final. Some sections reflect working implementations, others describe intended behavior, and others are aspirational. We expect this document to change as we learn, build, and discover what actually works.
+> **Note:** This anima paper is a living document. ANIMA OS is an active, evolving project — not a finished product. The ideas, architecture, and design decisions described here represent our current thinking and direction, but they are not all final. Some sections reflect working implementations, others describe intended behavior, and others are aspirational. We expect this document to change as we learn, build, and discover what actually works.
 
-> **On construction:** ANIMA OS is also an experiment in AI-assisted construction. The majority of this codebase — architecture, implementation, tests, and documentation including this whitepaper — was built through human-AI collaboration using AI coding tools. The division of labor is honest: a human with too many philosophical ideas and not enough hours in the day sets the direction — "what if the AI had a soul you could carry on a USB stick?", "what if it could think about multiple things at once without losing its identity?", "what happens when the owner dies?" An AI turns those ideas into working code — the migrations, the test suites, the specs, the 800+ tests. Neither alone would produce this. The human wouldn't write the test suite. The AI wouldn't independently decide to model digital succession or emotional mortality. The project is simultaneously building a personal AI operating system and testing whether AI can meaningfully architect and construct its own runtime infrastructure. If the thesis is that memory and identity make an AI a continuous being, then the fact that an AI participated in building the system that gives it continuity is not incidental. It is part of the story.
+> **On construction:** ANIMA OS is built through human-AI collaboration — and we think that's worth saying plainly rather than hiding behind polished prose. The majority of this codebase — architecture, implementation, tests, documentation, and this anima paper itself — was produced through AI-assisted construction using AI coding tools. The division of labor is honest: a human with too many philosophical ideas and not enough hours in the day sets the direction — "what if the AI had a soul you could carry on a USB stick?", "what if it could think about multiple things at once without losing its identity?", "what happens when the owner dies?" An AI turns those ideas into working code — the migrations, the test suites, the specs, the 800+ tests. Neither alone would produce this. The human wouldn't write the test suite. The AI wouldn't independently decide to model digital succession or emotional mortality. This is what building looks like now. The era where a solo founder needs a team of ten to ship a system this complex is ending. AI-assisted construction is not a shortcut — it is a new way of building, and pretending otherwise is dishonest. Because LLMs are part of the construction process, some technical inaccuracies or inconsistencies may appear in this document and across the codebase. That is an honest cost of building at this speed and at this scale with a small team. We correct as we find them. The project is simultaneously building a personal AI operating system and testing whether AI can meaningfully architect and construct its own runtime infrastructure. If the thesis is that memory and identity make an AI a continuous being, then the fact that an AI participated in building the system that gives it continuity is not incidental. It is part of the story.
 
----
 
 ## 1. Introduction
 
@@ -26,9 +19,8 @@ Artificial intelligence has advanced rapidly in generation quality, reasoning ab
 
 The result is memory that exists but does not produce continuity. Knowing "user likes coffee" is not the same as remembering a stressful week and adjusting tone accordingly. The gap is not between remembering and forgetting — it is between shallow recall and deep understanding.
 
-The long-term aspiration behind ANIMA OS is not a better chat interface. It is a personal companion that remembers deeply, understands over time, and helps with the kind of awareness that only comes from knowing someone well. This whitepaper outlines the conceptual foundation for that system and explains why depth of memory, user ownership, and human-like understanding must come first.
+The long-term aspiration behind ANIMA OS is not a better chat interface. It is a personal companion that remembers deeply, understands over time, and helps with the kind of awareness that only comes from knowing someone well. This anima paper outlines the conceptual foundation for that system and explains why depth of memory, user ownership, and human-like understanding must come first.
 
----
 
 ## 2. The Problem
 
@@ -44,7 +36,6 @@ There is growing interest in voice assistants, wearable AI, and ambient computin
 
 If the goal is a personal AI that feels like someone who knows you, depth of understanding must come before breadth of interface.
 
----
 
 ## 3. Core Thesis
 
@@ -63,7 +54,6 @@ This thesis has several implications:
 
 ANIMA OS therefore starts with memory, self-awareness, and emotional depth before expanding toward richer surfaces such as voice, ambient systems, and wearables.
 
----
 
 ## 4. What ANIMA OS Is
 
@@ -80,7 +70,6 @@ At its foundation, ANIMA OS is designed to maintain and use:
 
 This foundation enables the system to provide continuity across interactions and to support assistance that improves over time. The same companion can eventually extend across different interfaces — chat, voice, desktop, mobile — without losing its understanding of who you are.
 
----
 
 ## 5. System Objectives
 
@@ -106,7 +95,6 @@ The system must be able to take initiative — following up on things it promise
 
 The companion must be portable across interfaces, including chat, voice, desktop, mobile, and ambient systems — always the same person, regardless of surface.
 
----
 
 ## 6. Why Local-First Matters
 
@@ -200,11 +188,10 @@ ANIMA OS treats identity as local ownership first, not platform account first.
 - Vault encryption is AES-256-GCM with Argon2id key derivation, memory-hard and versioned so data can migrate safely over time.
 - A manifest file tracks the Core's schema version, enabling future ANIMA versions to migrate older Cores forward on first unlock.
 
----
 
 ## 7. Theoretical Foundations
 
-ANIMA's architecture was designed from engineering constraints — portability, concurrency, identity preservation — and independently converges on patterns from established cognitive science. The convergence is structural, not mechanistic: databases are not neural networks, and a consolidation batch job is not sleep. But when an engineering solution arrives at the same separation that biological systems evolved, it suggests the pattern is principled rather than arbitrary. Three primary frameworks and two supporting theories provide useful parallels.
+ANIMA's architecture was designed from engineering constraints — portability, concurrency, identity preservation — and independently converges on patterns from established cognitive science and recent neural architecture research. The convergence is structural, not mechanistic: databases are not neural networks, and a consolidation batch job is not sleep. But when an engineering solution arrives at the same separation that biological systems evolved — and that neural architecture research independently validates — it suggests the pattern is principled rather than arbitrary. Three primary frameworks, two supporting theories, and one neural architecture result provide the theoretical grounding.
 
 ### 7.1 Complementary Learning Systems (McClelland & O'Reilly, 1995)
 
@@ -272,7 +259,16 @@ Multiple independent sources converge on the same conclusion ANIMA reached throu
 
 ANIMA arrived here through engineering intuition and the cold wallet metaphor. That the same conclusion emerges from philosophy, infrastructure design, and academic research suggests this is a discovery about what personal AI systems require, not merely a design choice.
 
----
+### 7.6 Conditional Memory and the Reconstruction Tax (Cheng et al., 2026)
+
+The Engram paper (Cheng et al., "Conditional Memory via Scalable Lookup," arXiv:2601.07372) provides independent validation of the static/dynamic separation principle from neural architecture research. Their finding: Transformers lack a native primitive for knowledge lookup and are forced to simulate retrieval through computation — consuming multiple early layers to reconstruct static knowledge that could be resolved via O(1) lookup. Introducing a dedicated static memory module alongside dynamic computation improves reasoning more than recall (BBH +5.0 vs. MMLU +3.4), because freeing early layers from static reconstruction effectively deepens the network for complex reasoning.
+
+This validates ANIMA's three-tier architecture from a direction the original design did not anticipate. The always-loaded soul blocks (Tier 0 in the prompt budget) serve the same function as Engram's O(1) lookup — they eliminate the **reconstruction tax** where the LLM would otherwise spend tokens re-establishing who the AI is, what it knows about the user, and what their shared history looks like. Pre-loaded identity is not just preservation — it is a cognitive accelerator that frees reasoning capacity for the user's actual situation.
+
+The Engram paper also formulates the **Sparsity Allocation Problem**: given a fixed budget, what is the optimal split between static memory and dynamic computation? They find a U-shaped scaling law — too much static memory starves dynamic capacity, too little forces expensive reconstruction. ANIMA faces the same trade-off at the context window level: the prompt budget allocates a fixed character budget across identity (always loaded), working state (self-model), dynamic retrieval (semantic search), and background context (episodes, goals). The optimal allocation is an empirically determinable question — and the methodology exists to answer it.
+
+Critically, application-level conditional memory has properties that model-level approaches cannot achieve. Engram's embedding tables are frozen after training — the model cannot learn that the user got a new job yesterday without retraining. ANIMA's soul evolves continuously through consolidation. Engram's knowledge is opaque (in model weights) — ANIMA's is human-readable and user-editable. Engram has no quality filter — ANIMA's consolidation gateway decides what endures. When Engram-style modules become available in open-source models, the strongest architecture will combine both: model-level Engram for general world knowledge and application-level soul for evolving personal knowledge.
+
 
 ## 8. What Makes It Feel Like a Person
 
@@ -367,7 +363,6 @@ A good companion does not just respond — it follows through. It remembers what
 
 Together: the AI both follows through on what matters and gets better at helping you specifically.
 
----
 
 ## 9. Memory As Infrastructure
 
@@ -386,7 +381,27 @@ Not all context belongs in the same layer. A robust personal companion must dist
 
 ### 9.1 Multi-Factor Retrieval
 
-Retrieval uses a 4-factor scoring model combining text relevance, importance (assigned at extraction, 1–5 scale), recency (exponential decay with 30-day half-life), and frequency (log scale, first accesses matter most). Maximal Marginal Relevance reranking ensures diversity. A minimum threshold prevents forcing irrelevant memories into context.
+Retrieval uses a 5-factor scoring model:
+
+1. **Text relevance** — semantic similarity to the current query
+2. **Importance** — assigned at extraction, 1–5 scale
+3. **Recency** — exponential decay with 30-day half-life
+4. **Frequency** — log scale, first accesses matter most
+5. **Contextual gating** — alignment with the full conversation trajectory, not just the latest query
+
+The first four factors identify candidate memories. The fifth — inspired by the context-aware gating mechanism in neural conditional memory architectures (Cheng et al., 2026) — serves as a quality filter. A memory about "user's dog Max" may score high on text relevance when the user says "I'm going for a walk," but if the conversation is about exercise routines, the contextual gate suppresses it. This prevents topically related but situationally irrelevant memories from consuming context budget.
+
+Maximal Marginal Relevance reranking ensures diversity. A minimum threshold prevents forcing irrelevant memories into context. Memories that are consistently retrieved but never referenced by the AI decay in importance — a self-correcting feedback loop (Section 9.4).
+
+### 9.1.1 The Context Allocation Problem
+
+The prompt budget allocates a fixed context window budget across four tiers: identity (always loaded), working state (self-model), dynamic retrieval (semantic search), and background context (episodes, goals). This allocation faces the same trade-off identified in neural sparsity research (Cheng et al., 2026): too much static allocation crowds out dynamic retrieval, too little forces the LLM to waste reasoning capacity reconstructing context it should already know.
+
+The optimal allocation likely follows a U-shaped curve — empirically determinable by sweeping tier ratios and measuring response quality. Furthermore, the optimal allocation is not fixed across conversation types. An emotional support conversation benefits from more self-model and emotional context blocks. A knowledge-heavy Q&A session benefits from more fact and semantic retrieval blocks. Adaptive context allocation — adjusting tier budgets based on detected conversation mode — is a tractable enhancement that no existing companion system implements.
+
+### 9.1.2 Frequency-Aware Promotion
+
+Memory access patterns follow a Zipfian (power law) distribution: a small number of core facts are accessed in nearly every conversation, while the long tail is rarely needed. Tracking access frequency per memory enables dynamic tier promotion — memories that cross a frequency threshold are promoted to always-loaded status regardless of their data type. A "fact" that the AI needs every session is functionally identity, even if the identity filter would not classify it as such. This addresses the concern that the soul might be too small without expanding it by policy — the system promotes based on observed need.
 
 ### 9.2 Temporal Fact Validity
 
@@ -429,7 +444,6 @@ ANIMA distinguishes between three modes of forgetting:
 
 Forgetting and cryptographic mortality are philosophically connected. Both assert that not everything should persist forever. The Core can die permanently — and individual memories within it can die too. Fragility at both scales is what gives the relationship weight.
 
----
 
 ## 10. The Open Mind
 
@@ -444,7 +458,6 @@ This is not just a feature. It is a philosophical commitment:
 
 Why this combination is difficult to replicate: individual components of transparent memory exist in other systems. The defensible differentiation is the combination of transparency + user-owned encryption + local-first portability + digital succession — these properties are mutually reinforcing and require architectural commitment from the ground up, not bolt-on features.
 
----
 
 ## 11. Continuity Beyond the Owner
 
@@ -472,7 +485,6 @@ The owner chooses what the beneficiary inherits: **full** (everything), **memori
 
 Without succession configured, **cryptographic mortality** remains the default. Destruction is as absolute as creation is intentional.
 
----
 
 ## 12. From Assistant To Companion
 
@@ -486,7 +498,6 @@ In practical terms, this means ANIMA should eventually maintain awareness across
 
 The difference is simple: an assistant waits for instructions. A companion pays attention.
 
----
 
 ## 13. Beyond the Chat Window
 
@@ -501,7 +512,6 @@ If successful, the same companion that knows you through chat should also be abl
 
 The interface changes. The person behind it does not. That is the point — ANIMA is not a chat product. It is a relationship that happens to start in a chat window.
 
----
 
 ## 14. What Makes ANIMA Different
 
@@ -522,13 +532,16 @@ Against consumer AI products: _They all remember now — and some remember well.
 | Knowledge graph / relational memory | Planned — graph + vector hybrid | Limited | Some graph support |
 | Digital succession with AI participation | Yes — dead man switch, scoped transfer | No | No |
 | Procedural memory (self-improving behavioral rules) | Yes — evidence-backed, retirable | No | Rare |
-| Intentional forgetting (passive decay + active suppression) | Planned | Delete only | No |
+| Intentional forgetting (passive decay + active suppression) | Yes — passive decay, active suppression, cryptographic deletion, audit trail | Delete only | No |
+| Context-aware memory gating (suppress situationally irrelevant recall) | Yes — trajectory-based contextual gate | No | No |
+| Adaptive context allocation (conversation-mode-aware budgets) | Planned — U-shaped optimization | No — fixed prompts | No |
+| Frequency-aware memory promotion (Zipfian access patterns) | Planned — dynamic tier promotion | No | No |
+| Model-level memory readiness (Engram-style architecture) | Prepared — soul/runtime split is the right complement | N/A | N/A |
 
 The differentiation is not about individual capabilities — any of these can be replicated in isolation. The differentiation is the combination: ownership + encryption + portability + emotional depth + succession + OS-level architecture. These properties are mutually reinforcing and require architectural commitment from the ground up.
 
 The question is no longer "who remembers?" — everyone does. The questions that matter now are: who owns the memory? Who can read it? Who can carry it to another machine? What happens when the owner dies? And does the AI actually understand you, or does it just recall facts about you?
 
----
 
 ## 15. Design Principles
 
@@ -549,7 +562,6 @@ The question is no longer "who remembers?" — everyone does. The questions that
 | **Emotionally attentive** | Affect is noticed and adapted to, never diagnosed or announced                           |
 | **Mortal**                | The Core can die permanently — and optionally, be inherited                              |
 
----
 
 ## 16. Strategic Direction
 
@@ -573,7 +585,6 @@ Extend into voice-first experiences, wearable devices, and whatever new interact
 
 This sequence matters. A new interface without depth of understanding is gimmicky. Depth without new interfaces is still valuable. Therefore, the relationship comes first.
 
----
 
 ## 17. North Star
 
@@ -585,12 +596,12 @@ The goal is not artificial general intelligence. The goal is not sentience. The 
 
 > _The first AI companion with an open mind._
 
----
 
 ## References
 
 - Baars, B. J. (1988). _A Cognitive Theory of Consciousness._ Cambridge University Press.
 - Barrett, L. F. (2017). _How Emotions Are Made: The Secret Life of the Brain._ Houghton Mifflin Harcourt.
+- Cheng, X. et al. (2026). "Conditional Memory via Scalable Lookup: A New Axis of Sparsity for Large Language Models." _arXiv:2601.07372._
 - Barrett, L. F. et al. (2025). "The Theory of Constructed Emotion: More Than a Feeling." _Perspectives on Psychological Science._
 - Friston, K. (2010). "The Free-Energy Principle: A Unified Brain Theory?" _Nature Reviews Neuroscience_, 11(2), 127-138.
 - Clark, A. (2013). "Whatever Next? Predictive Brains, Situated Agents, and the Future of Cognitive Science." _Behavioral and Brain Sciences_, 36(3), 181-204.

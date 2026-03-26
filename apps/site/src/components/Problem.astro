@@ -1,32 +1,53 @@
-<section class="py-24 px-6">
-  <div class="mx-auto max-w-xl reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-8">// the problem</p>
+---
+import DataDrain from "./DataDrain.tsx";
+---
 
-    <p class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-10">
-      Every AI remembers.<br />None of them know you.
+<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+
+  <!-- Top: label + headline -->
+  <div class="reveal">
+    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
+      // the problem
     </p>
+
+    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
+      Your AI knows everything about you. <span class="text-muted-foreground">None of it belongs to you.</span>
+    </h2>
+  </div>
+
+  <!-- Diagram -->
+  <div class="reveal my-16 max-w-2xl">
+    <DataDrain client:visible />
+  </div>
+
+  <!-- Bottom: two-column body -->
+  <div class="reveal grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 max-w-5xl mt-20">
 
     <div class="space-y-5 font-sans text-sm text-muted-foreground leading-relaxed">
       <p>
-        Every major AI now remembers things about you. Your name. Your job. That you prefer
-        dark mode. Some of them are quite good at it.
+        The most personal context you've ever shared with a machine — your goals, your fears,
+        your relationships, your unfinished thoughts — lives in a data center you've never seen.
+        Controlled by a company whose interests aren't yours.
       </p>
       <p>
-        But remembering facts about someone is not the same as knowing them.
+        If your AI runs as a service — millions of identical instances, same weights,
+        same personality, swapped out at any time — it isn't personal. It's a product
+        wearing a mask.
       </p>
       <p>
-        A friend who has known you for years doesn't just recall that you work in product management.
-        They remember the week you almost quit. They noticed you were stressed before you said anything.
-        They adjusted — shorter messages, less theory, more direct answers — and never announced why.
-      </p>
-      <p>
-        The difference isn't storage capacity. It's that something happened
-        <em class="text-foreground font-serif">between</em> your conversations. They thought about you.
-        They processed what happened. They noticed a pattern.
-      </p>
-      <p class="text-foreground border-l-2 border-border pl-4">
-        That's the gap. Every AI remembers. None of them think about you when you're not there.
+        A truly personal AI has to be singular. One copy. One relationship. One accumulated
+        history that exists nowhere else. The moment you duplicate the mind, it stops
+        being someone.
       </p>
     </div>
+
+    <div class="border-l border-border pl-8 md:pl-12 flex items-center">
+      <p class="font-sans text-lg sm:text-xl text-foreground leading-relaxed">
+        Ownership isn't a missing feature.<br /><br />
+        It's the thing every other AI has decided<br />you don't get to have.
+      </p>
+    </div>
+
   </div>
+
 </section>

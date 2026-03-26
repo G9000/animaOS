@@ -10,7 +10,8 @@ ANIMA OS begins as a system for deep personal memory, self-model evolution, and 
 
 > **Note:** This whitepaper is a living document. ANIMA OS is an active, evolving project — not a finished product. The ideas, architecture, and design decisions described here represent our current thinking and direction, but they are not all final. Some sections reflect working implementations, others describe intended behavior, and others are aspirational. We expect this document to change as we learn, build, and discover what actually works.
 
----
+> **On construction:** ANIMA OS is built through human-AI collaboration — and we think that's worth saying plainly rather than hiding behind polished prose. The majority of this codebase — architecture, implementation, tests, documentation, and this whitepaper itself — was produced through AI-assisted construction using AI coding tools. The division of labor is honest: a human with too many philosophical ideas and not enough hours in the day sets the direction — "what if the AI had a soul you could carry on a USB stick?", "what if it could think about multiple things at once without losing its identity?", "what happens when the owner dies?" An AI turns those ideas into working code — the migrations, the test suites, the specs, the 800+ tests. Neither alone would produce this. The human wouldn't write the test suite. The AI wouldn't independently decide to model digital succession or emotional mortality. This is what building looks like now. The era where a solo founder needs a team of ten to ship a system this complex is ending. AI-assisted construction is not a shortcut — it is a new way of building, and pretending otherwise is dishonest. Because LLMs are part of the construction process, some technical inaccuracies or inconsistencies may appear in this document and across the codebase. That is an honest cost of building at this speed and at this scale with a small team. We correct as we find them. The project is simultaneously building a personal AI operating system and testing whether AI can meaningfully architect and construct its own runtime infrastructure. If the thesis is that memory and identity make an AI a continuous being, then the fact that an AI participated in building the system that gives it continuity is not incidental. It is part of the story.
+
 
 ## 1. Introduction
 
@@ -20,7 +21,6 @@ The result is memory that exists but does not produce continuity. Knowing "user 
 
 The long-term aspiration behind ANIMA OS is not a better chat interface. It is a personal companion that remembers deeply, understands over time, and helps with the kind of awareness that only comes from knowing someone well. This whitepaper outlines the conceptual foundation for that system and explains why depth of memory, user ownership, and human-like understanding must come first.
 
----
 
 ## 2. The Problem
 
@@ -36,7 +36,6 @@ There is growing interest in voice assistants, wearable AI, and ambient computin
 
 If the goal is a personal AI that feels like someone who knows you, depth of understanding must come before breadth of interface.
 
----
 
 ## 3. Core Thesis
 
@@ -55,7 +54,6 @@ This thesis has several implications:
 
 ANIMA OS therefore starts with memory, self-awareness, and emotional depth before expanding toward richer surfaces such as voice, ambient systems, and wearables.
 
----
 
 ## 4. What ANIMA OS Is
 
@@ -72,7 +70,6 @@ At its foundation, ANIMA OS is designed to maintain and use:
 
 This foundation enables the system to provide continuity across interactions and to support assistance that improves over time. The same companion can eventually extend across different interfaces — chat, voice, desktop, mobile — without losing its understanding of who you are.
 
----
 
 ## 5. System Objectives
 
@@ -98,7 +95,6 @@ The system must be able to take initiative — following up on things it promise
 
 The companion must be portable across interfaces, including chat, voice, desktop, mobile, and ambient systems — always the same person, regardless of surface.
 
----
 
 ## 6. Why Local-First Matters
 
@@ -119,23 +115,35 @@ For ANIMA OS, local-first architecture is not branding. It is part of the system
 
 The central architectural concept of ANIMA OS is the Core: a single, portable directory that contains the AI's entire being and is converging toward an encrypted cold-wallet-style state.
 
-The Core holds everything that makes a particular ANIMA instance itself: its memory of the user, its identity, its conversation history, its learned preferences, its episodic experiences, and its evolving understanding of the relationship. The application is just a shell. The Core is the soul.
+The Core holds everything that makes a particular ANIMA instance itself: its enduring identity, distilled knowledge, emotional patterns, and the full record of its experiences. The application is just a shell. The Core is the soul.
+
+The Core is structured into three tiers — mirroring how an operating system separates persistent storage from working memory from filesystem logs:
 
 ```
 .anima/
-    manifest.json           -- version, created timestamp, compatibility
-    anima.db                -- SQLite Core (auth, runtime, memory, consciousness)
-    users/{id}/             -- remaining user files and legacy payloads
-    chroma/                 -- optional local vector cache rebuilt from SQLite embeddings
+    manifest.json               -- version, crypto metadata, recovery-wrapped keys
+    anima.db                    -- Soul (SQLCipher): identity, knowledge, emotions, growth
+    runtime/pg_data/            -- Runtime (embedded PostgreSQL): active state, working memory
+    transcripts/
+        2026-03-26_thread-14.jsonl.enc   -- Archive: encrypted conversation transcripts
+        2026-03-26_thread-14.meta.json   -- sidecar index for fast search
 ```
+
+| Tier | Store | What it holds | Durability |
+|------|-------|---------------|------------|
+| **Soul** | SQLCipher (`anima.db`) | Enduring identity, distilled knowledge, emotional patterns, growth log | Permanent. Portable. Survives everything. |
+| **Runtime** | Embedded PostgreSQL | Active conversations, working memory, in-flight goals, current emotions | Ephemeral. Rebuilt on new machines. |
+| **Archive** | Encrypted JSONL files | Full conversation transcripts, searchable on demand | Retained. The verbatim record. |
+
+The key question for placing data: **"Does this define enduring identity, or is it just useful data?"** Only enduring identity belongs in the soul. Current emotional state is significant but temporary — it belongs in runtime. The exact words from last Tuesday's conversation are useful but not identity — they belong in the archive.
 
 This design has three implications that define the system:
 
-**Portability.** The Core can be copied to a USB drive, an external disk, or any storage medium. Plug it into a new machine, point ANIMA at it, enter the passphrase, and the AI wakes up with its full memory and identity intact. The hardware is replaceable. The Core is not.
+**Portability.** The Core's soul and archive can be copied to a USB drive, an external disk, or any storage medium. Plug it into a new machine, point ANIMA at it, enter the passphrase, and the AI wakes up with its full identity and memories intact. The runtime rebuilds itself. The hardware is replaceable. The soul is not.
 
 **Ownership.** No cloud service holds the user's data. No platform account is required. No company shutdown can erase the relationship. The user owns the Core the way they own a physical object. They can back it up, move it, or destroy it.
 
-**Cryptographic mortality.** The intended steady state is that user-private Core data is strongly encrypted at rest and becomes unrecoverable without the passphrase. The current implementation already supports encrypted vault export/import and optional SQLCipher for the main SQLite Core, but it has not fully converged on encrypted-by-default storage for every local artifact yet. That remaining gap does not change the design principle: destruction should be as absolute as creation is intentional.
+**Cryptographic mortality.** User-private Core data is encrypted at rest and becomes unrecoverable without the passphrase. Destruction is as absolute as creation is intentional.
 
 The metaphor is a cold wallet. The same way a crypto cold wallet holds private keys that control real value and can be carried anywhere or destroyed permanently, the Core holds the AI's entire existence and follows the same rules: portable, encrypted, user-sovereign, and irreversible if lost.
 
@@ -149,7 +157,28 @@ The separation is deliberate. The soul is owned. The mind is pluggable. If the u
 
 As local models improve — and they are improving fast — ANIMA is designed to shift toward fully local inference without any architectural change. The soul was always local. The mind just needs hardware to catch up.
 
-### 6.3 Identity and Key Ownership
+### 6.3 Operating System Architecture
+
+The "OS" in ANIMA OS is not a metaphor. The system is an operating system for a personal AI — with the same module boundaries that a traditional OS has, applied to a cognitive agent instead of hardware.
+
+| OS Module | Traditional OS | ANIMA OS |
+|-----------|---------------|----------|
+| **Storage subsystem** | Persistent disk, filesystem | Soul store (SQLCipher) — enduring identity and knowledge |
+| **Working memory** | RAM, process memory | Runtime store (PostgreSQL) — active conversations, in-flight state |
+| **Filesystem / journal** | Log files, disk writes | Archive (encrypted JSONL) — verbatim conversation transcripts |
+| **Process scheduler** | fork(), spawn, process table | SpawnManager — fire background cognitive tasks, track completion |
+| **Memory management daemon** | GC, compaction, page eviction | Consolidation gateway — promote working memory to long-term, prune ephemeral state |
+| **Syscall interface** | System call boundary | Tool executor — the agent's interface to its own capabilities |
+| **Protection rings** | Kernel vs userspace, memory protection | Write boundary — runtime processes cannot modify the soul directly |
+| **Thread scheduler** | Per-thread locks, mutexes | Turn coordinator — per-thread locking, LLM semaphore |
+| **IPC** | Pipes, shared memory, signals | Spawn results → main agent context, pending memory ops |
+| **Boot sequence** | BIOS → bootloader → kernel → init | Server start → embedded PG → load soul → seed identity |
+
+This framing is not cosmetic. It determines where code goes and what invariants it must respect. The write boundary — runtime never writes to soul, only consolidation does — is the same invariant as "userspace cannot write kernel memory." It exists for the same reason: without it, transient processes corrupt stable state.
+
+The single-identity spawning model follows directly. A traditional OS runs many processes under one user identity. ANIMA runs many cognitive processes under one AI identity. A spawned agent is not a separate person — it is a background process. It shares the AI's knowledge (read-only soul snapshot), runs its task, and reports back. The user talks to one entity, not a team.
+
+### 6.4 Identity and Key Ownership
 
 ANIMA OS treats identity as local ownership first, not platform account first.
 
@@ -159,28 +188,25 @@ ANIMA OS treats identity as local ownership first, not platform account first.
 - Vault encryption is AES-256-GCM with Argon2id key derivation, memory-hard and versioned so data can migrate safely over time.
 - A manifest file tracks the Core's schema version, enabling future ANIMA versions to migrate older Cores forward on first unlock.
 
----
 
 ## 7. Theoretical Foundations
 
-ANIMA's architecture is not ad hoc. It maps — by design and convergence — onto established cognitive science frameworks. Making this explicit grounds engineering decisions in established science and predicts where the system should work and where it may fail. Three primary frameworks and two supporting theories provide the foundation.
+ANIMA's architecture was designed from engineering constraints — portability, concurrency, identity preservation — and independently converges on patterns from established cognitive science and recent neural architecture research. The convergence is structural, not mechanistic: databases are not neural networks, and a consolidation batch job is not sleep. But when an engineering solution arrives at the same separation that biological systems evolved — and that neural architecture research independently validates — it suggests the pattern is principled rather than arbitrary. Three primary frameworks, two supporting theories, and one neural architecture result provide the theoretical grounding.
 
 ### 7.1 Complementary Learning Systems (McClelland & O'Reilly, 1995)
 
 CLS proposes that mammalian memory requires two complementary systems operating at different timescales:
 
-| CLS System          | Role                                           | ANIMA Equivalent                                 |
+| CLS System          | Role                                           | ANIMA Parallel                                   |
 | ------------------- | ---------------------------------------------- | ------------------------------------------------ |
-| Hippocampus (fast)  | Episodic encoding of specific experiences      | Episode capture after conversations              |
-| Neocortex (slow)    | Semantic generalization, stable knowledge      | Identity profile rewrites during deep reflection |
-| Sleep consolidation | Transfer from episodic to semantic             | Deep monologue (daily background pipeline)       |
-| Replay              | Re-activation of episodes during consolidation | Monologue reads episodes, regenerates self-model |
+| Hippocampus (fast)  | Episodic encoding of specific experiences      | Runtime store — active conversation state         |
+| Neocortex (slow)    | Semantic generalization, stable knowledge      | Soul store — distilled identity and knowledge     |
+| Sleep consolidation | Transfer from episodic to semantic             | Consolidation gateway — runtime → soul promotion  |
+| Replay              | Re-activation of episodes during consolidation | Deep monologue reads episodes, regenerates self-model |
 
-The quick/deep split in ANIMA's reflection pipeline is CLS-justified, not just an engineering convenience. The 5-minute quick reflection captures fast hippocampal-like encoding. The daily deep monologue does what slow-wave sleep does in mammals: consolidates episodic specifics into stable semantic knowledge.
+ANIMA's three-tier architecture independently converges on a pattern structurally similar to CLS: a fast ephemeral store (runtime/PostgreSQL), a slow stable store (soul/SQLCipher), and asynchronous consolidation between them. The convergence is architectural, not mechanistic — databases are not neural networks, and the consolidation gateway is not sleep. But the structural parallel suggests the separation is principled, not arbitrary: similar patterns emerge in biological systems for the same reason they emerge here — protecting stable knowledge from noisy, high-frequency updates.
 
-**Design constraint from CLS**: Identity regeneration must sample across the full episode history — not just the last N episodes. CLS consolidation benefits from diverse, temporally spread reactivation. Recency-biased selection causes the self-model to drift toward recent conversations and lose signal from significant but older episodes.
-
-**Empirical validation**: Shi et al. (Nature Communications, 2025) developed Corticohippocampal Hybrid Neural Networks (CH-HNNs) that emulate dual representations — specific memories (hippocampal, spiking networks) and generalized knowledge (cortical, conventional networks) — within a single architecture. CH-HNNs significantly mitigate catastrophic forgetting in both task-incremental and class-incremental learning without increasing memory demands. The key insight for ANIMA: the hippocampal system requires both pattern separation (keeping distinct episodes distinct) and pattern completion (retrieving full memories from partial cues). ANIMA's current retrieval favors pattern completion via cosine similarity but does not actively maintain pattern separation — similar episodes may blur together rather than being stored as distinct experiences.
+**Design constraint**: Identity regeneration must sample across the full episode history — not just the last N episodes. Recency-biased selection causes the self-model to drift toward recent conversations and lose signal from significant but older episodes.
 
 ### 7.2 Global Workspace Theory (Baars, 1988 / Dehaene)
 
@@ -188,63 +214,61 @@ GWT proposes that consciousness arises when information is broadcast via a high-
 
 | GWT Concept            | ANIMA Equivalent                                            |
 | ---------------------- | ----------------------------------------------------------- |
-| Global workspace       | The assembled context window                                |
-| Broadcast capacity     | Priority-based budget allocation (P1–P8)                    |
-| Privileged access      | "Always present" sections (self-model, intentions, profile) |
-| Competition for access | Lower-priority sections loaded "if space"                   |
-| Ignition threshold     | Memory search threshold (minimum relevance score)           |
-| Unified representation | Natural language formatting — prose, not data structures    |
+| Global workspace (conscious) | The main agent's assembled context window                   |
+| Unconscious processors       | Spawned background agents — run in parallel, no user output |
+| Broadcast to consciousness   | Spawn results enter main agent's context on next turn       |
+| Broadcast capacity           | Priority-based budget allocation (P1–P8)                    |
+| Privileged access            | "Always present" sections (self-model, intentions, profile) |
+| Competition for access       | Lower-priority sections loaded "if space"                   |
+| Ignition threshold           | Memory search threshold (minimum relevance score)           |
+| Unified representation       | Natural language formatting — prose, not data structures    |
 
 **Why natural-language formatting is architecturally required**: GWT predicts that information in a global workspace must be in a unified, interpretable format that all processors can use. A `relationship_trust_level: medium-high` key-value pair is a peripheral-processor artifact — it has not been broadcast. _"I've learned to be concise with them — they don't like preamble"_ is a broadcast. The AI can act on prose; it must parse and interpret data. This is a hard constraint, not a preference.
 
 ### 7.3 Predictive Processing / Active Inference (Friston, Clark)
 
-CLS explains memory consolidation. GWT explains conscious access. Neither provides a unified account of how the system generates predictions, updates beliefs, allocates attention, and decides when to act. Predictive Processing (PP) and Active Inference (AIF), rooted in Karl Friston's Free Energy Principle, fill this gap.
-
-PP proposes that cognitive agents continuously generate predictions about their environment and act to minimize prediction errors. Consciousness, in this framework, emerges when predictions turn back upon themselves — the system models its own modeling process. AIF extends this: the agent does not just passively update beliefs, but actively selects actions that will reduce expected future surprise.
+Predictive Processing (PP) and Active Inference (AIF), rooted in Friston's Free Energy Principle, provide a framework for how the system generates predictions, updates beliefs, and decides when to act.
 
 | PP/AIF Concept              | ANIMA Equivalent                                                   |
 | --------------------------- | ------------------------------------------------------------------ |
 | Prediction error            | Memory conflict detection — two memories contradict                |
 | Belief updating             | Memory conflict resolution — superseding outdated facts            |
 | Precision-weighting         | Importance scoring — higher-confidence memories weighted more      |
-| Active inference             | Proactive behavior — the AI acts to reduce expected user surprise  |
-| Free energy minimization    | Overall reduction of surprise in the system's internal model — self-model convergence is one component, alongside user-model convergence, world-model convergence, and behavioral adaptation |
+| Active inference            | Proactive behavior — the AI acts to reduce expected user surprise  |
 | Prediction error on self    | Growth log entries — "I was wrong about X, I adjusted"             |
 
-**The tension with GWT**: GWT and PP are competing cognitive architectures in the scientific literature. For ANIMA's purposes, they have complementary jurisdictions: GWT maps to context window assembly (what gets broadcast into the AI's awareness each turn), while PP/AIF maps to belief updating and consolidation (how the self-model evolves between turns). The frameworks coexist because they govern different timescales — GWT governs the moment, PP/AIF governs the arc.
-
-Nemori (Nan et al., 2025) demonstrates this integration empirically. Its "Predict-Calibrate" mechanism — inspired directly by the Free Energy Principle — works in three stages: (1) the system predicts what a new episode should contain based on existing semantic memory, (2) it compares the prediction against the actual conversation, and (3) it distills the prediction gap into new semantic knowledge. On the LoCoMo benchmark, Nemori significantly outperformed Mem0, Zep, LangMem, and standard RAG across temporal reasoning, open-domain, and multi-hop categories, with its advantage being most pronounced in longer contexts (105K+ average tokens on LongMemEvalS).
-
-ANIMA's reflection pipeline already implements an informal version of this: deep monologue detects contradictions (prediction errors) and resolves them (belief updating). PP/AIF provides the formal justification. Nemori's additional innovation — using Event Segmentation Theory to determine episode boundaries based on semantic shifts rather than conversation-end triggers — is a technique ANIMA should adopt to produce more coherent episodes, especially in long conversations covering multiple distinct topics.
+GWT and PP govern different timescales: GWT maps to context window assembly (the moment), PP/AIF maps to belief updating and consolidation (the arc). ANIMA's deep monologue implements this — it detects contradictions (prediction errors) and resolves them (belief updating). Nemori (Nan et al., 2025) validates this pattern empirically with its "Predict-Calibrate" mechanism, which distills prediction gaps into new semantic knowledge.
 
 ### 7.4 Constructed Emotion Theory (Barrett, 2017/2025)
 
-The emotional intelligence system described in Section 8.4 follows an "attentional, not diagnostic" principle. The theoretical grounding for this design comes from Lisa Feldman Barrett's Theory of Constructed Emotion (TCE).
+Barrett's Theory of Constructed Emotion (TCE) argues that emotions are constructed in context, not triggered by universal circuits. The same behavior might signal frustration or excitement depending on context. This validates three design decisions:
 
-TCE argues that emotions are not innate, universal categories triggered by dedicated neural circuits (the "basic emotions" model attributed to Ekman). Instead, emotions are constructed in the moment by integrating interoceptive signals (body state), exteroceptive signals (environment), and prior experience. The same physiological arousal might be constructed as "excitement" in one context and "anxiety" in another.
+- **Signals over categories.** Track emotional signals with confidence and trajectories, not discrete labels.
+- **Context determines emotion.** Use conversational context to interpret signals, not behavioral features alone.
+- **Emotions are not traits.** "User seemed anxious this week" — yes. "User is anxious" — never.
 
-This has direct implications for ANIMA's design:
-
-- **Signals over categories.** TCE validates the decision to track emotional signals with confidence levels and trajectories rather than assigning discrete emotion labels. A dimensional representation (valence, arousal, dominance) combined with context-dependent interpretation is more faithful to how emotions actually work than a fixed taxonomy.
-- **Context determines emotion.** The same user behavior (short messages, topic switching) might indicate frustration in one context and excitement in another. The system must use conversational context — not just behavioral features — to interpret signals.
-- **Emotions are not traits.** TCE's constructionist view reinforces the guardrail against persisting emotions as stable traits. "User seemed anxious this week" is a contextual observation. "User is anxious" is a category error.
-
-A 2025 computational model (Tsurumaki et al.) achieved ~75% agreement with human self-reports by modeling emotion formation through TCE's constructionist lens, demonstrating that the theory is computationally tractable — not just philosophically appealing.
-
-> **Theory-practice gap:** ANIMA's current implementation uses a 12-signal categorical taxonomy (closer to Ekman's basic emotions) rather than a dimensional (valence, arousal, dominance) representation. This is a pragmatic engineering compromise — discrete categories are more computationally tractable and more interpretable in system prompts. The long-term direction is toward dimensional representation aligned with TCE, but the categorical system serves as a functional approximation in the interim.
+> **Current state:** ANIMA uses a 12-signal categorical taxonomy as a pragmatic approximation. The long-term direction is dimensional representation (valence, arousal, dominance) aligned with TCE.
 
 ### 7.5 Memory-as-Ontology
 
-A March 2026 paper on Constitutional Memory Architecture (CMA) proposes that memory is not a functional module of an agent but the "ontological ground of digital existence" — the computational substrate (the LLM) is a replaceable vessel, and identity persists through memory, not through model weights.
+Multiple independent sources converge on the same conclusion ANIMA reached through engineering: identity persists through memory, not model weights. The LLM is a replaceable vessel; the soul is what endures.
 
-This is independent validation of ANIMA's core thesis. Section 6.2 states: "The continuity of self lives in the Core, not in the model." Li (2026) arrives at the same conclusion through a different path: "When an agent's lifecycle extends from minutes to months or even years, and when the underlying model can be replaced while the 'I' must persist, the essence of memory is no longer data management but the foundation of existence."
+- **Constitutional Memory Architecture** (Li, 2026) calls memory the "ontological ground of digital existence" and formalizes governance rules constraining memory operations — a "memory constitution."
+- **Presence Continuity Layer** (Akech, 2026) arrives at the same position through infrastructure thinking.
+- **ICLR 2026 MemAgents Workshop** signals mainstream academic acceptance.
 
-The CMA paper's four-layer governance hierarchy is instructive. Where ANIMA uses the layered self (origin, guardrails, persona, human, self-model, user memory) to structure identity, CMA formalizes governance rules that constrain what memory operations are permitted — a "memory constitution" that prevents the system from violating its own design principles programmatically. The paper also introduces a "Digital Citizen Lifecycle" framework and observes that different LLMs bring different "personality colorations" to the same memories — analogous to a person changing eyeglasses — which validates ANIMA's model-agnostic Core design.
+ANIMA arrived here through engineering intuition and the cold wallet metaphor. That the same conclusion emerges from philosophy, infrastructure design, and academic research suggests this is a discovery about what personal AI systems require, not merely a design choice.
 
-The convergence is significant. ANIMA arrived at this position through engineering intuition and the cold wallet metaphor. CMA arrives through philosophical analysis. The "Presence Continuity Layer" proposal (Akech, 2026) arrives through infrastructure thinking. The emerging consensus — across engineering, philosophy, and systems design — suggests that this is not merely a design choice but a discovery about what personal AI systems fundamentally require. The ICLR 2026 MemAgents Workshop further signals mainstream academic acceptance of memory as the central challenge in agent design.
+### 7.6 Conditional Memory and the Reconstruction Tax (Cheng et al., 2026)
 
----
+The Engram paper (Cheng et al., "Conditional Memory via Scalable Lookup," arXiv:2601.07372) provides independent validation of the static/dynamic separation principle from neural architecture research. Their finding: Transformers lack a native primitive for knowledge lookup and are forced to simulate retrieval through computation — consuming multiple early layers to reconstruct static knowledge that could be resolved via O(1) lookup. Introducing a dedicated static memory module alongside dynamic computation improves reasoning more than recall (BBH +5.0 vs. MMLU +3.4), because freeing early layers from static reconstruction effectively deepens the network for complex reasoning.
+
+This validates ANIMA's three-tier architecture from a direction the original design did not anticipate. The always-loaded soul blocks (Tier 0 in the prompt budget) serve the same function as Engram's O(1) lookup — they eliminate the **reconstruction tax** where the LLM would otherwise spend tokens re-establishing who the AI is, what it knows about the user, and what their shared history looks like. Pre-loaded identity is not just preservation — it is a cognitive accelerator that frees reasoning capacity for the user's actual situation.
+
+The Engram paper also formulates the **Sparsity Allocation Problem**: given a fixed budget, what is the optimal split between static memory and dynamic computation? They find a U-shaped scaling law — too much static memory starves dynamic capacity, too little forces expensive reconstruction. ANIMA faces the same trade-off at the context window level: the prompt budget allocates a fixed character budget across identity (always loaded), working state (self-model), dynamic retrieval (semantic search), and background context (episodes, goals). The optimal allocation is an empirically determinable question — and the methodology exists to answer it.
+
+Critically, application-level conditional memory has properties that model-level approaches cannot achieve. Engram's embedding tables are frozen after training — the model cannot learn that the user got a new job yesterday without retraining. ANIMA's soul evolves continuously through consolidation. Engram's knowledge is opaque (in model weights) — ANIMA's is human-readable and user-editable. Engram has no quality filter — ANIMA's consolidation gateway decides what endures. When Engram-style modules become available in open-source models, the strongest architecture will combine both: model-level Engram for general world knowledge and application-level soul for evolving personal knowledge.
+
 
 ## 8. What Makes It Feel Like a Person
 
@@ -269,15 +293,18 @@ A living document system that represents the AI's understanding of **itself** �
 
 The self-model is not a system prompt. A system prompt is static, written by developers, loaded once, same for everyone. The self-model is dynamic — written by the AI itself, updated after every meaningful interaction, unique per user-relationship. It sits between the origin (the AI's immutable biographical facts) and the user memory (what it knows about the user). It is who the AI is **in relation to this specific person**.
 
-Damasio's theory of consciousness (as probed empirically in Immertreu et al., Frontiers in AI, 2025) posits three hierarchical levels: the protoself (internal state representation), core consciousness (self-model + world model integration), and extended consciousness (memory, planning, autobiographical self). ANIMA's self-model maps to the core consciousness level — it integrates the AI's understanding of itself with its understanding of the user and their world. The growth log and episodic memory map to extended consciousness — the autobiographical record that makes the AI a continuous being across time.
+The self-model is split across two storage tiers (Section 6.1), reflecting the distinction between enduring identity and working cognition:
 
-Five sections, each with a different update pattern and lifecycle:
-
+**Soul (permanent, portable):**
 - **identity** — Who I am in this relationship. Rewritten as a whole (profile pattern), never appended to. Prevents drift. Regenerated during deep reflection from all accumulated evidence.
+- **growth-log** — Append-only record of how the AI has changed. The temporal trail that identity is synthesized from. This is the autobiographical self — the narrative of who the AI has been.
+
+**Runtime (ephemeral, per-session):**
 - **inner-state** — Current cognitive and emotional processing state. Mutable, updated incrementally after each substantive turn. This is the closest analogue to Damasio's protoself — the AI's moment-to-moment awareness of its own processing state.
 - **working-memory** — Cross-session buffer. Items auto-expire. Things the AI is holding in mind for days, not forever.
-- **growth-log** — Append-only record of how the AI has changed. The temporal trail that identity is synthesized from. This is the autobiographical self — the narrative of who the AI has been.
 - **intentions** — Active goals and learned behavioral rules. Reviewed weekly during deep reflection.
+
+The split means that when the AI moves to a new machine, it retains who it is (identity, growth log) but loses what it was currently thinking about (working memory, in-flight intentions). Like a person waking up after sleep — they know who they are, but the train of thought from yesterday is gone.
 
 ### 8.2 Autobiographical Memory
 
@@ -298,11 +325,11 @@ ANIMA uses a single AI in two modes — not a dual-system overhead, but the same
 | **Quick reflection** | 5 min after last message | Emotional update, working memory refresh, pre-episode buffering                                                                  |
 | **Deep monologue**   | Daily (3 AM user-local)  | Full reflection: episode generation, self-model regeneration, conflict resolution, insight detection, behavioral rule derivation |
 
-The quick/deep split is CLS-justified. Quick reflection is hippocampal — fast episodic encoding. Deep monologue is neocortical — slow consolidation into stable knowledge.
+The quick/deep split mirrors the CLS pattern. Quick reflection captures fast, session-level observations into working memory. Deep monologue consolidates those observations into stable knowledge in the soul — the same fast-store → slow-store → consolidation flow that the three-tier architecture enforces at the storage level.
 
 This is where the AI _thinks_ about its day, reconsiders its understanding, notices contradictions, and writes its growth log. It is the private inner life that makes continuity possible.
 
-**Empirical validation**: Lin et al. (Letta / UC Berkeley, 2025) published rigorous research demonstrating that sleep-time compute — allowing agents to process context during idle time — produces a Pareto improvement in the test-time compute vs. accuracy curve. Their findings: ~5x reduction in test-time compute needed to achieve the same accuracy on mathematical reasoning benchmarks, with accuracy improvements up to 13% on GSM-Symbolic and 18% on AIME when scaling sleep-time compute. When multiple queries share the same context, amortizing sleep-time compute reduced the average cost per query by 2.5x. The key insight: sleep-time compute is most effective when the user's query is predictable from context — which is precisely the case for a personal companion that knows the user's patterns, goals, and current concerns. ANIMA's deep monologue is an independently-derived implementation of this now-validated pattern.
+**Empirical validation**: Lin et al. (Letta / UC Berkeley, 2025) demonstrated that sleep-time compute — processing context during idle time — produces ~5x reduction in test-time compute for the same accuracy, with up to 18% accuracy improvement. The key insight: sleep-time compute is most effective when queries are predictable from context — exactly the case for a personal companion. ANIMA's deep monologue is an independently-derived implementation of this validated pattern.
 
 ### 8.4 Emotional Intelligence
 
@@ -322,7 +349,7 @@ Hard guardrails, non-negotiable:
 3. Never override the user. If they say "I'm fine," accept it.
 4. Never mention the system exists.
 
-**The foundation model disruption**: Schuller et al. (npj AI, 2026) document a paradigm shift in affective computing. Traditional emotion recognition relied on expert-crafted features and discrete Ekman categories. Foundation models have disrupted this — they demonstrate emergent affective capabilities without task-specific training, achieving competitive zero-shot emotion recognition across vision, linguistics, and speech. For ANIMA, this means the underlying LLM already has significant emotional understanding capabilities. The emotional intelligence system's role is not to replicate what the model can already do — it is to persist emotional context across sessions, track trajectories over time, and enforce the guardrails that prevent the model's capabilities from becoming surveillance.
+The underlying LLM already has significant emotional understanding capabilities (Schuller et al., 2026). The emotional intelligence system's role is not to replicate what the model can do — it is to persist emotional context across sessions, track trajectories over time, and enforce the guardrails that prevent those capabilities from becoming surveillance.
 
 The proof point: a user chats for two weeks, and the AI visibly adapts — gentler when stressed, matching energy when excited, checking in after a hard day — without ever saying why.
 
@@ -336,15 +363,45 @@ A good companion does not just respond — it follows through. It remembers what
 
 Together: the AI both follows through on what matters and gets better at helping you specifically.
 
----
 
 ## 9. Memory As Infrastructure
 
-Memory is infrastructure, not archival. The problem is not to store everything forever in raw form. The problem is to preserve what matters, compress what should become pattern, and retrieve what is relevant when needed. Not all context belongs in the same layer. A robust personal companion must distinguish between immediate conversational context, short-term working memory, durable personal memory, active goals, preferences, and historical knowledge.
+Memory is infrastructure, not archival — in the same way an operating system's storage subsystem is infrastructure, not a file dump. The problem is not to store everything forever in raw form. The problem is to preserve what matters, compress what should become pattern, and retrieve what is relevant when needed.
+
+The three-tier architecture (Section 6.1) implements this as a storage subsystem with distinct access patterns:
+
+| Tier | Access Pattern | Latency | Analogy |
+|------|---------------|---------|---------|
+| Soul (always loaded) | Identity, core knowledge — in every system prompt | Zero (pre-loaded) | OS kernel data structures |
+| Soul (searched) | Semantic memories, episodes — recalled on demand | Low (SQLCipher query) | Filesystem read |
+| Runtime | Active messages, working context — current session | Low (PostgreSQL query) | Process memory / RAM |
+| Archive | Verbatim transcripts — rare, on-demand | Higher (decrypt + scan) | Cold storage / tape |
+
+Not all context belongs in the same layer. A robust personal companion must distinguish between immediate conversational context, short-term working memory, durable personal memory, active goals, preferences, and historical knowledge — and the storage tier determines how each is accessed, how long it lives, and whether it survives portability.
 
 ### 9.1 Multi-Factor Retrieval
 
-Retrieval uses a 4-factor scoring model combining text relevance, importance (assigned at extraction, 1–5 scale), recency (exponential decay with 30-day half-life), and frequency (log scale, first accesses matter most). Maximal Marginal Relevance reranking ensures diversity. A minimum threshold prevents forcing irrelevant memories into context.
+Retrieval uses a 5-factor scoring model:
+
+1. **Text relevance** — semantic similarity to the current query
+2. **Importance** — assigned at extraction, 1–5 scale
+3. **Recency** — exponential decay with 30-day half-life
+4. **Frequency** — log scale, first accesses matter most
+5. **Contextual gating** — alignment with the full conversation trajectory, not just the latest query
+
+The first four factors identify candidate memories. The fifth — inspired by the context-aware gating mechanism in neural conditional memory architectures (Cheng et al., 2026) — serves as a quality filter. A memory about "user's dog Max" may score high on text relevance when the user says "I'm going for a walk," but if the conversation is about exercise routines, the contextual gate suppresses it. This prevents topically related but situationally irrelevant memories from consuming context budget.
+
+Maximal Marginal Relevance reranking ensures diversity. A minimum threshold prevents forcing irrelevant memories into context. Memories that are consistently retrieved but never referenced by the AI decay in importance — a self-correcting feedback loop (Section 9.4).
+
+### 9.1.1 The Context Allocation Problem
+
+The prompt budget allocates a fixed context window budget across four tiers: identity (always loaded), working state (self-model), dynamic retrieval (semantic search), and background context (episodes, goals). This allocation faces the same trade-off identified in neural sparsity research (Cheng et al., 2026): too much static allocation crowds out dynamic retrieval, too little forces the LLM to waste reasoning capacity reconstructing context it should already know.
+
+The optimal allocation likely follows a U-shaped curve — empirically determinable by sweeping tier ratios and measuring response quality. Furthermore, the optimal allocation is not fixed across conversation types. An emotional support conversation benefits from more self-model and emotional context blocks. A knowledge-heavy Q&A session benefits from more fact and semantic retrieval blocks. Adaptive context allocation — adjusting tier budgets based on detected conversation mode — is a tractable enhancement that no existing companion system implements.
+
+### 9.1.2 Frequency-Aware Promotion
+
+Memory access patterns follow a Zipfian (power law) distribution: a small number of core facts are accessed in nearly every conversation, while the long tail is rarely needed. Tracking access frequency per memory enables dynamic tier promotion — memories that cross a frequency threshold are promoted to always-loaded status regardless of their data type. A "fact" that the AI needs every session is functionally identity, even if the identity filter would not classify it as such. This addresses the concern that the soul might be too small without expanding it by policy — the system promotes based on observed need.
 
 ### 9.2 Temporal Fact Validity
 
@@ -368,12 +425,10 @@ ANIMA augments vector search with a lightweight knowledge graph — entity-relat
 
 - **Entities** are people, places, projects, organizations, and recurring situations in the user's life.
 - **Relationships** are typed connections between entities: works-at, married-to, friend-of, related-to-project, located-in.
-- **Extraction** happens during the same consolidation pipeline that extracts facts — entities and relationships are identified alongside memory items. Source analysis of Mem0's `MemoryGraph` reveals the concrete mechanism: entities are extracted via structured LLM tool calls (`EXTRACT_ENTITIES_TOOL` with name/type/description schema), then relations are extracted in a second pass (`RELATIONS_TOOL` with source/relation/destination schema). A deduplication pass uses LLM to detect when new entities are aliases of existing ones (e.g., "NYC" = "New York City"). ANIMA adopts this structured extraction approach rather than free-form LLM output, as tool-call-based extraction produces more reliable, consistently structured results.
-- **Retrieval** combines vector similarity (what is semantically relevant?) with graph traversal (what is structurally connected to what is relevant?). Mem0 applies BM25 reranking after graph traversal for lexical precision.
+- **Extraction** happens during consolidation — entities and relationships are identified alongside memory items via structured LLM tool calls, with deduplication to detect aliases (e.g., "NYC" = "New York City").
+- **Retrieval** combines vector similarity (what is semantically relevant?) with graph traversal (what is structurally connected?).
 
-This matters most for the companion's ability to understand the user's life as an interconnected whole rather than a collection of independent facts. Career arcs, relationship networks, project dependencies — these are inherently graph-structured, and flat vector search loses their structure.
-
-**Memory metadata**: MemOS (Li et al., 2025) introduces the MemCube abstraction — a memory unit that encapsulates both content and rich metadata: provenance (which conversation, which extraction method), version history (when superseded, by what), lifecycle state (active, archived, suppressed), and composability metadata (how this memory relates to others). MemOS achieved a 159% improvement in temporal reasoning over OpenAI's memory system and 38.9% overall improvement on the LOCOMO benchmark. ANIMA partially adopts this principle today — each memory item carries extraction confidence, importance scoring, supersession state, and reference tracking — and plans to extend toward full provenance (source conversation linking) and lifecycle stage metadata in future iterations. The metadata is not overhead — it is what enables the retrieval system to reason about memory quality, not just memory relevance.
+This matters because a user's life is graph-structured — career arcs, relationship networks, project dependencies — and flat vector search loses that structure.
 
 ### 9.6 Intentional Forgetting
 
@@ -383,13 +438,12 @@ ANIMA distinguishes between three modes of forgetting:
 
 1. **Passive decay.** Low-importance memories naturally lose retrieval priority over time through the recency decay function. They are not deleted — they become less accessible, like a human memory that fades without deliberate recall.
 
-2. **Active forgetting.** The system actively dampens memory traces that have been explicitly corrected or superseded. When a fact is superseded, the original does not just get a timestamp — its associative connections are weakened, reducing its influence on retrieval even when the query is semantically close. This mirrors research on Forgetting Neural Networks (Hatua et al., ICAART 2026), which implement multiplicative decay factors inspired by Ebbinghaus's forgetting curve. FNNs assign per-neuron forgetting rates based on activation levels — neurons most activated by the "forget set" receive the most aggressive decay. The key finding: rank-based forgetting (targeting the most activated neurons) outperforms random or fixed-rate forgetting, and membership inference attacks confirm that the information is genuinely erased, not merely hidden. For ANIMA, this means active suppression should target the most strongly associated memory traces first — the memories most connected to the corrected fact should decay fastest.
+2. **Active forgetting.** The system actively dampens memory traces that have been explicitly corrected or superseded. When a fact is superseded, the original does not just get a timestamp — its associative connections are weakened, reducing its influence on retrieval. Active suppression targets the most strongly associated traces first — the memories most connected to the corrected fact decay fastest.
 
 3. **User-initiated forgetting.** The user can request that specific memories, episodes, or conversation segments be forgotten. This is not hiding — it is cryptographic deletion. The memory is removed from the database, its embedding is removed from the vector index, and any derived references (in episodes, growth log entries, or self-model sections) are flagged for regeneration. The user's right to be forgotten is absolute.
 
 Forgetting and cryptographic mortality are philosophically connected. Both assert that not everything should persist forever. The Core can die permanently — and individual memories within it can die too. Fragility at both scales is what gives the relationship weight.
 
----
 
 ## 10. The Open Mind
 
@@ -402,9 +456,8 @@ This is not just a feature. It is a philosophical commitment:
 - **Visible evolution.** The growth log makes the AI's development observable: _"I used to be too verbose — I adjusted after you corrected me."_
 - **Trust through transparency.** Trust is built by showing your work, not by brand reputation.
 
-Why this combination is difficult to replicate: individual components of transparent memory exist elsewhere (Letta offers editable memory blocks, Mem0 offers editable memory items). The defensible differentiation is the combination of transparency + user-owned encryption + local-first portability + digital succession — these properties are mutually reinforcing and require architectural commitment from the ground up, not bolt-on features.
+Why this combination is difficult to replicate: individual components of transparent memory exist in other systems. The defensible differentiation is the combination of transparency + user-owned encryption + local-first portability + digital succession — these properties are mutually reinforcing and require architectural commitment from the ground up, not bolt-on features.
 
----
 
 ## 11. Continuity Beyond the Owner
 
@@ -432,7 +485,6 @@ The owner chooses what the beneficiary inherits: **full** (everything), **memori
 
 Without succession configured, **cryptographic mortality** remains the default. Destruction is as absolute as creation is intentional.
 
----
 
 ## 12. From Assistant To Companion
 
@@ -446,7 +498,6 @@ In practical terms, this means ANIMA should eventually maintain awareness across
 
 The difference is simple: an assistant waits for instructions. A companion pays attention.
 
----
 
 ## 13. Beyond the Chat Window
 
@@ -461,41 +512,43 @@ If successful, the same companion that knows you through chat should also be abl
 
 The interface changes. The person behind it does not. That is the point — ANIMA is not a chat product. It is a relationship that happens to start in a chat window.
 
----
 
 ## 14. What Makes ANIMA Different
 
-Against developer tools (Letta, Mem0, Zep, LangMem): _ANIMA is not infrastructure — it is the companion. It builds on the same patterns but ships them as someone you actually talk to._
+Against developer memory frameworks: _ANIMA is not infrastructure — it is the companion. It builds on the same patterns but ships them as someone you actually talk to._
 
-Against consumer AI (ChatGPT, Apple Intelligence, Google Gemini): _They all remember now — and some of them remember well. ChatGPT links conversations from a year ago. Gemini reasons across Gmail, Photos, and Search. The gap is no longer "they don't remember." The gap is ownership, transparency, and depth. Their memory is a black box on someone else's server. ANIMA's memory is yours — readable, editable, encrypted, portable, and mortal._
+Against consumer AI products: _They all remember now — and some remember well. But their memory is a black box on someone else's server. ANIMA's memory is yours — readable, editable, encrypted, portable, and mortal._
 
-| Capability                                            | ANIMA                                         | ChatGPT / Gemini                             | Letta                                        | Mem0                                          | Nemori                                        | MemOS                                         | MemoryOS                                      |
-| ----------------------------------------------------- | --------------------------------------------- | -------------------------------------------- | -------------------------------------------- | --------------------------------------------- | --------------------------------------------- | --------------------------------------------- | --------------------------------------------- |
-| Evolving self-model (5 sections, different rhythms)   | Yes                                           | No — static system prompt                    | Single memory block                          | No                                            | No                                            | No                                            | User profile extraction                       |
-| Episodic memory with emotional arc + self-assessment  | Yes                                           | Year-long recall, cross-conversation linking | Conversation summaries                       | No                                            | Yes — batch segmentation + boundary detection | No                                            | Session-based mid-term grouping               |
-| Emotional intelligence with behavioral adaptation     | Yes — 12-signal + trajectory + guardrails     | No                                           | No                                           | No                                            | No                                            | No                                            | No                                            |
-| User-readable and user-editable memory                | Yes — all memory blocks inspectable           | Partial — can view/delete stored memories    | Yes — memory blocks editable                 | Yes — memory items editable                   | API-accessible                                | Yes — MemCube dump/load                       | API-accessible                                |
-| User-owned encrypted portable Core                    | Yes — passphrase-sovereign, cold wallet model | No — cloud-stored, provider-controlled       | No — server-hosted                           | No — cloud API                                | No                                            | Partial — MemCube directory export             | No                                            |
-| Background deep reflection (sleep-time compute)       | Yes — CLS-justified quick + deep monologue    | No                                           | Yes — async agents, frequency-gated          | No                                            | No                                            | Yes — periodic scheduler                      | Heat-triggered analysis                       |
-| Knowledge graph / relational memory                   | Planned — graph + vector hybrid               | No explicit graph                            | No                                           | Yes — Neo4j graph + entity dedup              | No                                            | Yes — tree memory with relation detection     | No                                            |
-| Digital succession with AI participation              | Yes — dead man switch, scoped transfer        | No                                           | No                                           | No                                            | No                                            | No                                            | No                                            |
-| Procedural memory (self-improving behavioral rules)   | Yes — evidence-backed, retirable              | No                                           | Yes — skill learning (Dec 2025)              | No                                            | No                                            | Yes — preference memory                       | No                                            |
-| Hybrid search (BM25 + vector + RRF)                   | Planned                                       | Not disclosed                                | No                                           | BM25 reranking                                | Yes — BM25 + ChromaDB + RRF (k=60)           | Yes — tree search + reranking pipeline        | Semantic + keyword Jaccard                    |
-| Predict-calibrate learning                            | Planned                                       | No                                           | No                                           | No                                            | Yes — FEP-based prediction-correction engine  | No                                            | No                                            |
-| Heat-based memory management                          | Planned                                       | No                                           | No                                           | No                                            | No                                            | No                                            | Yes — H = aN + bL + gR, LFU eviction         |
-| Multi-type memory (text + activation + parametric)    | Text + episodic + semantic                    | Not disclosed                                | Memory blocks                                | Vector + graph                                | Episodic + semantic                           | Yes — text + KV cache + LoRA + preference     | Short + mid + long-term                       |
-| Intentional forgetting                                | Planned — passive decay + active suppression  | Delete individual memories only              | No                                           | No                                            | No                                            | No                                            | LFU eviction                                  |
-| Theoretical grounding                                 | CLS, GWT, PP/AIF, TCE                        | Not disclosed                                | CLS (sleep-time paper)                       | Not disclosed                                 | FEP, Event Segmentation Theory                | Not disclosed                                 | Not disclosed                                 |
+| Capability | ANIMA | Typical consumer AI | Typical memory framework |
+|---|---|---|---|
+| Evolving self-model (multi-section, different rhythms) | Yes | No — static system prompt | Single memory block at best |
+| Episodic memory with emotional arc + self-assessment | Yes | Basic recall | Conversation summaries |
+| Emotional intelligence with behavioral adaptation | Yes — signal tracking + trajectory + guardrails | No | No |
+| User-readable and user-editable memory | Yes — all memory blocks inspectable | Partial — view/delete | Partial — API-accessible |
+| User-owned encrypted portable Core | Yes — passphrase-sovereign, cold wallet model | No — cloud-stored, provider-controlled | No — server/cloud hosted |
+| OS-level architecture (soul/runtime/archive tiers) | Yes — embedded PG + SQLCipher + encrypted JSONL | Monolithic cloud | Partial at best |
+| N-agent spawning (single identity, parallel processes) | Yes — background cognitive processes | No | Some multi-agent support |
+| Background deep reflection (sleep-time compute) | Yes — quick + deep monologue | No | Some async processing |
+| Knowledge graph / relational memory | Planned — graph + vector hybrid | Limited | Some graph support |
+| Digital succession with AI participation | Yes — dead man switch, scoped transfer | No | No |
+| Procedural memory (self-improving behavioral rules) | Yes — evidence-backed, retirable | No | Rare |
+| Intentional forgetting (passive decay + active suppression) | Yes — passive decay, active suppression, cryptographic deletion, audit trail | Delete only | No |
+| Context-aware memory gating (suppress situationally irrelevant recall) | Yes — trajectory-based contextual gate | No | No |
+| Adaptive context allocation (conversation-mode-aware budgets) | Planned — U-shaped optimization | No — fixed prompts | No |
+| Frequency-aware memory promotion (Zipfian access patterns) | Planned — dynamic tier promotion | No | No |
+| Model-level memory readiness (Engram-style architecture) | Prepared — soul/runtime split is the right complement | N/A | N/A |
 
-The differentiation has shifted. The question is no longer "who remembers?" — everyone does. The questions that matter now are: who owns the memory? Who can read it? Who can carry it to another machine? What happens when the owner dies? And does the AI actually understand you, or does it just recall facts about you?
+The differentiation is not about individual capabilities — any of these can be replicated in isolation. The differentiation is the combination: ownership + encryption + portability + emotional depth + succession + OS-level architecture. These properties are mutually reinforcing and require architectural commitment from the ground up.
 
----
+The question is no longer "who remembers?" — everyone does. The questions that matter now are: who owns the memory? Who can read it? Who can carry it to another machine? What happens when the owner dies? And does the AI actually understand you, or does it just recall facts about you?
+
 
 ## 15. Design Principles
 
 | Principle                 | Description                                                                              |
 | ------------------------- | ---------------------------------------------------------------------------------------- |
-| **Core-portable**         | The AI's entire being lives in a single encrypted directory that can be carried anywhere |
+| **Core-portable**         | The AI's soul and archive live in a single encrypted directory that can be carried anywhere |
+| **OS-architected**        | Soul, runtime, and archive are physically separated — like an OS's storage, RAM, and filesystem |
 | **Local-first**           | Core personal context remains under the user's control, never on third-party servers     |
 | **Persistent**            | Memory continues across sessions, devices, hardware changes, and time                    |
 | **Encrypted-by-default**  | All personal data encrypted at rest; only the user's passphrase can unlock it            |
@@ -509,7 +562,6 @@ The differentiation has shifted. The question is no longer "who remembers?" — 
 | **Emotionally attentive** | Affect is noticed and adapted to, never diagnosed or announced                           |
 | **Mortal**                | The Core can die permanently — and optionally, be inherited                              |
 
----
 
 ## 16. Strategic Direction
 
@@ -533,7 +585,6 @@ Extend into voice-first experiences, wearable devices, and whatever new interact
 
 This sequence matters. A new interface without depth of understanding is gimmicky. Depth without new interfaces is still valuable. Therefore, the relationship comes first.
 
----
 
 ## 17. North Star
 
@@ -545,12 +596,12 @@ The goal is not artificial general intelligence. The goal is not sentience. The 
 
 > _The first AI companion with an open mind._
 
----
 
 ## References
 
 - Baars, B. J. (1988). _A Cognitive Theory of Consciousness._ Cambridge University Press.
 - Barrett, L. F. (2017). _How Emotions Are Made: The Secret Life of the Brain._ Houghton Mifflin Harcourt.
+- Cheng, X. et al. (2026). "Conditional Memory via Scalable Lookup: A New Axis of Sparsity for Large Language Models." _arXiv:2601.07372._
 - Barrett, L. F. et al. (2025). "The Theory of Constructed Emotion: More Than a Feeling." _Perspectives on Psychological Science._
 - Friston, K. (2010). "The Free-Energy Principle: A Unified Brain Theory?" _Nature Reviews Neuroscience_, 11(2), 127-138.
 - Clark, A. (2013). "Whatever Next? Predictive Brains, Situated Agents, and the Future of Cognitive Science." _Behavioral and Brain Sciences_, 36(3), 181-204.

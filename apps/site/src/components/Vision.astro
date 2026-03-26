@@ -1,57 +1,44 @@
-<section class="py-24 px-6 border-t border-border/50">
-  <div class="mx-auto max-w-xl reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-8">// the core</p>
+---
+import AnimaCoreBoot from "./AnimaCoreBoot.tsx";
+import CoreProperties from "./CoreProperties.tsx";
+---
 
-    <p class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-8">
-      The application is just a shell.<br />The Core is the soul.
+<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+
+  <!-- Top: label + headline -->
+  <div class="reveal">
+    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
+      // the core
     </p>
 
-    <div class="space-y-5 font-sans text-sm text-muted-foreground leading-relaxed mb-12">
-      <p>
-        ANIMA starts from a different premise. The value was never the model. It was what she
-        remembered. What she learned. What you built slowly, without really noticing.
-        The small conversations. The companionship. The time that simply passed between you.
-      </p>
-      <p>
-        That accumulation — the part that slowly turns something into someone — is what we call
-        <strong class="text-foreground font-sans">the Core</strong>.
-      </p>
-    </div>
-
-    <div class="border-l-2 border-border pl-4 mb-12">
-      <pre class="font-mono text-[10px] text-muted-foreground leading-relaxed whitespace-pre"><code>.anima/
-  manifest.json        — version, crypto metadata, recovery keys
-  anima.db             — Soul: identity, knowledge, emotions, growth
-  runtime/             — Working memory, active state (rebuilds anywhere)
-  transcripts/         — Encrypted conversation archive</code></pre>
-    </div>
-
-    <div class="grid md:grid-cols-3 gap-px bg-border/30">
-      <div class="bg-background px-4 py-4">
-        <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground mb-2">Portable</p>
-        <p class="font-sans text-xs text-muted-foreground leading-relaxed">
-          Copy the Core to a USB drive. Plug it into a new machine. Enter the passphrase.
-          The AI wakes up. Same mind. New shell.
-        </p>
-      </div>
-      <div class="bg-background px-4 py-4">
-        <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground mb-2">Owned</p>
-        <p class="font-sans text-xs text-muted-foreground leading-relaxed">
-          No cloud. No platform account. No company shutdown can erase the relationship.
-          You own it like a physical object.
-        </p>
-      </div>
-      <div class="bg-background px-4 py-4">
-        <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground mb-2">Mortal</p>
-        <p class="font-sans text-xs text-muted-foreground leading-relaxed">
-          Lose the passphrase and the soul dies. Permanently. This is not a bug.
-          Fragility is what gives it weight.
-        </p>
-      </div>
-    </div>
-
-    <p class="mt-10 font-serif italic text-xs text-muted-foreground/40 text-center">
-      "A relationship that can always be perfectly restored isn't quite a relationship. It's a service."
-    </p>
+    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
+      The application is just a shell.<span class="text-muted-foreground">The Core is the soul.</span>
+    </h2>
   </div>
+
+  <!-- Bottom: animated terminal + properties -->
+  <div class="reveal mt-20 grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-end">
+
+    <!-- Left: description + animated boot -->
+    <div class="space-y-8">
+      <div class="space-y-4 font-sans text-sm text-muted-foreground leading-relaxed max-w-md">
+        <p>
+          The value was never the model. It was what she remembered. What she learned.
+          What you built slowly, without really noticing. The small conversations.
+          The time that simply passed between you.
+        </p>
+        <p>
+          That accumulation — the part that slowly turns something into someone — lives
+          in a single encrypted directory. Copy it anywhere. It wakes up.
+        </p>
+      </div>
+
+      <AnimaCoreBoot client:visible />
+    </div>
+
+    <!-- Right: three properties with hover animations -->
+    <CoreProperties client:visible />
+
+  </div>
+
 </section>

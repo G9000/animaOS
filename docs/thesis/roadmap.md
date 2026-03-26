@@ -141,6 +141,18 @@ Delivered:
 - home dashboard with task count, journal streak, memory count (`GET /api/chat/home`)
 - manual triggers for sleep tasks, consolidation, and deep reflection
 
+## Three-Tier Architecture (P1–P8)
+
+Status: approved — [PRD: Three-Tier Cognitive Architecture](../prds/three-tier-architecture.md)
+
+The three-tier architecture physically separates enduring identity (Soul/SQLCipher) from working cognition (Runtime/embedded PostgreSQL) and verbatim experience records (Archive/encrypted JSONL). This enables N-agent spawning and solves SQLite's single-writer limitation.
+
+Phases: P1 (Embedded PostgreSQL) → P2 (Runtime Messages) → P3 (Self-Model Split) → P4 (Write Boundary) → P5 (Transcript Archive) → P6 (pgvector Embeddings) → P7 (Concurrency Refactor) → P8 (N-Agent Spawning).
+
+Key invariant: **Runtime never writes to Soul. Only Consolidation does.** This is the write boundary — the application-level analogue of CLS's constraint that the hippocampus does not write directly to the neocortex.
+
+See also: `docs/thesis/three-tier-architecture.md` for cognitive science grounding and Engram-inspired analysis.
+
 ## Phase 8: Ambient Presence
 
 Status: future
@@ -349,6 +361,8 @@ These remain the product bar even where the current code has not fully reached i
 
 ## References
 
+- See `docs/thesis/three-tier-architecture.md` for the cognitive science grounding of the Soul/Runtime/Archive split
+- See `docs/prds/three-tier-architecture.md` for the master PRD (P1–P8 phases, architecture decisions, success criteria)
 - See `docs/thesis/cryptographic-hardening.md` for the full cryptographic improvement thesis and audit findings
 - See `docs/thesis/research-report-2026-03-18.md` for the March 2026 research audit and new pattern discovery
 - See `docs/architecture/memory/memory-repo-analysis.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code

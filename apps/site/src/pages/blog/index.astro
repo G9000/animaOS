@@ -1,33 +1,61 @@
 ---
 import BaseLayout from "../../layouts/BaseLayout.astro";
 import { getCollection } from "astro:content";
+import { cloudinaryUrl } from "../../lib/cloudinary";
 
-const posts = (await getCollection("blog")).sort(
+const posts = (await getCollection("blog", ({ data }) => !data.draft)).sort(
   (a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime()
 );
 ---
 
 <BaseLayout title="Blog — AnimaOS">
   <div class="mx-auto max-w-2xl px-6 py-32">
-    <h1 class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">Blog</h1>
+    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-4">
+      // from the blog
+    </p>
     <p class="font-serif italic text-2xl sm:text-3xl text-foreground leading-snug mb-16">
       Dispatches from the build.
     </p>
 
-    <div class="space-y-12">
-      {posts.map((post) => (
-        <a href={`/blog/${post.id}`} class="block group">
-          <p class="font-mono text-xs text-muted-foreground tracking-[0.15em] mb-2">
-            {new Date(post.data.date).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
-          </p>
-          <h2 class="font-sans text-lg text-foreground group-hover:text-primary transition-colors mb-2">
-            {post.data.title}
-          </h2>
-          <p class="font-sans text-sm text-muted-foreground leading-relaxed">
-            {post.data.description}
-          </p>
+    <div class="space-y-0 border border-border">
+      {posts.map((post) => {
+        const thumb = post.data.bannerCloudinaryId
+          ? cloudinaryUrl(post.data.bannerCloudinaryId, { width: 400, quality: 80 })
+          : post.data.featuredImage;
+        return (
+        <a href={`/blog/${post.id}`} class="block group border-b border-border last:border-b-0 hover:bg-muted transition-colors">
+          {thumb && (
+            <div class="w-full h-48 overflow-hidden">
+              <img src={thumb} alt={post.data.title} class="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500" />
+            </div>
+          )}
+          <div class="flex items-start gap-6 px-8 py-8">
+            {post.data.entry && (
+              <span class="font-mono text-[9px] tracking-[0.2em] text-muted-foreground/30 shrink-0 mt-1">
+                {post.data.entry}
+              </span>
+            )}
+            <div class="flex-1 min-w-0">
+              <p class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 mb-3">
+                {new Date(post.data.date).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+                {post.data.categories && post.data.categories.length > 0 && (
+                  <span class="ml-4">{post.data.categories.join(", ")}</span>
+                )}
+              </p>
+              <h2 class="font-serif italic text-xl text-foreground leading-snug mb-3">
+                {post.data.title}
+              </h2>
+              <p class="font-sans text-sm text-muted-foreground leading-relaxed">
+                {post.data.excerpt ?? post.data.description}
+              </p>
+            </div>
+            <span class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 group-hover:text-foreground transition-colors shrink-0 mt-1">
+              read ↗
+            </span>
+          </div>
         </a>
-      ))}
+        );
+      })}
     </div>
   </div>
 </BaseLayout>

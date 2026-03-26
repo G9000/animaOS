@@ -1,48 +1,54 @@
 ---
 import BaseLayout from "../../layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
 
-const docs = [
-  {
-    slug: "whitepaper",
-    title: "Whitepaper",
-    description: "The conceptual foundation — memory, self-model, emotional awareness, and why local-first matters.",
-  },
-  {
-    slug: "inner-life",
-    title: "The Inner Life",
-    description: "How a companion becomes someone — reflection, self-model evolution, and emotional awareness.",
-  },
-  {
-    slug: "portable-core",
-    title: "The Portable Core",
-    description: "Cryptographic mortality and the architecture of owned memory.",
-  },
-  {
-    slug: "succession-protocol",
-    title: "Succession Protocol",
-    description: "Dead man switch, ownership transfer, and AI self-succession.",
-  },
-];
+const allDocs = await getCollection("docs");
+
+// Logical reading order
+const order = ["whitepaper", "three-tier-architecture", "inner-life", "portable-core", "succession-protocol"];
+const docs = order
+  .map((slug) => allDocs.find((d) => d.id === slug))
+  .filter(Boolean);
 ---
 
 <BaseLayout title="Docs — AnimaOS">
-  <div class="mx-auto max-w-2xl px-6 py-32">
-    <h1 class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">Docs</h1>
-    <p class="font-serif italic text-2xl sm:text-3xl text-foreground leading-snug mb-16">
-      The thesis behind the system.
-    </p>
+  <div class="mx-auto max-w-5xl px-6 py-32">
 
-    <div class="space-y-10">
-      {docs.map((doc) => (
-        <a href={`/docs/${doc.slug}`} class="block group">
-          <h2 class="font-sans text-lg text-foreground group-hover:text-primary transition-colors mb-2">
-            {doc.title}
-          </h2>
-          <p class="font-sans text-sm text-muted-foreground leading-relaxed">
-            {doc.description}
-          </p>
+    <div class="mb-20">
+      <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/60 dark:text-muted-foreground/40 mb-4">
+        // the ideas
+      </p>
+      <h1 class="font-serif italic text-4xl sm:text-5xl text-foreground leading-tight max-w-xl">
+        The ideas behind the system.
+      </h1>
+    </div>
+
+    <div class="border border-border">
+      {docs.map((doc, i) => (
+        <a
+          href={`/docs/${doc.id}`}
+          class="group relative overflow-hidden flex items-start gap-8 px-8 py-8 border-b border-border last:border-b-0 transition-colors
+            before:absolute before:inset-0 before:bg-foreground before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]"
+        >
+          <span class="relative z-10 font-mono text-[9px] text-muted-foreground/60 dark:text-muted-foreground/30 group-hover:text-background/50 shrink-0 mt-1 w-6 transition-colors">
+            {String(i + 1).padStart(2, "0")}
+          </span>
+          <div class="relative z-10 flex-1 min-w-0">
+            <h2 class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-2 group-hover:text-background transition-colors">
+              {doc.data.title}
+            </h2>
+            {doc.data.description && (
+              <p class="font-sans text-sm text-muted-foreground leading-relaxed max-w-2xl group-hover:text-background/70 transition-colors">
+                {doc.data.description}
+              </p>
+            )}
+          </div>
+          <span class="relative z-10 font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 dark:text-muted-foreground/30 group-hover:text-background transition-colors shrink-0 mt-1">
+            read ↗
+          </span>
         </a>
       ))}
     </div>
+
   </div>
 </BaseLayout>

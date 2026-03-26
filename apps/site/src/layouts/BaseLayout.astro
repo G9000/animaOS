@@ -1,13 +1,13 @@
 ---
-import Footer from "../components/Footer.astro";
 import "../styles/global.css";
 
 interface Props {
   title: string;
   description?: string;
+  ogImage?: string;
 }
 
-const { title, description = "A mind that remains. A soul that remembers." } = Astro.props;
+const { title, description = "A mind that remains. A soul that remembers.", ogImage } = Astro.props;
 ---
 
 <!doctype html>
@@ -16,14 +16,26 @@ const { title, description = "A mind that remains. A soul that remembers." } = A
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
+    {ogImage && <meta property="og:image" content={ogImage} />}
+    {ogImage && <meta name="twitter:image" content={ogImage} />}
+    <meta name="twitter:card" content={ogImage ? "summary_large_image" : "summary"} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title}</title>
+    <!-- No-flash theme init: runs before paint -->
+    <script is:inline>
+      const stored = localStorage.getItem("theme");
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      if (stored === "light" || (!stored && !prefersDark)) {
+        document.documentElement.classList.remove("dark");
+      } else {
+        document.documentElement.classList.add("dark");
+      }
+    </script>
   </head>
   <body class="bg-background text-foreground">
     <main>
       <slot />
     </main>
-    <Footer />
     <script>
       const observer = new IntersectionObserver(
         (entries) => {

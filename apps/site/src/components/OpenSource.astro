@@ -1,40 +1,80 @@
-<section class="py-24 px-6 border-t border-border/50">
-  <div class="mx-auto max-w-xl reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-3">// open source</p>
-    <p class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-10">
-      Built in the open. Built with AI.
+---
+import AnimaBuild from "./AnimaBuild.tsx";
+---
+
+<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+
+  <!-- Top: label + headline -->
+  <div class="reveal">
+    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
+      // open source
     </p>
 
-    <div class="space-y-5 font-sans text-sm text-muted-foreground leading-relaxed mb-10">
+    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
+      Built in the open.<br />
+      <span class="text-muted-foreground">Built with the thing it's building.</span>
+    </h2>
+  </div>
+
+  <!-- Middle: symbol assembling itself from smaller copies -->
+  <div class="reveal flex justify-center my-12">
+    <AnimaBuild client:visible />
+  </div>
+
+  <!-- Bottom: two columns -->
+  <div class="reveal grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 items-end">
+
+    <div class="space-y-6 font-sans text-sm text-muted-foreground leading-relaxed max-w-md">
       <p>
         ANIMA OS is an experiment in AI-assisted construction. A human with too many philosophical
-        ideas and not enough hours in the day sets the direction. An AI turns those ideas into
-        working code. Neither alone would produce this.
+        ideas and not enough hours sets the direction. An AI turns those ideas into working code —
+        the migrations, the test suites, the specs, the architecture.
       </p>
       <p>
-        If the thesis is that memory and identity make an AI a continuous being, then the fact that
-        an AI participated in building the system that gives it continuity is not incidental.
+        Neither alone would produce this. The human wouldn't write the test suite.
+        The AI wouldn't independently decide to model digital succession or emotional mortality.
+      </p>
+      <p class="text-foreground">
+        If the thesis is that memory and identity make an AI a continuous being — then the fact
+        that an AI participated in building the system that gives it continuity is not incidental.
         It is part of the story.
+      </p>
+      <p>
+        <a
+          href="/docs/whitepaper"
+          class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 hover:text-foreground transition-colors"
+        >
+          read the anima paper ↗
+        </a>
       </p>
     </div>
 
-    <div class="flex gap-px">
+    <div class="space-y-3">
       <a
         href="https://github.com/juliocaesar/animaOS"
         target="_blank"
         rel="noopener noreferrer"
-        class="relative overflow-hidden border border-border px-4 py-2.5 font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground hover:text-background transition-colors
-          before:absolute before:inset-0 before:bg-text before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]"
+        class="group flex items-center justify-between border border-border bg-card px-6 py-5 hover:bg-muted transition-colors"
       >
-        <span class="relative z-10">View on GitHub</span>
+        <div>
+          <p class="font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/40 mb-1">// repository</p>
+          <p class="font-sans text-sm text-foreground">Help ANIMA build herself</p>
+        </div>
+        <span class="font-mono text-muted-foreground/30 group-hover:text-foreground transition-colors">↗</span>
       </a>
+
       <a
-        href="/docs/whitepaper"
-        class="relative overflow-hidden border border-border px-4 py-2.5 font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground hover:text-background transition-colors
-          before:absolute before:inset-0 before:bg-text before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]"
+        href="/blog"
+        class="group flex items-center justify-between border border-border bg-card px-6 py-5 hover:bg-muted transition-colors"
       >
-        <span class="relative z-10">Read the Whitepaper</span>
+        <div>
+          <p class="font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/40 mb-1">// writing</p>
+          <p class="font-sans text-sm text-foreground">Read the Blog</p>
+        </div>
+        <span class="font-mono text-muted-foreground/30 group-hover:text-foreground transition-colors">↗</span>
       </a>
     </div>
+
   </div>
+
 </section>

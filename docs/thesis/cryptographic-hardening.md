@@ -12,6 +12,8 @@ _A companion thesis to [The Portable Core](portable-core.md). That document esta
 
 > **Note:** This thesis is a living document. Some sections describe settled improvements with clear implementation paths. Others describe constructions that are architecturally sound but not yet scheduled. A few describe open research questions. Each section states its confidence level. Expect this document to evolve alongside the codebase it describes.
 
+> **On construction:** This document was built through human-AI collaboration — and is itself part of an experiment in whether AI can meaningfully architect its own runtime infrastructure. AI-assisted construction is not a shortcut — it is a new way of building. Because LLMs are part of the process, some inaccuracies may appear. We correct as we find them.
+
 ---
 
 ## 0. Where We Stand

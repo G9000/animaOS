@@ -1,0 +1,62 @@
+---
+import { getCollection } from "astro:content";
+
+const allDocs = await getCollection("docs");
+
+const order = ["three-tier-architecture", "inner-life", "portable-core", "succession-protocol"];
+const docs = order
+  .map((slug) => allDocs.find((d) => d.id === slug))
+  .filter(Boolean);
+---
+
+<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+
+  <!-- Top: label + headline -->
+  <div class="reveal">
+    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/60 dark:text-muted-foreground/40 mb-16">
+      // the ideas
+    </p>
+
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 max-w-4xl">
+      <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1]">
+        What ANIMA thinks<br />
+        <span class="text-muted-foreground">and why.</span>
+      </h2>
+      <a
+        href="/docs/whitepaper"
+        class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 dark:text-muted-foreground/40 hover:text-foreground transition-colors shrink-0 mb-2"
+      >
+        anima paper ↗
+      </a>
+    </div>
+  </div>
+
+  <!-- Bottom: doc list -->
+  <div class="reveal border border-border mt-20">
+    {docs.map((doc, i) => (
+      <a
+        href={`/docs/${doc.id}`}
+        class="group relative overflow-hidden flex items-start gap-8 px-8 py-7 border-b border-border last:border-b-0 transition-colors
+          before:absolute before:inset-0 before:bg-foreground before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]"
+      >
+        <span class="relative z-10 font-mono text-[9px] text-muted-foreground/60 dark:text-muted-foreground/30 group-hover:text-background/50 shrink-0 mt-0.5 w-6 transition-colors">
+          {String(i + 1).padStart(2, "0")}
+        </span>
+        <div class="relative z-10 flex-1 min-w-0">
+          <h3 class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-2 group-hover:text-background transition-colors">
+            {doc.data.title}
+          </h3>
+          {doc.data.description && (
+            <p class="font-sans text-sm text-muted-foreground leading-relaxed max-w-2xl group-hover:text-background/70 transition-colors">
+              {doc.data.description}
+            </p>
+          )}
+        </div>
+        <span class="relative z-10 font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 dark:text-muted-foreground/30 group-hover:text-background transition-colors shrink-0 mt-1">
+          read ↗
+        </span>
+      </a>
+    ))}
+  </div>
+
+</section>

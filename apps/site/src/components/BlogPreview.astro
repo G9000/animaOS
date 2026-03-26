@@ -1,0 +1,71 @@
+---
+import { getCollection } from "astro:content";
+import { cloudinaryUrl } from "../lib/cloudinary";
+
+const posts = (await getCollection("blog", ({ data }) => !data.draft))
+  .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime())
+  .slice(0, 3);
+---
+
+<section class="border-t border-border px-8 md:px-16 lg:px-24 py-20">
+
+  <div class="reveal flex items-end justify-between mb-16">
+    <div>
+      <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground mb-4">
+        // from the blog
+      </p>
+      <h2 class="font-serif italic text-3xl sm:text-4xl text-foreground leading-tight">
+        Dispatches from the build.
+      </h2>
+    </div>
+    <a
+      href="/blog"
+      class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 hover:text-foreground transition-colors shrink-0 ml-8"
+    >
+      all posts ↗
+    </a>
+  </div>
+
+  <div class="reveal grid grid-cols-1 md:grid-cols-3 gap-px border border-border">
+    {posts.map((post) => {
+      const thumb = post.data.bannerCloudinaryId
+        ? cloudinaryUrl(post.data.bannerCloudinaryId, { width: 600, quality: 80 })
+        : post.data.featuredImage;
+      return (
+      <a
+        href={`/blog/${post.id}`}
+        class="group bg-card hover:bg-muted transition-colors flex flex-col"
+      >
+        {thumb && (
+          <div class="w-full h-48 overflow-hidden shrink-0">
+            <img src={thumb} alt={post.data.title} class="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500" />
+          </div>
+        )}
+        <div class="px-6 py-6 flex flex-col justify-between flex-1">
+          <div>
+            <p class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 mb-4">
+              {new Date(post.data.date).toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+            </p>
+            <h3 class="font-serif italic text-lg sm:text-xl text-foreground leading-snug mb-3">
+              {post.data.title}
+            </h3>
+            <p class="font-sans text-sm text-muted-foreground leading-relaxed">
+              {post.data.excerpt ?? post.data.description}
+            </p>
+          </div>
+          <div class="mt-6">
+            <span class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 group-hover:text-foreground transition-colors">
+              read ↗
+            </span>
+          </div>
+        </div>
+      </a>
+      );
+    })}
+  </div>
+
+</section>

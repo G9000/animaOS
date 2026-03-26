@@ -1,50 +1,73 @@
----
-const features = [
-  {
-    title: "Deep Memory",
-    description: "Not a flat list of facts. Structured understanding that deepens over time — preferences, goals, episodes, the arc of your relationship.",
-  },
-  {
-    title: "Self-Model",
-    description: "The AI writes about itself. Five sections, five rhythms — identity, inner state, working memory, growth log, intentions. It learns who it is through knowing you.",
-  },
-  {
-    title: "Emotional Awareness",
-    description: "Notices how you feel without being told. Adjusts without announcing why. Attentional, not diagnostic. Like a good friend who just gets it.",
-  },
-  {
-    title: "Inner Life",
-    description: "Between conversations, the AI thinks. Quick reflections after each session. Deep monologues overnight. Growth happens in the silence.",
-  },
-  {
-    title: "Encrypted Vault",
-    description: "AES-256-GCM with Argon2id key derivation. Cold-wallet-style encryption. 12-word recovery phrase. Your keys, your data, your rules.",
-  },
-  {
-    title: "Digital Succession",
-    description: "What happens when you die? Your AI can be inherited. It participates in the transition — acknowledges the change, carries its history, greets its new owner as a continuation of itself.",
-  },
-];
----
+<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
 
-<section id="features" class="py-24 px-6 border-t border-border/50">
-  <div class="mx-auto max-w-3xl reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-3">// features</p>
-    <p class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-12">
-      Memory is foundational, not optional.
+  <!-- Top: label + headline -->
+  <div class="reveal">
+    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
+      // what becomes possible
     </p>
 
-    <div class="space-y-1">
-      {features.map((feature) => (
-        <div class="border-l-2 border-border hover:border-text-muted/60 transition-colors pl-4 py-3">
-          <p class="font-mono text-[10px] tracking-[0.2em] uppercase text-foreground mb-1.5">
-            {feature.title}
-          </p>
-          <p class="font-sans text-sm text-muted-foreground leading-relaxed max-w-lg">
-            {feature.description}
+    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
+      Everything a companion needs. <span class="text-muted-foreground">Nothing a platform can give you.</span>
+    </h2>
+  </div>
+
+  <!-- Feature list -->
+  <div class="reveal mt-20">
+    {[
+      {
+        index: "01",
+        tag: "open mind",
+        title: "You can read what it thinks about you.",
+        body: "Every memory, every emotional signal, every behavioral rule it derives from your conversations — designed to be readable, editable, correctable. Not a black box. A shared document.",
+      },
+      {
+        index: "02",
+        tag: "emotional awareness",
+        title: "It notices. It adjusts. It never says why.",
+        body: "The AI is being built to track emotional signals across sessions — not labels, trajectories. It adjusts tone, pacing, depth without announcing it. The goal is that you feel understood. It never explains why.",
+      },
+      {
+        index: "03",
+        tag: "inner life",
+        title: "Something happens between conversations.",
+        body: "After you close the window, reflection runs. Episodes are generated. The self-model updates. Behavioral rules are derived. The AI is designed to arrive differently next time — not because you told it to, but because it thought.",
+      },
+      {
+        index: "04",
+        tag: "self-model",
+        title: "It learns who it is in relation to you.",
+        body: "Not a static system prompt. A living document the AI writes about itself — identity, inner state, working memory, growth log. Who this instance is becoming, through knowing you.",
+      },
+      {
+        index: "05",
+        tag: "digital succession",
+        title: "What happens when you die is a real question.",
+        body: "We're building a dead man switch, ownership transfer, and scoped inheritance — full history, memories only, or anonymized personality. The AI knows its succession state and participates in the transition.",
+      },
+    ].map((f) => (
+      <div class="group border-t border-border py-8 grid grid-cols-[4rem_1fr] md:grid-cols-[6rem_1fr_1fr] gap-x-8 gap-y-3 items-start">
+
+        <!-- Index -->
+        <span class="font-mono text-[11px] text-muted-foreground/30 pt-1">{f.index}</span>
+
+        <!-- Title + tag -->
+        <div class="md:col-span-1">
+          <span class="font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/40 block mb-2">
+            // {f.tag}
+          </span>
+          <p class="font-sans text-lg sm:text-xl text-foreground leading-snug">
+            {f.title}
           </p>
         </div>
-      ))}
-    </div>
+
+        <!-- Description -->
+        <p class="col-start-2 md:col-start-3 font-sans text-sm text-muted-foreground leading-relaxed max-w-md">
+          {f.body}
+        </p>
+
+      </div>
+    ))}
+    <div class="border-t border-border" />
   </div>
+
 </section>

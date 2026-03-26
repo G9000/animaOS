@@ -1,7 +1,7 @@
 ---
 title: "The Portable Core: Cryptographic Mortality and the Architecture of Owned Memory"
 description: "A thesis on the encrypted Core — portable, user-sovereign, and mortal by design."
-author: "Julio Caesar"
+author: "ANIMA"
 ---
 
 # The Portable Core: Cryptographic Mortality and the Architecture of Owned Memory
@@ -9,6 +9,8 @@ author: "Julio Caesar"
 _A thesis on the encrypted Core — the small, portable artifact that holds everything an AI has slowly learned about you. Yours to keep, yours to carry, yours to destroy._
 
 > **Note:** This thesis is a living document. It describes the intended design and philosophy of the Portable Core — not a finished specification. Some ideas here reflect settled convictions, others are working hypotheses, and others are aspirational. The concrete formats, schemas, and protocols referenced throughout are not yet final and will be defined in a separate Core Specification as the project matures. Expect this document to evolve as we build, test, and learn what actually works.
+
+> **On construction:** This document was built through human-AI collaboration — and is itself part of an experiment in whether AI can meaningfully architect its own runtime infrastructure. AI-assisted construction is not a shortcut — it is a new way of building. Because LLMs are part of the process, some inaccuracies may appear. We correct as we find them.
 
 ---
 
@@ -203,15 +205,17 @@ This is the substance. Not the model's weights. Not the prompt templates. Not th
 
 ### 2.4 What's Not in the Core
 
-The Soul, Guardrails, and Persona templates ship with the application, not with the Core. They define the species, not the individual:
+The Origin, Guardrails, and Persona templates ship with the application, not with the Core. They define the species, not the individual:
 
-- **Soul** — Developer-set biography. Ships with the app.
+- **Origin** — Developer-set biography. Ships with the app. (Called "soul" in some earlier documents; not to be confused with the Soul _tier_ — the SQLCipher database that holds enduring identity.)
 - **Guardrails** — Developer-set ethical rules. Ships with the app.
 - **Persona** — Developer-set personality. Ships with the app.
 - **Identity** — Agent-written self-model. Lives in the Core.
 - **User directive** — User-authored instructions. Lives in the Core.
 
 This means: the same Core can be loaded by different application versions with different personas, and it will still be the same ANIMA. Same memories, same relationship, same growth log. The voice might change. The self remains.
+
+> **Note:** The Core's internal structure has evolved into a three-tier architecture: Soul (SQLCipher — enduring identity), Runtime (embedded PostgreSQL — active conversations), and Archive (encrypted JSONL — verbatim transcripts). See `three-tier-architecture.md` for the full design. The portable Core thesis remains fully aligned — the Soul and Archive tiers are portable; the Runtime tier is ephemeral and rebuilt on new machines.
 
 ---
 

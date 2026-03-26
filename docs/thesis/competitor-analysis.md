@@ -54,7 +54,7 @@ A source-code-level comparison of five AI memory systems against the AnimaOS the
 
 | System | Tiers | Storage | Portable | Encrypted |
 |--------|-------|---------|----------|-----------|
-| **AnimaOS** | Flat with typed blocks (working, episodic, semantic, soul, self-model, intentions) | SQLite/SQLCipher | Yes (.anima/ directory) | Yes (SQLCipher + AES-256-GCM) |
+| **AnimaOS** | 3-tier (Soul/SQLCipher + Runtime/embedded PG + Archive/encrypted JSONL) with typed memory blocks | SQLCipher + embedded PostgreSQL + encrypted JSONL | Yes (.anima/ directory) | Yes (SQLCipher + AES-256-GCM) |
 | **Letta** | 3-tier (core blocks, recall, archival) + file + git-backed | PostgreSQL + pgvector | No (server-bound) | Optional single key |
 | **Mem0** | 2-tier (vector + graph) | 26 vector backends + Neo4j | No (cloud or server) | No |
 | **Nemori** | 2-tier (episodic + semantic) | JSONL files + ChromaDB | Partially (local files) | No |
@@ -80,7 +80,7 @@ A source-code-level comparison of five AI memory systems against the AnimaOS the
 
 | System | Search Method | Scoring | Reranking |
 |--------|--------------|---------|-----------|
-| **AnimaOS** | In-memory cosine similarity on persisted embeddings | importance + recency + frequency (planned: heat) | No |
+| **AnimaOS** | In-memory cosine similarity on persisted embeddings + contextual gating | importance + recency + frequency + contextual gate (planned: heat, BM25+RRF) | No |
 | **Letta** | pgvector + Turbopuffer hybrid (vector + FTS + RRF) | Similarity score, optional RRF | Via Turbopuffer |
 | **Mem0** | Vector similarity + graph traversal | Cosine similarity | Yes (5 providers: Cohere, HuggingFace, LLM, etc.) |
 | **Nemori** | BM25 + ChromaDB vector + RRF (k=60) | Reciprocal Rank Fusion | NOR-LIFT (stub, not implemented) |

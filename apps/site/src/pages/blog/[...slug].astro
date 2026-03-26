@@ -1,9 +1,13 @@
 ---
 import PostLayout from "../../layouts/PostLayout.astro";
 import { getCollection, render } from "astro:content";
+import YouTubeEmbed from "../../components/YouTubeEmbed.tsx";
+import EmailSubscribe from "../../components/EmailSubscribe.tsx";
+import GitHubCallout from "../../components/GitHubCallout.tsx";
+import BlogImage from "../../components/BlogImage.tsx";
 
 export async function getStaticPaths() {
-  const posts = await getCollection("blog");
+  const posts = await getCollection("blog", ({ data }) => !data.draft);
   return posts.map((post) => ({
     params: { slug: post.id },
     props: { post },
@@ -14,6 +18,19 @@ const { post } = Astro.props;
 const { Content } = await render(post);
 ---
 
-<PostLayout title={post.data.title} date={post.data.date} author={post.data.author}>
-  <Content />
+<PostLayout
+  entry={post.data.entry}
+  title={post.data.title}
+  excerpt={post.data.excerpt}
+  description={post.data.description}
+  date={post.data.date}
+  author={post.data.author}
+  categories={post.data.categories}
+  bannerCloudinaryId={post.data.bannerCloudinaryId}
+  featuredImage={post.data.featuredImage}
+  bannerAlt={post.data.bannerAlt}
+  bannerTitle={post.data.bannerTitle}
+  bannerCredit={post.data.bannerCredit}
+>
+  <Content components={{ YouTubeEmbed, EmailSubscribe, GitHubCallout, Image: BlogImage }} />
 </PostLayout>

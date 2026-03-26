@@ -17,8 +17,8 @@
   --color-bg-card: #0c0d14;
   --color-bg-input: #10111a;
   --color-bg-surface: #13141e;
-  --color-border: #252740;
-  --color-border-active: #383a58;
+  --color-border: var(--border);
+  --color-border-active: var(--border);
   --color-text: #c8c8d4;
   --color-text-muted: #8898a8;
   --color-primary: #5ea0ab;
@@ -42,6 +42,11 @@
 .text-body    { font-size: 0.75rem; }
 .text-ui      { font-size: 0.875rem; }
 .text-title   { font-size: 1rem; }
+
+/* Boost muted-foreground in dark mode — the default is too dim at low opacities */
+.dark {
+  --muted-foreground: oklch(0.72 0 0);
+}
 
 body {
   @apply font-sans antialiased min-h-screen leading-relaxed;
@@ -157,22 +162,22 @@ a {
 
 /* Prose — sharp, monospace headers (matches desktop) */
 .prose {
-  --tw-prose-body: var(--color-text);
-  --tw-prose-headings: var(--color-text);
-  --tw-prose-lead: var(--color-text-muted);
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--foreground);
+  --tw-prose-lead: var(--muted-foreground);
   --tw-prose-links: var(--color-primary);
-  --tw-prose-bold: var(--color-text);
-  --tw-prose-counters: var(--color-text-muted);
-  --tw-prose-bullets: var(--color-text-muted);
-  --tw-prose-hr: var(--color-border);
-  --tw-prose-quotes: var(--color-text);
+  --tw-prose-bold: var(--foreground);
+  --tw-prose-counters: var(--muted-foreground);
+  --tw-prose-bullets: var(--muted-foreground);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--foreground);
   --tw-prose-quote-borders: var(--color-primary);
-  --tw-prose-captions: var(--color-text-muted);
+  --tw-prose-captions: var(--muted-foreground);
   --tw-prose-code: var(--color-primary);
-  --tw-prose-pre-code: var(--color-text);
+  --tw-prose-pre-code: var(--foreground);
   --tw-prose-pre-bg: var(--color-bg);
-  --tw-prose-th-borders: var(--color-border);
-  --tw-prose-td-borders: var(--color-border);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
 }
 
 .prose :where(code):not(:where([class~="not-prose"] *)) {
@@ -195,7 +200,7 @@ a {
 }
 
 .prose :where(blockquote):not(:where([class~="not-prose"] *)) {
-  @apply border-l-2 border-primary/40 pl-4 italic text-text-muted;
+  @apply border-l-2 border-primary/40 pl-4 italic;
 }
 
 .prose :where(ul, ol):not(:where([class~="not-prose"] *)) {
@@ -207,7 +212,7 @@ a {
 }
 
 .prose :where(h1, h2, h3, h4, h5, h6):not(:where([class~="not-prose"] *)) {
-  @apply font-mono tracking-wider uppercase mt-4 mb-2 text-text;
+  @apply font-mono tracking-wider uppercase mt-4 mb-2;
 }
 
 .prose :where(table):not(:where([class~="not-prose"] *)) {
