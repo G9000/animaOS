@@ -1,0 +1,36 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+
+interface Props {
+  title: string;
+  date: string;
+  author: string;
+}
+
+const { title, date, author } = Astro.props;
+---
+
+<BaseLayout title={`${title} — AnimaOS`}>
+  <article class="mx-auto max-w-2xl px-6 py-32">
+    <header class="mb-16">
+      <p class="font-mono text-xs tracking-[0.3em] uppercase text-primary mb-4">
+        <a href="/blog" class="hover:text-text transition-colors">&larr; Blog</a>
+      </p>
+      <h1 class="font-serif italic text-3xl sm:text-4xl text-text leading-tight mb-4">
+        {title}
+      </h1>
+      <p class="font-mono text-xs text-text-muted tracking-[0.15em]">
+        {author} &middot; {new Date(date).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+      </p>
+    </header>
+
+    <div class="prose prose-invert prose-sm max-w-none
+      prose-headings:font-mono prose-headings:uppercase prose-headings:tracking-[0.2em] prose-headings:text-text
+      prose-p:font-sans prose-p:text-text-muted prose-p:leading-relaxed
+      prose-a:text-primary prose-a:no-underline hover:prose-a:text-text
+      prose-strong:text-text
+      prose-blockquote:border-primary prose-blockquote:text-text-muted prose-blockquote:font-serif prose-blockquote:italic">
+      <slot />
+    </div>
+  </article>
+</BaseLayout>
