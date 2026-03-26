@@ -14,7 +14,7 @@ export default function AnimaSymbolSpinning() {
       </pre>
       {/* Main layer */}
       <pre
-        className="relative font-mono text-[11px] sm:text-[14px] md:text-[16px] leading-[1.2] text-text-muted select-none whitespace-pre"
+        className="relative font-mono text-[11px] sm:text-[14px] md:text-[16px] leading-[1.2] text-muted-foreground select-none whitespace-pre"
         aria-hidden="true"
       >
         {frame}

@@ -20,7 +20,7 @@ export default function WaitlistForm() {
 
   if (status === "success") {
     return (
-      <p className="font-mono text-[9px] tracking-[0.3em] uppercase text-text-muted/60">
+      <p className="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/60">
         [ registered ] — we'll be in touch
       </p>
     );
@@ -28,21 +28,21 @@ export default function WaitlistForm() {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-px w-full max-w-sm mx-auto">
-      <div className="flex-1 flex items-center bg-bg-input border border-border px-3 py-2.5 gap-2">
-        <span className="font-mono text-xs text-text-muted/40 shrink-0">&gt;</span>
+      <div className="flex-1 flex items-center bg-input border border-border px-3 py-2.5 gap-2">
+        <span className="font-mono text-xs text-muted-foreground/40 shrink-0">&gt;</span>
         <input
           type="email"
           required
           placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="flex-1 bg-transparent font-mono text-xs text-text placeholder:text-text-muted/40 focus:outline-none tracking-wider"
+          className="flex-1 bg-transparent font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none tracking-wider"
         />
       </div>
       <button
         type="submit"
         disabled={status === "submitting"}
-        className="relative overflow-hidden border border-border px-4 py-2.5 font-mono text-[10px] tracking-[0.2em] uppercase text-text-muted hover:text-bg transition-colors disabled:opacity-30
+        className="relative overflow-hidden border border-border px-4 py-2.5 font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground hover:text-background transition-colors disabled:opacity-30
           before:absolute before:inset-0 before:bg-text before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]"
       >
         <span className="relative z-10">
@@ -50,7 +50,7 @@ export default function WaitlistForm() {
         </span>
       </button>
       {status === "error" && (
-        <p className="font-mono text-[8px] text-danger/60 mt-1 sm:mt-0 sm:ml-2 self-center">[err] try again</p>
+        <p className="font-mono text-[8px] text-destructive/60 mt-1 sm:mt-0 sm:ml-2 self-center">[err] try again</p>
       )}
     </form>
   );

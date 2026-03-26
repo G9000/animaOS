@@ -13,13 +13,13 @@ const { title, date, author } = Astro.props;
 <BaseLayout title={`${title} — AnimaOS`}>
   <article class="mx-auto max-w-2xl px-6 py-32">
     <header class="mb-16">
-      <p class="font-mono text-xs tracking-[0.3em] uppercase text-text-muted mb-4">
-        <a href="/blog" class="hover:text-text transition-colors">&larr; Blog</a>
+      <p class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">
+        <a href="/blog" class="hover:text-foreground transition-colors">&larr; Blog</a>
       </p>
-      <h1 class="font-serif italic text-3xl sm:text-4xl text-text leading-tight mb-4">
+      <h1 class="font-serif italic text-3xl sm:text-4xl text-foreground leading-tight mb-4">
         {title}
       </h1>
-      <p class="font-mono text-xs text-text-muted tracking-[0.15em]">
+      <p class="font-mono text-xs text-muted-foreground tracking-[0.15em]">
         {author} &middot; {new Date(date).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
       </p>
     </header>

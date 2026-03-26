@@ -9,21 +9,21 @@ const posts = (await getCollection("blog")).sort(
 
 <BaseLayout title="Blog — AnimaOS">
   <div class="mx-auto max-w-2xl px-6 py-32">
-    <h1 class="font-mono text-xs tracking-[0.3em] uppercase text-text-muted mb-4">Blog</h1>
-    <p class="font-serif italic text-2xl sm:text-3xl text-text leading-snug mb-16">
+    <h1 class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">Blog</h1>
+    <p class="font-serif italic text-2xl sm:text-3xl text-foreground leading-snug mb-16">
       Dispatches from the build.
     </p>
 
     <div class="space-y-12">
       {posts.map((post) => (
         <a href={`/blog/${post.id}`} class="block group">
-          <p class="font-mono text-xs text-text-muted tracking-[0.15em] mb-2">
+          <p class="font-mono text-xs text-muted-foreground tracking-[0.15em] mb-2">
             {new Date(post.data.date).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
           </p>
-          <h2 class="font-sans text-lg text-text group-hover:text-primary transition-colors mb-2">
+          <h2 class="font-sans text-lg text-foreground group-hover:text-primary transition-colors mb-2">
             {post.data.title}
           </h2>
-          <p class="font-sans text-sm text-text-muted leading-relaxed">
+          <p class="font-sans text-sm text-muted-foreground leading-relaxed">
             {post.data.description}
           </p>
         </a>

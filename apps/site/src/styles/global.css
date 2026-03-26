@@ -44,7 +44,7 @@
 .text-title   { font-size: 1rem; }
 
 body {
-  @apply bg-bg text-text font-sans antialiased min-h-screen leading-relaxed;
+  @apply font-sans antialiased min-h-screen leading-relaxed;
 }
 
 ::selection {

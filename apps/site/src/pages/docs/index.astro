@@ -27,18 +27,18 @@ const docs = [
 
 <BaseLayout title="Docs — AnimaOS">
   <div class="mx-auto max-w-2xl px-6 py-32">
-    <h1 class="font-mono text-xs tracking-[0.3em] uppercase text-text-muted mb-4">Docs</h1>
-    <p class="font-serif italic text-2xl sm:text-3xl text-text leading-snug mb-16">
+    <h1 class="font-mono text-xs tracking-[0.3em] uppercase text-muted-foreground mb-4">Docs</h1>
+    <p class="font-serif italic text-2xl sm:text-3xl text-foreground leading-snug mb-16">
       The thesis behind the system.
     </p>
 
     <div class="space-y-10">
       {docs.map((doc) => (
         <a href={`/docs/${doc.slug}`} class="block group">
-          <h2 class="font-sans text-lg text-text group-hover:text-primary transition-colors mb-2">
+          <h2 class="font-sans text-lg text-foreground group-hover:text-primary transition-colors mb-2">
             {doc.title}
           </h2>
-          <p class="font-sans text-sm text-text-muted leading-relaxed">
+          <p class="font-sans text-sm text-muted-foreground leading-relaxed">
             {doc.description}
           </p>
         </a>

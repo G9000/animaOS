@@ -6,13 +6,13 @@ export default function AnimaSymbol() {
   return (
     <div className="relative">
       <pre
-        className="font-mono text-[8px] sm:text-[9px] md:text-[10px] leading-[1.15] text-text-muted/40 select-none whitespace-pre"
+        className="font-mono text-[8px] sm:text-[9px] md:text-[10px] leading-[1.15] text-muted-foreground/40 select-none whitespace-pre"
         aria-hidden="true"
       >
         {frame.base}
       </pre>
       <pre
-        className="absolute inset-0 font-mono text-[8px] sm:text-[9px] md:text-[10px] leading-[1.15] text-text/60 select-none whitespace-pre"
+        className="absolute inset-0 font-mono text-[8px] sm:text-[9px] md:text-[10px] leading-[1.15] text-foreground/60 select-none whitespace-pre"
         aria-hidden="true"
       >
         {frame.text}

@@ -6,16 +6,16 @@ const links = [
 ];
 ---
 
-<nav class="fixed top-0 left-0 right-0 z-50 border-b border-border bg-bg/90 backdrop-blur-md">
+<nav class="fixed top-0 left-0 right-0 z-50 border-b border-border bg-background/90 backdrop-blur-md">
   <div class="mx-auto max-w-5xl flex items-center justify-between px-5 py-2.5">
-    <a href="/" class="font-mono text-[10px] tracking-[0.3em] uppercase text-text hover:text-primary transition-colors">
+    <a href="/" class="font-mono text-[10px] tracking-[0.3em] uppercase text-foreground hover:text-primary transition-colors">
       ✦ ANIMA
     </a>
     <div class="flex items-center gap-6">
       {links.map((link) => (
         <a
           href={link.href}
-          class="font-mono text-[10px] tracking-[0.2em] uppercase text-text-muted hover:text-text transition-colors"
+          class="font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground hover:text-foreground transition-colors"
         >
           {link.label}
         </a>
@@ -24,7 +24,7 @@ const links = [
         href="https://github.com/juliocaesar/animaOS"
         target="_blank"
         rel="noopener noreferrer"
-        class="font-mono text-[10px] tracking-[0.2em] uppercase text-text-muted hover:text-text transition-colors"
+        class="font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground hover:text-foreground transition-colors"
       >
         GitHub
       </a>
