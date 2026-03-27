@@ -1009,22 +1009,35 @@ _has_table_cache: dict[int, dict[str, bool]] = {}
 
 
 def _has_table(db: Session, table_name: str) -> bool:
-    """Check if a table exists, caching per engine to avoid repeated introspection."""
+    """Check if a table exists, caching per engine instance."""
     try:
-        engine_id = id(db.get_bind())
+        engine = db.get_bind()
+        engine_key = id(engine)
+        # Don't cache for in-memory SQLite (test fixtures reuse addresses)
+        is_memory = str(engine.url) == "sqlite://"
     except Exception:
-        engine_id = 0
-    engine_cache = _has_table_cache.get(engine_id)
-    if engine_cache is not None:
-        cached = engine_cache.get(table_name)
-        if cached is not None:
-            return cached
+        return _has_table_uncached(db, table_name)
+
+    if not is_memory:
+        engine_cache = _has_table_cache.get(engine_key)
+        if engine_cache is not None:
+            cached = engine_cache.get(table_name)
+            if cached is not None:
+                return cached
+
+    result = _has_table_uncached(db, table_name)
+
+    if not is_memory:
+        if engine_key not in _has_table_cache:
+            _has_table_cache[engine_key] = {}
+        _has_table_cache[engine_key][table_name] = result
+
+    return result
+
+
+def _has_table_uncached(db: Session, table_name: str) -> bool:
     try:
-        result = sa_inspect(db.connection()).has_table(table_name)
-        if engine_id not in _has_table_cache:
-            _has_table_cache[engine_id] = {}
-        _has_table_cache[engine_id][table_name] = result
-        return result
+        return sa_inspect(db.connection()).has_table(table_name)
     except Exception:
         return False
 

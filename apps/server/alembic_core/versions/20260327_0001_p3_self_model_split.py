@@ -160,8 +160,7 @@ def downgrade() -> None:
     )
 
     # Restore growth_log: concatenate individual entries back into a single
-    # markdown blob per user.  SQLite's group_concat preserves content; the
-    # "### " prefix re-creates the original separator format.
+    # markdown blob per user, ordered chronologically.
     op.execute(
         """
         INSERT INTO self_model_blocks (user_id, section, content, version, updated_by, created_at, updated_at)
@@ -173,7 +172,11 @@ def downgrade() -> None:
             'migration',
             MIN(created_at),
             MAX(created_at)
-        FROM growth_log
+        FROM (
+            SELECT user_id, entry, created_at
+            FROM growth_log
+            ORDER BY created_at ASC, id ASC
+        )
         GROUP BY user_id
         """
     )

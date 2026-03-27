@@ -838,9 +838,10 @@ def _promote_runtime_emotional_patterns(
             )
             if promoted > 0:
                 soul_db.commit()
+                pg_db.commit()
             return promoted
     except Exception:
-        logger.debug("Failed to promote emotional patterns for user %s", user_id)
+        logger.warning("Failed to promote emotional patterns for user %s", user_id)
         return 0
 
 
