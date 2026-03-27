@@ -27,6 +27,10 @@ export function addSessionRule(rule: string): void {
   sessionRules.add(rule);
 }
 
+export function clearSessionRules(): void {
+  sessionRules.clear();
+}
+
 export function checkPermission(
   toolName: string,
   args: Record<string, unknown>,
