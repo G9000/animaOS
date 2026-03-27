@@ -21,7 +21,6 @@ from anima_server.db.runtime import (
 from anima_server.db.session import get_db
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 
 HAS_PGSERVER = importlib.util.find_spec("pgserver") is not None
@@ -229,12 +228,11 @@ def test_get_runtime_session_rolls_back_on_exception(runtime_database_url: str) 
 
         factory = get_runtime_session_factory()
 
-        with pytest.raises(RuntimeError, match="force rollback"):
-            with factory() as session:
-                session.execute(
-                    text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')")
-                )
-                raise RuntimeError("force rollback")
+        with pytest.raises(RuntimeError, match="force rollback"), factory() as session:
+            session.execute(
+                text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')")
+            )
+            raise RuntimeError("force rollback")
 
         with factory() as session:
             result = session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
@@ -415,6 +413,5 @@ def test_explicit_runtime_url_skips_embedded_pg(
 def test_init_runtime_engine_raises_on_invalid_url() -> None:
     init_runtime_engine("postgresql+psycopg://invalid:5432/nope")
     factory = get_runtime_session_factory()
-    with pytest.raises(Exception):
-        with factory() as session:
-            session.execute(text("SELECT 1"))
+    with pytest.raises((OSError, Exception)), factory() as session:
+        session.execute(text("SELECT 1"))

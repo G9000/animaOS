@@ -13,17 +13,15 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import BigInteger, create_engine, event
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db import runtime as runtime_mod
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
-
+from sqlalchemy import BigInteger, create_engine, event
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # ---------------------------------------------------------------------------
 # SQLite compat: BigInteger → INTEGER so AUTOINCREMENT works for runtime models.
@@ -33,7 +31,7 @@ from anima_server.models import runtime as _runtime_models  # noqa: F401 — reg
 # ---------------------------------------------------------------------------
 
 @compiles(BigInteger, "sqlite")
-def _compile_biginteger_sqlite(type_: BigInteger, compiler: object, **kw: object) -> str:  # noqa: ARG001
+def _compile_biginteger_sqlite(type_: BigInteger, compiler: object, **kw: object) -> str:
     return "INTEGER"
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store

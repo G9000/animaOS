@@ -16,15 +16,13 @@ from collections.abc import Generator
 from contextlib import contextmanager
 
 import pytest
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
 from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
-
 
 # ---------------------------------------------------------------------------
 # SQLite compat: BigInteger → INTEGER so AUTOINCREMENT works

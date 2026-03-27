@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryDailyLog, User
+from anima_server.models import MemoryDailyLog
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import (
     _build_transcript,
@@ -34,7 +34,6 @@ from anima_server.services.agent.conversation_search import (
 )
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.state import StoredMessage
-from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -125,7 +124,7 @@ class _FakeUser:
             self.id = _TEST_USER_COUNTER
 
 
-def _create_user(db: Session, *, user_id: int = 1) -> _FakeUser:  # noqa: ARG001
+def _create_user(db: Session, *, user_id: int = 1) -> _FakeUser:
     return _FakeUser(user_id=user_id)
 
 

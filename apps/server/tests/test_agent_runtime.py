@@ -6,7 +6,6 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import User
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.memory_blocks import MemoryBlock

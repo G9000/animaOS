@@ -17,7 +17,6 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import User
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
@@ -45,7 +44,6 @@ from anima_server.services.agent.sequencing import reserve_message_sequences
 from anima_server.services.agent.state import AgentResult
 from anima_server.services.agent.streaming import build_approval_pending_event
 from anima_server.services.agent.tools import send_message, tool
-from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker

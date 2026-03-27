@@ -9,7 +9,6 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.models import MemoryDailyLog, User
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
-from conftest_runtime import runtime_db_session
 from anima_server.services.agent.consolidation import (
     LLMExtractionResult,
     consolidate_turn_memory,
@@ -17,6 +16,7 @@ from anima_server.services.agent.consolidation import (
     drain_background_memory_tasks,
 )
 from anima_server.services.agent.memory_store import get_memory_items
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker

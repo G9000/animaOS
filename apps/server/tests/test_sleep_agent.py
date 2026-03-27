@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from anima_server.db.base import Base
+from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.services.agent.sleep_agent import (
     SLEEPTIME_FREQUENCY,
@@ -20,12 +21,9 @@ from anima_server.services.agent.sleep_agent import (
     should_run_sleeptime,
     update_last_processed_message_id,
 )
-from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from anima_server.db.runtime_base import RuntimeBase
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -68,8 +66,6 @@ def db_factory(db_engine):
 @pytest.fixture()
 def runtime_db_engine():
     """Runtime DB engine for RuntimeBackgroundTaskRun and task tracking."""
-    from sqlalchemy import BigInteger
-    from sqlalchemy.ext.compiler import compiles
 
     engine = create_engine(
         "sqlite://",

@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.config import settings
+from anima_server.config import settings  # noqa: F401 — tests patch this attribute
 from anima_server.models import MemoryDailyLog, MemoryEpisode
 from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef

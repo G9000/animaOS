@@ -28,7 +28,8 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSON, TIMESTAMP as _PG_TIMESTAMP
+from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 
 # TIMESTAMPTZ shorthand — ``TIMESTAMP(timezone=True)`` is the portable
 # spelling that works across all SQLAlchemy versions & PG backends.

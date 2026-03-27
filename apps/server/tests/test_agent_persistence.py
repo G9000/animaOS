@@ -45,7 +45,7 @@ class _FakeUser:
         self.id = _TEST_USER_COUNTER
 
 
-def _make_user(db: Session) -> _FakeUser:  # noqa: ARG001 — db unused
+def _make_user(db: Session) -> _FakeUser:
     return _FakeUser()
 
 
