@@ -6,6 +6,9 @@ that move to runtime storage.
 
 from __future__ import annotations
 
+import re
+from datetime import UTC, datetime
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -93,18 +96,49 @@ def upgrade() -> None:
     )
 
     # --- Migrate growth_log blobs into individual rows ---
-    # Growth log content uses "### YYYY-MM-DD" separators.  We cannot
-    # reliably split markdown in pure SQL, so we copy the entire blob as
-    # a single entry.  The application-level _replace_growth_log_entries()
-    # will re-split it on the next write.  This preserves all content.
-    op.execute(
-        """
-        INSERT INTO growth_log (user_id, entry, source, created_at)
-        SELECT user_id, content, 'migration', created_at
-        FROM self_model_blocks
-        WHERE section = 'growth_log' AND content != ''
-        """
+    # Growth log uses "### YYYY-MM-DD — entry" separators.  We split in
+    # Python so each entry becomes its own row (matching the new schema).
+    conn = op.get_bind()
+    rows = conn.execute(
+        sa.text(
+            "SELECT user_id, content, created_at "
+            "FROM self_model_blocks "
+            "WHERE section = 'growth_log' AND content != ''"
+        )
+    ).fetchall()
+
+    growth_log_table = sa.table(
+        "growth_log",
+        sa.column("user_id", sa.Integer),
+        sa.column("entry", sa.Text),
+        sa.column("source", sa.String),
+        sa.column("created_at", sa.DateTime),
     )
+
+    for user_id, blob, fallback_ts in rows:
+        chunks = [c.strip() for c in blob.split("### ") if c.strip()]
+        if not chunks:
+            continue
+        for chunk in chunks:
+            entry_text = chunk
+            entry_ts = fallback_ts
+            # Try to parse "YYYY-MM-DD — entry" or "YYYY-MM-DD - entry"
+            m = re.match(r"(\d{4}-\d{2}-\d{2})\s*[-—]\s*(.*)", chunk, re.DOTALL)
+            if m:
+                try:
+                    entry_ts = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=UTC)
+                except ValueError:
+                    pass
+                entry_text = m.group(2).strip()
+            if entry_text:
+                conn.execute(
+                    growth_log_table.insert().values(
+                        user_id=user_id,
+                        entry=entry_text,
+                        source="migration",
+                        created_at=entry_ts,
+                    )
+                )
 
     # --- Delete migrated/moved sections ---
     op.execute(

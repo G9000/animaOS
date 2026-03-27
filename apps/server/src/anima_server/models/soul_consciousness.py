@@ -33,6 +33,7 @@ class IdentityBlock(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

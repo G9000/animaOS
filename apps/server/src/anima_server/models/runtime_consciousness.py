@@ -44,6 +44,7 @@ class WorkingContext(RuntimeBase):
         TIMESTAMPTZ,
         nullable=False,
         server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -61,6 +62,7 @@ class ActiveIntention(RuntimeBase):
         TIMESTAMPTZ,
         nullable=False,
         server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
