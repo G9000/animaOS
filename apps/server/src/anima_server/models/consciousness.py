@@ -26,9 +26,8 @@ from anima_server.db.base import Base
 class SelfModelBlock(Base):
     """Per-user self-model section.
 
-    Sections: identity, inner_state, working_memory, growth_log, intentions.
-    Each user has at most one row per section. Identity uses profile-pattern
-    (full rewrite), growth_log uses append-pattern, others are mutable.
+    P3 keeps only soul-tier sections here: soul, persona, human, user_directive.
+    Moved sections remain for backward compatibility during migration reads.
     """
 
     __tablename__ = "self_model_blocks"
@@ -44,7 +43,7 @@ class SelfModelBlock(Base):
     section: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-    )  # identity, inner_state, working_memory, growth_log, intentions
+    )  # soul, persona, human, user_directive, plus legacy compatibility sections
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[str] = mapped_column(
@@ -106,7 +105,8 @@ class EmotionalSignal(Base):
     """Detected emotional signal from a conversation turn.
 
     Stores per-conversation emotion detections with confidence, trajectory,
-    and evidence. Used to build the agent's "gut feeling" about the user.
+    and evidence. Kept for backward compatibility; P3 writes new signals to
+    runtime current_emotions instead.
     """
 
     __tablename__ = "emotional_signals"

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Iterator
 
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
@@ -24,7 +24,7 @@ SOUL_SECTIONS = ("soul", "persona", "human", "user_directive")
 IDENTITY_SECTIONS = ("identity", "growth_log")
 RUNTIME_SECTIONS = ("inner_state", "working_memory", "intentions")
 ALL_SECTIONS = SOUL_SECTIONS + IDENTITY_SECTIONS + RUNTIME_SECTIONS
-SECTIONS = SOUL_SECTIONS
+SECTIONS = ("identity", "inner_state", "working_memory", "growth_log", "intentions")
 
 _SEED_IDENTITY = """# Who I Am
 <!-- certainty: low -->
@@ -239,8 +239,29 @@ def get_working_context(
     pg_db: Session,
     *,
     user_id: int,
-) -> dict[str, WorkingContext]:
+) -> dict[str, WorkingContext | LegacySelfModelBlockView]:
     """Get all working-context rows for a user keyed by section."""
+    if not _has_table(pg_db, "working_context"):
+        rows = pg_db.scalars(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section.in_(("inner_state", "working_memory")),
+            )
+        ).all()
+        return {
+            row.section: _make_legacy_view(
+                user_id=user_id,
+                section=row.section,
+                plaintext=df(user_id, row.content, table="self_model_blocks", field="content"),
+                version=row.version,
+                updated_by=row.updated_by,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                row_id=row.id,
+            )
+            for row in rows
+        }
+
     rows = pg_db.scalars(
         select(WorkingContext).where(WorkingContext.user_id == user_id)
     ).all()
@@ -256,6 +277,50 @@ def set_working_context(
     updated_by: str = "system",
 ) -> WorkingContext:
     """Create or update a working-context section in runtime storage."""
+    if not _has_table(pg_db, "working_context"):
+        existing = pg_db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == section,
+            )
+        )
+        if existing is not None:
+            existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+            existing.version += 1
+            existing.updated_by = updated_by
+            existing.updated_at = datetime.now(UTC)
+            pg_db.flush()
+            return _make_legacy_view(
+                user_id=user_id,
+                section=section,
+                plaintext=content,
+                version=existing.version,
+                updated_by=existing.updated_by,
+                created_at=existing.created_at,
+                updated_at=existing.updated_at,
+                row_id=existing.id,
+            )
+
+        legacy = SelfModelBlock(
+            user_id=user_id,
+            section=section,
+            content=ef(user_id, content, table="self_model_blocks", field="content"),
+            version=1,
+            updated_by=updated_by,
+        )
+        pg_db.add(legacy)
+        pg_db.flush()
+        return _make_legacy_view(
+            user_id=user_id,
+            section=section,
+            plaintext=content,
+            version=legacy.version,
+            updated_by=legacy.updated_by,
+            created_at=legacy.created_at,
+            updated_at=legacy.updated_at,
+            row_id=legacy.id,
+        )
+
     existing = pg_db.scalar(
         select(WorkingContext).where(
             WorkingContext.user_id == user_id,
@@ -287,8 +352,28 @@ def get_active_intentions(
     pg_db: Session,
     *,
     user_id: int,
-) -> ActiveIntention | None:
+) -> ActiveIntention | LegacySelfModelBlockView | None:
     """Get the active-intentions block for a user."""
+    if not _has_table(pg_db, "active_intentions"):
+        row = pg_db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == "intentions",
+            )
+        )
+        if row is None:
+            return None
+        return _make_legacy_view(
+            user_id=user_id,
+            section="intentions",
+            plaintext=df(user_id, row.content, table="self_model_blocks", field="content"),
+            version=row.version,
+            updated_by=row.updated_by,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            row_id=row.id,
+        )
+
     return pg_db.scalar(select(ActiveIntention).where(ActiveIntention.user_id == user_id))
 
 
@@ -300,6 +385,50 @@ def set_active_intentions(
     updated_by: str = "system",
 ) -> ActiveIntention:
     """Create or update active intentions in runtime storage."""
+    if not _has_table(pg_db, "active_intentions"):
+        existing = pg_db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == "intentions",
+            )
+        )
+        if existing is not None:
+            existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+            existing.version += 1
+            existing.updated_by = updated_by
+            existing.updated_at = datetime.now(UTC)
+            pg_db.flush()
+            return _make_legacy_view(
+                user_id=user_id,
+                section="intentions",
+                plaintext=content,
+                version=existing.version,
+                updated_by=existing.updated_by,
+                created_at=existing.created_at,
+                updated_at=existing.updated_at,
+                row_id=existing.id,
+            )
+
+        legacy = SelfModelBlock(
+            user_id=user_id,
+            section="intentions",
+            content=ef(user_id, content, table="self_model_blocks", field="content"),
+            version=1,
+            updated_by=updated_by,
+        )
+        pg_db.add(legacy)
+        pg_db.flush()
+        return _make_legacy_view(
+            user_id=user_id,
+            section="intentions",
+            plaintext=content,
+            version=legacy.version,
+            updated_by=legacy.updated_by,
+            created_at=legacy.created_at,
+            updated_at=legacy.updated_at,
+            row_id=legacy.id,
+        )
+
     existing = get_active_intentions(pg_db, user_id=user_id)
     if existing is not None:
         existing.content = content
@@ -361,12 +490,27 @@ def get_self_model_block(
                 user_id=user_id,
                 section="growth_log",
                 plaintext=get_growth_log_text(db, user_id=user_id),
-                version=len(entries),
+                version=len(entries) + 1,
                 updated_by=latest.source,
                 created_at=oldest.created_at,
                 updated_at=latest.created_at,
                 row_id=latest.id,
             )
+        legacy_growth = db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == "growth_log",
+            )
+        )
+        if legacy_growth is not None:
+            return legacy_growth
+        return _make_legacy_view(
+            user_id=user_id,
+            section="growth_log",
+            plaintext=_SEED_GROWTH_LOG,
+            version=1,
+            updated_by="system",
+        )
 
     if section in RUNTIME_SECTIONS:
         with _runtime_session() as pg_db:
@@ -553,10 +697,9 @@ def seed_self_model(
         if existing is not None:
             created["identity"] = existing
 
-    if get_growth_log_entries(db, user_id=user_id):
-        growth = get_self_model_block(db, user_id=user_id, section="growth_log")
-        if growth is not None:
-            created["growth_log"] = growth
+    growth = get_self_model_block(db, user_id=user_id, section="growth_log")
+    if growth is not None:
+        created["growth_log"] = growth
 
     with _runtime_session() as pg_db:
         if pg_db is not None:
@@ -832,6 +975,13 @@ def _make_legacy_view_from_runtime(
         updated_at=row.updated_at,
         row_id=row.id,
     )
+
+
+def _has_table(db: Session, table_name: str) -> bool:
+    try:
+        return sa_inspect(db.connection()).has_table(table_name)
+    except Exception:
+        return False
 
 
 @contextmanager
