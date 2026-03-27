@@ -7,14 +7,31 @@ export interface FieldProps extends ComponentProps<"input"> {
   label: string;
   /** Optional hint shown below the input. */
   hint?: string;
+  /** Error message displayed below the input. */
+  error?: string;
+  /** Additional classes for the container wrapper. */
+  containerClassName?: string;
 }
 
-export function Field({ label, hint, id, ...inputProps }: FieldProps) {
+export function Field({
+  label,
+  hint,
+  error,
+  id,
+  className,
+  containerClassName,
+  ...inputProps
+}: FieldProps) {
   const autoId = useId();
   const fieldId = id ?? autoId;
+  const errorId = `${fieldId}-error`;
+  const hintId = `${fieldId}-hint`;
+
+  const hasError = Boolean(error);
+  const helperId = hasError ? errorId : hint ? hintId : undefined;
 
   return (
-    <div className="relative pt-2">
+    <div className={cn("relative pt-2", containerClassName)}>
       <Label
         htmlFor={fieldId}
         className="absolute top-0 left-3 z-10 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-background bg-muted-foreground leading-none"
@@ -23,10 +40,29 @@ export function Field({ label, hint, id, ...inputProps }: FieldProps) {
       </Label>
       <Input
         id={fieldId}
-        className="pt-4 focus:border-primary/35 focus:bg-card"
+        aria-invalid={hasError}
+        aria-describedby={helperId}
+        className={cn(
+          "pt-4 focus:border-primary/35 focus:bg-card",
+          hasError && "border-destructive focus:border-destructive",
+          className,
+        )}
         {...inputProps}
       />
-      {hint && <p className="mt-2 text-[11px] text-muted-foreground">{hint}</p>}
+      {hasError ? (
+        <p id={errorId} className="mt-2 text-[11px] text-destructive">
+          {error}
+        </p>
+      ) : hint ? (
+        <p id={hintId} className="mt-2 text-[11px] text-muted-foreground">
+          {hint}
+        </p>
+      ) : null}
     </div>
   );
+}
+
+// Simple cn helper since this file doesn't import it
+function cn(...classes: Array<string | boolean | undefined>) {
+  return classes.filter(Boolean).join(" ");
 }
