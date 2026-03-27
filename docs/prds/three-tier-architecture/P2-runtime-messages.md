@@ -8,9 +8,18 @@ version: "1.0"
 # Phase 2: Runtime Messages
 
 **Status**: Approved
-**Date**: 2026-03-26
+**Date**: 2026-03-26 (updated 2026-03-27)
 **Depends on**: P1 (Embedded PostgreSQL)
 **Blocks**: P3, P6, P7
+**Design Spec**: [2026-03-27-p2-runtime-messages-design.md](../../superpowers/specs/2026-03-27-p2-runtime-messages-design.md)
+
+### Design Updates (2026-03-27)
+
+Three departures from the original PRD, decided during design review:
+
+1. **Sync sessions (psycopg2), not async** — The entire service layer is synchronous. Converting to async belongs in P7 (Concurrency Refactor). Using sync PG sessions keeps the diff minimal and avoids rewiring background tasks, companion, and tool context.
+2. **No feature flag** — `ANIMA_USE_RUNTIME_PG` is removed. Desktop app with embedded PG has no deployment scenario needing a SQLCipher fallback. One code path, less maintenance.
+3. **PG-specific column types** — `TIMESTAMPTZ`, `postgresql.JSON` instead of generic types. Runtime is PG-only; tests use embedded PG.
 
 ## Overview
 
@@ -34,8 +43,7 @@ Phase 2 moves these runtime models to the shared PostgreSQL instance provisioned
 - Runtime database engine/session factory (`db/runtime.py`)
 - Alembic migration environment for the runtime database (separate from the soul database)
 - Rewiring of all service modules that read/write these models
-- Feature flag `ANIMA_USE_RUNTIME_PG` for rollback
-- Updated test fixtures providing runtime sessions
+- Updated test fixtures providing runtime sessions (using embedded PG)
 - Removal of field-level encryption (`ef`/`df`) calls on message content in the PG path (TLS + at-rest encryption replaces this)
 
 ### Out of scope
