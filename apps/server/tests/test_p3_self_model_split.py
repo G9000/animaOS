@@ -483,3 +483,84 @@ class TestIntentionsRuntime:
 
         result = complete_intention(runtime_db, user_id=1, title="Test goal")
         assert result is True
+
+
+class TestMemoryBlocksDualRead:
+    def test_build_self_model_memory_blocks_dual_store(
+        self,
+        soul_db: Session,
+        runtime_db: Session,
+    ) -> None:
+        """build_self_model_memory_blocks reads identity from soul and working context from runtime."""
+        from anima_server.services.agent.memory_blocks import build_self_model_memory_blocks
+        from anima_server.services.agent.self_model import (
+            set_active_intentions,
+            set_identity_block,
+            set_working_context,
+        )
+
+        set_identity_block(
+            soul_db,
+            user_id=1,
+            content="I am a caring companion.",
+            updated_by="system",
+        )
+        soul_db.flush()
+
+        set_working_context(
+            runtime_db,
+            user_id=1,
+            section="inner_state",
+            content="Feeling curious.",
+        )
+        set_working_context(
+            runtime_db,
+            user_id=1,
+            section="working_memory",
+            content="- Remember to ask about project",
+        )
+        set_active_intentions(
+            runtime_db,
+            user_id=1,
+            content="# Intentions\n- Learn preferences",
+        )
+        runtime_db.flush()
+
+        blocks = build_self_model_memory_blocks(soul_db, pg_db=runtime_db, user_id=1)
+
+        labels = {b.label for b in blocks}
+        assert "self_identity" in labels
+        assert "self_inner_state" in labels
+        assert "self_working_memory" in labels
+        assert "self_intentions" in labels
+
+    def test_build_emotional_context_from_runtime(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+        from anima_server.services.agent.memory_blocks import build_emotional_context_block
+
+        record_emotional_signal(runtime_db, user_id=1, emotion="curious", confidence=0.7)
+        runtime_db.flush()
+
+        block = build_emotional_context_block(runtime_db, user_id=1)
+        assert block is not None
+        assert "curious" in block.value
+
+    def test_build_emotional_patterns_block(self, soul_db: Session) -> None:
+        from anima_server.models.soul_consciousness import CoreEmotionalPattern
+        from anima_server.services.agent.memory_blocks import build_emotional_patterns_block
+
+        soul_db.add(
+            CoreEmotionalPattern(
+                user_id=1,
+                pattern="Gets frustrated under deadline pressure",
+                dominant_emotion="frustrated",
+                trigger_context="work deadlines",
+                frequency=6,
+                confidence=0.8,
+            )
+        )
+        soul_db.flush()
+
+        block = build_emotional_patterns_block(soul_db, user_id=1)
+        assert block is not None
+        assert "frustrated" in block.value
