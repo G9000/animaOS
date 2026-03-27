@@ -116,6 +116,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Restore identity rows to self_model_blocks
     op.execute(
         """
         INSERT INTO self_model_blocks (user_id, section, content, version, updated_by, created_at, updated_at)
@@ -123,6 +124,60 @@ def downgrade() -> None:
         FROM identity_blocks
         """
     )
+
+    # Restore growth_log: concatenate individual entries back into a single
+    # markdown blob per user.  SQLite's group_concat preserves content; the
+    # "### " prefix re-creates the original separator format.
+    op.execute(
+        """
+        INSERT INTO self_model_blocks (user_id, section, content, version, updated_by, created_at, updated_at)
+        SELECT
+            user_id,
+            'growth_log',
+            group_concat('### ' || entry, char(10) || char(10)),
+            1,
+            'migration',
+            MIN(created_at),
+            MAX(created_at)
+        FROM growth_log
+        GROUP BY user_id
+        """
+    )
+
+    # Re-seed empty runtime sections so the app doesn't break.
+    # The actual data lives in PG runtime tables (separate migration)
+    # and will be re-seeded by ensure_self_model_exists() on next startup.
+    op.execute(
+        """
+        INSERT INTO self_model_blocks (user_id, section, content, version, updated_by)
+        SELECT DISTINCT user_id, 'inner_state', '', 1, 'system'
+        FROM identity_blocks
+        WHERE user_id NOT IN (
+            SELECT user_id FROM self_model_blocks WHERE section = 'inner_state'
+        )
+        """
+    )
+    op.execute(
+        """
+        INSERT INTO self_model_blocks (user_id, section, content, version, updated_by)
+        SELECT DISTINCT user_id, 'working_memory', '', 1, 'system'
+        FROM identity_blocks
+        WHERE user_id NOT IN (
+            SELECT user_id FROM self_model_blocks WHERE section = 'working_memory'
+        )
+        """
+    )
+    op.execute(
+        """
+        INSERT INTO self_model_blocks (user_id, section, content, version, updated_by)
+        SELECT DISTINCT user_id, 'intentions', '', 1, 'system'
+        FROM identity_blocks
+        WHERE user_id NOT IN (
+            SELECT user_id FROM self_model_blocks WHERE section = 'intentions'
+        )
+        """
+    )
+
     op.drop_table("core_emotional_patterns")
     op.drop_table("growth_log")
     op.drop_table("identity_blocks")
