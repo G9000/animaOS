@@ -103,9 +103,7 @@ def build_runtime_memory_blocks(
     if current_focus_block is not None:
         blocks.append(current_focus_block)
 
-    summary_block = build_thread_summary_block(
-        db, thread_id=thread_id, user_id=user_id, runtime_db=runtime_db
-    )
+    summary_block = build_thread_summary_block(thread_id=thread_id, runtime_db=runtime_db)
     if summary_block is not None:
         blocks.append(summary_block)
 
@@ -304,10 +302,8 @@ def build_current_focus_memory_block(
 
 
 def build_thread_summary_block(
-    db: Session,  # kept for signature compat but unused
     *,
     thread_id: int,
-    user_id: int | None = None,
     runtime_db: Session | None = None,
 ) -> MemoryBlock | None:
     from anima_server.models.runtime import RuntimeMessage
