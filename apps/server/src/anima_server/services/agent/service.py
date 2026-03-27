@@ -361,25 +361,38 @@ async def _execute_agent_turn(
     extra_tool_schemas: list[dict[str, Any]] | None = None,
 ) -> AgentResult:
     if thread_id is not None:
-        resolved_thread_id = thread_id
+        thread_lock = get_thread_lock(thread_id)
+        async with thread_lock:
+            return await _execute_agent_turn_locked(
+                user_message,
+                user_id,
+                db,
+                runtime_db,
+                event_callback=event_callback,
+                source=source,
+                tool_delegate=tool_delegate,
+                delegated_tool_names=delegated_tool_names,
+                extra_tool_schemas=extra_tool_schemas,
+            )
     else:
-        # Serialize thread creation per user so concurrent first requests
-        # don't race on get_or_create_thread() before the thread lock exists.
+        # Hold the creation lock through thread lock acquisition so that
+        # concurrent first-turn requests can't race on get_or_create_thread()
+        # with uncommitted DB sessions.
         async with get_user_creation_lock(user_id):
             resolved_thread_id = _resolve_thread_id(user_id, runtime_db)
-    thread_lock = get_thread_lock(resolved_thread_id)
-    async with thread_lock:
-        return await _execute_agent_turn_locked(
-            user_message,
-            user_id,
-            db,
-            runtime_db,
-            event_callback=event_callback,
-            source=source,
-            tool_delegate=tool_delegate,
-            delegated_tool_names=delegated_tool_names,
-            extra_tool_schemas=extra_tool_schemas,
-        )
+            thread_lock = get_thread_lock(resolved_thread_id)
+            async with thread_lock:
+                return await _execute_agent_turn_locked(
+                    user_message,
+                    user_id,
+                    db,
+                    runtime_db,
+                    event_callback=event_callback,
+                    source=source,
+                    tool_delegate=tool_delegate,
+                    delegated_tool_names=delegated_tool_names,
+                    extra_tool_schemas=extra_tool_schemas,
+                )
 
 
 def _resolve_thread_id(user_id: int, runtime_db: Session) -> int:
