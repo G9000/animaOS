@@ -242,3 +242,152 @@ class TestCurrentEmotion:
             .where(CurrentEmotion.user_id == 1)
         )
         assert count == 3
+
+
+class TestSelfModelIdentityBlock:
+    def test_get_identity_block_returns_none_when_missing(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import get_identity_block
+
+        result = get_identity_block(soul_db, user_id=1)
+        assert result is None
+
+    def test_set_and_get_identity_block(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            get_identity_block,
+            set_identity_block,
+        )
+
+        set_identity_block(soul_db, user_id=1, content="I am a companion.", updated_by="system")
+        soul_db.flush()
+
+        block = get_identity_block(soul_db, user_id=1)
+        assert block is not None
+        assert block.content == "I am a companion."
+        assert block.version == 1
+
+    def test_set_identity_block_bumps_version(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            get_identity_block,
+            set_identity_block,
+        )
+
+        set_identity_block(soul_db, user_id=1, content="v1", updated_by="system")
+        soul_db.flush()
+        set_identity_block(soul_db, user_id=1, content="v2", updated_by="sleep_time")
+        soul_db.flush()
+
+        block = get_identity_block(soul_db, user_id=1)
+        assert block is not None
+        assert block.content == "v2"
+        assert block.version == 2
+
+    def test_identity_stability_threshold(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            get_identity_block,
+            set_identity_block,
+        )
+
+        set_identity_block(soul_db, user_id=1, content="original", updated_by="system")
+        soul_db.flush()
+
+        set_identity_block(
+            soul_db,
+            user_id=1,
+            content="completely different text here",
+            updated_by="sleep_time",
+        )
+        soul_db.flush()
+
+        block = get_identity_block(soul_db, user_id=1)
+        assert block is not None
+        assert block.content == "original"
+
+
+class TestSelfModelGrowthLog:
+    def test_append_growth_log_entry_row(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            append_growth_log_entry_row,
+            get_growth_log_entries,
+        )
+
+        append_growth_log_entry_row(soul_db, user_id=1, entry="Learned patience")
+        soul_db.flush()
+
+        entries = get_growth_log_entries(soul_db, user_id=1)
+        assert len(entries) == 1
+        assert entries[0].entry == "Learned patience"
+
+    def test_dedup_by_word_overlap(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            append_growth_log_entry_row,
+            get_growth_log_entries,
+        )
+
+        append_growth_log_entry_row(soul_db, user_id=1, entry="Learned to be patient with the user")
+        soul_db.flush()
+        result = append_growth_log_entry_row(
+            soul_db,
+            user_id=1,
+            entry="Learned to be patient with the user today",
+        )
+        soul_db.flush()
+
+        assert result is None
+        entries = get_growth_log_entries(soul_db, user_id=1)
+        assert len(entries) == 1
+
+    def test_trim_to_max_entries(self, soul_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            append_growth_log_entry_row,
+            get_growth_log_entries,
+        )
+
+        for i in range(25):
+            append_growth_log_entry_row(
+                soul_db,
+                user_id=1,
+                entry=f"Unique entry number {i} with distinctive words {i * 100}",
+            )
+            soul_db.flush()
+
+        entries = get_growth_log_entries(soul_db, user_id=1)
+        assert len(entries) <= 20
+
+
+class TestSelfModelWorkingContext:
+    def test_get_working_context_empty(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.self_model import get_working_context
+
+        result = get_working_context(runtime_db, user_id=1)
+        assert result == {}
+
+    def test_set_and_get_working_context(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            get_working_context,
+            set_working_context,
+        )
+
+        set_working_context(
+            runtime_db,
+            user_id=1,
+            section="inner_state",
+            content="Feeling curious.",
+        )
+        runtime_db.flush()
+
+        result = get_working_context(runtime_db, user_id=1)
+        assert "inner_state" in result
+        assert result["inner_state"].content == "Feeling curious."
+
+    def test_get_active_intentions(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.self_model import (
+            get_active_intentions,
+            set_active_intentions,
+        )
+
+        set_active_intentions(runtime_db, user_id=1, content="Learn preferences")
+        runtime_db.flush()
+
+        result = get_active_intentions(runtime_db, user_id=1)
+        assert result is not None
+        assert result.content == "Learn preferences"

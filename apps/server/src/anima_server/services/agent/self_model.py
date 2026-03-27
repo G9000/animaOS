@@ -1,43 +1,30 @@
-"""Self-model management: the agent's understanding of itself per user.
-
-Manages sections stored in self_model_blocks:
-
-Core identity (seeded at registration):
-- soul: immutable origin block (agent name, creator, birth date)
-- persona: voice and personality (mutable — evolves through reflection)
-- human: the agent's understanding of the user (mutable)
-- user_directive: user-provided instructions (optional)
-
-Self-model (seeded lazily on first conversation):
-- identity: who the agent is in this relationship (profile-pattern, full rewrite)
-- inner_state: current cognitive/emotional processing state (mutable)
-- working_memory: cross-session buffer with expiring items (mutable)
-- growth_log: append-only changelog of how the agent has evolved
-- intentions: active goals and learned behavioral rules (mutable)
-"""
+"""Self-model management across soul and runtime stores."""
 
 from __future__ import annotations
 
 import logging
+import re
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Iterator
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import SelfModelBlock
+from anima_server.models.runtime_consciousness import ActiveIntention, WorkingContext
+from anima_server.models.soul_consciousness import GrowthLogEntry, IdentityBlock
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
 
-# All valid section names for self_model_blocks
-ALL_SECTIONS = (
-    "soul", "persona", "human", "user_directive",
-    "identity", "inner_state", "working_memory", "growth_log", "intentions",
-)
-
-# Sections that get lazily seeded via seed_self_model()
-SECTIONS = ("identity", "inner_state", "working_memory", "growth_log", "intentions")
+SOUL_SECTIONS = ("soul", "persona", "human", "user_directive")
+IDENTITY_SECTIONS = ("identity", "growth_log")
+RUNTIME_SECTIONS = ("inner_state", "working_memory", "intentions")
+ALL_SECTIONS = SOUL_SECTIONS + IDENTITY_SECTIONS + RUNTIME_SECTIONS
+SECTIONS = SOUL_SECTIONS
 
 _SEED_IDENTITY = """# Who I Am
 <!-- certainty: low -->
@@ -53,10 +40,10 @@ Using my default communication style until I learn their preferences.
 
 # What I'm Uncertain About
 <!-- certainty: low -->
-Everything — we're just getting started."""
+Everything - we're just getting started."""
 
 _SEED_INNER_STATE = """# Current Sense of the User
-No strong signals yet — too early to form impressions.
+No strong signals yet - too early to form impressions.
 
 # Active Threads
 No ongoing threads yet.
@@ -78,20 +65,12 @@ _SEED_INTENTIONS = """# Active Intentions
 
 ## Ongoing
 - **Learn this person's communication preferences**
-  - Evidence: New relationship — no data yet
-  - Status: Active — observing
+  - Evidence: New relationship - no data yet
+  - Status: Active - observing
   - Strategy: Pay attention to how they respond to different styles
 
 # Behavioral Rules I've Learned
-No rules yet — still observing."""
-
-_SEEDS: dict[str, str] = {
-    "identity": _SEED_IDENTITY,
-    "inner_state": _SEED_INNER_STATE,
-    "working_memory": _SEED_WORKING_MEMORY,
-    "growth_log": _SEED_GROWTH_LOG,
-    "intentions": _SEED_INTENTIONS,
-}
+No rules yet - still observing."""
 
 _BUDGET: dict[str, int] = {
     "identity": settings.agent_self_model_identity_budget,
@@ -101,16 +80,313 @@ _BUDGET: dict[str, int] = {
     "intentions": settings.agent_self_model_intentions_budget,
 }
 
+_TRUSTED_WRITERS = frozenset({"user", "system", "api"})
+_IDENTITY_STABILITY_THRESHOLD = 5
+
+
+@dataclass(slots=True)
+class LegacySelfModelBlockView:
+    """Compatibility view for callers still expecting a SelfModelBlock shape."""
+
+    user_id: int
+    section: str
+    content: str
+    version: int
+    updated_by: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    metadata_json: dict | None = None
+    needs_regeneration: bool = False
+    id: int | None = None
+    _plaintext: str = ""
+
+
+def get_identity_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> IdentityBlock | None:
+    """Get the identity block for a user from the soul store."""
+    return db.scalar(select(IdentityBlock).where(IdentityBlock.user_id == user_id))
+
+
+def set_identity_block(
+    db: Session,
+    *,
+    user_id: int,
+    content: str,
+    updated_by: str = "system",
+) -> IdentityBlock:
+    """Create or update the identity block with stability governance."""
+    existing = get_identity_block(db, user_id=user_id)
+
+    if (
+        existing is not None
+        and existing.version < _IDENTITY_STABILITY_THRESHOLD
+        and updated_by not in _TRUSTED_WRITERS
+        and existing.content.strip()
+    ):
+        existing_words = set(existing.content.lower().split())
+        new_words = set(content.lower().split())
+        if existing_words and new_words and max(len(existing_words), len(new_words)) >= 3:
+            overlap = len(existing_words & new_words) / max(len(existing_words), len(new_words))
+            if overlap < 0.5:
+                logger.info(
+                    "Blocked identity rewrite by %s (version %d < %d, overlap %.2f).",
+                    updated_by,
+                    existing.version,
+                    _IDENTITY_STABILITY_THRESHOLD,
+                    overlap,
+                )
+                append_growth_log_entry_row(
+                    db,
+                    user_id=user_id,
+                    entry=f"Identity update proposed by {updated_by} (blocked): {content[:200]}",
+                )
+                return existing
+
+    if existing is not None:
+        existing.content = content
+        existing.version += 1
+        existing.updated_by = updated_by
+        existing.updated_at = datetime.now(UTC)
+        db.flush()
+        return existing
+
+    block = IdentityBlock(
+        user_id=user_id,
+        content=content,
+        version=1,
+        updated_by=updated_by,
+    )
+    db.add(block)
+    db.flush()
+    return block
+
+
+def get_growth_log_entries(
+    db: Session,
+    *,
+    user_id: int,
+    limit: int = 20,
+) -> list[GrowthLogEntry]:
+    """Get growth log entries, most recent first."""
+    return list(
+        db.scalars(
+            select(GrowthLogEntry)
+            .where(GrowthLogEntry.user_id == user_id)
+            .order_by(GrowthLogEntry.created_at.desc(), GrowthLogEntry.id.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def get_growth_log_text(
+    db: Session,
+    *,
+    user_id: int,
+    limit: int = 20,
+) -> str:
+    """Render growth log entries as the legacy markdown block."""
+    entries = get_growth_log_entries(db, user_id=user_id, limit=limit)
+    if not entries:
+        return ""
+
+    lines: list[str] = []
+    for entry in reversed(entries):
+        date_str = entry.created_at.strftime("%Y-%m-%d") if entry.created_at else "unknown"
+        lines.append(f"### {date_str} - {entry.entry}")
+    return "\n\n".join(lines)
+
+
+def append_growth_log_entry_row(
+    db: Session,
+    *,
+    user_id: int,
+    entry: str,
+    source: str = "sleep_time",
+    max_entries: int = 20,
+) -> GrowthLogEntry | None:
+    """Append a growth log row, deduplicating and trimming older entries."""
+    cleaned = entry.strip()
+    if not cleaned:
+        return None
+
+    for existing in get_growth_log_entries(db, user_id=user_id, limit=max_entries):
+        if _is_duplicate_growth_entry_text(existing.entry, cleaned):
+            return None
+
+    row = GrowthLogEntry(user_id=user_id, entry=cleaned, source=source)
+    db.add(row)
+    db.flush()
+
+    entries = list(
+        db.scalars(
+            select(GrowthLogEntry)
+            .where(GrowthLogEntry.user_id == user_id)
+            .order_by(GrowthLogEntry.created_at.asc(), GrowthLogEntry.id.asc())
+        ).all()
+    )
+    if len(entries) > max_entries:
+        for stale in entries[: len(entries) - max_entries]:
+            db.delete(stale)
+        db.flush()
+
+    return row
+
+
+def get_working_context(
+    pg_db: Session,
+    *,
+    user_id: int,
+) -> dict[str, WorkingContext]:
+    """Get all working-context rows for a user keyed by section."""
+    rows = pg_db.scalars(
+        select(WorkingContext).where(WorkingContext.user_id == user_id)
+    ).all()
+    return {row.section: row for row in rows}
+
+
+def set_working_context(
+    pg_db: Session,
+    *,
+    user_id: int,
+    section: str,
+    content: str,
+    updated_by: str = "system",
+) -> WorkingContext:
+    """Create or update a working-context section in runtime storage."""
+    existing = pg_db.scalar(
+        select(WorkingContext).where(
+            WorkingContext.user_id == user_id,
+            WorkingContext.section == section,
+        )
+    )
+
+    if existing is not None:
+        existing.content = content
+        existing.version += 1
+        existing.updated_by = updated_by
+        existing.updated_at = datetime.now(UTC)
+        pg_db.flush()
+        return existing
+
+    row = WorkingContext(
+        user_id=user_id,
+        section=section,
+        content=content,
+        version=1,
+        updated_by=updated_by,
+    )
+    pg_db.add(row)
+    pg_db.flush()
+    return row
+
+
+def get_active_intentions(
+    pg_db: Session,
+    *,
+    user_id: int,
+) -> ActiveIntention | None:
+    """Get the active-intentions block for a user."""
+    return pg_db.scalar(select(ActiveIntention).where(ActiveIntention.user_id == user_id))
+
+
+def set_active_intentions(
+    pg_db: Session,
+    *,
+    user_id: int,
+    content: str,
+    updated_by: str = "system",
+) -> ActiveIntention:
+    """Create or update active intentions in runtime storage."""
+    existing = get_active_intentions(pg_db, user_id=user_id)
+    if existing is not None:
+        existing.content = content
+        existing.version += 1
+        existing.updated_by = updated_by
+        existing.updated_at = datetime.now(UTC)
+        pg_db.flush()
+        return existing
+
+    row = ActiveIntention(
+        user_id=user_id,
+        content=content,
+        version=1,
+        updated_by=updated_by,
+    )
+    pg_db.add(row)
+    pg_db.flush()
+    return row
+
 
 def get_self_model_block(
     db: Session,
     *,
     user_id: int,
     section: str,
-) -> SelfModelBlock | None:
-    """Get a single self-model section."""
+) -> SelfModelBlock | LegacySelfModelBlockView | None:
+    """Compatibility reader across soul and runtime stores."""
     if section not in ALL_SECTIONS:
         return None
+
+    if section in SOUL_SECTIONS:
+        return db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == section,
+            )
+        )
+
+    if section == "identity":
+        identity = get_identity_block(db, user_id=user_id)
+        if identity is not None:
+            return _make_legacy_view(
+                user_id=user_id,
+                section="identity",
+                plaintext=identity.content,
+                version=identity.version,
+                updated_by=identity.updated_by,
+                created_at=identity.created_at,
+                updated_at=identity.updated_at,
+                row_id=identity.id,
+            )
+
+    if section == "growth_log":
+        entries = get_growth_log_entries(db, user_id=user_id)
+        if entries:
+            latest = entries[0]
+            oldest = entries[-1]
+            return _make_legacy_view(
+                user_id=user_id,
+                section="growth_log",
+                plaintext=get_growth_log_text(db, user_id=user_id),
+                version=len(entries),
+                updated_by=latest.source,
+                created_at=oldest.created_at,
+                updated_at=latest.created_at,
+                row_id=latest.id,
+            )
+
+    if section in RUNTIME_SECTIONS:
+        with _runtime_session() as pg_db:
+            if pg_db is not None:
+                if section == "intentions":
+                    row = get_active_intentions(pg_db, user_id=user_id)
+                else:
+                    row = get_working_context(pg_db, user_id=user_id).get(section)
+                if row is not None:
+                    return _make_legacy_view(
+                        user_id=user_id,
+                        section=section,
+                        plaintext=row.content,
+                        version=row.version,
+                        updated_by=row.updated_by,
+                        created_at=getattr(row, "created_at", None),
+                        updated_at=row.updated_at,
+                        row_id=row.id,
+                    )
+
     return db.scalar(
         select(SelfModelBlock).where(
             SelfModelBlock.user_id == user_id,
@@ -123,18 +399,25 @@ def get_all_self_model_blocks(
     db: Session,
     *,
     user_id: int,
-) -> dict[str, SelfModelBlock]:
-    """Get all self-model sections for a user, keyed by section name."""
-    blocks = db.scalars(select(SelfModelBlock).where(SelfModelBlock.user_id == user_id)).all()
-    return {b.section: b for b in blocks}
+) -> dict[str, SelfModelBlock | LegacySelfModelBlockView]:
+    """Get all known self-model sections for a user keyed by section name."""
+    rows = db.scalars(select(SelfModelBlock).where(SelfModelBlock.user_id == user_id)).all()
+    blocks: dict[str, SelfModelBlock | LegacySelfModelBlockView] = {row.section: row for row in rows}
 
+    identity = get_self_model_block(db, user_id=user_id, section="identity")
+    if identity is not None:
+        blocks["identity"] = identity
 
-# Writers that are always trusted (user edits, system seeds)
-_TRUSTED_WRITERS = frozenset({"user", "system", "api"})
+    growth_log = get_self_model_block(db, user_id=user_id, section="growth_log")
+    if growth_log is not None:
+        blocks["growth_log"] = growth_log
 
-# Identity requires high version threshold before automated rewrites are allowed.
-# Below this version, only trusted writers can fully rewrite identity.
-_IDENTITY_STABILITY_THRESHOLD = 5
+    for section in ("inner_state", "working_memory", "intentions"):
+        block = get_self_model_block(db, user_id=user_id, section=section)
+        if block is not None:
+            blocks[section] = block
+
+    return blocks
 
 
 def set_self_model_block(
@@ -145,73 +428,89 @@ def set_self_model_block(
     content: str,
     updated_by: str = "system",
     metadata: dict | None = None,
-) -> SelfModelBlock:
-    """Create or update a self-model section. Bumps version on update.
-
-    Write governance:
-    - identity: automated writers cannot fully rewrite until version >= threshold.
-      Before that, automated rewrites are logged to growth_log instead.
-    - growth_log: append-only (use append_growth_log_entry instead).
-    """
+) -> SelfModelBlock | LegacySelfModelBlockView:
+    """Compatibility writer that routes moved sections to their new stores."""
     if section not in ALL_SECTIONS:
         raise ValueError(f"Invalid section: {section}")
 
-    existing = get_self_model_block(db, user_id=user_id, section=section)
-
-    # Identity governance: block automated full rewrites of young identity
-    if (
-        section == "identity"
-        and existing is not None
-        and existing.version < _IDENTITY_STABILITY_THRESHOLD
-        and updated_by not in _TRUSTED_WRITERS
-        and df(user_id, existing.content, table="self_model_blocks", field="content").strip()
-    ):
-        # Check if the proposed content is substantially different
-        existing_plaintext = df(
-            user_id, existing.content, table="self_model_blocks", field="content"
+    if section in SOUL_SECTIONS:
+        existing = db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == section,
+            )
         )
-        existing_words = set(existing_plaintext.lower().split())
-        new_words = set(content.lower().split())
-        if existing_words and new_words:
-            overlap = len(existing_words & new_words) / max(len(existing_words), len(new_words))
-            if overlap < 0.5:
-                # Too different — log to growth log instead of overwriting
-                logger.info(
-                    "Blocked identity rewrite by %s (version %d < %d, overlap %.2f). "
-                    "Logging to growth log instead.",
-                    updated_by,
-                    existing.version,
-                    _IDENTITY_STABILITY_THRESHOLD,
-                    overlap,
-                )
-                append_growth_log_entry(
-                    db,
-                    user_id=user_id,
-                    entry=f"Identity update proposed by {updated_by} (blocked — too early): {content[:200]}",
-                )
-                return existing
+        if existing is not None:
+            existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+            existing.version += 1
+            existing.updated_by = updated_by
+            existing.updated_at = datetime.now(UTC)
+            if metadata is not None:
+                existing.metadata_json = metadata
+            db.flush()
+            return existing
 
-    if existing is not None:
-        existing.content = ef(user_id, content, table="self_model_blocks", field="content")
-        existing.version += 1
-        existing.updated_by = updated_by
-        existing.updated_at = datetime.now(UTC)
-        if metadata is not None:
-            existing.metadata_json = metadata
+        block = SelfModelBlock(
+            user_id=user_id,
+            section=section,
+            content=ef(user_id, content, table="self_model_blocks", field="content"),
+            version=1,
+            updated_by=updated_by,
+            metadata_json=metadata,
+        )
+        db.add(block)
         db.flush()
-        return existing
+        return block
 
-    block = SelfModelBlock(
-        user_id=user_id,
-        section=section,
-        content=ef(user_id, content, table="self_model_blocks", field="content"),
-        version=1,
-        updated_by=updated_by,
-        metadata_json=metadata,
-    )
-    db.add(block)
-    db.flush()
-    return block
+    if section == "identity":
+        block = set_identity_block(db, user_id=user_id, content=content, updated_by=updated_by)
+        return _make_legacy_view(
+            user_id=user_id,
+            section="identity",
+            plaintext=block.content,
+            version=block.version,
+            updated_by=block.updated_by,
+            created_at=block.created_at,
+            updated_at=block.updated_at,
+            row_id=block.id,
+        )
+
+    if section == "growth_log":
+        _replace_growth_log_entries(db, user_id=user_id, content=content, source=updated_by)
+        growth_log = get_self_model_block(db, user_id=user_id, section="growth_log")
+        if growth_log is None:
+            return _make_legacy_view(
+                user_id=user_id,
+                section="growth_log",
+                plaintext="",
+                version=0,
+                updated_by=updated_by,
+            )
+        return growth_log
+
+    with _runtime_session() as pg_db:
+        if pg_db is None:
+            raise RuntimeError("Runtime session factory not initialized.")
+        if section == "intentions":
+            row = set_active_intentions(pg_db, user_id=user_id, content=content, updated_by=updated_by)
+        else:
+            row = set_working_context(
+                pg_db,
+                user_id=user_id,
+                section=section,
+                content=content,
+                updated_by=updated_by,
+            )
+        return _make_legacy_view(
+            user_id=user_id,
+            section=section,
+            plaintext=row.content,
+            version=row.version,
+            updated_by=row.updated_by,
+            created_at=getattr(row, "created_at", None),
+            updated_at=row.updated_at,
+            row_id=row.id,
+        )
 
 
 def append_growth_log_entry(
@@ -220,99 +519,99 @@ def append_growth_log_entry(
     user_id: int,
     entry: str,
     max_entries: int = 20,
-) -> SelfModelBlock | None:
-    """Append an entry to the growth log. Deduplicates and trims to max_entries.
-
-    Returns None if the entry is a duplicate of something already in the log.
-    """
-    if not entry or not entry.strip():
+) -> LegacySelfModelBlockView | None:
+    """Backward-compatible growth-log append wrapper."""
+    row = append_growth_log_entry_row(
+        db,
+        user_id=user_id,
+        entry=entry,
+        max_entries=max_entries,
+    )
+    if row is None:
         return None
-
     block = get_self_model_block(db, user_id=user_id, section="growth_log")
-    now = datetime.now(UTC)
-    date_str = now.strftime("%Y-%m-%d")
-    formatted = f"\n\n### {date_str} — {entry}"
-
-    # Dedup: skip if a substantially similar entry already exists
-    if block is not None:
-        block_content = df(user_id, block.content, table="self_model_blocks", field="content")
-        if _is_duplicate_growth_entry(block_content, entry):
-            return None
-
-    if block is None:
-        block = SelfModelBlock(
-            user_id=user_id,
-            section="growth_log",
-            content=ef(user_id, formatted.strip(), table="self_model_blocks", field="content"),
-            version=1,
-            updated_by="sleep_time",
-        )
-        db.add(block)
-        db.flush()
+    if isinstance(block, LegacySelfModelBlockView):
         return block
-
-    # Append and trim
-    content = df(user_id, block.content, table="self_model_blocks", field="content") + formatted
-    entries = [e.strip() for e in content.split("### ") if e.strip()]
-    if len(entries) > max_entries:
-        entries = entries[-max_entries:]
-    new_content = "\n\n".join(f"### {e}" for e in entries) if entries else ""
-    block.content = ef(user_id, new_content, table="self_model_blocks", field="content")
-    block.version += 1
-    block.updated_by = "sleep_time"
-    block.updated_at = now
-    db.flush()
-    return block
-
-
-def _is_duplicate_growth_entry(existing_content: str, new_entry: str) -> bool:
-    """Check if a growth log entry is substantially similar to an existing one."""
-    new_words = set(new_entry.lower().split())
-    if len(new_words) < 3:
-        return new_entry.lower().strip() in existing_content.lower()
-    # Check each existing entry for word overlap
-    for entry_text in existing_content.split("### "):
-        entry_text = entry_text.strip()
-        if not entry_text:
-            continue
-        # Strip date prefix (YYYY-MM-DD — )
-        if " — " in entry_text:
-            entry_text = entry_text.split(" — ", 1)[1]
-        existing_words = set(entry_text.lower().split())
-        if not existing_words:
-            continue
-        overlap = len(new_words & existing_words) / max(len(new_words), len(existing_words))
-        if overlap > 0.7:
-            return True
-    return False
+    return None
 
 
 def seed_self_model(
     db: Session,
     *,
     user_id: int,
-) -> dict[str, SelfModelBlock]:
-    """Create initial self-model for a new user. No-op if already exists."""
-    existing = get_all_self_model_blocks(db, user_id=user_id)
-    created: dict[str, SelfModelBlock] = {}
+) -> dict[str, SelfModelBlock | LegacySelfModelBlockView]:
+    """Seed the split self-model stores for a new user."""
+    created: dict[str, SelfModelBlock | LegacySelfModelBlockView] = {}
 
-    for section in SECTIONS:
-        if section in existing:
-            created[section] = existing[section]
-            continue
-        block = SelfModelBlock(
+    if get_identity_block(db, user_id=user_id) is None:
+        created["identity"] = _make_legacy_view_from_identity(
             user_id=user_id,
-            section=section,
-            content=ef(
-                user_id, _SEEDS.get(section, ""), table="self_model_blocks", field="content"
-            ),
-            version=1,
-            updated_by="system",
+            block=set_identity_block(db, user_id=user_id, content=_SEED_IDENTITY, updated_by="system"),
         )
-        db.add(block)
-        created[section] = block
+    else:
+        existing = get_self_model_block(db, user_id=user_id, section="identity")
+        if existing is not None:
+            created["identity"] = existing
 
-    db.flush()
+    if get_growth_log_entries(db, user_id=user_id):
+        growth = get_self_model_block(db, user_id=user_id, section="growth_log")
+        if growth is not None:
+            created["growth_log"] = growth
+
+    with _runtime_session() as pg_db:
+        if pg_db is not None:
+            working = get_working_context(pg_db, user_id=user_id)
+            if "inner_state" not in working:
+                created["inner_state"] = _make_legacy_view_from_runtime(
+                    user_id=user_id,
+                    row=set_working_context(
+                        pg_db,
+                        user_id=user_id,
+                        section="inner_state",
+                        content=_SEED_INNER_STATE,
+                        updated_by="system",
+                    ),
+                )
+            else:
+                created["inner_state"] = _make_legacy_view_from_runtime(
+                    user_id=user_id,
+                    row=working["inner_state"],
+                )
+
+            if "working_memory" not in working:
+                created["working_memory"] = _make_legacy_view_from_runtime(
+                    user_id=user_id,
+                    row=set_working_context(
+                        pg_db,
+                        user_id=user_id,
+                        section="working_memory",
+                        content=_SEED_WORKING_MEMORY,
+                        updated_by="system",
+                    ),
+                )
+            else:
+                created["working_memory"] = _make_legacy_view_from_runtime(
+                    user_id=user_id,
+                    row=working["working_memory"],
+                )
+
+            intentions = get_active_intentions(pg_db, user_id=user_id)
+            if intentions is None:
+                created["intentions"] = _make_legacy_view_from_runtime(
+                    user_id=user_id,
+                    row=set_active_intentions(
+                        pg_db,
+                        user_id=user_id,
+                        content=_SEED_INTENTIONS,
+                        updated_by="system",
+                    ),
+                )
+            else:
+                created["intentions"] = _make_legacy_view_from_runtime(
+                    user_id=user_id,
+                    row=intentions,
+                )
+
     return created
 
 
@@ -321,9 +620,25 @@ def ensure_self_model_exists(
     *,
     user_id: int,
 ) -> None:
-    """Ensure self-model exists for user, seeding if necessary."""
-    count = db.scalar(select(SelfModelBlock.id).where(SelfModelBlock.user_id == user_id).limit(1))
-    if count is None:
+    """Ensure the split self-model exists for the user."""
+    missing = False
+    if get_identity_block(db, user_id=user_id) is None and get_self_model_block(
+        db, user_id=user_id, section="identity"
+    ) is None:
+        missing = True
+
+    with _runtime_session() as pg_db:
+        if pg_db is None:
+            runtime_missing = False
+        else:
+            working = get_working_context(pg_db, user_id=user_id)
+            runtime_missing = (
+                "inner_state" not in working
+                or "working_memory" not in working
+                or get_active_intentions(pg_db, user_id=user_id) is None
+            )
+
+    if missing or runtime_missing:
         seed_self_model(db, user_id=user_id)
 
 
@@ -332,23 +647,116 @@ def expire_working_memory_items(
     *,
     user_id: int,
 ) -> int:
-    """Remove expired items from working_memory. Returns count of items removed."""
-    import re
+    """Remove expired items from runtime working memory."""
+    with _runtime_session() as pg_db:
+        if pg_db is not None:
+            row = get_working_context(pg_db, user_id=user_id).get("working_memory")
+            if row is not None:
+                return _expire_working_memory_row(
+                    set_row=lambda text: set_working_context(
+                        pg_db,
+                        user_id=user_id,
+                        section="working_memory",
+                        content=text,
+                        updated_by="expiry_sweep",
+                    ),
+                    plaintext=row.content,
+                )
 
-    block = get_self_model_block(db, user_id=user_id, section="working_memory")
+    block = db.scalar(
+        select(SelfModelBlock).where(
+            SelfModelBlock.user_id == user_id,
+            SelfModelBlock.section == "working_memory",
+        )
+    )
     if block is None:
         return 0
     plaintext = df(user_id, block.content, table="self_model_blocks", field="content")
+    return _expire_working_memory_row(
+        set_row=lambda text: set_self_model_block(
+            db,
+            user_id=user_id,
+            section="working_memory",
+            content=text,
+            updated_by="expiry_sweep",
+        ),
+        plaintext=plaintext,
+    )
+
+
+def render_self_model_section(
+    block: SelfModelBlock | LegacySelfModelBlockView | IdentityBlock | ActiveIntention | WorkingContext | None,
+    *,
+    budget: int | None = None,
+    user_id: int = 0,
+) -> str:
+    """Render a self-model section, respecting character budget."""
+    if block is None:
+        return ""
+
+    plaintext = getattr(block, "_plaintext", None)
+    if plaintext is None:
+        if isinstance(block, SelfModelBlock):
+            plaintext = df(user_id, block.content, table="self_model_blocks", field="content").strip()
+        else:
+            plaintext = getattr(block, "content", "").strip()
+    if not plaintext:
+        return ""
+
+    max_chars = budget or _BUDGET.get(getattr(block, "section", ""), 1000)
+    if len(plaintext) > max_chars:
+        return plaintext[:max_chars]
+    return plaintext
+
+
+def _is_duplicate_growth_entry_text(existing_entry: str, new_entry: str) -> bool:
+    """Check whether two growth-log entries are substantially similar."""
+    new_words = set(new_entry.lower().split())
+    if len(new_words) < 3:
+        return new_entry.lower().strip() in existing_entry.lower()
+
+    existing_words = set(existing_entry.lower().split())
+    if not existing_words:
+        return False
+    overlap = len(new_words & existing_words) / max(len(new_words), len(existing_words))
+    return overlap > 0.7
+
+
+def _replace_growth_log_entries(
+    db: Session,
+    *,
+    user_id: int,
+    content: str,
+    source: str,
+) -> None:
+    existing = db.scalars(select(GrowthLogEntry).where(GrowthLogEntry.user_id == user_id)).all()
+    for row in existing:
+        db.delete(row)
+    db.flush()
+
+    chunks = [chunk.strip() for chunk in content.split("### ") if chunk.strip()]
+    if not chunks and content.strip():
+        append_growth_log_entry_row(db, user_id=user_id, entry=content.strip(), source=source)
+        return
+
+    for chunk in chunks:
+        entry_text = chunk
+        if " - " in chunk:
+            maybe_date, remainder = chunk.split(" - ", 1)
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", maybe_date.strip()):
+                entry_text = remainder.strip()
+        append_growth_log_entry_row(db, user_id=user_id, entry=entry_text, source=source)
+
+
+def _expire_working_memory_row(*, set_row, plaintext: str) -> int:
     if not plaintext.strip():
         return 0
 
     today = datetime.now(UTC).date()
-    content = plaintext
-    lines = content.split("\n")
     kept: list[str] = []
     removed = 0
 
-    for line in lines:
+    for line in plaintext.split("\n"):
         match = re.search(r"\[expires:\s*(\d{4}-\d{2}-\d{2})\]", line)
         if match:
             try:
@@ -362,30 +770,86 @@ def expire_working_memory_items(
         kept.append(line)
 
     if removed > 0:
-        set_self_model_block(
-            db,
-            user_id=user_id,
-            section="working_memory",
-            content="\n".join(kept).strip(),
-            updated_by="expiry_sweep",
-        )
-
+        set_row("\n".join(kept).strip())
     return removed
 
 
-def render_self_model_section(
-    block: SelfModelBlock | None,
+def _make_legacy_view(
     *,
-    budget: int | None = None,
-    user_id: int = 0,
-) -> str:
-    """Render a self-model section, respecting character budget."""
-    if block is None:
-        return ""
-    content = df(user_id, block.content, table="self_model_blocks", field="content").strip()
-    if not content:
-        return ""
-    max_chars = budget or _BUDGET.get(block.section, 1000)
-    if len(content) > max_chars:
-        content = content[:max_chars]
-    return content
+    user_id: int,
+    section: str,
+    plaintext: str,
+    version: int,
+    updated_by: str,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    row_id: int | None = None,
+) -> LegacySelfModelBlockView:
+    encrypted = ef(user_id, plaintext, table="self_model_blocks", field="content")
+    return LegacySelfModelBlockView(
+        id=row_id,
+        user_id=user_id,
+        section=section,
+        content=encrypted,
+        version=version,
+        updated_by=updated_by,
+        created_at=created_at,
+        updated_at=updated_at,
+        _plaintext=plaintext,
+    )
+
+
+def _make_legacy_view_from_identity(
+    *,
+    user_id: int,
+    block: IdentityBlock,
+) -> LegacySelfModelBlockView:
+    return _make_legacy_view(
+        user_id=user_id,
+        section="identity",
+        plaintext=block.content,
+        version=block.version,
+        updated_by=block.updated_by,
+        created_at=block.created_at,
+        updated_at=block.updated_at,
+        row_id=block.id,
+    )
+
+
+def _make_legacy_view_from_runtime(
+    *,
+    user_id: int,
+    row: WorkingContext | ActiveIntention,
+) -> LegacySelfModelBlockView:
+    section = row.section if isinstance(row, WorkingContext) else "intentions"
+    return _make_legacy_view(
+        user_id=user_id,
+        section=section,
+        plaintext=row.content,
+        version=row.version,
+        updated_by=row.updated_by,
+        created_at=getattr(row, "created_at", None),
+        updated_at=row.updated_at,
+        row_id=row.id,
+    )
+
+
+@contextmanager
+def _runtime_session() -> Iterator[Session | None]:
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        factory = get_runtime_session_factory()
+    except Exception:
+        yield None
+        return
+
+    session = factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
