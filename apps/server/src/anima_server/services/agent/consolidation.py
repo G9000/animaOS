@@ -113,6 +113,7 @@ def consolidate_turn_memory(
     from anima_server.db.session import SessionLocal
 
     factory = db_factory or SessionLocal
+    runtime_factory = _get_runtime_factory()
     result = MemoryConsolidationResult()
 
     with factory() as db:
@@ -241,7 +242,8 @@ async def consolidate_turn_memory_with_llm(
         try:
             from anima_server.services.agent.emotional_intelligence import record_emotional_signal
 
-            with factory() as _edb:
+            emotion_session_factory = runtime_factory or factory
+            with emotion_session_factory() as _edb:
                 record_emotional_signal(
                     _edb,
                     user_id=user_id,
@@ -256,6 +258,7 @@ async def consolidate_turn_memory_with_llm(
             logger.debug("Failed to record emotional signal from extraction")
 
     if not llm_items:
+        _promote_runtime_emotional_patterns(user_id=user_id, db_factory=db_factory)
         return result
     regex_contents = {c.lower() for c in result.facts_added + result.preferences_added}
 
@@ -422,6 +425,7 @@ async def consolidate_turn_memory_with_llm(
 
         db.commit()
 
+    _promote_runtime_emotional_patterns(user_id=user_id, db_factory=db_factory)
     return result
 
 
@@ -808,5 +812,43 @@ def _on_background_task_done(task: asyncio.Task[None]) -> None:
         task.result()
     except asyncio.CancelledError:
         return
+
+
+def _promote_runtime_emotional_patterns(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> int:
+    runtime_factory = _get_runtime_factory()
+    if runtime_factory is None:
+        return 0
+
+    from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
+
+    factory = db_factory or SessionLocal
+
+    try:
+        with factory() as soul_db, runtime_factory() as pg_db:
+            promoted = promote_emotional_patterns(
+                soul_db=soul_db,
+                pg_db=pg_db,
+                user_id=user_id,
+            )
+            if promoted > 0:
+                soul_db.commit()
+            return promoted
+    except Exception:
+        logger.debug("Failed to promote emotional patterns for user %s", user_id)
+        return 0
+
+
+def _get_runtime_factory() -> Callable[..., object] | None:
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    try:
+        return get_runtime_session_factory()
+    except RuntimeError:
+        return None
     except Exception:
         logger.exception("Background memory consolidation task failed")

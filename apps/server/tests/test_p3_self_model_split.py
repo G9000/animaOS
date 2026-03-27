@@ -564,3 +564,33 @@ class TestMemoryBlocksDualRead:
         block = build_emotional_patterns_block(soul_db, user_id=1)
         assert block is not None
         assert "frustrated" in block.value
+
+
+class TestEmotionalPatternPromotion:
+    def test_promote_from_signals(self, soul_db: Session, runtime_db: Session) -> None:
+        from sqlalchemy import select
+
+        from anima_server.models.soul_consciousness import CoreEmotionalPattern
+        from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+        from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
+
+        for _ in range(5):
+            record_emotional_signal(
+                runtime_db,
+                user_id=1,
+                emotion="frustrated",
+                confidence=0.7,
+                evidence="Deadline talk",
+                topic="work",
+            )
+        runtime_db.flush()
+
+        promoted = promote_emotional_patterns(soul_db=soul_db, pg_db=runtime_db, user_id=1)
+        soul_db.flush()
+
+        assert promoted >= 1
+        patterns = soul_db.scalars(
+            select(CoreEmotionalPattern).where(CoreEmotionalPattern.user_id == 1)
+        ).all()
+        assert len(patterns) >= 1
+        assert any(pattern.dominant_emotion == "frustrated" for pattern in patterns)
