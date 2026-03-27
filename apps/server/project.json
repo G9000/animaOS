@@ -36,21 +36,21 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/server",
-        "command": "uv run --project . alembic -c alembic.ini heads"
+        "command": "uv run --project . alembic -c alembic_core.ini heads"
       }
     },
     "db-current": {
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/server",
-        "command": "uv run --project . alembic -c alembic.ini current"
+        "command": "uv run --project . alembic -c alembic_core.ini current"
       }
     },
     "db-upgrade": {
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/server",
-        "command": "uv run --project . alembic -c alembic.ini upgrade head"
+        "command": "uv run --project . alembic -c alembic_core.ini upgrade head"
       }
     }
   },

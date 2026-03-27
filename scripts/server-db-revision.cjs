@@ -14,7 +14,7 @@ const command = [
   "apps/server",
   "alembic",
   "-c",
-  "apps/server/alembic.ini",
+  "apps/server/alembic_core.ini",
   "revision",
   "--autogenerate",
   "-m",

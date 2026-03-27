@@ -25,7 +25,7 @@ _session_factory_cache: dict[str, sessionmaker[Session]] = {}
 _user_engines: dict[str, Engine] = {}
 _migrated_databases: set[str] = set()
 
-_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic_core.ini"
 
 
 def _make_engine(database_url: str | None = None) -> Engine:

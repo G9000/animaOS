@@ -48,7 +48,7 @@ def run_migrations_online() -> None:
         with context.begin_transaction():
             context.run_migrations()
     else:
-        # CLI usage: alembic upgrade head
+        # CLI usage: alembic -c alembic_core.ini upgrade head
         from anima_server.db.session import engine as app_engine
 
         with app_engine.connect() as connection:
