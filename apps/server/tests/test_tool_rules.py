@@ -249,7 +249,7 @@ class TestCycleDetection:
 class TestWarnUnknownTools:
     def test_logs_warning_for_unknown_init_tool(self) -> None:
         solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
-        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+        with patch("anima_server.services.agent.rules._warn_rule_issue") as warning_mock:
             solver.warn_unknown_tools(["real_tool"])
         warning_mock.assert_called_once_with(
             "InitToolRule references unknown tool %r",
@@ -258,7 +258,7 @@ class TestWarnUnknownTools:
 
     def test_no_warning_when_all_tools_known(self) -> None:
         solver = ToolRulesSolver([InitToolRule(tool_name="tool_a")])
-        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+        with patch("anima_server.services.agent.rules._warn_rule_issue") as warning_mock:
             solver.warn_unknown_tools(["tool_a", "tool_b"])
         warning_mock.assert_not_called()
 
@@ -267,7 +267,7 @@ class TestWarnUnknownTools:
             PrerequisiteToolRule(
                 prerequisite_tool="unknown_pre", dependent_tool="tool_a"),
         ])
-        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+        with patch("anima_server.services.agent.rules._warn_rule_issue") as warning_mock:
             solver.warn_unknown_tools(["tool_a"])
         warning_mock.assert_called_once_with(
             "PrerequisiteToolRule references unknown prerequisite tool %r",
@@ -276,6 +276,6 @@ class TestWarnUnknownTools:
 
     def test_logs_warning_even_if_rules_logger_level_was_raised(self) -> None:
         solver = ToolRulesSolver([InitToolRule(tool_name="ghost_tool")])
-        with patch("anima_server.services.agent.rules.logger.warning") as warning_mock:
+        with patch("anima_server.services.agent.rules._warn_rule_issue") as warning_mock:
             solver.warn_unknown_tools(["real_tool"])
         warning_mock.assert_called_once()
