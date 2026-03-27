@@ -14,11 +14,25 @@ export interface ToastData {
   };
 }
 
+export interface ToastContainerProps {
+  /** Maximum number of toasts to display at once. Older toasts are removed. */
+  maxToasts?: number;
+  /** Position of the toast container */
+  position?: "bottom-right" | "bottom-left" | "top-right" | "top-left";
+}
+
 const toastStyles: Record<ToastType, string> = {
   success: "bg-success/10 border-success/30 text-success",
   error: "bg-destructive/10 border-destructive/30 text-destructive",
   warning: "bg-warning/10 border-warning/30 text-warning",
   info: "bg-primary/10 border-primary/30 text-primary",
+};
+
+const positionStyles: Record<NonNullable<ToastContainerProps["position"]>, string> = {
+  "bottom-right": "bottom-4 right-4",
+  "bottom-left": "bottom-4 left-4",
+  "top-right": "top-4 right-4",
+  "top-left": "top-4 left-4",
 };
 
 function ToastItem({
@@ -123,19 +137,26 @@ export function showInfo(message: string, duration?: number) {
   showToast({ message, type: "info", duration });
 }
 
-export function ToastContainer() {
+export function ToastContainer({ maxToasts = 5, position = "bottom-right" }: ToastContainerProps) {
   const [toasts, setToasts] = useState<ToastData[]>([]);
 
   useEffect(() => {
     const handleToast = (toast: ToastData) => {
-      setToasts((prev) => [...prev, toast]);
+      setToasts((prev) => {
+        // Add new toast and limit to maxToasts (remove oldest)
+        const newToasts = [...prev, toast];
+        if (newToasts.length > maxToasts) {
+          return newToasts.slice(newToasts.length - maxToasts);
+        }
+        return newToasts;
+      });
     };
 
     toastListeners.push(handleToast);
     return () => {
       toastListeners = toastListeners.filter((l) => l !== handleToast);
     };
-  }, []);
+  }, [maxToasts]);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -144,7 +165,7 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+    <div className={cn("fixed z-[100] flex flex-col gap-2 pointer-events-none", positionStyles[position])}>
       {toasts.map((toast) => (
         <div key={toast.id} className="pointer-events-auto">
           <ToastItem {...toast} onDismiss={dismissToast} />

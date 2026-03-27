@@ -1,4 +1,4 @@
-import { type ComponentProps, type ReactNode } from "react";
+import { forwardRef, type ComponentProps, type ReactNode } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../utils/cn";
 
@@ -74,38 +74,43 @@ export interface ButtonProps
   iconPosition?: "left" | "right";
 }
 
-export function Button({
-  variant = "fill",
-  size = "sm",
-  iconOnly = false,
-  loading = false,
-  disabled,
-  icon,
-  iconPosition = "left",
-  className,
-  children,
-  ...props
-}: ButtonProps) {
-  return (
-    <button
-      disabled={disabled || loading}
-      className={cn(buttonVariants({ variant, size, iconOnly }), className)}
-      {...props}
-    >
-      <span className={textVariants({ variant })}>
-        {loading ? (
-          <LoadingDots />
-        ) : (
-          <>
-            {icon && iconPosition === "left"  && <span className="shrink-0">{icon}</span>}
-            {!iconOnly && children}
-            {icon && iconPosition === "right" && <span className="shrink-0">{icon}</span>}
-          </>
-        )}
-      </span>
-    </button>
-  );
-}
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  ({
+    variant = "fill",
+    size = "sm",
+    iconOnly = false,
+    loading = false,
+    disabled,
+    icon,
+    iconPosition = "left",
+    className,
+    children,
+    ...props
+  }, ref) => {
+    return (
+      <button
+        ref={ref}
+        disabled={disabled || loading}
+        className={cn(buttonVariants({ variant, size, iconOnly }), className)}
+        {...props}
+      >
+        <span className={textVariants({ variant })}>
+          {loading ? (
+            <LoadingDots />
+          ) : (
+            <>
+              {icon && iconPosition === "left"  && <span className="shrink-0">{icon}</span>}
+              {!iconOnly && children}
+              {icon && iconPosition === "right" && <span className="shrink-0">{icon}</span>}
+            </>
+          )}
+        </span>
+      </button>
+    );
+  },
+);
+
+Button.displayName = "Button";
 
 function LoadingDots() {
   return (

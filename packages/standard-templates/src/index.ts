@@ -9,6 +9,7 @@ export { DotLoader, type DotLoaderProps } from "./primitives/DotLoader";
 export { Input, type InputProps } from "./primitives/Input";
 export { Label, type LabelProps } from "./primitives/Label";
 export { LoadingText, type LoadingTextProps } from "./primitives/LoadingText";
+export { Textarea, type TextareaProps } from "./primitives/Textarea";
 export { Toggle, type ToggleProps } from "./primitives/Toggle";
 
 // ── Composed ───────────────────────────────────────────────────────────────
@@ -26,13 +27,18 @@ export {
   showInfo,
   type ToastData,
   type ToastType,
+  type ToastContainerProps,
 } from "./composed/Toast";
+
+// ── Icons ───────────────────────────────────────────────────────────────────
+export { type IconProps } from "./icons/BaseIcon";
 export {
   PlusIcon, ImageIcon, FileIcon, DocumentIcon,
   MicIcon, SendIcon, EyeIcon, EyeOffIcon,
   ArrowRightIcon, ArrowLeftIcon, ChevronRightIcon, XIcon,
 } from "./icons";
 
+// ── ASCII Art ───────────────────────────────────────────────────────────────
 export {
   useAnimaSymbol,
   useAnimaLogo,
