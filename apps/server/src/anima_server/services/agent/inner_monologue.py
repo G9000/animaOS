@@ -68,6 +68,7 @@ async def run_quick_reflection(
     thread_id: str | None = None,
     conversation_text: str = "",
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> QuickReflectionResult:
     """Run a quick post-conversation reflection.
 
@@ -81,21 +82,41 @@ async def run_quick_reflection(
 
     try:
         from anima_server.db.session import SessionLocal
+        from anima_server.services.agent.emotional_intelligence import (
+            record_emotional_signal,
+        )
         from anima_server.services.agent.prompt_loader import get_prompt_loader
         from anima_server.services.agent.self_model import (
             get_self_model_block,
+            get_working_context,
+            render_self_model_section,
             set_self_model_block,
+            set_working_context,
         )
 
         factory = db_factory or SessionLocal
+        runtime_factory = _get_runtime_factory(runtime_db_factory)
 
         with factory() as db:
             # Load prompt loader with agent name
             prompt_loader = get_prompt_loader(db, user_id)
 
-            inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
-            working_memory_block = get_self_model_block(
-                db, user_id=user_id, section="working_memory"
+            if runtime_factory is None:
+                inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+                working_memory_block = get_self_model_block(
+                    db, user_id=user_id, section="working_memory"
+                )
+            else:
+                with runtime_factory() as pg_db:
+                    working_context = get_working_context(pg_db, user_id=user_id)
+                    inner_state_block = working_context.get("inner_state")
+                    working_memory_block = working_context.get("working_memory")
+
+            inner_state_text = (
+                render_self_model_section(inner_state_block, user_id=user_id) or "No state yet."
+            )
+            working_memory_text = (
+                render_self_model_section(working_memory_block, user_id=user_id) or "Empty."
             )
 
             # Get recent episodes
@@ -126,19 +147,8 @@ async def run_quick_reflection(
 
             # Render prompt using template
             prompt = prompt_loader.quick_reflection(
-                inner_state=df(
-                    user_id, inner_state_block.content, table="self_model_blocks", field="content"
-                )
-                if inner_state_block
-                else "No state yet.",
-                working_memory=df(
-                    user_id,
-                    working_memory_block.content,
-                    table="self_model_blocks",
-                    field="content",
-                )
-                if working_memory_block
-                else "Empty.",
+                inner_state=inner_state_text,
+                working_memory=working_memory_text,
                 recent_episodes=episodes_text,
                 conversation=conversation_text[:3000],
             )
@@ -156,30 +166,14 @@ async def run_quick_reflection(
 
             # Update inner state
             inner_state_data = parsed.get("inner_state")
-            if inner_state_data and isinstance(inner_state_data, dict):
-                new_inner_state = _format_inner_state(inner_state_data)
-                set_self_model_block(
-                    db,
-                    user_id=user_id,
-                    section="inner_state",
-                    content=new_inner_state,
-                    updated_by="post_turn",
-                )
-                result.inner_state_updated = True
-
-            # Update working memory
             wm_updates = parsed.get("working_memory_updates", [])
+
+            current_wm = (
+                working_memory_text
+                if working_memory_block is not None
+                else "# Things I'm Holding in Mind\n"
+            )
             if wm_updates and isinstance(wm_updates, list):
-                current_wm = (
-                    df(
-                        user_id,
-                        working_memory_block.content,
-                        table="self_model_blocks",
-                        field="content",
-                    )
-                    if working_memory_block
-                    else "# Things I'm Holding in Mind\n"
-                )
                 for update in wm_updates:
                     if not isinstance(update, dict):
                         continue
@@ -195,33 +189,80 @@ async def run_quick_reflection(
                         current_wm += f"\n{entry}"
                     elif action == "remove":
                         current_wm = current_wm.replace(f"- {item}", "")
-                set_self_model_block(
-                    db,
-                    user_id=user_id,
-                    section="working_memory",
-                    content=current_wm.strip(),
-                    updated_by="post_turn",
-                )
-                result.working_memory_updated = True
 
             # Record emotional signal
             emotional = parsed.get("emotional_read", {})
-            if isinstance(emotional, dict) and emotional.get("emotion"):
-                from anima_server.services.agent.emotional_intelligence import (
-                    record_emotional_signal,
-                )
+            if runtime_factory is None:
+                if inner_state_data and isinstance(inner_state_data, dict):
+                    new_inner_state = _format_inner_state(inner_state_data)
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="inner_state",
+                        content=new_inner_state,
+                        updated_by="post_turn",
+                    )
+                    result.inner_state_updated = True
 
-                signal = record_emotional_signal(
-                    db,
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    emotion=emotional["emotion"],
-                    confidence=float(emotional.get("confidence", 0.5)),
-                    evidence_type="linguistic",
-                    evidence=str(emotional.get("evidence", "")),
-                    trajectory=str(emotional.get("trajectory", "stable")),
-                )
-                result.emotional_signal_recorded = signal is not None
+                if wm_updates and isinstance(wm_updates, list):
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="working_memory",
+                        content=current_wm.strip(),
+                        updated_by="post_turn",
+                    )
+                    result.working_memory_updated = True
+
+                if isinstance(emotional, dict) and emotional.get("emotion"):
+                    signal = record_emotional_signal(
+                        db,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        emotion=emotional["emotion"],
+                        confidence=float(emotional.get("confidence", 0.5)),
+                        evidence_type="linguistic",
+                        evidence=str(emotional.get("evidence", "")),
+                        trajectory=str(emotional.get("trajectory", "stable")),
+                    )
+                    result.emotional_signal_recorded = signal is not None
+            else:
+                with runtime_factory() as pg_db:
+                    if inner_state_data and isinstance(inner_state_data, dict):
+                        new_inner_state = _format_inner_state(inner_state_data)
+                        set_working_context(
+                            pg_db,
+                            user_id=user_id,
+                            section="inner_state",
+                            content=new_inner_state,
+                            updated_by="post_turn",
+                        )
+                        result.inner_state_updated = True
+
+                    if wm_updates and isinstance(wm_updates, list):
+                        set_working_context(
+                            pg_db,
+                            user_id=user_id,
+                            section="working_memory",
+                            content=current_wm.strip(),
+                            updated_by="post_turn",
+                        )
+                        result.working_memory_updated = True
+
+                    if isinstance(emotional, dict) and emotional.get("emotion"):
+                        signal = record_emotional_signal(
+                            pg_db,
+                            user_id=user_id,
+                            thread_id=thread_id,
+                            emotion=emotional["emotion"],
+                            confidence=float(emotional.get("confidence", 0.5)),
+                            evidence_type="linguistic",
+                            evidence=str(emotional.get("evidence", "")),
+                            trajectory=str(emotional.get("trajectory", "stable")),
+                        )
+                        result.emotional_signal_recorded = signal is not None
+
+                    pg_db.commit()
 
             result.quick_take = parsed.get("quick_take", "")
             db.commit()
@@ -534,6 +575,355 @@ async def run_deep_monologue(
     return result
 
 
+async def _run_deep_monologue_p3(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> DeepMonologueResult:
+    """P3 implementation that reads soul and runtime stores separately."""
+    result = DeepMonologueResult()
+
+    if settings.agent_provider == "scaffold":
+        return result
+
+    from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.emotional_intelligence import get_recent_signals
+    from anima_server.services.agent.prompt_loader import get_prompt_loader
+    from anima_server.services.agent.self_model import (
+        append_growth_log_entry,
+        get_active_intentions,
+        get_growth_log_text,
+        get_identity_block,
+        get_self_model_block,
+        get_working_context,
+        render_self_model_section,
+        set_active_intentions,
+        set_self_model_block,
+        set_working_context,
+    )
+
+    factory = db_factory or SessionLocal
+    runtime_factory = _get_runtime_factory(runtime_db_factory)
+
+    try:
+        with factory() as db:
+            prompt_loader = get_prompt_loader(db, user_id)
+
+            from sqlalchemy import select
+
+            from anima_server.services.agent.memory_store import get_memory_items
+
+            facts = get_memory_items(db, user_id=user_id, limit=20)
+            facts_text = (
+                "\n".join(
+                    f"- {df(user_id, item.content, table='memory_items', field='content')}"
+                    for item in facts
+                )
+                if facts
+                else "No stored facts yet."
+            )
+
+            episodes = db.scalars(
+                select(MemoryEpisode)
+                .where(MemoryEpisode.user_id == user_id)
+                .order_by(MemoryEpisode.created_at.desc())
+                .limit(10)
+            ).all()
+            episodes_text = (
+                "\n\n".join(
+                    f"{episode.date}: "
+                    f"{df(user_id, episode.summary, table='memory_episodes', field='summary')}"
+                    for episode in reversed(episodes)
+                )
+                or "No episodes yet."
+            )
+
+            identity_block = get_identity_block(db, user_id=user_id)
+            identity_version = identity_block.version if identity_block else 1
+            identity_text = (
+                render_self_model_section(identity_block, user_id=user_id) or "Not yet created."
+            )
+
+            persona_block = get_self_model_block(db, user_id=user_id, section="persona")
+            persona_text = (
+                render_self_model_section(persona_block, user_id=user_id)
+                if persona_block
+                else "Default persona - not yet customized."
+            )
+            has_persona_block = persona_block is not None
+            growth_log_text = _last_n_entries(get_growth_log_text(db, user_id=user_id), 5)
+
+            if runtime_factory is None:
+                inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+                working_memory_block = get_self_model_block(
+                    db,
+                    user_id=user_id,
+                    section="working_memory",
+                )
+                intentions_block = get_self_model_block(db, user_id=user_id, section="intentions")
+
+                inner_state_text = (
+                    render_self_model_section(inner_state_block, user_id=user_id) or "No state."
+                )
+                working_memory_text = (
+                    render_self_model_section(working_memory_block, user_id=user_id) or "Empty."
+                )
+                intentions_text = (
+                    render_self_model_section(intentions_block, user_id=user_id) or "None."
+                )
+
+                from anima_server.models import EmotionalSignal
+
+                signals = db.scalars(
+                    select(EmotionalSignal)
+                    .where(EmotionalSignal.user_id == user_id)
+                    .order_by(EmotionalSignal.created_at.desc())
+                    .limit(10)
+                ).all()
+                signals_text = (
+                    "\n".join(
+                        f"- {signal.created_at.date()}: {signal.emotion} ({signal.trajectory})"
+                        + (
+                            f" - {df(user_id, signal.evidence, table='emotional_signals', field='evidence')[:80]}"
+                            if signal.evidence
+                            else ""
+                        )
+                        for signal in signals
+                    )
+                    or "No emotional signals yet."
+                )
+            else:
+                with runtime_factory() as pg_db:
+                    working_context = get_working_context(pg_db, user_id=user_id)
+                    intentions_block = get_active_intentions(pg_db, user_id=user_id)
+                    signals = get_recent_signals(pg_db, user_id=user_id, limit=10)
+
+                    inner_state_text = (
+                        render_self_model_section(working_context.get("inner_state"), user_id=user_id)
+                        or "No state."
+                    )
+                    working_memory_text = (
+                        render_self_model_section(
+                            working_context.get("working_memory"),
+                            user_id=user_id,
+                        )
+                        or "Empty."
+                    )
+                    intentions_text = (
+                        render_self_model_section(intentions_block, user_id=user_id) or "None."
+                    )
+                    signals_text = (
+                        "\n".join(
+                            f"- {signal.created_at.date()}: {signal.emotion} ({signal.trajectory})"
+                            + (
+                                f" - {str(getattr(signal, 'evidence', '') or '')[:80]}"
+                                if getattr(signal, "evidence", "")
+                                else ""
+                            )
+                            for signal in signals
+                        )
+                        or "No emotional signals yet."
+                    )
+
+            prompt = prompt_loader.deep_monologue(
+                identity_version=identity_version,
+                identity=identity_text,
+                persona=persona_text[:1000],
+                inner_state=inner_state_text,
+                working_memory=working_memory_text,
+                growth_log=growth_log_text,
+                intentions=intentions_text,
+                user_facts=facts_text[:2000],
+                recent_episodes=episodes_text[:2000],
+                emotional_signals=signals_text[:1000],
+            )
+            system_prompt = prompt_loader.deep_monologue_system()
+
+        response = await _call_llm(prompt, system=system_prompt)
+        if not response:
+            return result
+
+        parsed = _parse_json(response)
+        if not parsed:
+            result.errors.append("Failed to parse monologue response")
+            return result
+
+        with factory() as db:
+            from anima_server.models import SelfModelBlock
+
+            if parsed.get("identity_update"):
+                set_self_model_block(
+                    db,
+                    user_id=user_id,
+                    section="identity",
+                    content=parsed["identity_update"],
+                    updated_by="sleep_time",
+                )
+                result.identity_updated = True
+
+            if parsed.get("persona_update"):
+                if has_persona_block:
+                    from sqlalchemy import select as sa_select
+
+                    fresh_persona = db.scalar(
+                        sa_select(SelfModelBlock).where(
+                            SelfModelBlock.user_id == user_id,
+                            SelfModelBlock.section == "persona",
+                        )
+                    )
+                    if fresh_persona is not None:
+                        from anima_server.services.data_crypto import ef
+
+                        fresh_persona.content = ef(
+                            user_id,
+                            parsed["persona_update"],
+                            table="self_model_blocks",
+                            field="content",
+                        )
+                        fresh_persona.version += 1
+                        fresh_persona.updated_by = "sleep_time"
+                else:
+                    from anima_server.services.data_crypto import ef
+
+                    db.add(
+                        SelfModelBlock(
+                            user_id=user_id,
+                            section="persona",
+                            content=ef(
+                                user_id,
+                                parsed["persona_update"],
+                                table="self_model_blocks",
+                                field="content",
+                            ),
+                            version=1,
+                            updated_by="sleep_time",
+                        )
+                    )
+                result.persona_updated = True
+
+            if parsed.get("growth_log_entry"):
+                append_growth_log_entry(
+                    db,
+                    user_id=user_id,
+                    entry=parsed["growth_log_entry"],
+                )
+                result.growth_log_entry_added = True
+
+            updated_intentions_text = intentions_text if intentions_text != "None." else "# Intentions\n"
+
+            if runtime_factory is None:
+                if parsed.get("inner_state_update"):
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="inner_state",
+                        content=parsed["inner_state_update"],
+                        updated_by="sleep_time",
+                    )
+                    result.inner_state_updated = True
+
+                if parsed.get("working_memory_update"):
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="working_memory",
+                        content=parsed["working_memory_update"],
+                        updated_by="sleep_time",
+                    )
+                    result.working_memory_updated = True
+
+                if parsed.get("intentions_update"):
+                    updated_intentions_text = str(parsed["intentions_update"])
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="intentions",
+                        content=updated_intentions_text,
+                        updated_by="sleep_time",
+                    )
+                    result.intentions_updated = True
+
+                rules = parsed.get("new_procedural_rules", [])
+                if rules and isinstance(rules, list):
+                    rules_text = "\n".join(
+                        f"- {rule.get('rule', '')} [confidence: {rule.get('confidence', 'medium')}]"
+                        for rule in rules
+                        if isinstance(rule, dict)
+                    )
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="intentions",
+                        content=updated_intentions_text + "\n\n## Learned Rules\n" + rules_text,
+                        updated_by="sleep_time",
+                    )
+                    result.procedural_rules_added = len(rules)
+            else:
+                with runtime_factory() as pg_db:
+                    if parsed.get("inner_state_update"):
+                        set_working_context(
+                            pg_db,
+                            user_id=user_id,
+                            section="inner_state",
+                            content=parsed["inner_state_update"],
+                            updated_by="sleep_time",
+                        )
+                        result.inner_state_updated = True
+
+                    if parsed.get("working_memory_update"):
+                        set_working_context(
+                            pg_db,
+                            user_id=user_id,
+                            section="working_memory",
+                            content=parsed["working_memory_update"],
+                            updated_by="sleep_time",
+                        )
+                        result.working_memory_updated = True
+
+                    if parsed.get("intentions_update"):
+                        updated_intentions_text = str(parsed["intentions_update"])
+                        set_active_intentions(
+                            pg_db,
+                            user_id=user_id,
+                            content=updated_intentions_text,
+                            updated_by="sleep_time",
+                        )
+                        result.intentions_updated = True
+
+                    rules = parsed.get("new_procedural_rules", [])
+                    if rules and isinstance(rules, list):
+                        rules_text = "\n".join(
+                            f"- {rule.get('rule', '')} [confidence: {rule.get('confidence', 'medium')}]"
+                            for rule in rules
+                            if isinstance(rule, dict)
+                        )
+                        set_active_intentions(
+                            pg_db,
+                            user_id=user_id,
+                            content=updated_intentions_text + "\n\n## Learned Rules\n" + rules_text,
+                            updated_by="sleep_time",
+                        )
+                        result.procedural_rules_added = len(rules)
+
+                    pg_db.commit()
+
+            insights = parsed.get("insights", [])
+            if insights and isinstance(insights, list):
+                result.insights_generated = len(insights)
+
+            db.commit()
+
+    except Exception as e:
+        logger.exception("Deep monologue failed for user %s", user_id)
+        result.errors.append(str(e))
+
+    return result
+
+
+run_deep_monologue = _run_deep_monologue_p3
+
+
 async def _get_recent_conversation(
     db: Session, user_id: int, thread_id: str | None, limit: int = 10
 ) -> str:
@@ -592,3 +982,17 @@ def _last_n_entries(content: str, n: int) -> str:
         return "No entries yet."
     entries = [line for line in content.split("\n") if line.strip().startswith(("- ", "* "))]
     return "\n".join(entries[-n:]) if entries else "No entries yet."
+
+
+def _get_runtime_factory(
+    runtime_db_factory: Callable[..., object] | None,
+) -> Callable[..., object] | None:
+    if runtime_db_factory is not None:
+        return runtime_db_factory
+
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    try:
+        return get_runtime_session_factory()
+    except RuntimeError:
+        return None
