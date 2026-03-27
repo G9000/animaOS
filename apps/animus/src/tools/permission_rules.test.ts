@@ -83,4 +83,20 @@ describe("loadPermissionRules", () => {
     expect(rules.allow).toContain("bash:ls");
     expect(rules.deny).toEqual([]);
   });
+
+  test("filters out non-string values from rules", () => {
+    const animusDir = join(dir, ".animus");
+    mkdirSync(animusDir, { recursive: true });
+    writeFileSync(
+      join(animusDir, "permissions.json"),
+      JSON.stringify({
+        allow: ["bash:ls", 123, null, true, "write_file"],
+        deny: [456, "bash:rm *"],
+      }),
+    );
+
+    const rules = loadPermissionRules(dir);
+    expect(rules.allow).toEqual(["bash:ls", "write_file"]);
+    expect(rules.deny).toEqual(["bash:rm *"]);
+  });
 });

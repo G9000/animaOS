@@ -153,7 +153,7 @@ export function App({ config }: AppProps) {
     addEntry({ type: "user", content: text });
     setIsThinking(true);
     connection?.send({ type: "user_message", message: text });
-  }, [connection, addEntry, exit]);
+  }, [connection, addEntry, exit, mode]);
 
   const handleApproval = useCallback((decision: "allow" | "deny" | "always") => {
     if (decision === "always" && pendingApproval) {

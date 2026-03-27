@@ -36,8 +36,8 @@ function loadFile(path: string): PermissionRules {
   try {
     const raw = JSON.parse(readFileSync(path, "utf-8"));
     return {
-      allow: Array.isArray(raw.allow) ? raw.allow : [],
-      deny: Array.isArray(raw.deny) ? raw.deny : [],
+      allow: Array.isArray(raw.allow) ? raw.allow.filter((v: unknown) => typeof v === "string") : [],
+      deny: Array.isArray(raw.deny) ? raw.deny.filter((v: unknown) => typeof v === "string") : [],
     };
   } catch {
     return EMPTY;
