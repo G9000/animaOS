@@ -12,9 +12,11 @@ from collections import OrderedDict
 from threading import Lock
 
 _MAX_THREAD_LOCKS = 512
+_MAX_USER_CREATION_LOCKS = 256
 
 _global_lock = Lock()
 _thread_locks: OrderedDict[int, asyncio.Lock] = OrderedDict()
+_user_creation_locks: OrderedDict[int, asyncio.Lock] = OrderedDict()
 
 
 def get_thread_lock(thread_id: int) -> asyncio.Lock:
@@ -39,6 +41,30 @@ def get_thread_lock(thread_id: int) -> asyncio.Lock:
             if oldest_lock.locked():
                 break
             _thread_locks.pop(oldest_id)
+
+        return lock
+
+
+def get_user_creation_lock(user_id: int) -> asyncio.Lock:
+    """Return a per-user asyncio.Lock for serializing thread creation.
+
+    Prevents concurrent first-turn requests from racing on
+    ``get_or_create_thread()`` before a thread-level lock can be acquired.
+    """
+    with _global_lock:
+        lock = _user_creation_locks.get(user_id)
+        if lock is not None:
+            _user_creation_locks.move_to_end(user_id)
+            return lock
+
+        lock = asyncio.Lock()
+        _user_creation_locks[user_id] = lock
+
+        while len(_user_creation_locks) > _MAX_USER_CREATION_LOCKS:
+            oldest_id, oldest_lock = next(iter(_user_creation_locks.items()))
+            if oldest_lock.locked():
+                break
+            _user_creation_locks.pop(oldest_id)
 
         return lock
 

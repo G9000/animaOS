@@ -72,7 +72,7 @@ from anima_server.services.agent.tool_context import (
     set_tool_context,
 )
 from anima_server.services.agent.tools import get_tools
-from anima_server.services.agent.turn_coordinator import get_thread_lock
+from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df
 
 _runner_lock = Lock()
@@ -360,9 +360,13 @@ async def _execute_agent_turn(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
 ) -> AgentResult:
-    resolved_thread_id = (
-        thread_id if thread_id is not None else _resolve_thread_id(user_id, runtime_db)
-    )
+    if thread_id is not None:
+        resolved_thread_id = thread_id
+    else:
+        # Serialize thread creation per user so concurrent first requests
+        # don't race on get_or_create_thread() before the thread lock exists.
+        async with get_user_creation_lock(user_id):
+            resolved_thread_id = _resolve_thread_id(user_id, runtime_db)
     thread_lock = get_thread_lock(resolved_thread_id)
     async with thread_lock:
         return await _execute_agent_turn_locked(
