@@ -80,12 +80,18 @@ class EmbeddedPG:
 
         try:
             os.kill(pid, 0)
-        except OSError:
+        except ProcessLookupError:
             logger.warning(
                 "Stale postmaster.pid found (PID %d not running), removing",
                 pid,
             )
             pid_file.unlink(missing_ok=True)
+        except PermissionError:
+            logger.info(
+                "postmaster.pid points to PID %d that exists but is owned by another user; "
+                "leaving lockfile in place.",
+                pid,
+            )
 
     @staticmethod
     def _to_asyncpg_url(psycopg_url: str) -> str:

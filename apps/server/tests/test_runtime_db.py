@@ -160,6 +160,25 @@ def test_embedded_pg_keeps_valid_lockfile(managed_tmp_path: Path) -> None:
     assert pid_file.exists() is True
 
 
+def test_embedded_pg_keeps_lockfile_on_permission_error(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+    pg.data_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = pg.data_dir / "postmaster.pid"
+    pid_file.write_text("42\n", encoding="utf-8")
+
+    def _deny_signal(_pid: int, _sig: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(os, "kill", _deny_signal)
+
+    pg._recover_stale_lockfile()
+
+    assert pid_file.exists() is True
+
+
 @pytest.mark.asyncio
 @requires_runtime_backend
 async def test_runtime_session_factory_creates_working_async_sessions(
