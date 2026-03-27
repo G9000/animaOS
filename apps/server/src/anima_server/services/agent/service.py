@@ -207,7 +207,15 @@ async def approve_or_deny_turn(
     conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
     cancel_event = companion.create_cancel_event(run.id)
-    set_tool_context(ToolContext(db=db, runtime_db=runtime_db, user_id=user_id, thread_id=thread.id))
+    set_tool_context(
+        ToolContext(
+            db=db,
+            runtime_db=runtime_db,
+            user_id=user_id,
+            thread_id=thread.id,
+            run_id=run.id,
+        )
+    )
     try:
         runner = get_or_build_runner()
         result = await runner.resume_after_approval(
@@ -734,7 +742,15 @@ async def _invoke_turn_runtime(
     extra_tool_schemas: list[dict[str, Any]] | None = None,
 ) -> AgentResult:
     """Stage 2: Set tool context and invoke the agent runtime."""
-    set_tool_context(ToolContext(db=db, runtime_db=runtime_db, user_id=user_id, thread_id=thread.id))
+    set_tool_context(
+        ToolContext(
+            db=db,
+            runtime_db=runtime_db,
+            user_id=user_id,
+            thread_id=thread.id,
+            run_id=run.id,
+        )
+    )
 
     async def _refresh_memory() -> tuple[MemoryBlock, ...] | None:
         """Memory refresher callback for in-context memory editing.
@@ -1158,6 +1174,7 @@ def _run_post_turn_hooks(
         assistant_response=enriched_response,
         thread_id=thread_id,
         db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
     )
     schedule_reflection(
         user_id=user_id,

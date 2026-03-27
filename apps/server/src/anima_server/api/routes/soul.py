@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
 from anima_server.models import SelfModelBlock
-from anima_server.services.data_crypto import df, ef
+from anima_server.services.agent.soul_writer import set_soul_block
+from anima_server.services.data_crypto import df
 from anima_server.services.storage import get_user_data_dir
 
 logger = logging.getLogger(__name__)
@@ -73,30 +74,13 @@ def _get_user_directive_block(db: Session, user_id: int) -> SelfModelBlock | Non
 
 
 def _set_user_directive_block(db: Session, user_id: int, content: str) -> SelfModelBlock:
-    from datetime import UTC, datetime
-
-    existing = _get_user_directive_block(db, user_id)
-    encrypted_content = ef(
-        user_id, content, table="self_model_blocks", field="content"
-    )
-    if existing is not None:
-        existing.content = encrypted_content
-        existing.version += 1
-        existing.updated_by = "user_edit"
-        existing.updated_at = datetime.now(UTC)
-        db.flush()
-        return existing
-
-    block = SelfModelBlock(
+    return set_soul_block(
+        db,
         user_id=user_id,
         section=USER_DIRECTIVE_SECTION,
-        content=encrypted_content,
-        version=1,
+        content=content,
         updated_by="user_edit",
     )
-    db.add(block)
-    db.flush()
-    return block
 
 
 @router.get("/{user_id}", response_model=UserDirectiveResponse)

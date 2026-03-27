@@ -5,9 +5,12 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
+
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.services.agent.claims import upsert_claim
@@ -49,6 +52,13 @@ class MemoryConsolidationResult:
     current_focus_updated: str | None = None
     llm_items_added: list[str] = field(default_factory=list)
     conflicts_resolved: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PendingOpsConsolidationResult:
+    processed_ids: list[int] = field(default_factory=list)
+    failed_ids: list[int] = field(default_factory=list)
+    skipped_ids: list[int] = field(default_factory=list)
 
 
 _FACT_EXTRACTORS: tuple[PatternExtractor, ...] = (
@@ -186,6 +196,103 @@ def consolidate_turn_memory(
         db.commit()
 
     return result
+
+
+async def consolidate_pending_ops(
+    *,
+    user_id: int,
+    soul_db_factory: Callable[..., object],
+    runtime_db_factory: Callable[..., object],
+) -> PendingOpsConsolidationResult:
+    """Promote pending runtime memory ops into the soul store."""
+    from anima_server.models import PendingMemoryOp
+    from anima_server.services.agent.pending_ops import get_pending_ops
+    from anima_server.services.agent.soul_writer import (
+        append_to_soul_block,
+        full_replace_soul_block,
+        replace_in_soul_block,
+    )
+
+    result = PendingOpsConsolidationResult()
+    runtime_db = runtime_db_factory()
+    soul_db = soul_db_factory()
+    now = datetime.now(UTC)
+
+    try:
+        bind = runtime_db.get_bind()
+        if bind.dialect.name == "postgresql":
+            runtime_db.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": user_id},
+            )
+
+        pending_ops = get_pending_ops(runtime_db, user_id=user_id)
+        if not pending_ops:
+            return result
+
+        for op in pending_ops:
+            if op.source_tool_call_id:
+                duplicate = runtime_db.scalar(
+                    select(PendingMemoryOp.id).where(
+                        PendingMemoryOp.user_id == user_id,
+                        PendingMemoryOp.source_tool_call_id == op.source_tool_call_id,
+                        PendingMemoryOp.consolidated.is_(True),
+                        PendingMemoryOp.id != op.id,
+                    )
+                )
+                if duplicate is not None:
+                    op.consolidated = True
+                    op.consolidated_at = now
+                    result.skipped_ids.append(op.id)
+                    continue
+
+            if op.op_type == "append":
+                append_to_soul_block(
+                    soul_db,
+                    user_id=user_id,
+                    section=op.target_block,
+                    content=op.content,
+                )
+            elif op.op_type == "replace":
+                replaced = replace_in_soul_block(
+                    soul_db,
+                    user_id=user_id,
+                    section=op.target_block,
+                    old_content=op.old_content or "",
+                    new_content=op.content,
+                )
+                if replaced is None:
+                    op.failed = True
+                    op.failure_reason = "old_content not found in target block"
+                    result.failed_ids.append(op.id)
+                    continue
+            elif op.op_type == "full_replace":
+                full_replace_soul_block(
+                    soul_db,
+                    user_id=user_id,
+                    section=op.target_block,
+                    content=op.content,
+                )
+            else:
+                op.failed = True
+                op.failure_reason = f"unsupported op_type: {op.op_type}"
+                result.failed_ids.append(op.id)
+                continue
+
+            op.consolidated = True
+            op.consolidated_at = now
+            result.processed_ids.append(op.id)
+
+        soul_db.commit()
+        runtime_db.commit()
+        return result
+    except Exception:
+        soul_db.rollback()
+        runtime_db.rollback()
+        raise
+    finally:
+        soul_db.close()
+        runtime_db.close()
 
 
 async def consolidate_turn_memory_with_llm(
@@ -694,8 +801,20 @@ async def run_background_memory_consolidation(
     user_message: str,
     assistant_response: str,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
     try:
+        from anima_server.db.session import SessionLocal
+
+        soul_factory = db_factory or SessionLocal
+        runtime_factory = runtime_db_factory or _get_runtime_factory()
+        if runtime_factory is not None:
+            await consolidate_pending_ops(
+                user_id=user_id,
+                soul_db_factory=soul_factory,
+                runtime_db_factory=runtime_factory,
+            )
+
         if settings.agent_provider != "scaffold":
             await consolidate_turn_memory_with_llm(
                 user_id=user_id,
@@ -754,6 +873,7 @@ def schedule_background_memory_consolidation(
     assistant_response: str,
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
     if not settings.agent_background_memory_enabled:
         return
@@ -781,6 +901,7 @@ def schedule_background_memory_consolidation(
                 assistant_response=assistant_response,
                 thread_id=thread_id,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
             )
         )
     else:
@@ -791,6 +912,7 @@ def schedule_background_memory_consolidation(
                 user_message=user_message,
                 assistant_response=assistant_response,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
             )
         )
     with _background_tasks_lock:

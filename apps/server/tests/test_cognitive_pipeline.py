@@ -9,10 +9,11 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import SelfModelBlock, User
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models import PendingMemoryOp, SelfModelBlock, User
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.executor import ToolExecutor
-from anima_server.services.agent.memory_blocks import MemoryBlock
+from anima_server.services.agent.memory_blocks import MemoryBlock, build_merged_block_content
 from anima_server.services.agent.rules import TerminalToolRule
 from anima_server.services.agent.runtime import AgentRuntime
 from anima_server.services.agent.runtime_types import (
@@ -73,11 +74,13 @@ def _db_session() -> Generator[Session, None, None]:
         class_=Session,
     )
     Base.metadata.create_all(bind=engine)
+    RuntimeBase.metadata.create_all(bind=engine)
     session = factory()
     try:
         yield session
     finally:
         session.close()
+        RuntimeBase.metadata.drop_all(bind=engine)
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
 
@@ -163,20 +166,18 @@ async def test_append_memory_respond_pipeline() -> None:
                 max_steps=5,
             )
 
-            # Memory refresher that reads from DB
+            # Memory refresher that reads the merged soul + pending view
             async def refresher():
-                block = db.scalar(
-                    select(SelfModelBlock).where(
-                        SelfModelBlock.user_id == user.id,
-                        SelfModelBlock.section == "human",
-                    )
+                merged = build_merged_block_content(
+                    db,
+                    db,
+                    user_id=user.id,
+                    section="human",
                 )
-                if block is None:
-                    return None
                 return (
                     MemoryBlock(
                         label="human",
-                        value=block.content,
+                        value=merged,
                         description="User understanding",
                     ),
                 )
@@ -200,16 +201,23 @@ async def test_append_memory_respond_pipeline() -> None:
             assert result.stop_reason == StopReason.TERMINAL_TOOL.value
             assert len(result.step_traces) == 2
 
-            # Verify the memory was actually persisted to DB
-            block = db.scalar(
+            # Verify the soul block is unchanged and the pending view is updated.
+            soul_block = db.scalar(
                 select(SelfModelBlock).where(
                     SelfModelBlock.user_id == user.id,
                     SelfModelBlock.section == "human",
                 )
             )
-            assert block is not None
-            assert "Biscuit" in block.content
-            assert "Alice" in block.content  # original content preserved
+            pending = db.scalar(select(PendingMemoryOp))
+            merged = build_merged_block_content(db, db, user_id=user.id, section="human")
+
+            assert soul_block is not None
+            assert soul_block.content == "Name: Alice"
+            assert pending is not None
+            assert pending.op_type == "append"
+            assert "Biscuit" in pending.content
+            assert "Biscuit" in merged
+            assert "Alice" in merged
 
         finally:
             clear_tool_context()
@@ -295,8 +303,16 @@ async def test_core_memory_replace_pipeline() -> None:
                     SelfModelBlock.section == "human",
                 )
             )
-            assert "Apple" in block.content
-            assert "Google" not in block.content
+            pending = db.scalar(select(PendingMemoryOp))
+            merged = build_merged_block_content(db, db, user_id=user.id, section="human")
+
+            assert block is not None
+            assert block.content == "Works at Google"
+            assert pending is not None
+            assert pending.op_type == "replace"
+            assert pending.old_content == "Works at Google"
+            assert "Apple" in merged
+            assert "Google" not in merged
 
         finally:
             clear_tool_context()

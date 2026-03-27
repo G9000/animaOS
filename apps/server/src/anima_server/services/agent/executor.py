@@ -87,6 +87,7 @@ class ToolExecutor:
         # are forwarded to the client instead of erroring.
         if self._delegate and tool_call.name in self._delegated_tool_names:
             clean_args = dict(tool_call.arguments) if tool_call.arguments else {}
+            _set_current_tool_call_id(tool_call.id)
             try:
                 delegated = await self._delegate(tool_call.id, tool_call.name, clean_args)
                 formatted_output = (
@@ -159,6 +160,7 @@ class ToolExecutor:
         flags: dict[str, bool] = {"memory_modified": False}
 
         try:
+            _set_current_tool_call_id(tool_call.id)
             timeout = settings.agent_tool_timeout
             output = await asyncio.wait_for(
                 _invoke_tool(tool, tool_call.arguments, flags),
@@ -275,6 +277,17 @@ def _check_memory_modified(flags: dict[str, bool]) -> None:
         if ctx.memory_modified:
             flags["memory_modified"] = True
             ctx.memory_modified = False  # reset for next tool
+    except RuntimeError:
+        pass
+
+
+def _set_current_tool_call_id(tool_call_id: str) -> None:
+    """Stamp the active ToolContext with the current tool call id."""
+    try:
+        from anima_server.services.agent.tool_context import get_tool_context
+
+        ctx = get_tool_context()
+        ctx.current_tool_call_id = tool_call_id
     except RuntimeError:
         pass
 
