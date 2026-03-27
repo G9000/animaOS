@@ -130,6 +130,13 @@ async def get_full_self_model(
             updated_by=latest.source,
             updated_at=latest.created_at,
         )
+    else:
+        sections["growth_log"] = _section_dict(
+            content="",
+            version=1,
+            updated_by="system",
+            updated_at=None,
+        )
 
     working_context = get_working_context(runtime_db, user_id=user_id)
     for section_name in ("inner_state", "working_memory"):
@@ -200,15 +207,21 @@ async def get_self_model_section(
 
     if section == "growth_log":
         entries = get_growth_log_entries(db, user_id=user_id)
-        if not entries:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
-        latest = entries[0]
+        if entries:
+            latest = entries[0]
+            return _section_response(
+                section=section,
+                content=get_growth_log_text(db, user_id=user_id),
+                version=len(entries),
+                updated_by=latest.source,
+                updated_at=latest.created_at,
+            )
         return _section_response(
             section=section,
-            content=get_growth_log_text(db, user_id=user_id),
-            version=len(entries),
-            updated_by=latest.source,
-            updated_at=latest.created_at,
+            content="",
+            version=1,
+            updated_by="system",
+            updated_at=None,
         )
 
     if section in {"inner_state", "working_memory"}:

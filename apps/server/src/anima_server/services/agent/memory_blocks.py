@@ -59,10 +59,15 @@ def build_runtime_memory_blocks(
     for sm_block in build_self_model_memory_blocks(db, user_id=user_id, pg_db=runtime_db):
         blocks.append(sm_block)
 
-    # Emotional context (Priority 2)
+    # Emotional context (Priority 2 — momentary signals from runtime)
     emotional_block = build_emotional_context_block(runtime_db or db, user_id=user_id)
     if emotional_block is not None:
         blocks.append(emotional_block)
+
+    # Emotional patterns (Priority 2 — enduring patterns from soul)
+    emotional_patterns_block = build_emotional_patterns_block(db, user_id=user_id)
+    if emotional_patterns_block is not None:
+        blocks.append(emotional_patterns_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     if semantic_results:

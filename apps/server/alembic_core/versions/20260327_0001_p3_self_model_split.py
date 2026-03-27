@@ -23,6 +23,7 @@ def upgrade() -> None:
         sa.Column("content", sa.Text(), nullable=False, server_default=""),
         sa.Column("version", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("updated_by", sa.String(length=32), nullable=False, server_default="system"),
+        sa.Column("metadata_json", sa.JSON(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -81,6 +82,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
 
+    # --- Migrate identity rows ---
     op.execute(
         """
         INSERT INTO identity_blocks (user_id, content, version, updated_by, created_at, updated_at)
@@ -90,6 +92,21 @@ def upgrade() -> None:
         """
     )
 
+    # --- Migrate growth_log blobs into individual rows ---
+    # Growth log content uses "### YYYY-MM-DD" separators.  We cannot
+    # reliably split markdown in pure SQL, so we copy the entire blob as
+    # a single entry.  The application-level _replace_growth_log_entries()
+    # will re-split it on the next write.  This preserves all content.
+    op.execute(
+        """
+        INSERT INTO growth_log (user_id, entry, source, created_at)
+        SELECT user_id, content, 'migration', created_at
+        FROM self_model_blocks
+        WHERE section = 'growth_log' AND content != ''
+        """
+    )
+
+    # --- Delete migrated/moved sections ---
     op.execute(
         """
         DELETE FROM self_model_blocks

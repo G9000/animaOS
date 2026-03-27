@@ -274,12 +274,12 @@ async def run_quick_reflection(
     return result
 
 
-async def run_deep_monologue(
+async def _run_deep_monologue_legacy(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
 ) -> DeepMonologueResult:
-    """Run a deep reflection cycle, updating all self-model sections."""
+    """Legacy deep monologue (pre-P3). Kept for reference only."""
     result = DeepMonologueResult()
 
     if settings.agent_provider == "scaffold":
@@ -575,13 +575,13 @@ async def run_deep_monologue(
     return result
 
 
-async def _run_deep_monologue_p3(
+async def run_deep_monologue(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> DeepMonologueResult:
-    """P3 implementation that reads soul and runtime stores separately."""
+    """Run a deep reflection cycle across soul and runtime stores."""
     result = DeepMonologueResult()
 
     if settings.agent_provider == "scaffold":
@@ -908,6 +908,23 @@ async def _run_deep_monologue_p3(
 
                     pg_db.commit()
 
+            # Promote recurring emotional signals to enduring soul patterns
+            if runtime_factory is not None:
+                try:
+                    from anima_server.services.agent.emotional_patterns import (
+                        promote_emotional_patterns,
+                    )
+
+                    with runtime_factory() as pg_db:
+                        promote_emotional_patterns(
+                            soul_db=db, pg_db=pg_db, user_id=user_id
+                        )
+                except Exception:
+                    logger.debug(
+                        "Emotional pattern promotion skipped in deep monologue for user %s",
+                        user_id,
+                    )
+
             insights = parsed.get("insights", [])
             if insights and isinstance(insights, list):
                 result.insights_generated = len(insights)
@@ -919,9 +936,6 @@ async def _run_deep_monologue_p3(
         result.errors.append(str(e))
 
     return result
-
-
-run_deep_monologue = _run_deep_monologue_p3
 
 
 async def _get_recent_conversation(

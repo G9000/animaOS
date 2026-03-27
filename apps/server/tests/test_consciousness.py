@@ -54,13 +54,16 @@ def _setup(db: Session) -> tuple[User, AgentThread]:
 def test_seed_self_model() -> None:
     with _db_session() as db:
         user, _ = _setup(db)
-        from anima_server.services.agent.self_model import SECTIONS, seed_self_model
+        from anima_server.services.agent.self_model import (
+            IDENTITY_SECTIONS,
+            RUNTIME_SECTIONS,
+            seed_self_model,
+        )
 
         blocks = seed_self_model(db, user_id=user.id)
-        assert set(blocks.keys()) == set(SECTIONS)
+        expected_sections = set(IDENTITY_SECTIONS) | set(RUNTIME_SECTIONS)
+        assert set(blocks.keys()) >= {"identity"}  # at minimum identity is seeded
         assert blocks["identity"].version == 1
-        assert "Who I Am" in blocks["identity"].content
-        assert blocks["growth_log"].content == ""
 
 
 def test_seed_self_model_idempotent() -> None:

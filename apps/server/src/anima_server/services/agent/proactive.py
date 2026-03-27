@@ -133,12 +133,26 @@ def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
         else None
     )
 
-    # Get emotional context
+    # Get emotional context (read from runtime PG where signals now live)
     from anima_server.services.agent.emotional_intelligence import (
         get_recent_signals,
     )
 
-    signals = get_recent_signals(db, user_id=user_id, limit=1)
+    emotion_db = db
+    _own_emotion_session = None
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        _own_emotion_session = get_runtime_session_factory()()
+        emotion_db = _own_emotion_session
+    except Exception:
+        pass  # fall back to soul DB
+
+    try:
+        signals = get_recent_signals(emotion_db, user_id=user_id, limit=1)
+    finally:
+        if _own_emotion_session is not None:
+            _own_emotion_session.close()
     emotional_summary = None
     if signals:
         s = signals[0]

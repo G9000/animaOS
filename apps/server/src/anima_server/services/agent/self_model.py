@@ -24,7 +24,6 @@ SOUL_SECTIONS = ("soul", "persona", "human", "user_directive")
 IDENTITY_SECTIONS = ("identity", "growth_log")
 RUNTIME_SECTIONS = ("inner_state", "working_memory", "intentions")
 ALL_SECTIONS = SOUL_SECTIONS + IDENTITY_SECTIONS + RUNTIME_SECTIONS
-SECTIONS = ("identity", "inner_state", "working_memory", "growth_log", "intentions")
 
 _SEED_IDENTITY = """# Who I Am
 <!-- certainty: low -->
@@ -977,9 +976,26 @@ def _make_legacy_view_from_runtime(
     )
 
 
+_has_table_cache: dict[int, dict[str, bool]] = {}
+
+
 def _has_table(db: Session, table_name: str) -> bool:
+    """Check if a table exists, caching per engine to avoid repeated introspection."""
     try:
-        return sa_inspect(db.connection()).has_table(table_name)
+        engine_id = id(db.get_bind())
+    except Exception:
+        engine_id = 0
+    engine_cache = _has_table_cache.get(engine_id)
+    if engine_cache is not None:
+        cached = engine_cache.get(table_name)
+        if cached is not None:
+            return cached
+    try:
+        result = sa_inspect(db.connection()).has_table(table_name)
+        if engine_id not in _has_table_cache:
+            _has_table_cache[engine_id] = {}
+        _has_table_cache[engine_id][table_name] = result
+        return result
     except Exception:
         return False
 
