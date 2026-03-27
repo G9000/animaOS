@@ -391,3 +391,65 @@ class TestSelfModelWorkingContext:
         result = get_active_intentions(runtime_db, user_id=1)
         assert result is not None
         assert result.content == "Learn preferences"
+
+
+class TestEmotionalIntelligenceRuntime:
+    def test_record_signal_to_runtime(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+
+        signal = record_emotional_signal(
+            runtime_db,
+            user_id=1,
+            emotion="excited",
+            confidence=0.8,
+            evidence="Used exclamation marks",
+            topic="weekend",
+        )
+        assert signal is not None
+        assert signal.emotion == "excited"
+
+    def test_get_recent_signals_from_runtime(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.emotional_intelligence import (
+            get_recent_signals,
+            record_emotional_signal,
+        )
+
+        record_emotional_signal(runtime_db, user_id=1, emotion="calm", confidence=0.7)
+        record_emotional_signal(runtime_db, user_id=1, emotion="curious", confidence=0.6)
+        runtime_db.flush()
+
+        signals = get_recent_signals(runtime_db, user_id=1)
+        assert len(signals) == 2
+
+    def test_synthesize_from_runtime(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.emotional_intelligence import (
+            record_emotional_signal,
+            synthesize_emotional_context,
+        )
+
+        record_emotional_signal(
+            runtime_db,
+            user_id=1,
+            emotion="frustrated",
+            confidence=0.8,
+            evidence="Short replies",
+        )
+        runtime_db.flush()
+
+        context = synthesize_emotional_context(runtime_db, user_id=1)
+        assert "frustrated" in context
+
+    def test_trim_buffer(self, runtime_db: Session) -> None:
+        from sqlalchemy import func, select
+
+        from anima_server.models.runtime_consciousness import CurrentEmotion
+        from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+
+        for _ in range(25):
+            record_emotional_signal(runtime_db, user_id=1, emotion="calm", confidence=0.5)
+            runtime_db.flush()
+
+        count = runtime_db.scalar(
+            select(func.count()).select_from(CurrentEmotion).where(CurrentEmotion.user_id == 1)
+        )
+        assert count <= 20
