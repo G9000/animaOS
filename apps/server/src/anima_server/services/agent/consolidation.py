@@ -232,13 +232,18 @@ async def consolidate_pending_ops(
 
         for op in pending_ops:
             if op.source_tool_call_id:
+                dedup_filters = [
+                    PendingMemoryOp.user_id == user_id,
+                    PendingMemoryOp.source_tool_call_id == op.source_tool_call_id,
+                    PendingMemoryOp.consolidated.is_(True),
+                    PendingMemoryOp.id != op.id,
+                ]
+                # Scope by run to avoid false matches on non-unique call IDs
+                # (e.g. fallback IDs like "tool-call-0" can repeat across runs)
+                if op.source_run_id is not None:
+                    dedup_filters.append(PendingMemoryOp.source_run_id == op.source_run_id)
                 duplicate = runtime_db.scalar(
-                    select(PendingMemoryOp.id).where(
-                        PendingMemoryOp.user_id == user_id,
-                        PendingMemoryOp.source_tool_call_id == op.source_tool_call_id,
-                        PendingMemoryOp.consolidated.is_(True),
-                        PendingMemoryOp.id != op.id,
-                    )
+                    select(PendingMemoryOp.id).where(*dedup_filters)
                 )
                 if duplicate is not None:
                     op.consolidated = True
@@ -283,17 +288,18 @@ async def consolidate_pending_ops(
             op.consolidated_at = now
             result.processed_ids.append(op.id)
 
-        # Commit runtime first so ops are marked consolidated before soul
-        # is durable. If soul commit fails, ops are marked consolidated but
-        # soul is rolled back — idempotency check prevents re-application.
-        # The reverse (soul first, runtime fails) would leave ops unconsolidated
-        # and cause duplicate application on retry.
-        runtime_db.commit()
+        # Commit soul first so identity mutations are durable before we
+        # mark ops as consolidated. If runtime commit fails afterward,
+        # ops remain unconsolidated but soul already has the data — on
+        # retry the idempotency check (scoped by run + tool_call_id)
+        # prevents re-application. The reverse (runtime first, soul
+        # fails) would silently lose identity writes.
         soul_db.commit()
+        runtime_db.commit()
         return result
     except Exception:
-        runtime_db.rollback()
         soul_db.rollback()
+        runtime_db.rollback()
         raise
     finally:
         soul_db.close()
