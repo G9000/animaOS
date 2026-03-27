@@ -601,7 +601,6 @@ async def _prepare_turn_context(
         )
 
         signals = collect_feedback_signals(
-            db,
             user_id=user_id,
             user_message=user_message,
             thread_id=thread.id,

@@ -549,7 +549,6 @@ def test_collect_feedback_signals_with_correction() -> None:
         from anima_server.services.agent.feedback_signals import collect_feedback_signals
 
         signals = collect_feedback_signals(
-            db,
             user_id=user.id,
             user_message="No, I said I wanted the shorter version",
             thread_id=thread.id,
