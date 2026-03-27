@@ -8,9 +8,8 @@ from math import ceil
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, AgentThread
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.sequencing import reserve_message_sequences
-from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
 
@@ -60,22 +59,22 @@ def estimate_message_tokens(
 def compact_thread_context(
     db: Session,
     *,
-    thread: AgentThread,
+    thread: RuntimeThread,
     run_id: int | None,
     trigger_token_limit: int,
     keep_last_messages: int,
     reserved_prompt_tokens: int = 0,
 ) -> CompactionResult | None:
     in_context_rows = db.scalars(
-        select(AgentMessage)
+        select(RuntimeMessage)
         .where(
-            AgentMessage.thread_id == thread.id,
-            AgentMessage.is_in_context.is_(True),
-            AgentMessage.role.in_(("summary", "user", "assistant", "tool")),
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.is_in_context.is_(True),
+            RuntimeMessage.role.in_(("summary", "user", "assistant", "tool")),
         )
         .order_by(
-            case((AgentMessage.role == "summary", 0), else_=1),
-            AgentMessage.sequence_id,
+            case((RuntimeMessage.role == "summary", 0), else_=1),
+            RuntimeMessage.sequence_id,
         )
     ).all()
 
@@ -126,13 +125,14 @@ def compact_thread_context(
         thread_id=thread.id,
         count=1,
     )
-    summary_message = AgentMessage(
+    summary_message = RuntimeMessage(
         thread_id=thread.id,
+        user_id=thread.user_id,
         run_id=run_id,
         step_id=None,
         sequence_id=summary_sequence_id,
         role="summary",
-        content_text=ef(thread.user_id, summary_text, table="agent_messages", field="content_text"),
+        content_text=summary_text,
         content_json={
             "compacted_message_count": len(compacted_rows),
             "source_sequence_end": compacted_rows[-1].sequence_id,
@@ -171,17 +171,15 @@ def compact_thread_context(
 
 
 def render_summary_text(
-    summary_rows: list[AgentMessage],
-    compacted_rows: list[AgentMessage],
+    summary_rows: list[RuntimeMessage],
+    compacted_rows: list[RuntimeMessage],
     *,
     user_id: int = 0,
 ) -> str:
     lines: list[str] = ["Conversation summary:"]
 
     for summary_row in summary_rows:
-        content = df(
-            user_id, (summary_row.content_text or ""), table="agent_messages", field="content_text"
-        ).strip()
+        content = (summary_row.content_text or "").strip()
         if not content:
             continue
         compact_content = _trim_summary_text(content)
@@ -201,14 +199,12 @@ def render_summary_text(
     return "\n".join(lines)
 
 
-def _summarize_row(row: AgentMessage, *, user_id: int = 0) -> str:
+def _summarize_row(row: RuntimeMessage, *, user_id: int = 0) -> str:
     role_label = "Tool" if row.role == "tool" else row.role.capitalize()
     if row.role == "tool" and row.tool_name:
         role_label = f"Tool {row.tool_name}"
 
-    content = _trim_summary_text(
-        df(user_id, row.content_text or "", table="agent_messages", field="content_text")
-    )
+    content = _trim_summary_text(row.content_text or "")
     if not content:
         return f"{role_label}: [empty]"
     return f"{role_label}: {content}"
@@ -226,7 +222,7 @@ def _trim_summary_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_transcript(rows: list[AgentMessage], *, clamp_tools: bool = False) -> str:
+def _build_transcript(rows: list[RuntimeMessage], *, clamp_tools: bool = False) -> str:
     """Build a plain-text transcript from message rows for LLM summarization."""
     lines: list[str] = []
     for row in rows:
@@ -256,7 +252,7 @@ def _build_transcript(rows: list[AgentMessage], *, clamp_tools: bool = False) ->
 
 
 async def summarize_with_llm(
-    rows: list[AgentMessage],
+    rows: list[RuntimeMessage],
     *,
     transcript_override: str | None = None,
 ) -> str | None:
@@ -333,7 +329,7 @@ async def summarize_with_llm(
 async def compact_thread_context_with_llm(
     db: Session,
     *,
-    thread: AgentThread,
+    thread: RuntimeThread,
     run_id: int | None,
     trigger_token_limit: int,
     keep_last_messages: int,
@@ -350,15 +346,15 @@ async def compact_thread_context_with_llm(
     """
     # Use the same initial logic as compact_thread_context to find rows
     in_context_rows = db.scalars(
-        select(AgentMessage)
+        select(RuntimeMessage)
         .where(
-            AgentMessage.thread_id == thread.id,
-            AgentMessage.is_in_context.is_(True),
-            AgentMessage.role.in_(("summary", "user", "assistant", "tool")),
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.is_in_context.is_(True),
+            RuntimeMessage.role.in_(("summary", "user", "assistant", "tool")),
         )
         .order_by(
-            case((AgentMessage.role == "summary", 0), else_=1),
-            AgentMessage.sequence_id,
+            case((RuntimeMessage.role == "summary", 0), else_=1),
+            RuntimeMessage.sequence_id,
         )
     ).all()
 
@@ -451,13 +447,14 @@ async def compact_thread_context_with_llm(
         existing_summary_rows, compacted_rows, user_id=thread.user_id
     )
 
-    summary_message = AgentMessage(
+    summary_message = RuntimeMessage(
         thread_id=thread.id,
+        user_id=thread.user_id,
         run_id=run_id,
         step_id=None,
         sequence_id=summary_sequence_id,
         role="summary",
-        content_text=ef(thread.user_id, summary_text, table="agent_messages", field="content_text"),
+        content_text=summary_text,
         content_json={
             "compacted_message_count": len(compacted_rows),
             "total_hidden_message_count": total_hidden,
