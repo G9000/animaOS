@@ -96,8 +96,6 @@ def detect_reask(
 
 
 def collect_feedback_signals(
-    db: Session,
-    *,
     user_id: int,
     user_message: str,
     thread_id: int | None = None,
