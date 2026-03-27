@@ -7,10 +7,31 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
-from anima_server.db import get_db, get_runtime_db
+from anima_server.db import get_db
 from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/consciousness", tags=["consciousness"])
+
+
+def _get_optional_runtime_db():
+    """Yield a runtime DB session, or None if runtime is not initialized."""
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        factory = get_runtime_session_factory()
+    except RuntimeError:
+        yield None
+        return
+
+    session = factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 class SelfModelSectionResponse(BaseModel):
@@ -81,7 +102,7 @@ async def get_full_self_model(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    runtime_db: Session = Depends(get_runtime_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> dict[str, object]:
     """Get the complete self-model for this user across soul and runtime stores."""
     require_unlocked_user(request, user_id)
@@ -138,7 +159,7 @@ async def get_full_self_model(
             updated_at=None,
         )
 
-    working_context = get_working_context(runtime_db, user_id=user_id)
+    working_context = get_working_context(runtime_db or db, user_id=user_id)
     for section_name in ("inner_state", "working_memory"):
         block = working_context.get(section_name)
         if block is None:
@@ -150,7 +171,7 @@ async def get_full_self_model(
             updated_at=block.updated_at,
         )
 
-    intentions_block = get_active_intentions(runtime_db, user_id=user_id)
+    intentions_block = get_active_intentions(runtime_db or db, user_id=user_id)
     if intentions_block is not None:
         sections["intentions"] = _section_dict(
             content=render_self_model_section(intentions_block, user_id=user_id),
@@ -168,7 +189,7 @@ async def get_self_model_section(
     section: str,
     request: Request,
     db: Session = Depends(get_db),
-    runtime_db: Session = Depends(get_runtime_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """Get a single self-model section."""
     require_unlocked_user(request, user_id)
@@ -225,7 +246,7 @@ async def get_self_model_section(
         )
 
     if section in {"inner_state", "working_memory"}:
-        block = get_working_context(runtime_db, user_id=user_id).get(section)
+        block = get_working_context(runtime_db or db, user_id=user_id).get(section)
         if block is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
@@ -237,7 +258,7 @@ async def get_self_model_section(
         )
 
     if section == "intentions":
-        block = get_active_intentions(runtime_db, user_id=user_id)
+        block = get_active_intentions(runtime_db or db, user_id=user_id)
         if block is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
@@ -268,7 +289,7 @@ async def update_self_model_section(
     payload: SelfModelUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    runtime_db: Session = Depends(get_runtime_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """User edits a self-model section. Treated as highest-confidence evidence."""
     require_unlocked_user(request, user_id)
@@ -291,16 +312,17 @@ async def update_self_model_section(
 
     ensure_self_model_exists(db, user_id=user_id)
 
+    rt = runtime_db or db
     if section == "intentions":
         block = set_active_intentions(
-            runtime_db,
+            rt,
             user_id=user_id,
             content=payload.content,
             updated_by="user_edit",
         )
     elif section in {"inner_state", "working_memory"}:
         block = set_working_context(
-            runtime_db,
+            rt,
             user_id=user_id,
             section=section,
             content=payload.content,
@@ -323,7 +345,8 @@ async def update_self_model_section(
         )
 
     db.commit()
-    runtime_db.commit()
+    if runtime_db is not None:
+        runtime_db.commit()
 
     return _section_response(
         section=section,
@@ -468,7 +491,8 @@ async def get_emotional_state(
     user_id: int,
     request: Request,
     limit: int = Query(default=10, ge=1, le=50),
-    runtime_db: Session = Depends(get_runtime_db),
+    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> EmotionalContextResponse:
     """Get the AI's current emotional read of the user."""
     require_unlocked_user(request, user_id)
@@ -478,8 +502,9 @@ async def get_emotional_state(
         synthesize_emotional_context,
     )
 
-    signals = get_recent_signals(runtime_db, user_id=user_id, limit=limit)
-    context = synthesize_emotional_context(runtime_db, user_id=user_id)
+    emotion_db = runtime_db or db
+    signals = get_recent_signals(emotion_db, user_id=user_id, limit=limit)
+    context = synthesize_emotional_context(emotion_db, user_id=user_id)
 
     dominant = None
     if signals:
@@ -514,12 +539,13 @@ async def get_emotional_state(
 async def get_intentions(
     user_id: int,
     request: Request,
-    runtime_db: Session = Depends(get_runtime_db),
+    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> dict[str, str]:
     """Get the AI's current intentions and behavioral rules."""
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.intentions import get_intentions_text
 
-    content = get_intentions_text(runtime_db, user_id=user_id)
+    content = get_intentions_text(runtime_db or db, user_id=user_id)
     return {"content": content}

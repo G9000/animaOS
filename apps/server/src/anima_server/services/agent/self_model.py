@@ -106,7 +106,12 @@ def get_identity_block(
     user_id: int,
 ) -> IdentityBlock | None:
     """Get the identity block for a user from the soul store."""
-    return db.scalar(select(IdentityBlock).where(IdentityBlock.user_id == user_id))
+    block = db.scalar(select(IdentityBlock).where(IdentityBlock.user_id == user_id))
+    if block is not None:
+        block.content = _maybe_decrypt_migrated(
+            user_id, block.content, table="self_model_blocks", field="content"
+        )
+    return block
 
 
 def set_identity_block(
@@ -170,7 +175,7 @@ def get_growth_log_entries(
     limit: int = 20,
 ) -> list[GrowthLogEntry]:
     """Get growth log entries, most recent first."""
-    return list(
+    entries = list(
         db.scalars(
             select(GrowthLogEntry)
             .where(GrowthLogEntry.user_id == user_id)
@@ -178,6 +183,11 @@ def get_growth_log_entries(
             .limit(limit)
         ).all()
     )
+    for entry in entries:
+        entry.entry = _maybe_decrypt_migrated(
+            user_id, entry.entry, table="self_model_blocks", field="content"
+        )
+    return entries
 
 
 def get_growth_log_text(
@@ -974,6 +984,25 @@ def _make_legacy_view_from_runtime(
         updated_at=row.updated_at,
         row_id=row.id,
     )
+
+
+def _maybe_decrypt_migrated(
+    user_id: int, value: str, *, table: str, field: str
+) -> str:
+    """Transparently decrypt content migrated from self_model_blocks.
+
+    During the P3 migration, content is copied as-is from self_model_blocks
+    (where it may have been encrypted with AAD "self_model_blocks:user_id:field")
+    into new tables that store plaintext.  On first read, if the value looks
+    like ciphertext (starts with "enc1:" or "enc2:"), we decrypt it using the
+    original AAD and return plaintext.
+    """
+    if not value or not (value.startswith("enc1:") or value.startswith("enc2:")):
+        return value
+    try:
+        return df(user_id, value, table=table, field=field)
+    except Exception:
+        return value
 
 
 _has_table_cache: dict[int, dict[str, bool]] = {}

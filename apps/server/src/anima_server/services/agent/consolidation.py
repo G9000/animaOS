@@ -206,6 +206,7 @@ async def consolidate_turn_memory_with_llm(
     from anima_server.db.session import SessionLocal
 
     factory = db_factory or SessionLocal
+    runtime_factory = _get_runtime_factory()
 
     # --- Predict-Calibrate path (F3) ---
     # Try predict-calibrate extraction when enough facts exist.
