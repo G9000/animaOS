@@ -453,3 +453,33 @@ class TestEmotionalIntelligenceRuntime:
             select(func.count()).select_from(CurrentEmotion).where(CurrentEmotion.user_id == 1)
         )
         assert count <= 20
+
+
+class TestIntentionsRuntime:
+    def test_add_intention_to_runtime(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.self_model import set_active_intentions
+        from anima_server.services.agent.intentions import add_intention
+
+        set_active_intentions(runtime_db, user_id=1, content="# Active Intentions\n\n## Ongoing")
+        runtime_db.flush()
+
+        content = add_intention(
+            runtime_db,
+            user_id=1,
+            title="Learn communication style",
+            evidence="New relationship",
+        )
+        assert "Learn communication style" in content
+
+    def test_complete_intention_in_runtime(self, runtime_db: Session) -> None:
+        from anima_server.services.agent.self_model import set_active_intentions
+        from anima_server.services.agent.intentions import add_intention, complete_intention
+
+        set_active_intentions(runtime_db, user_id=1, content="# Active Intentions\n\n## Ongoing")
+        runtime_db.flush()
+
+        add_intention(runtime_db, user_id=1, title="Test goal")
+        runtime_db.flush()
+
+        result = complete_intention(runtime_db, user_id=1, title="Test goal")
+        assert result is True

@@ -17,8 +17,8 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from anima_server.services.agent.self_model import (
-    get_self_model_block,
-    set_self_model_block,
+    get_active_intentions,
+    set_active_intentions,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def get_intentions_text(
     user_id: int,
 ) -> str:
     """Get the raw intentions section content."""
-    block = get_self_model_block(db, user_id=user_id, section="intentions")
+    block = get_active_intentions(db, user_id=user_id)
     return block.content if block else ""
 
 
@@ -73,7 +73,7 @@ def add_intention(
     strategy: str = "",
 ) -> str:
     """Add a new intention to the intentions section. Returns updated content."""
-    block = get_self_model_block(db, user_id=user_id, section="intentions")
+    block = get_active_intentions(db, user_id=user_id)
     content = block.content if block else ""
 
     # Check if intention already exists (fuzzy match on title)
@@ -106,10 +106,9 @@ def add_intention(
         else:
             content = content[:rules_idx] + f"{section_header}\n\n{entry}\n\n" + content[rules_idx:]
 
-    set_self_model_block(
+    set_active_intentions(
         db,
         user_id=user_id,
-        section="intentions",
         content=content,
         updated_by="post_turn",
     )
@@ -123,7 +122,7 @@ def complete_intention(
     title: str,
 ) -> bool:
     """Mark an intention as completed. Returns True if found."""
-    block = get_self_model_block(db, user_id=user_id, section="intentions")
+    block = get_active_intentions(db, user_id=user_id)
     if block is None:
         return False
 
@@ -162,10 +161,9 @@ def complete_intention(
     else:
         content = content[: match.start(2)] + "Status: Completed" + content[match.end(2) :]
 
-    set_self_model_block(
+    set_active_intentions(
         db,
         user_id=user_id,
-        section="intentions",
         content=content,
         updated_by="post_turn",
     )
@@ -181,7 +179,7 @@ def add_procedural_rule(
     confidence: str = "low",
 ) -> str:
     """Add a behavioral rule to the intentions section."""
-    block = get_self_model_block(db, user_id=user_id, section="intentions")
+    block = get_active_intentions(db, user_id=user_id)
     content = block.content if block else ""
 
     # Check for duplicate rule
@@ -202,10 +200,9 @@ def add_procedural_rule(
     else:
         content += f"\n\n{rules_marker}\n\n{entry}"
 
-    set_self_model_block(
+    set_active_intentions(
         db,
         user_id=user_id,
-        section="intentions",
         content=content,
         updated_by="sleep_time",
     )
