@@ -131,6 +131,39 @@ export const ACTION_TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: "multi_edit",
+    description:
+      "Apply multiple edits to a single file atomically. All edits are validated first; if any old_string is missing the whole batch is rejected.",
+    parameters: {
+      type: "object",
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Absolute path to the file",
+        },
+        edits: {
+          type: "array",
+          description: "Array of {old_string, new_string} replacements",
+          items: {
+            type: "object",
+            properties: {
+              old_string: {
+                type: "string",
+                description: "Exact string to find",
+              },
+              new_string: {
+                type: "string",
+                description: "Replacement string",
+              },
+            },
+            required: ["old_string", "new_string"],
+          },
+        },
+      },
+      required: ["file_path", "edits"],
+    },
+  },
+  {
     name: "ask_user",
     description: "Ask the user a question and wait for their response.",
     parameters: {

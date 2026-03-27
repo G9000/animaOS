@@ -119,13 +119,19 @@ export interface CancelMessage {
   run_id?: number;
 }
 
+export interface SetModeMessage {
+  type: "set_mode";
+  mode: "normal" | "plan";
+}
+
 export type ClientMessage =
   | AuthMessage
   | UserMessage
   | ToolResultMessage
   | ToolSchemasMessage
   | ApprovalResponseMessage
-  | CancelMessage;
+  | CancelMessage
+  | SetModeMessage;
 
 // ── Tool Schema ──
 

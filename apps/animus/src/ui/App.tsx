@@ -25,6 +25,7 @@ export function App({ config }: AppProps) {
   const [approvalResolver, setApprovalResolver] = useState<((d: PermissionDecision) => void) | null>(null);
   const [connection, setConnection] = useState<ConnectionManager | null>(null);
   const [model, setModel] = useState<string | undefined>();
+  const [mode, setMode] = useState<"normal" | "plan">("normal");
 
   const addEntry = useCallback((entry: ChatEntry) => {
     setEntries((prev) => [...prev, entry]);
@@ -56,6 +57,21 @@ export function App({ config }: AppProps) {
               addEntry({ type: "assistant", content: msg.content });
               setIsThinking(false);
             }
+            break;
+          case "reasoning":
+            setIsThinking(false);
+            setEntries((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.type === "reasoning" && last.streaming) {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...last,
+                  content: last.content + msg.content,
+                };
+                return updated;
+              }
+              return [...prev, { type: "reasoning", content: msg.content, streaming: true }];
+            });
             break;
           case "tool_execute":
             addEntry({
@@ -93,15 +109,17 @@ export function App({ config }: AppProps) {
           case "turn_complete":
             setIsThinking(false);
             setModel(msg.model);
-            // Finalize any streaming entry
+            // Finalize any streaming entries (assistant or reasoning)
             setEntries((prev) => {
-              const last = prev[prev.length - 1];
-              if (last && last.type === "assistant" && last.streaming) {
-                const updated = [...prev];
-                updated[updated.length - 1] = { ...last, streaming: false };
-                return updated;
-              }
-              return prev;
+              let changed = false;
+              const updated = prev.map((e) => {
+                if (e.streaming) {
+                  changed = true;
+                  return { ...e, streaming: false };
+                }
+                return e;
+              });
+              return changed ? updated : prev;
             });
             break;
           case "error":
@@ -125,6 +143,13 @@ export function App({ config }: AppProps) {
       setEntries([]);
       return;
     }
+    if (text === "/plan") {
+      const next = mode === "plan" ? "normal" : "plan";
+      setMode(next);
+      connection?.send({ type: "set_mode", mode: next });
+      addEntry({ type: "assistant", content: `Mode: ${next}` });
+      return;
+    }
     addEntry({ type: "user", content: text });
     setIsThinking(true);
     connection?.send({ type: "user_message", message: text });
@@ -141,7 +166,7 @@ export function App({ config }: AppProps) {
 
   return (
     <Box flexDirection="column" height="100%">
-      <Header connectionStatus={status} model={model} cwd={process.cwd()} />
+      <Header connectionStatus={status} model={model} cwd={process.cwd()} mode={mode} />
       <Chat entries={entries} />
       {isThinking && <Spinner />}
       {pendingApproval && (
