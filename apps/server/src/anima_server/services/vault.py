@@ -800,6 +800,8 @@ def read_data_snapshot(*, user_id: int | None = None) -> dict[str, str]:
             continue
         if relative_path.parts and relative_path.parts[0] == "chroma":
             continue  # skip legacy chroma directory if present
+        if relative_path.parts and relative_path.parts[0] == "runtime":
+            continue  # skip ephemeral runtime data (embedded PG, etc.)
         # Scope to user directory if user_id is set (files are stored under users/{id}/)
         if user_id is not None and relative_path.parts:
             if relative_path.parts[0] == "users" and len(relative_path.parts) > 1:
