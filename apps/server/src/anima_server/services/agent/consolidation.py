@@ -841,7 +841,9 @@ def _promote_runtime_emotional_patterns(
                 pg_db.commit()
             return promoted
     except Exception:
-        logger.warning("Failed to promote emotional patterns for user %s", user_id)
+        logger.warning(
+            "Failed to promote emotional patterns for user %s", user_id, exc_info=True
+        )
         return 0
 
 

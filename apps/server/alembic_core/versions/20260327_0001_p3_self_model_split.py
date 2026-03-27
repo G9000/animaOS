@@ -160,14 +160,17 @@ def downgrade() -> None:
     )
 
     # Restore growth_log: concatenate individual entries back into a single
-    # markdown blob per user, ordered chronologically.
+    # markdown blob per user, ordered chronologically with dated headings.
     op.execute(
         """
         INSERT INTO self_model_blocks (user_id, section, content, version, updated_by, created_at, updated_at)
         SELECT
             user_id,
             'growth_log',
-            group_concat('### ' || entry, char(10) || char(10)),
+            group_concat(
+                '### ' || strftime('%Y-%m-%d', created_at) || ' — ' || entry,
+                char(10) || char(10)
+            ),
             1,
             'migration',
             MIN(created_at),

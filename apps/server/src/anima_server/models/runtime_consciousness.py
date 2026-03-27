@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -76,7 +77,11 @@ class CurrentEmotion(RuntimeBase):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    thread_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("runtime_threads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     emotion: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     evidence_type: Mapped[str] = mapped_column(
