@@ -265,7 +265,12 @@ async def run_deep_monologue(
 
             facts = get_memory_items(db, user_id=user_id, limit=20)
             facts_text = (
-                "\n".join(f"- {m.content}" for m in facts) if facts else "No stored facts yet."
+                "\n".join(
+                    f"- {df(user_id, m.content, table='memory_items', field='content')}"
+                    for m in facts
+                )
+                if facts
+                else "No stored facts yet."
             )
 
             # Gather recent episodes

@@ -143,7 +143,7 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
     if thread is not None:
         companion.thread_id = thread.id
         history = companion.ensure_history_loaded(runtime_db)
-        memory_blocks = companion.ensure_memory_loaded(db)
+        memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
 
     runner = get_or_build_runner()
     result = await runner.invoke(
@@ -201,7 +201,7 @@ async def approve_or_deny_turn(
     companion.thread_id = thread.id
 
     history = companion.ensure_history_loaded(runtime_db)
-    memory_blocks = companion.ensure_memory_loaded(db)
+    memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
     conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
     cancel_event = companion.create_cancel_event(run.id)
@@ -568,7 +568,7 @@ async def _prepare_turn_context(
         pass
 
     # Use companion-cached static blocks, reload from DB only if stale.
-    static_blocks = companion.ensure_memory_loaded(db)
+    static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
 
     # If we have semantic results or a query embedding, build fresh
     # blocks so query-aware scoring can re-rank facts/preferences/etc.
@@ -580,6 +580,7 @@ async def _prepare_turn_context(
             semantic_results=semantic_results,
             query_embedding=query_embedding,
             query=user_message,
+            runtime_db=runtime_db,
         )
         # Re-populate the cache with the freshly-built static subset so
         # the next turn that has no semantic changes still benefits.
@@ -604,6 +605,7 @@ async def _prepare_turn_context(
             user_id=user_id,
             user_message=user_message,
             thread_id=thread.id,
+            runtime_db=runtime_db,
         )
         if signals:
             record_feedback_signals(db, user_id=user_id, signals=signals)
@@ -720,6 +722,7 @@ async def _invoke_turn_runtime(
             db,
             user_id=user_id,
             thread_id=thread.id,
+            runtime_db=runtime_db,
         )
 
     try:

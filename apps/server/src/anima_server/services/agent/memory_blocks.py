@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, User
+from anima_server.models import MemoryEpisode, User
 from anima_server.models.task import Task
 from anima_server.services.agent.memory_store import (
     get_current_focus,
@@ -32,6 +32,7 @@ def build_runtime_memory_blocks(
     semantic_results: list[tuple[int, str, float]] | None = None,
     query_embedding: list[float] | None = None,
     query: str | None = None,
+    runtime_db: Session | None = None,
 ) -> tuple[MemoryBlock, ...]:
     blocks: list[MemoryBlock] = []
 
@@ -102,7 +103,9 @@ def build_runtime_memory_blocks(
     if current_focus_block is not None:
         blocks.append(current_focus_block)
 
-    summary_block = build_thread_summary_block(db, thread_id=thread_id, user_id=user_id)
+    summary_block = build_thread_summary_block(
+        db, thread_id=thread_id, user_id=user_id, runtime_db=runtime_db
+    )
     if summary_block is not None:
         blocks.append(summary_block)
 
@@ -301,41 +304,56 @@ def build_current_focus_memory_block(
 
 
 def build_thread_summary_block(
-    db: Session,
+    db: Session,  # kept for signature compat but unused
     *,
     thread_id: int,
     user_id: int | None = None,
+    runtime_db: Session | None = None,
 ) -> MemoryBlock | None:
-    summary_row = db.scalar(
-        select(AgentMessage)
-        .where(
-            AgentMessage.thread_id == thread_id,
-            AgentMessage.role == "summary",
-            AgentMessage.is_in_context.is_(True),
+    from anima_server.models.runtime import RuntimeMessage
+
+    # Use the caller-provided runtime session when available; fall back to
+    # opening our own session from the factory.  Opening our own session is
+    # fine in production (PG connection pool) but would conflict with
+    # StaticPool in-memory SQLite used by the test harness.
+    own_session: Session | None = None
+    session = runtime_db
+    if session is None:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        try:
+            factory = get_runtime_session_factory()
+        except RuntimeError:
+            return None  # runtime engine not initialized (e.g., tests)
+        own_session = factory()
+        session = own_session
+
+    try:
+        summary_row = session.scalar(
+            select(RuntimeMessage)
+            .where(
+                RuntimeMessage.thread_id == thread_id,
+                RuntimeMessage.role == "summary",
+                RuntimeMessage.is_in_context.is_(True),
+            )
+            .order_by(RuntimeMessage.sequence_id.desc())
+            .limit(1)
         )
-        .order_by(AgentMessage.sequence_id.desc())
-        .limit(1)
-    )
+    finally:
+        if own_session is not None:
+            own_session.close()
+
     if summary_row is None:
         return None
 
-    # Resolve user_id for decryption
-    uid = user_id
-    if uid is None:
-        thread = db.get(AgentThread, thread_id)
-        uid = thread.user_id if thread else 0
-
-    summary_text = (
-        df(uid, summary_row.content_text, table="agent_messages", field="content_text").strip()
-        if summary_row.content_text
-        else ""
-    )
+    # Runtime content is plaintext — no df() decryption needed.
+    summary_text = (summary_row.content_text or "").strip()
     if not summary_text:
         return None
 
     return MemoryBlock(
         label="thread_summary",
-        description="Compressed summary of earlier conversation context.",
+        description="Summary of earlier conversation (compacted).",
         value=summary_text,
     )
 

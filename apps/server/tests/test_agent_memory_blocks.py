@@ -4,7 +4,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 
 from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentThread, MemoryItem, User
+from anima_server.models import AgentThread, MemoryItem, User
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 from anima_server.services.agent.persistence import load_thread_history
@@ -40,7 +40,7 @@ def _db_session() -> Generator[Session, None, None]:
 
 
 def test_build_runtime_memory_blocks_includes_human_and_thread_summary() -> None:
-    with _db_session() as session:
+    with _db_session() as session, runtime_db_session() as rt_session:
         user = User(
             username="alice-memory",
             password_hash="not-used",
@@ -55,21 +55,28 @@ def test_build_runtime_memory_blocks_includes_human_and_thread_summary() -> None
         session.add(thread)
         session.flush()
 
-        session.add(
-            AgentMessage(
-                thread_id=thread.id,
+        # Insert summary into runtime DB (P2: summaries live in PG)
+        rt_thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(rt_thread)
+        rt_session.flush()
+
+        rt_session.add(
+            RuntimeMessage(
+                thread_id=rt_thread.id,
+                user_id=user.id,
                 sequence_id=1,
                 role="summary",
                 content_text="Conversation summary:\n- User likes green tea.",
                 is_in_context=True,
             )
         )
-        session.commit()
+        rt_session.commit()
 
         blocks = build_runtime_memory_blocks(
             session,
             user_id=user.id,
-            thread_id=thread.id,
+            thread_id=rt_thread.id,
+            runtime_db=rt_session,
         )
 
     labels = [block.label for block in blocks]

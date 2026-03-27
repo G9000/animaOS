@@ -228,6 +228,7 @@ class AnimaCompanion:
             user_id=self._user_id,
             thread_id=self._thread_id,
             semantic_results=None,
+            runtime_db=runtime_db,
         )
         self.set_memory_cache(blocks)
 
@@ -242,7 +243,9 @@ class AnimaCompanion:
             len(self._conversation_window),
         )
 
-    def ensure_memory_loaded(self, db: Session) -> tuple[MemoryBlock, ...]:
+    def ensure_memory_loaded(
+        self, db: Session, *, runtime_db: Session | None = None
+    ) -> tuple[MemoryBlock, ...]:
         """Return cached static blocks, reloading from DB if stale."""
         cached = self.get_cached_memory_blocks()
         if cached is not None:
@@ -256,6 +259,7 @@ class AnimaCompanion:
             user_id=self._user_id,
             thread_id=self._thread_id,
             semantic_results=None,
+            runtime_db=runtime_db,
         )
         self.set_memory_cache(blocks)
         return blocks
