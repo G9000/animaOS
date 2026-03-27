@@ -1,9 +1,7 @@
 #!/usr/bin/env bun
 // apps/animus/src/index.ts
-import { render } from "ink";
-import React from "react";
-import { App } from "./ui/App";
 import { readConfig, writeConfig, login, getConfigPath } from "./client/auth";
+import { runHeadless } from "./headless";
 
 const args = process.argv.slice(2);
 const serverFlag = args.indexOf("--server");
@@ -42,15 +40,35 @@ async function main() {
     }
   }
 
+  // Collect flags
+  const flagArgs = new Set(["--server", "--json", "--timeout"]);
+  const prompt = args.find((a, i) => {
+    if (a.startsWith("--")) return false;
+    // Skip values that follow a flag expecting a value
+    const prev = args[i - 1];
+    if (prev === "--server" || prev === "--timeout") return false;
+    return true;
+  });
+
   // Headless mode: first non-flag arg is the prompt
-  const prompt = args.find((a) => !a.startsWith("--") && a !== serverUrl);
   if (prompt) {
-    // TODO: headless mode — connect, send prompt, print result, exit
-    console.log("Headless mode not yet implemented. Use interactive mode.");
-    process.exit(0);
+    const jsonMode = args.includes("--json");
+    const timeoutIdx = args.indexOf("--timeout");
+    const timeout = timeoutIdx >= 0 ? parseInt(args[timeoutIdx + 1], 10) : undefined;
+
+    await runHeadless({
+      config,
+      prompt,
+      json: jsonMode,
+      timeout: timeout && !isNaN(timeout) ? timeout : undefined,
+    });
+    return;
   }
 
-  // Interactive TUI mode
+  // Interactive TUI mode — lazy-load ink/React to keep headless path fast
+  const { render } = await import("ink");
+  const React = await import("react");
+  const { App } = await import("./ui/App");
   render(React.createElement(App, { config }));
 }
 
