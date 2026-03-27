@@ -14,7 +14,7 @@ import contextlib
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
-from anima_server.models import AgentMessage, AgentRun, AgentThread
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.services.agent.compaction import (
     CompactionResult,
     compact_thread_context,
@@ -109,24 +109,24 @@ def invalidate_agent_runtime_cache() -> None:
 
 
 async def run_agent(
-    user_message: str, user_id: int, db: Session, *, source: str | None = None
+    user_message: str, user_id: int, db: Session, runtime_db: Session, *, source: str | None = None
 ) -> AgentResult:
-    return await _execute_agent_turn(user_message, user_id, db, source=source)
+    return await _execute_agent_turn(user_message, user_id, db, runtime_db, source=source)
 
 
-async def cancel_agent_run(run_id: int, user_id: int, db: Session) -> AgentRun | None:
+async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> RuntimeRun | None:
     """Cancel a running agent turn by run id."""
-    run = cancel_run(db, run_id)
+    run = cancel_run(runtime_db, run_id)
     if run is None:
         return None
     companion = get_companion(user_id)
     if companion is not None:
         companion.set_cancel(run_id)
-    db.commit()
+    runtime_db.commit()
     return run
 
 
-async def dry_run_agent(user_message: str, user_id: int, db: Session) -> DryRunResult:
+async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db: Session) -> DryRunResult:
     """Execute a dry run: build the full prompt but do not call the LLM.
 
     Does not create any DB records (threads, messages, runs).
@@ -136,15 +136,13 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session) -> DryRunR
     # Look up existing thread without creating one.
     from sqlalchemy import select as sa_select
 
-    from anima_server.models import AgentThread as AgentThreadModel
-
-    thread = db.scalar(sa_select(AgentThreadModel).where(AgentThreadModel.user_id == user_id))
+    thread = runtime_db.scalar(sa_select(RuntimeThread).where(RuntimeThread.user_id == user_id))
 
     history: list[StoredMessage] = []
     memory_blocks: tuple[MemoryBlock, ...] = ()
     if thread is not None:
         companion.thread_id = thread.id
-        history = companion.ensure_history_loaded(db)
+        history = companion.ensure_history_loaded(runtime_db)
         memory_blocks = companion.ensure_memory_loaded(db)
 
     runner = get_or_build_runner()
@@ -164,6 +162,7 @@ async def approve_or_deny_turn(
     user_id: int,
     approved: bool,
     db: Session,
+    runtime_db: Session,
     *,
     denial_reason: str | None = None,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
@@ -174,7 +173,7 @@ async def approve_or_deny_turn(
     follow-up.  On deny: inject denial as a tool error and make one LLM
     follow-up so the companion can respond.
     """
-    checkpoint = load_approval_checkpoint(db, run_id)
+    checkpoint = load_approval_checkpoint(runtime_db, run_id)
     if checkpoint is None:
         raise ValueError(f"Run {run_id} is not awaiting approval")
 
@@ -192,21 +191,21 @@ async def approve_or_deny_turn(
     )
 
     # Resolve the checkpoint now — the re-entry takes over.
-    clear_approval_checkpoint(db, run, approval_msg)
-    db.flush()
+    clear_approval_checkpoint(runtime_db, run, approval_msg)
+    runtime_db.flush()
 
     companion = _get_companion(user_id)
-    thread = db.get(AgentThread, run.thread_id)
+    thread = runtime_db.get(RuntimeThread, run.thread_id)
     if thread is None:
         raise ValueError("Thread not found")
     companion.thread_id = thread.id
 
-    history = companion.ensure_history_loaded(db)
+    history = companion.ensure_history_loaded(runtime_db)
     memory_blocks = companion.ensure_memory_loaded(db)
-    conversation_turn_count = count_messages_by_role(db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
     cancel_event = companion.create_cancel_event(run.id)
-    set_tool_context(ToolContext(db=db, user_id=user_id, thread_id=thread.id))
+    set_tool_context(ToolContext(db=db, runtime_db=runtime_db, user_id=user_id, thread_id=thread.id))
     try:
         runner = get_or_build_runner()
         result = await runner.resume_after_approval(
@@ -221,12 +220,12 @@ async def approve_or_deny_turn(
             cancel_event=cancel_event,
         )
     except StepFailedError as exc:
-        mark_run_failed(db, run, str(exc.cause))
-        db.commit()
+        mark_run_failed(runtime_db, run, str(exc.cause))
+        runtime_db.commit()
         raise exc.cause from exc
     except Exception as exc:
-        mark_run_failed(db, run, str(exc))
-        db.commit()
+        mark_run_failed(runtime_db, run, str(exc))
+        runtime_db.commit()
         raise
     finally:
         companion.clear_cancel_event(run.id)
@@ -234,8 +233,8 @@ async def approve_or_deny_turn(
 
     # Handle cancellation during resume
     if result.stop_reason == StopReason.CANCELLED.value:
-        cancel_run(db, run.id)
-        db.commit()
+        cancel_run(runtime_db, run.id)
+        runtime_db.commit()
         if event_callback is not None:
             await event_callback(build_cancelled_event(run.id))
         return result
@@ -243,13 +242,13 @@ async def approve_or_deny_turn(
     # Persist result
     result_message_count = count_persisted_result_messages(result)
     persist_agent_result(
-        db,
+        runtime_db,
         thread=thread,
         run=run,
         result=result,
         initial_sequence_id=(
             reserve_message_sequences(
-                db,
+                runtime_db,
                 thread_id=thread.id,
                 count=result_message_count,
             )
@@ -258,7 +257,7 @@ async def approve_or_deny_turn(
         ),
     )
     compact_thread_context(
-        db,
+        runtime_db,
         thread=thread,
         run_id=run.id,
         trigger_token_limit=max(
@@ -272,8 +271,8 @@ async def approve_or_deny_turn(
             else 0
         ),
     )
-    db.commit()
-    _refresh_companion_history(user_id=user_id, db=db)
+    runtime_db.commit()
+    _refresh_companion_history(user_id=user_id, runtime_db=runtime_db)
 
     # Post-turn hooks
     _run_post_turn_hooks(
@@ -282,6 +281,7 @@ async def approve_or_deny_turn(
         user_message="",  # no new user message on resume
         result=result,
         db_factory=_build_db_factory(db),
+        runtime_db_factory=_build_runtime_db_factory(),
     )
 
     if event_callback is not None:
@@ -297,6 +297,7 @@ async def stream_approve_or_deny(
     user_id: int,
     approved: bool,
     db: Session,
+    runtime_db: Session,
     *,
     denial_reason: str | None = None,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
@@ -315,6 +316,7 @@ async def stream_approve_or_deny(
                 user_id,
                 approved,
                 db,
+                runtime_db,
                 denial_reason=denial_reason,
                 event_callback=emit,
             )
@@ -347,6 +349,7 @@ async def _execute_agent_turn(
     user_message: str,
     user_id: int,
     db: Session,
+    runtime_db: Session,
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
@@ -360,6 +363,7 @@ async def _execute_agent_turn(
             user_message,
             user_id,
             db,
+            runtime_db,
             event_callback=event_callback,
             source=source,
             tool_delegate=tool_delegate,
@@ -372,6 +376,7 @@ async def _execute_agent_turn_locked(
     user_message: str,
     user_id: int,
     db: Session,
+    runtime_db: Session,
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
@@ -384,6 +389,7 @@ async def _execute_agent_turn_locked(
         user_message,
         user_id,
         db,
+        runtime_db,
         event_callback=event_callback,
         source=source,
     )
@@ -391,7 +397,7 @@ async def _execute_agent_turn_locked(
     # Stage 1b: Proactive context management — compact before the LLM call
     # if estimated context usage already exceeds the threshold.
     turn_ctx = await _proactive_compact_if_needed(
-        db,
+        runtime_db,
         thread=thread,
         run=run,
         turn_ctx=turn_ctx,
@@ -406,6 +412,7 @@ async def _execute_agent_turn_locked(
             user_message,
             user_id,
             db,
+            runtime_db,
             thread=thread,
             run=run,
             user_msg=user_msg,
@@ -421,8 +428,8 @@ async def _execute_agent_turn_locked(
 
     # Handle cancellation: persist cancel status and emit event
     if result.stop_reason == StopReason.CANCELLED.value:
-        cancel_run(db, run.id)
-        db.commit()
+        cancel_run(runtime_db, run.id)
+        runtime_db.commit()
         if event_callback is not None:
             await event_callback(build_cancelled_event(run.id))
         return result
@@ -430,13 +437,13 @@ async def _execute_agent_turn_locked(
     # Handle approval: persist checkpoint and emit event
     if result.stop_reason == StopReason.AWAITING_APPROVAL.value:
         pending_tc = _persist_approval_checkpoint(
-            db,
+            runtime_db,
             thread=thread,
             run=run,
             result=result,
             initial_sequence_id=initial_sequence_id,
         )
-        _refresh_companion_history(user_id=user_id, db=db)
+        _refresh_companion_history(user_id=user_id, runtime_db=runtime_db)
         if event_callback is not None:
             if pending_tc is not None:
                 await event_callback(
@@ -459,13 +466,13 @@ async def _execute_agent_turn_locked(
 
     # Stage 3: Persist result
     await _persist_turn_result(
-        db,
+        runtime_db,
         thread=thread,
         run=run,
         result=result,
         initial_sequence_id=initial_sequence_id,
     )
-    _refresh_companion_history(user_id=user_id, db=db)
+    _refresh_companion_history(user_id=user_id, runtime_db=runtime_db)
 
     # Stage 4: Post-turn hooks
     _run_post_turn_hooks(
@@ -474,6 +481,7 @@ async def _execute_agent_turn_locked(
         user_message=user_message,
         result=result,
         db_factory=_build_db_factory(db),
+        runtime_db_factory=_build_runtime_db_factory(),
     )
 
     if event_callback is not None:
@@ -495,10 +503,11 @@ async def _prepare_turn_context(
     user_message: str,
     user_id: int,
     db: Session,
+    runtime_db: Session,
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
-) -> tuple[AgentThread, AgentRun, AgentMessage, int, _TurnContext]:
+) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
     Uses the AnimaCompanion cache for static memory blocks and conversation
@@ -506,14 +515,14 @@ async def _prepare_turn_context(
     """
     companion = _get_companion(user_id)
 
-    thread = get_or_create_thread(db, user_id)
+    thread = get_or_create_thread(runtime_db, user_id)
     companion.thread_id = thread.id
 
     # Use cached conversation history when available, otherwise load from DB.
-    history = companion.ensure_history_loaded(db)
+    history = companion.ensure_history_loaded(runtime_db)
 
     run = create_run(
-        db,
+        runtime_db,
         thread_id=thread.id,
         user_id=user_id,
         provider=settings.agent_provider,
@@ -521,19 +530,19 @@ async def _prepare_turn_context(
         mode="streaming" if event_callback is not None else "blocking",
     )
     initial_sequence_id = reserve_message_sequences(
-        db,
+        runtime_db,
         thread_id=thread.id,
         count=1,
     )
     user_msg = append_user_message(
-        db,
+        runtime_db,
         thread=thread,
         run_id=run.id,
         content=user_message,
         sequence_id=initial_sequence_id,
         source=source,
     )
-    conversation_turn_count = count_messages_by_role(db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
@@ -682,10 +691,11 @@ async def _invoke_turn_runtime(
     user_message: str,
     user_id: int,
     db: Session,
+    runtime_db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
-    user_msg: AgentMessage,
+    thread: RuntimeThread,
+    run: RuntimeRun,
+    user_msg: RuntimeMessage,
     turn_ctx: _TurnContext,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     cancel_event: asyncio.Event | None = None,
@@ -694,7 +704,7 @@ async def _invoke_turn_runtime(
     extra_tool_schemas: list[dict[str, Any]] | None = None,
 ) -> AgentResult:
     """Stage 2: Set tool context and invoke the agent runtime."""
-    set_tool_context(ToolContext(db=db, user_id=user_id, thread_id=thread.id))
+    set_tool_context(ToolContext(db=db, runtime_db=runtime_db, user_id=user_id, thread_id=thread.id))
 
     async def _refresh_memory() -> tuple[MemoryBlock, ...] | None:
         """Memory refresher callback for in-context memory editing.
@@ -741,7 +751,7 @@ async def _invoke_turn_runtime(
             if not _should_retry_after_compaction(exc):
                 raise
             # Context overflow: compact and retry once.
-            compacted = _emergency_compact(db, thread=thread, run=run)
+            compacted = _emergency_compact(runtime_db, thread=thread, run=run)
             if not compacted:
                 raise
             logger.info(
@@ -749,7 +759,7 @@ async def _invoke_turn_runtime(
                 compacted.compacted_message_count,
             )
             turn_ctx = _rebuild_turn_context_after_compaction(
-                db,
+                runtime_db,
                 user_id=user_id,
                 thread=thread,
                 user_message=user_message,
@@ -771,25 +781,25 @@ async def _invoke_turn_runtime(
             if tool_delegate:
                 runner._tool_executor.clear_delegation()
     except StepFailedError as exc:
-        _handle_step_failure(db, run=run, user_msg=user_msg, err=exc)
+        _handle_step_failure(runtime_db, run=run, user_msg=user_msg, err=exc)
         raise exc.cause from exc
     except Exception as exc:
         # Remove orphaned user message from active context so it doesn't
         # replay as valid history on the next turn.
         user_msg.is_in_context = False
-        db.add(user_msg)
-        mark_run_failed(db, run, str(exc))
-        db.commit()
+        runtime_db.add(user_msg)
+        mark_run_failed(runtime_db, run, str(exc))
+        runtime_db.commit()
         raise
     finally:
         clear_tool_context()
 
 
 async def _proactive_compact_if_needed(
-    db: Session,
+    runtime_db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
+    thread: RuntimeThread,
+    run: RuntimeRun,
     turn_ctx: _TurnContext,
     user_id: int,
 ) -> _TurnContext:
@@ -812,7 +822,7 @@ async def _proactive_compact_if_needed(
         threshold,
     )
     result = compact_thread_context(
-        db,
+        runtime_db,
         thread=thread,
         run_id=run.id,
         trigger_token_limit=threshold,
@@ -822,7 +832,7 @@ async def _proactive_compact_if_needed(
     if result is None:
         return turn_ctx
 
-    db.flush()
+    runtime_db.flush()
     logger.info(
         "Proactive compaction: %d messages compacted (%d -> %d estimated tokens)",
         result.compacted_message_count,
@@ -831,7 +841,7 @@ async def _proactive_compact_if_needed(
     )
 
     return _rebuild_turn_context_after_compaction(
-        db,
+        runtime_db,
         user_id=user_id,
         thread=thread,
         user_message="",
@@ -847,10 +857,10 @@ def _should_retry_after_compaction(exc: StepFailedError) -> bool:
 
 
 def _emergency_compact(
-    db: Session,
+    runtime_db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
+    thread: RuntimeThread,
+    run: RuntimeRun,
 ) -> CompactionResult | None:
     """Run compaction mid-turn to recover from context overflow.
 
@@ -859,7 +869,7 @@ def _emergency_compact(
     """
     keep_last = max(1, settings.agent_compaction_keep_last_messages // 2)
     result = compact_thread_context(
-        db,
+        runtime_db,
         thread=thread,
         run_id=run.id,
         trigger_token_limit=1,  # force compaction
@@ -867,23 +877,23 @@ def _emergency_compact(
         reserved_prompt_tokens=0,
     )
     if result is not None:
-        db.flush()
+        runtime_db.flush()
     return result
 
 
 def _rebuild_turn_context_after_compaction(
-    db: Session,
+    runtime_db: Session,
     *,
     user_id: int,
-    thread: AgentThread,
+    thread: RuntimeThread,
     user_message: str,
     turn_ctx: _TurnContext,
 ) -> _TurnContext:
     """Reload history and memory after emergency compaction."""
     companion = _get_companion(user_id)
     companion.invalidate_history()
-    history = companion.ensure_history_loaded(db)
-    conversation_turn_count = count_messages_by_role(db, thread.id, "user")
+    history = companion.ensure_history_loaded(runtime_db)
+    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
     return _TurnContext(
         history=history,
         conversation_turn_count=conversation_turn_count,
@@ -891,20 +901,20 @@ def _rebuild_turn_context_after_compaction(
     )
 
 
-def _refresh_companion_history(*, user_id: int, db: Session) -> None:
+def _refresh_companion_history(*, user_id: int, runtime_db: Session) -> None:
     """Reload the cached conversation window from persisted in-context history."""
     companion = get_companion(user_id)
     if companion is None:
         return
     companion.invalidate_history()
-    companion.ensure_history_loaded(db)
+    companion.ensure_history_loaded(runtime_db)
 
 
 def _handle_step_failure(
-    db: Session,
+    runtime_db: Session,
     *,
-    run: AgentRun,
-    user_msg: AgentMessage,
+    run: RuntimeRun,
+    user_msg: RuntimeMessage,
     err: StepFailedError,
 ) -> None:
     """Progression-aware cleanup after a step failure.
@@ -920,18 +930,18 @@ def _handle_step_failure(
     # how far the step progressed — tool side-effects (if any) are
     # committed atomically with the run-failure record below.
     user_msg.is_in_context = False
-    db.add(user_msg)
+    runtime_db.add(user_msg)
 
     detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
-    mark_run_failed(db, run, detail)
-    db.commit()
+    mark_run_failed(runtime_db, run, detail)
+    runtime_db.commit()
 
 
 def _persist_approval_checkpoint(
-    db: Session,
+    runtime_db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
+    thread: RuntimeThread,
+    run: RuntimeRun,
     result: AgentResult,
     initial_sequence_id: int,
 ) -> ToolCall | None:
@@ -948,13 +958,13 @@ def _persist_approval_checkpoint(
     # First persist the normal step traces (assistant msg + tool error).
     result_message_count = count_persisted_result_messages(result)
     persist_agent_result(
-        db,
+        runtime_db,
         thread=thread,
         run=run,
         result=result,
         initial_sequence_id=(
             reserve_message_sequences(
-                db,
+                runtime_db,
                 thread_id=thread.id,
                 count=result_message_count,
             )
@@ -983,13 +993,13 @@ def _persist_approval_checkpoint(
             break
 
     if pending_tool_call is None:
-        mark_run_failed(db, run, "Could not reconstruct pending tool call for approval checkpoint")
-        db.commit()
+        mark_run_failed(runtime_db, run, "Could not reconstruct pending tool call for approval checkpoint")
+        runtime_db.commit()
         return None
 
-    seq_id = reserve_message_sequences(db, thread_id=thread.id, count=1)
+    seq_id = reserve_message_sequences(runtime_db, thread_id=thread.id, count=1)
     save_approval_checkpoint(
-        db,
+        runtime_db,
         thread=thread,
         run=run,
         tool_call=pending_tool_call,
@@ -997,15 +1007,15 @@ def _persist_approval_checkpoint(
         sequence_id=seq_id,
     )
 
-    db.commit()
+    runtime_db.commit()
     return pending_tool_call
 
 
 async def _persist_turn_result(
-    db: Session,
+    runtime_db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
+    thread: RuntimeThread,
+    run: RuntimeRun,
     result: AgentResult,
     initial_sequence_id: int,
 ) -> None:
@@ -1016,13 +1026,13 @@ async def _persist_turn_result(
     """
     result_message_count = count_persisted_result_messages(result)
     persist_agent_result(
-        db,
+        runtime_db,
         thread=thread,
         run=run,
         result=result,
         initial_sequence_id=(
             reserve_message_sequences(
-                db,
+                runtime_db,
                 thread_id=thread.id,
                 count=result_message_count,
             )
@@ -1033,7 +1043,7 @@ async def _persist_turn_result(
 
     # Commit persistence before compaction to avoid holding the DB lock
     # open during a potentially slow LLM summarization call.
-    db.commit()
+    runtime_db.commit()
 
     compaction_kwargs = dict(
         thread=thread,
@@ -1055,15 +1065,15 @@ async def _persist_turn_result(
     try:
         from anima_server.services.agent.compaction import compact_thread_context_with_llm
 
-        llm_result = await compact_thread_context_with_llm(db, **compaction_kwargs)
+        llm_result = await compact_thread_context_with_llm(runtime_db, **compaction_kwargs)
     except Exception:
         pass
 
     # Fall back to fast text-based compaction if LLM didn't trigger
     if llm_result is None:
-        compact_thread_context(db, **compaction_kwargs)
+        compact_thread_context(runtime_db, **compaction_kwargs)
 
-    db.commit()
+    runtime_db.commit()
 
 
 def _extract_inner_thoughts(result: AgentResult) -> str:
@@ -1097,6 +1107,7 @@ def _run_post_turn_hooks(
     user_message: str,
     result: AgentResult,
     db_factory: Callable[[], Session],
+    runtime_db_factory: Callable[[], Session],
 ) -> None:
     """Stage 4: Schedule background memory and reflection work."""
     # Include inner thoughts in the consolidation input so the extraction
@@ -1120,6 +1131,7 @@ def _run_post_turn_hooks(
         user_id=user_id,
         thread_id=thread_id,
         db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
     )
 
 
@@ -1127,6 +1139,7 @@ async def stream_agent(
     user_message: str,
     user_id: int,
     db: Session,
+    runtime_db: Session,
     *,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
@@ -1146,6 +1159,7 @@ async def stream_agent(
                 user_message,
                 user_id,
                 db,
+                runtime_db,
                 event_callback=emit,
                 source=source,
                 tool_delegate=tool_delegate,
@@ -1177,17 +1191,17 @@ async def stream_agent(
                 await worker_task
 
 
-def list_agent_history(user_id: int, db: Session, *, limit: int = 50) -> list[AgentMessage]:
+def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) -> list[RuntimeMessage]:
     return list_transcript_messages(
-        db,
+        runtime_db,
         user_id=user_id,
         limit=limit,
     )
 
 
-async def reset_agent_thread(user_id: int, db: Session) -> None:
-    reset_thread(db, user_id)
-    db.commit()
+async def reset_agent_thread(user_id: int, runtime_db: Session) -> None:
+    reset_thread(runtime_db, user_id)
+    runtime_db.commit()
     companion = get_companion(user_id)
     if companion is not None:
         companion.reset()
@@ -1202,3 +1216,9 @@ def _build_db_factory(db: Session) -> Callable[[], Session]:
         expire_on_commit=db.expire_on_commit,
         class_=type(db),
     )
+
+
+def _build_runtime_db_factory() -> Callable[[], Session]:
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    return get_runtime_session_factory()

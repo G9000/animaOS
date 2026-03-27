@@ -110,47 +110,45 @@ async def _issue_background_task(
     task_type: str,
     task_fn: Callable[..., Any],
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
     **kwargs: Any,
 ) -> str:
     """Fire a tracked background task.
 
-    1. Create BackgroundTaskRun with status='pending'
+    1. Create RuntimeBackgroundTaskRun with status='pending'
     2. Update to 'running' with started_at
     3. Execute task_fn
     4. Update to 'completed' or 'failed' with result/error
     Uses finally-block to ensure state is always saved.
-    All DB writes retry on ``database is locked`` errors.
+    Task tracking is stored in the Runtime (PG) database.
     """
-    from anima_server.db.session import SessionLocal
-    from anima_server.models import BackgroundTaskRun
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
 
-    factory = db_factory or SessionLocal
+    rt_factory = runtime_db_factory or get_runtime_session_factory()
 
-    # Create the task run record (with retry)
-    with factory() as db:
-        run = BackgroundTaskRun(
+    # Create the task run record
+    with rt_factory() as rt_db:
+        run = RuntimeBackgroundTaskRun(
             user_id=user_id,
             task_type=task_type,
             status="pending",
         )
-        db.add(run)
-        if not await _commit_with_retry(db, label=f"{task_type}:create"):
-            raise RuntimeError(f"Could not create task run for {task_type}")
+        rt_db.add(run)
+        rt_db.commit()
         run_id = run.id
 
-    # Mark running (separate session — close before task_fn to avoid
-    # holding a connection while the task opens its own session, which
-    # causes "database is locked" on SQLite/SQLCipher).
+    # Mark running
     status = "running"
     result_json: dict | None = None
     error_message: str | None = None
 
-    with factory() as db:
-        run = db.get(BackgroundTaskRun, run_id)
+    with rt_factory() as rt_db:
+        run = rt_db.get(RuntimeBackgroundTaskRun, run_id)
         if run is not None:
             run.status = "running"
             run.started_at = datetime.now(UTC)
-            await _commit_with_retry(db, label=f"{task_type}:running")
+            rt_db.commit()
 
     # Execute the task function (no session held open here)
     try:
@@ -172,10 +170,10 @@ async def _issue_background_task(
             user_id,
         )
 
-    # Always update final status (with retry)
+    # Always update final status
     try:
-        with factory() as db:
-            run = db.get(BackgroundTaskRun, run_id)
+        with rt_factory() as rt_db:
+            run = rt_db.get(RuntimeBackgroundTaskRun, run_id)
             if run is not None:
                 run.status = status
                 run.completed_at = datetime.now(UTC)
@@ -183,7 +181,7 @@ async def _issue_background_task(
                     run.result_json = result_json
                 if error_message is not None:
                     run.error_message = error_message
-                await _commit_with_retry(db, label=f"{task_type}:finalize")
+                rt_db.commit()
     except Exception:
         logger.exception("Failed to update task run %s status", run_id)
 
@@ -200,6 +198,7 @@ async def run_sleeptime_agents(
     assistant_response: str,
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
     force: bool = False,
 ) -> list[str]:
     """Orchestrate all background tasks.
@@ -256,6 +255,7 @@ async def run_sleeptime_agents(
                 task_type=task_type,
                 task_fn=task_fn,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
                 **extra_kwargs,
             )
             run_ids.append(r)
@@ -282,6 +282,7 @@ async def run_sleeptime_agents(
                 task_type="contradiction_scan",
                 task_fn=_task_contradiction_scan,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
             )
             run_ids.append(rid)
         except Exception:
@@ -293,6 +294,7 @@ async def run_sleeptime_agents(
                 task_type="profile_synthesis",
                 task_fn=_task_profile_synthesis,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
             )
             run_ids.append(rid)
         except Exception:
@@ -309,6 +311,7 @@ async def run_sleeptime_agents(
                 task_type="deep_monologue",
                 task_fn=_task_deep_monologue,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
             )
             run_ids.append(rid)
     except Exception:
@@ -516,30 +519,31 @@ def get_last_processed_message_id(
     user_id: int,
     thread_id: int | None = None,
     *,
+    runtime_db_factory: Callable[..., object] | None = None,
     db_factory: Callable[..., object] | None = None,
 ) -> int | None:
     """Get the last processed message ID for the active cursor scope.
 
-    Reads from the most recent completed BackgroundTaskRun where
+    Reads from the most recent completed RuntimeBackgroundTaskRun where
     task_type='consolidation' and result_json.thread_id matches.
     """
     from sqlalchemy import desc, select
 
-    from anima_server.db.session import SessionLocal
-    from anima_server.models import BackgroundTaskRun
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
 
-    factory = db_factory or SessionLocal
-    with factory() as db:
+    factory = runtime_db_factory or get_runtime_session_factory()
+    with factory() as rt_db:
         stmt = (
-            select(BackgroundTaskRun)
+            select(RuntimeBackgroundTaskRun)
             .where(
-                BackgroundTaskRun.user_id == user_id,
-                BackgroundTaskRun.task_type == "consolidation",
-                BackgroundTaskRun.status == "completed",
+                RuntimeBackgroundTaskRun.user_id == user_id,
+                RuntimeBackgroundTaskRun.task_type == "consolidation",
+                RuntimeBackgroundTaskRun.status == "completed",
             )
-            .order_by(desc(BackgroundTaskRun.completed_at))
+            .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
         )
-        runs = list(db.scalars(stmt).all())
+        runs = list(rt_db.scalars(stmt).all())
 
     for run in runs:
         rj = run.result_json
@@ -558,26 +562,27 @@ def update_last_processed_message_id(
     message_id: int,
     messages_processed: int,
     *,
+    runtime_db_factory: Callable[..., object] | None = None,
     db_factory: Callable[..., object] | None = None,
 ) -> None:
     """Persist the consolidation restart cursor in the most recent run."""
     from sqlalchemy import desc, select
 
-    from anima_server.db.session import SessionLocal
-    from anima_server.models import BackgroundTaskRun
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
 
-    factory = db_factory or SessionLocal
-    with factory() as db:
+    factory = runtime_db_factory or get_runtime_session_factory()
+    with factory() as rt_db:
         stmt = (
-            select(BackgroundTaskRun)
+            select(RuntimeBackgroundTaskRun)
             .where(
-                BackgroundTaskRun.user_id == user_id,
-                BackgroundTaskRun.task_type == "consolidation",
-                BackgroundTaskRun.status == "completed",
+                RuntimeBackgroundTaskRun.user_id == user_id,
+                RuntimeBackgroundTaskRun.task_type == "consolidation",
+                RuntimeBackgroundTaskRun.status == "completed",
             )
-            .order_by(desc(BackgroundTaskRun.completed_at))
+            .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
         )
-        runs = list(db.scalars(stmt).all())
+        runs = list(rt_db.scalars(stmt).all())
         run = None
         for candidate in runs:
             rj = candidate.result_json
@@ -590,4 +595,4 @@ def update_last_processed_message_id(
                 "last_processed_message_id": message_id,
                 "messages_processed": messages_processed,
             }
-            db.commit()
+            rt_db.commit()

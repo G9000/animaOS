@@ -22,6 +22,7 @@ def schedule_reflection(
     user_id: int,
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
     """Schedule a reflection task after a period of inactivity.
 
@@ -49,6 +50,7 @@ def schedule_reflection(
                 thread_id=thread_id,
                 scheduled_at=now,
                 db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
             )
         )
 
@@ -59,6 +61,7 @@ async def _delayed_reflection(
     thread_id: int | None,
     scheduled_at: datetime,
     db_factory: Callable[..., object] | None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
     """Wait for the inactivity period, then run reflection if no new activity occurred."""
     try:
@@ -71,7 +74,12 @@ async def _delayed_reflection(
         if last is not None and last > scheduled_at:
             return
 
-    await run_reflection(user_id=user_id, thread_id=thread_id, db_factory=db_factory)
+    await run_reflection(
+        user_id=user_id,
+        thread_id=thread_id,
+        db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
 
 
 async def run_reflection(
@@ -79,6 +87,7 @@ async def run_reflection(
     user_id: int,
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
     """Run sleep-time tasks + quick inner monologue reflection."""
     # 0. Expire working memory items
@@ -126,6 +135,7 @@ async def run_reflection(
             assistant_response="",
             thread_id=thread_id,
             db_factory=db_factory,
+            runtime_db_factory=runtime_db_factory,
             force=True,
         )
         if run_ids:

@@ -10,9 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
-from anima_server.db import get_db
+from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
-from anima_server.models import AgentMessage, AgentThread, MemoryDailyLog, MemoryItem, Task
+from anima_server.models import MemoryDailyLog, MemoryItem, Task
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.schemas.chat import (
     ApprovalRequest,
     ApprovalResponse,
@@ -41,7 +42,6 @@ from anima_server.services.agent import (
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
 from anima_server.services.agent.system_prompt import PromptTemplateError
-from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +53,13 @@ async def send_message(
     payload: ChatRequest,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
     require_unlocked_user(request, payload.userId)
 
     if not payload.stream:
         try:
-            result = await run_agent(payload.message, payload.userId, db, source=payload.source)
+            result = await run_agent(payload.message, payload.userId, db, runtime_db, source=payload.source)
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -82,7 +83,7 @@ async def send_message(
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
             async for event in stream_agent(
-                payload.message, payload.userId, db, source=payload.source
+                payload.message, payload.userId, db, runtime_db, source=payload.source
             ):
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client
@@ -110,16 +111,16 @@ async def get_chat_history(
     request: Request,
     userId: int = Query(ge=0),
     limit: int = Query(default=50, ge=1, le=200),
-    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> list[ChatHistoryMessage]:
     require_unlocked_user(request, userId)
-    rows = list_agent_history(userId, db, limit=limit)
+    rows = list_agent_history(userId, runtime_db, limit=limit)
     return [
         ChatHistoryMessage(
             id=row.id,
             userId=userId,
             role="assistant" if row.role == "tool" else row.role,
-            content=df(userId, row.content_text, table="agent_messages", field="content_text"),
+            content=row.content_text or "",
             createdAt=row.created_at,
             source=getattr(row, "source", None),
         )
@@ -131,10 +132,10 @@ async def get_chat_history(
 async def clear_chat_history(
     payload: ChatResetRequest,
     request: Request,
-    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatHistoryClearResponse:
     require_unlocked_user(request, payload.userId)
-    await reset_agent_thread(payload.userId, db)
+    await reset_agent_thread(payload.userId, runtime_db)
     return ChatHistoryClearResponse(status="cleared")
 
 
@@ -142,10 +143,10 @@ async def clear_chat_history(
 async def reset_chat_thread(
     payload: ChatResetRequest,
     request: Request,
-    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResetResponse:
     require_unlocked_user(request, payload.userId)
-    await reset_agent_thread(payload.userId, db)
+    await reset_agent_thread(payload.userId, runtime_db)
     return ChatResetResponse(status="reset")
 
 
@@ -240,6 +241,7 @@ async def get_home(
     request: Request,
     userId: int = Query(ge=0),
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     require_unlocked_user(request, userId)
 
@@ -265,10 +267,10 @@ async def get_home(
     )
 
     message_count = (
-        db.scalar(
-            select(func.count(AgentMessage.id))
-            .join(AgentThread, AgentMessage.thread_id == AgentThread.id)
-            .where(AgentThread.user_id == userId)
+        runtime_db.scalar(
+            select(func.count(RuntimeMessage.id))
+            .join(RuntimeThread, RuntimeMessage.thread_id == RuntimeThread.id)
+            .where(RuntimeThread.user_id == userId)
         )
         or 0
     )
@@ -421,20 +423,19 @@ async def cancel_run(
     run_id: int,
     payload: CancelRunRequest,
     request: Request,
-    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> CancelRunResponse:
     """Request cancellation of a running agent turn."""
     require_unlocked_user(request, payload.userId)
-    from anima_server.models import AgentRun as AgentRunModel
 
-    run = db.get(AgentRunModel, run_id)
+    run = runtime_db.get(RuntimeRun, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     if run.user_id != payload.userId:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to cancel this run"
         )
-    cancelled = await cancel_agent_run(run_id, payload.userId, db)
+    cancelled = await cancel_agent_run(run_id, payload.userId, runtime_db)
     if cancelled is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return CancelRunResponse(runId=cancelled.id, status=cancelled.status)
@@ -445,12 +446,13 @@ async def dry_run(
     payload: DryRunRequest,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> DryRunResponse:
     """Assemble the full prompt without calling the LLM."""
     require_unlocked_user(request, payload.userId)
 
     try:
-        result = await dry_run_agent(payload.message, payload.userId, db)
+        result = await dry_run_agent(payload.message, payload.userId, db, runtime_db)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -473,13 +475,12 @@ async def handle_approval(
     payload: ApprovalRequest,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> ApprovalResponse | StreamingResponse:
     """Approve or deny a pending tool call for an awaiting-approval run."""
     require_unlocked_user(request, payload.userId)
 
-    from anima_server.models import AgentRun as AgentRunModel
-
-    run = db.get(AgentRunModel, run_id)
+    run = runtime_db.get(RuntimeRun, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     if run.user_id != payload.userId:
@@ -500,6 +501,7 @@ async def handle_approval(
                 payload.userId,
                 payload.approved,
                 db,
+                runtime_db,
                 denial_reason=payload.reason,
             ):
                 if event.event == "thought":
@@ -521,6 +523,7 @@ async def handle_approval(
             payload.userId,
             payload.approved,
             db,
+            runtime_db,
             denial_reason=payload.reason,
         )
     except ValueError as exc:
