@@ -85,11 +85,11 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
 
-    # --- Migrate identity rows ---
+    # --- Migrate identity rows (including metadata_json) ---
     op.execute(
         """
-        INSERT INTO identity_blocks (user_id, content, version, updated_by, created_at, updated_at)
-        SELECT user_id, content, version, updated_by, created_at, updated_at
+        INSERT INTO identity_blocks (user_id, content, version, updated_by, metadata_json, created_at, updated_at)
+        SELECT user_id, content, version, updated_by, metadata_json, created_at, updated_at
         FROM self_model_blocks
         WHERE section = 'identity'
         """
@@ -116,7 +116,9 @@ def upgrade() -> None:
     )
 
     for user_id, blob, fallback_ts in rows:
-        chunks = [c.strip() for c in blob.split("### ") if c.strip()]
+        # Split only on "### " at the start of a line (not mid-body occurrences)
+        chunks = re.split(r"(?:^|\n)### ", blob)
+        chunks = [c.strip() for c in chunks if c.strip()]
         if not chunks:
             continue
         for chunk in chunks:

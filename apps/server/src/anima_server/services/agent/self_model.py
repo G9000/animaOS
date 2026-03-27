@@ -910,7 +910,7 @@ def _replace_growth_log_entries(
         db.delete(row)
     db.flush()
 
-    chunks = [chunk.strip() for chunk in content.split("### ") if chunk.strip()]
+    chunks = [c.strip() for c in re.split(r"(?:^|\n)### ", content) if c.strip()]
     if not chunks and content.strip():
         append_growth_log_entry_row(db, user_id=user_id, entry=content.strip(), source=source)
         return
