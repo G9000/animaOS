@@ -17,6 +17,7 @@ from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db import runtime as runtime_mod
 from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models import runtime_consciousness as _runtime_consciousness_models  # noqa: F401
 from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
 from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.ext.compiler import compiles
