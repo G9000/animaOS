@@ -643,7 +643,31 @@ def set_self_model_block(
 
     with _runtime_session() as pg_db:
         if pg_db is None:
-            raise RuntimeError("Runtime session factory not initialized.")
+            # No runtime DB — fall back to writing in the soul DB
+            # via the legacy SelfModelBlock table.
+            existing = db.scalar(
+                select(SelfModelBlock).where(
+                    SelfModelBlock.user_id == user_id,
+                    SelfModelBlock.section == section,
+                )
+            )
+            if existing is not None:
+                existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+                existing.version += 1
+                existing.updated_by = updated_by
+                existing.updated_at = datetime.now(UTC)
+                db.flush()
+                return existing
+            block = SelfModelBlock(
+                user_id=user_id,
+                section=section,
+                content=ef(user_id, content, table="self_model_blocks", field="content"),
+                version=1,
+                updated_by=updated_by,
+            )
+            db.add(block)
+            db.flush()
+            return block
         if section == "intentions":
             row = set_active_intentions(pg_db, user_id=user_id, content=content, updated_by=updated_by)
         else:

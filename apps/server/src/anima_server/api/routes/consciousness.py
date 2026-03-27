@@ -514,6 +514,15 @@ async def get_emotional_state(
         if emotion_scores:
             dominant = max(emotion_scores, key=emotion_scores.get)
 
+    from anima_server.models import EmotionalSignal
+
+    def _signal_text(signal, field: str) -> str:
+        """Read evidence/topic, decrypting legacy EmotionalSignal rows."""
+        value = getattr(signal, field, "") or ""
+        if isinstance(signal, EmotionalSignal) and value:
+            return df(user_id, value, table="emotional_signals", field=field)
+        return str(value)
+
     return EmotionalContextResponse(
         dominantEmotion=dominant,
         recentSignals=[
@@ -522,8 +531,8 @@ async def get_emotional_state(
                 confidence=signal.confidence,
                 trajectory=signal.trajectory,
                 evidenceType=signal.evidence_type,
-                evidence=str(getattr(signal, "evidence", "") or ""),
-                topic=str(getattr(signal, "topic", "") or ""),
+                evidence=_signal_text(signal, "evidence"),
+                topic=_signal_text(signal, "topic"),
                 createdAt=signal.created_at.isoformat() if signal.created_at else None,
             )
             for signal in signals
