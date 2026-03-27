@@ -5,7 +5,8 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread, User
+from anima_server.models import User
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.services.agent import list_agent_history, run_agent
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.compaction import compact_thread_context
@@ -16,6 +17,7 @@ from anima_server.services.agent.prompt_budget import (
 )
 from anima_server.services.agent.runtime_types import StepTrace
 from anima_server.services.agent.state import AgentResult
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -73,7 +75,8 @@ class RecordingRunner:
 
 
 @contextmanager
-def _db_session() -> Generator[Session, None, None]:
+def _soul_db_session() -> Generator[Session, None, None]:
+    """Soul DB session (for User model)."""
     engine: Engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -104,24 +107,24 @@ async def test_failed_turn_retry_keeps_history_clean(
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
-    with _db_session() as session:
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
         user = User(
             username="retry-me",
             password_hash="not-used",
             display_name="Retry Me",
         )
-        session.add(user)
-        session.commit()
+        soul_session.add(user)
+        soul_session.commit()
 
         with pytest.raises(RuntimeError, match="boom"):
-            await run_agent("first attempt", user.id, session)
+            await run_agent("first attempt", user.id, soul_session, runtime_session)
 
-        result = await run_agent("second attempt", user.id, session)
+        result = await run_agent("second attempt", user.id, soul_session, runtime_session)
 
-        thread = session.query(AgentThread).one()
-        runs = session.query(AgentRun).order_by(AgentRun.id).all()
-        messages = session.query(AgentMessage).order_by(AgentMessage.sequence_id).all()
-        history = list_agent_history(user.id, session, limit=10)
+        thread = runtime_session.query(RuntimeThread).one()
+        runs = runtime_session.query(RuntimeRun).order_by(RuntimeRun.id).all()
+        messages = runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
+        history = list_agent_history(user.id, runtime_session, limit=10)
 
     assert result.response == "Recovered reply."
     assert [run.status for run in runs] == ["failed", "completed"]
@@ -149,17 +152,17 @@ async def test_run_agent_passes_only_prior_turns_in_history(
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
     try:
-        with _db_session() as session:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
             user = User(
                 username="history-check",
                 password_hash="not-used",
                 display_name="History Check",
             )
-            session.add(user)
-            session.commit()
+            soul_session.add(user)
+            soul_session.commit()
 
-            await run_agent("first turn", user.id, session)
-            await run_agent("second turn", user.id, session)
+            await run_agent("first turn", user.id, soul_session, runtime_session)
+            await run_agent("second turn", user.id, soul_session, runtime_session)
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
@@ -173,23 +176,17 @@ async def test_run_agent_passes_only_prior_turns_in_history(
 
 
 def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
-    with _db_session() as session:
-        user = User(
-            username="prompt-budget",
-            password_hash="not-used",
-            display_name="Prompt Budget",
-        )
-        session.add(user)
-        session.flush()
+    with runtime_db_session() as session:
+        user_id = 42
 
-        thread = AgentThread(user_id=user.id, status="active", next_message_sequence=2)
+        thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=2)
         session.add(thread)
         session.flush()
 
         run = create_run(
             session,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             provider="test-provider",
             model="test-model",
             mode="blocking",
@@ -232,7 +229,7 @@ def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
         )
         session.commit()
 
-        step = session.query(AgentStep).one()
+        step = session.query(RuntimeStep).one()
 
     prompt_budget = step.request_json["prompt_budget"]
     assert prompt_budget["system_prompt_token_estimate"] == 30
@@ -240,30 +237,26 @@ def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
 
 
 def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
-    with _db_session() as session:
-        user = User(
-            username="compact-budget",
-            password_hash="not-used",
-            display_name="Compact Budget",
-        )
-        session.add(user)
-        session.flush()
+    with runtime_db_session() as session:
+        user_id = 43
 
-        thread = AgentThread(user_id=user.id, status="active", next_message_sequence=3)
+        thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=3)
         session.add(thread)
         session.flush()
 
         session.add_all(
             [
-                AgentMessage(
+                RuntimeMessage(
                     thread_id=thread.id,
+                    user_id=user_id,
                     sequence_id=1,
                     role="user",
                     content_text="a" * 40,
                     is_in_context=True,
                 ),
-                AgentMessage(
+                RuntimeMessage(
                     thread_id=thread.id,
+                    user_id=user_id,
                     sequence_id=2,
                     role="assistant",
                     content_text="b" * 40,
@@ -281,7 +274,7 @@ def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
             keep_last_messages=1,
             reserved_prompt_tokens=12,
         )
-        summary = session.query(AgentMessage).filter(AgentMessage.role == "summary").one()
+        summary = session.query(RuntimeMessage).filter(RuntimeMessage.role == "summary").one()
 
     assert result is not None
     assert result.effective_trigger_token_limit == 18

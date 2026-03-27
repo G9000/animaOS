@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import os
 import sys
@@ -16,7 +15,7 @@ from anima_server.db.pg_lifecycle import EmbeddedPG
 from anima_server.db.runtime import (
     dispose_runtime_engine,
     get_runtime_engine,
-    get_runtime_session,
+    get_runtime_session_factory,
     init_runtime_engine,
 )
 from anima_server.db.session import get_db
@@ -26,7 +25,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 
 HAS_PGSERVER = importlib.util.find_spec("pgserver") is not None
-HAS_ASYNCPG = importlib.util.find_spec("asyncpg") is not None
+HAS_PSYCOPG = importlib.util.find_spec("psycopg") is not None or importlib.util.find_spec("psycopg2") is not None
 EXPLICIT_RUNTIME_DATABASE_URL = os.getenv("ANIMA_RUNTIME_DATABASE_URL", "").strip()
 
 requires_embedded_pg = pytest.mark.skipif(
@@ -37,9 +36,9 @@ requires_embedded_pg = pytest.mark.skipif(
     ),
 )
 requires_runtime_backend = pytest.mark.skipif(
-    not HAS_ASYNCPG or (not EXPLICIT_RUNTIME_DATABASE_URL and not HAS_PGSERVER),
+    not HAS_PSYCOPG or (not EXPLICIT_RUNTIME_DATABASE_URL and not HAS_PGSERVER),
     reason=(
-        "Runtime PostgreSQL integration tests require asyncpg plus either "
+        "Runtime PostgreSQL integration tests require psycopg plus either "
         "pgserver or ANIMA_RUNTIME_DATABASE_URL."
     ),
 )
@@ -47,9 +46,9 @@ requires_runtime_backend = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _reset_runtime_engine_state() -> None:
-    asyncio.run(dispose_runtime_engine())
+    dispose_runtime_engine()
     yield
-    asyncio.run(dispose_runtime_engine())
+    dispose_runtime_engine()
 
 
 @pytest.fixture
@@ -91,9 +90,10 @@ def _reload_main_module():
     return importlib.import_module("anima_server.main")
 
 
-async def _execute_runtime_sql(sql: str) -> None:
-    async with get_runtime_engine().begin() as connection:
-        await connection.execute(text(sql))
+def _execute_runtime_sql(sql: str) -> None:
+    engine = get_runtime_engine()
+    with engine.begin() as connection:
+        connection.execute(text(sql))
 
 
 @requires_embedded_pg
@@ -121,12 +121,12 @@ def test_embedded_pg_stop_is_idempotent(managed_tmp_path: Path) -> None:
 
 
 @requires_embedded_pg
-def test_embedded_pg_database_url_returns_asyncpg_url(managed_tmp_path: Path) -> None:
+def test_embedded_pg_database_url_returns_raw_url(managed_tmp_path: Path) -> None:
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
 
     try:
         pg.start()
-        assert pg.database_url.startswith("postgresql+asyncpg://")
+        assert pg.database_url.startswith("postgresql")
     finally:
         pg.stop()
 
@@ -179,83 +179,83 @@ def test_embedded_pg_keeps_lockfile_on_permission_error(
     assert pid_file.exists() is True
 
 
-@pytest.mark.asyncio
 @requires_runtime_backend
-async def test_runtime_session_factory_creates_working_async_sessions(
+def test_runtime_session_factory_creates_working_sync_sessions(
     runtime_database_url: str,
 ) -> None:
     init_runtime_engine(runtime_database_url)
 
-    async with get_runtime_session() as session:
-        result = await session.execute(text("SELECT 1"))
+    factory = get_runtime_session_factory()
+    with factory() as session:
+        result = session.execute(text("SELECT 1"))
 
     assert result.scalar_one() == 1
 
 
-@pytest.mark.asyncio
 @requires_runtime_backend
-async def test_get_runtime_session_commits(runtime_database_url: str) -> None:
+def test_get_runtime_session_commits(runtime_database_url: str) -> None:
     table_name = _unique_table_name("runtime_commit_test")
     init_runtime_engine(runtime_database_url)
 
     try:
-        await _execute_runtime_sql(
+        _execute_runtime_sql(
             f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
         )
 
-        async with get_runtime_session() as session:
-            await session.execute(
+        factory = get_runtime_session_factory()
+        with factory() as session:
+            session.execute(
                 text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'committed')")
             )
+            session.commit()
 
-        async with get_runtime_session() as session:
-            result = await session.execute(text(f"SELECT value FROM {table_name} WHERE id = 1"))
+        with factory() as session:
+            result = session.execute(text(f"SELECT value FROM {table_name} WHERE id = 1"))
 
         assert result.scalar_one() == "committed"
     finally:
-        await _execute_runtime_sql(f"DROP TABLE IF EXISTS {table_name}")
+        _execute_runtime_sql(f"DROP TABLE IF EXISTS {table_name}")
 
 
-@pytest.mark.asyncio
 @requires_runtime_backend
-async def test_get_runtime_session_rolls_back_on_exception(runtime_database_url: str) -> None:
+def test_get_runtime_session_rolls_back_on_exception(runtime_database_url: str) -> None:
     table_name = _unique_table_name("runtime_rollback_test")
     init_runtime_engine(runtime_database_url)
 
     try:
-        await _execute_runtime_sql(
+        _execute_runtime_sql(
             f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
         )
 
+        factory = get_runtime_session_factory()
+
         with pytest.raises(RuntimeError, match="force rollback"):
-            async with get_runtime_session() as session:
-                await session.execute(
+            with factory() as session:
+                session.execute(
                     text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')")
                 )
                 raise RuntimeError("force rollback")
 
-        async with get_runtime_session() as session:
-            result = await session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+        with factory() as session:
+            result = session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
 
         assert result.scalar_one() == 0
     finally:
-        await _execute_runtime_sql(f"DROP TABLE IF EXISTS {table_name}")
+        _execute_runtime_sql(f"DROP TABLE IF EXISTS {table_name}")
 
 
-@pytest.mark.asyncio
 @requires_runtime_backend
-async def test_dispose_runtime_engine_cleans_up(runtime_database_url: str) -> None:
+def test_dispose_runtime_engine_cleans_up(runtime_database_url: str) -> None:
     init_runtime_engine(runtime_database_url)
 
-    await dispose_runtime_engine()
+    dispose_runtime_engine()
 
     with pytest.raises(RuntimeError, match="Runtime engine not initialized"):
         get_runtime_engine()
 
 
-@pytest.mark.asyncio
 @requires_runtime_backend
-async def test_dual_engine_coexistence(
+def test_dual_engine_coexistence(
     managed_tmp_path: Path,
     runtime_database_url: str,
 ) -> None:
@@ -278,8 +278,9 @@ async def test_dual_engine_coexistence(
             finally:
                 db_dependency.close()
 
-        async with get_runtime_session() as runtime_session:
-            runtime_result = await runtime_session.execute(text("SELECT 1"))
+        factory = get_runtime_session_factory()
+        with factory() as runtime_session:
+            runtime_result = runtime_session.execute(text("SELECT 1"))
 
         soul_engine = soul_session.get_bind()
         runtime_engine = get_runtime_engine()
@@ -288,7 +289,7 @@ async def test_dual_engine_coexistence(
         assert runtime_result.scalar_one() == 1
         assert soul_engine.dialect.name == "sqlite"
         assert runtime_engine.dialect.name == "postgresql"
-        assert soul_engine is not runtime_engine.sync_engine
+        assert soul_engine is not runtime_engine
     finally:
         settings.data_dir = original_data_dir
         dispose_cached_engines()
@@ -299,13 +300,13 @@ def test_config_auto_derives_url_from_embedded_pg(
     managed_tmp_path: Path,
 ) -> None:
     fake_pg = SimpleNamespace(
-        database_url="postgresql+asyncpg://anima:test@localhost:5432/anima_runtime",
+        database_url="postgresql://anima:test@localhost:5432/anima_runtime",
         stop=MagicMock(),
     )
     init_calls: list[tuple[str, bool]] = []
     cancel_pending_reflection = AsyncMock()
     drain_background_memory_tasks = AsyncMock()
-    dispose_runtime_engine_mock = AsyncMock()
+    dispose_runtime_engine_mock = MagicMock()
 
     original_data_dir = settings.data_dir
     original_runtime_database_url = settings.runtime_database_url
@@ -322,8 +323,9 @@ def test_config_auto_derives_url_from_embedded_pg(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False: init_calls.append((database_url, echo)),
+            lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
         )
+        monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
         monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
@@ -341,7 +343,7 @@ def test_config_auto_derives_url_from_embedded_pg(
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
-        dispose_runtime_engine_mock.assert_awaited_once_with()
+        dispose_runtime_engine_mock.assert_called_once_with()
         fake_pg.stop.assert_called_once_with()
     finally:
         settings.data_dir = original_data_dir
@@ -355,11 +357,11 @@ def test_explicit_runtime_url_skips_embedded_pg(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
 ) -> None:
-    explicit_url = "postgresql+asyncpg://anima:test@localhost:5432/anima_runtime"
+    explicit_url = "postgresql://anima:test@localhost:5432/anima_runtime"
     init_calls: list[tuple[str, bool]] = []
     cancel_pending_reflection = AsyncMock()
     drain_background_memory_tasks = AsyncMock()
-    dispose_runtime_engine_mock = AsyncMock()
+    dispose_runtime_engine_mock = MagicMock()
 
     original_data_dir = settings.data_dir
     original_runtime_database_url = settings.runtime_database_url
@@ -377,8 +379,9 @@ def test_explicit_runtime_url_skips_embedded_pg(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False: init_calls.append((database_url, echo)),
+            lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
         )
+        monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
         monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
@@ -396,7 +399,7 @@ def test_explicit_runtime_url_skips_embedded_pg(
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
-        dispose_runtime_engine_mock.assert_awaited_once_with()
+        dispose_runtime_engine_mock.assert_called_once_with()
     finally:
         settings.data_dir = original_data_dir
         settings.runtime_database_url = original_runtime_database_url
@@ -405,9 +408,13 @@ def test_explicit_runtime_url_skips_embedded_pg(
         sys.modules.pop("anima_server.main", None)
 
 
-@pytest.mark.asyncio
-async def test_init_runtime_engine_raises_on_invalid_url() -> None:
-    init_runtime_engine("postgresql+asyncpg://invalid:5432/nope")
+@pytest.mark.skipif(
+    not importlib.util.find_spec("psycopg"),
+    reason="psycopg (v3) not installed",
+)
+def test_init_runtime_engine_raises_on_invalid_url() -> None:
+    init_runtime_engine("postgresql+psycopg://invalid:5432/nope")
+    factory = get_runtime_session_factory()
     with pytest.raises(Exception):
-        async with get_runtime_session() as session:
-            await session.execute(text("SELECT 1"))
+        with factory() as session:
+            session.execute(text("SELECT 1"))

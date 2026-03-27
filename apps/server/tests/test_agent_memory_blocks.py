@@ -5,8 +5,10 @@ from contextlib import contextmanager
 
 from anima_server.db.base import Base
 from anima_server.models import AgentMessage, AgentThread, MemoryItem, User
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 from anima_server.services.agent.persistence import load_thread_history
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -192,30 +194,26 @@ def test_build_runtime_memory_blocks_omits_empty_focus() -> None:
 
 
 def test_load_thread_history_excludes_summary_messages() -> None:
-    with _db_session() as session:
-        user = User(
-            username="history-filter",
-            password_hash="not-used",
-            display_name="History Filter",
-        )
-        session.add(user)
-        session.flush()
+    with runtime_db_session() as session:
+        user_id = 99
 
-        thread = AgentThread(user_id=user.id, status="active")
+        thread = RuntimeThread(user_id=user_id, status="active")
         session.add(thread)
         session.flush()
 
         session.add_all(
             [
-                AgentMessage(
+                RuntimeMessage(
                     thread_id=thread.id,
+                    user_id=user_id,
                     sequence_id=1,
                     role="summary",
                     content_text="Conversation summary:\n- Earlier context.",
                     is_in_context=True,
                 ),
-                AgentMessage(
+                RuntimeMessage(
                     thread_id=thread.id,
+                    user_id=user_id,
                     sequence_id=2,
                     role="assistant",
                     content_text="Latest assistant message.",

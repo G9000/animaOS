@@ -202,7 +202,8 @@ async def test_memory_modified_flag_propagated() -> None:
         return "modified"
 
     mock_db = MagicMock()
-    set_tool_context(ToolContext(db=mock_db, user_id=1, thread_id=1))
+    mock_runtime_db = MagicMock()
+    set_tool_context(ToolContext(db=mock_db, runtime_db=mock_runtime_db, user_id=1, thread_id=1))
     try:
         executor = ToolExecutor([modify_memory])
         tc = ToolCall(id="c1", name="modify_memory", arguments={})

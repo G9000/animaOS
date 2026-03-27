@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from contextlib import contextmanager
-
-from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentThread, User
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import (
     SUMMARY_LINE_LIMIT,
     SUMMARY_TEXT_LIMIT,
@@ -17,48 +13,31 @@ from anima_server.services.agent.compaction import (
     estimate_message_tokens,
     render_summary_text,
 )
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from conftest_runtime import runtime_db_session
+from sqlalchemy.orm import Session
 
 # --------------------------------------------------------------------------- #
-# In-memory database helper
+# In-memory database helper (runtime DB — compaction uses RuntimeBase models)
 # --------------------------------------------------------------------------- #
 
+_db_session = runtime_db_session
 
-@contextmanager
-def _db_session() -> Generator[Session, None, None]:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    factory = sessionmaker(
-        bind=engine,
-        autoflush=False,
-        autocommit=False,
-        expire_on_commit=False,
-        class_=Session,
-    )
-    Base.metadata.create_all(bind=engine)
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
+_TEST_USER_COUNTER = 0
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="testuser", password_hash="x", display_name="Test")
-    db.add(user)
-    db.flush()
-    return user
+class _FakeUser:
+    def __init__(self) -> None:
+        global _TEST_USER_COUNTER
+        _TEST_USER_COUNTER += 1
+        self.id = _TEST_USER_COUNTER
 
 
-def _make_thread(db: Session, user_id: int) -> AgentThread:
-    thread = AgentThread(user_id=user_id, status="active")
+def _make_user(db: Session) -> _FakeUser:  # noqa: ARG001
+    return _FakeUser()
+
+
+def _make_thread(db: Session, user_id: int) -> RuntimeThread:
+    thread = RuntimeThread(user_id=user_id, status="active")
     db.add(thread)
     db.flush()
     return thread
@@ -71,12 +50,14 @@ def _add_message(
     sequence_id: int,
     role: str,
     content_text: str,
+    user_id: int = 1,
     is_in_context: bool = True,
     tool_name: str | None = None,
     token_estimate: int | None = None,
-) -> AgentMessage:
-    msg = AgentMessage(
+) -> RuntimeMessage:
+    msg = RuntimeMessage(
         thread_id=thread_id,
+        user_id=user_id,
         run_id=None,
         step_id=None,
         sequence_id=sequence_id,

@@ -17,7 +17,8 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentRun, AgentThread, User
+from anima_server.models import User
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.persistence import (
@@ -44,6 +45,7 @@ from anima_server.services.agent.sequencing import reserve_message_sequences
 from anima_server.services.agent.state import AgentResult
 from anima_server.services.agent.streaming import build_approval_pending_event
 from anima_server.services.agent.tools import send_message, tool
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -71,6 +73,10 @@ class QueueAdapter(BaseLLMAdapter):
 
 @contextmanager
 def _db_session() -> Generator[Session, None, None]:
+    """Combined session with both RuntimeBase and Base tables."""
+    from anima_server.db.runtime_base import RuntimeBase
+    from anima_server.models import runtime as _rm  # noqa: F401
+
     engine: Engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -84,19 +90,26 @@ def _db_session() -> Generator[Session, None, None]:
         class_=Session,
     )
     Base.metadata.create_all(bind=engine)
+    RuntimeBase.metadata.create_all(bind=engine)
     session = factory()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
         engine.dispose()
 
+_TEST_USER_COUNTER = 0
 
-def _setup_thread_and_run(db: Session) -> tuple[AgentThread, AgentRun, User]:
-    user = User(username="testuser", password_hash="x", display_name="Test")
-    db.add(user)
-    db.flush()
+
+class _FakeUser:
+    def __init__(self) -> None:
+        global _TEST_USER_COUNTER
+        _TEST_USER_COUNTER += 1
+        self.id = _TEST_USER_COUNTER
+
+
+def _setup_thread_and_run(db: Session) -> tuple[RuntimeThread, RuntimeRun, _FakeUser]:
+    user = _FakeUser()
     thread = get_or_create_thread(db, user.id)
     run = create_run(
         db,
@@ -581,6 +594,7 @@ async def test_approve_or_deny_turn_persists_and_finalizes(
             user_id=user.id,
             approved=True,
             db=db,
+            runtime_db=db,
         )
 
     assert result.response == "File deleted."
@@ -713,7 +727,7 @@ def test_persist_approval_checkpoint_creates_message_and_sets_status() -> None:
         assert run.status == "awaiting_approval"
         assert run.pending_approval_message_id is not None
 
-        approval_msgs = db.query(AgentMessage).filter_by(role="approval").all()
+        approval_msgs = db.query(RuntimeMessage).filter_by(role="approval").all()
         assert len(approval_msgs) == 1
         assert approval_msgs[0].tool_name == "delete_file"
 

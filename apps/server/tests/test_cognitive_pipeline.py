@@ -109,7 +109,7 @@ async def test_append_memory_respond_pipeline() -> None:
         )
         db.commit()
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=1))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=1))
         try:
             # Step 1: core_memory_append (with thinking)
             # Step 2: send_message (with thinking)
@@ -235,7 +235,7 @@ async def test_core_memory_replace_pipeline() -> None:
         )
         db.commit()
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=1))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=1))
         try:
             adapter = QueueAdapter(
                 [

@@ -9,6 +9,7 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.models import MemoryDailyLog, User
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
+from conftest_runtime import runtime_db_session
 from anima_server.services.agent.consolidation import (
     LLMExtractionResult,
     consolidate_turn_memory,
@@ -309,7 +310,7 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
         settings.agent_provider = "scaffold"
         invalidate_agent_runtime_cache()
 
-        with _db_session() as session:
+        with _db_session() as session, runtime_db_session() as runtime_session:
             user = User(
                 username="background-memory",
                 password_hash="not-used",
@@ -325,6 +326,7 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
                 "I prefer short walks. My current focus is finishing the memory pipeline.",
                 user.id,
                 session,
+                runtime_session,
             )
             await drain_background_memory_tasks()
             session.expire_all()

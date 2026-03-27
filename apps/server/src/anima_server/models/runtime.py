@@ -5,7 +5,7 @@ via :class:`RuntimeBase` instead of the per-user SQLCipher :class:`Base`.
 
 Key differences from the soul models:
 - ``BigInteger`` primary keys
-- ``TIMESTAMPTZ`` instead of ``DateTime(timezone=True)``
+- ``TIMESTAMP(timezone=True)`` instead of ``DateTime(timezone=True)``
 - ``postgresql.JSON`` instead of generic ``JSON``
 - Table names prefixed with ``runtime_``
 - ``user_id`` is a plain indexed column (no FK to soul tables)
@@ -28,7 +28,11 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSON, TIMESTAMPTZ
+from sqlalchemy.dialects.postgresql import JSON, TIMESTAMP as _PG_TIMESTAMP
+
+# TIMESTAMPTZ shorthand — ``TIMESTAMP(timezone=True)`` is the portable
+# spelling that works across all SQLAlchemy versions & PG backends.
+TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from anima_server.db.runtime_base import RuntimeBase
