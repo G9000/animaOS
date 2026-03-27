@@ -25,6 +25,13 @@ from anima_server.models.consciousness import (
     SelfModelBlock,
 )
 from anima_server.models.links import DiscordLink, TelegramLink
+from anima_server.models.runtime import (
+    RuntimeBackgroundTaskRun,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeStep,
+    RuntimeThread,
+)
 from anima_server.models.task import Task
 from anima_server.models.user import User
 from anima_server.models.user_key import UserKey
@@ -49,6 +56,11 @@ __all__ = [
     "MemoryItem",
     "MemoryItemTag",
     "MemoryVector",
+    "RuntimeBackgroundTaskRun",
+    "RuntimeMessage",
+    "RuntimeRun",
+    "RuntimeStep",
+    "RuntimeThread",
     "SelfModelBlock",
     "SessionNote",
     "Task",
