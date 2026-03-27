@@ -19,3 +19,5 @@ __pycache__/
 .claude/worktrees/
 .anima-cli-session
 .worktrees/
+apps/server/eval/data/
+apps/server/eval/results/
