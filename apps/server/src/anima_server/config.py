@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     agent_emotional_context_budget: int = 500
     agent_emotional_signal_buffer_size: int = 20
     agent_emotional_confidence_threshold: float = 0.4
+    agent_emotional_patterns_budget: int = 400
     message_ttl_days: int = 30
     consolidation_health_threshold_minutes: int = 30
     sidecar_nonce: str = ""

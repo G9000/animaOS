@@ -56,13 +56,18 @@ def build_runtime_memory_blocks(
         blocks.append(user_directive_block)
 
     # Self-model blocks (Priority 1 — always present, never truncated)
-    for sm_block in build_self_model_memory_blocks(db, user_id=user_id):
+    for sm_block in build_self_model_memory_blocks(db, user_id=user_id, pg_db=runtime_db):
         blocks.append(sm_block)
 
-    # Emotional context (Priority 2)
-    emotional_block = build_emotional_context_block(db, user_id=user_id)
+    # Emotional context (Priority 2 — momentary signals from runtime)
+    emotional_block = build_emotional_context_block(runtime_db or db, user_id=user_id)
     if emotional_block is not None:
         blocks.append(emotional_block)
+
+    # Emotional patterns (Priority 2 — enduring patterns from soul)
+    emotional_patterns_block = build_emotional_patterns_block(db, user_id=user_id)
+    if emotional_patterns_block is not None:
+        blocks.append(emotional_patterns_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     if semantic_results:
@@ -557,16 +562,23 @@ def build_self_model_memory_blocks(
     db: Session,
     *,
     user_id: int,
+    pg_db: Session | None = None,
 ) -> list[MemoryBlock]:
     """Build memory blocks from the agent's self-model sections."""
     from anima_server.services.agent.self_model import (
         ensure_self_model_exists,
+        get_active_intentions,
         get_all_self_model_blocks,
+        get_growth_log_text,
+        get_identity_block,
+        get_working_context,
         render_self_model_section,
     )
 
     ensure_self_model_exists(db, user_id=user_id)
     blocks_map = get_all_self_model_blocks(db, user_id=user_id)
+    working_context = get_working_context(pg_db, user_id=user_id) if pg_db is not None else {}
+    intentions = get_active_intentions(pg_db, user_id=user_id) if pg_db is not None else None
     result: list[MemoryBlock] = []
 
     section_config = [
@@ -586,8 +598,22 @@ def build_self_model_memory_blocks(
     ]
 
     for section, label, description in section_config:
-        block = blocks_map.get(section)
-        text = render_self_model_section(block, user_id=user_id)
+        if section == "identity":
+            block = get_identity_block(db, user_id=user_id) or blocks_map.get(section)
+            text = render_self_model_section(block, user_id=user_id)
+        elif section == "growth_log":
+            text = get_growth_log_text(db, user_id=user_id)
+            if not text:
+                text = render_self_model_section(blocks_map.get(section), user_id=user_id)
+        elif section in {"inner_state", "working_memory"}:
+            block = working_context.get(section) or blocks_map.get(section)
+            text = render_self_model_section(block, user_id=user_id)
+        elif section == "intentions":
+            block = intentions or blocks_map.get(section)
+            text = render_self_model_section(block, user_id=user_id)
+        else:
+            block = blocks_map.get(section)
+            text = render_self_model_section(block, user_id=user_id)
         if text:
             result.append(
                 MemoryBlock(
@@ -616,6 +642,38 @@ def build_emotional_context_block(
         label="emotional_context",
         description="My sense of how the user is doing emotionally. Guide tone, not verbal analysis.",
         value=text,
+    )
+
+
+def build_emotional_patterns_block(
+    db: Session,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    """Build a memory block from enduring emotional patterns."""
+    from anima_server.config import settings
+    from anima_server.models.soul_consciousness import CoreEmotionalPattern
+
+    patterns = db.scalars(
+        select(CoreEmotionalPattern)
+        .where(CoreEmotionalPattern.user_id == user_id)
+        .order_by(CoreEmotionalPattern.confidence.desc())
+        .limit(10)
+    ).all()
+    if not patterns:
+        return None
+
+    value = "\n".join(
+        f"- {pattern.pattern} ({pattern.dominant_emotion}, confidence: {pattern.confidence:.1f})"
+        for pattern in patterns
+    )
+    if len(value) > settings.agent_emotional_patterns_budget:
+        value = value[: settings.agent_emotional_patterns_budget]
+
+    return MemoryBlock(
+        label="emotional_patterns",
+        description="My enduring emotional tendencies - patterns distilled from many conversations.",
+        value=value,
     )
 
 

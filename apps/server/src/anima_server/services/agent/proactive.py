@@ -95,40 +95,64 @@ def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
         )
 
     # Get self-model sections for context
-    from anima_server.services.agent.self_model import get_self_model_block
+    from anima_server.services.agent.self_model import (
+        get_identity_block,
+        get_self_model_block,
+        get_working_context,
+        render_self_model_section,
+    )
 
-    identity_block = get_self_model_block(db, user_id=user_id, section="identity")
+    identity_block = get_identity_block(db, user_id=user_id)
     identity_summary = (
-        df(user_id, identity_block.content, table="self_model_blocks", field="content")
+        render_self_model_section(identity_block, user_id=user_id)
         if identity_block
         else None
     )
 
-    inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+    inner_state_block = None
+    working_memory_block = None
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        with get_runtime_session_factory()() as runtime_db:
+            working_context = get_working_context(runtime_db, user_id=user_id)
+            inner_state_block = working_context.get("inner_state")
+            working_memory_block = working_context.get("working_memory")
+    except Exception:
+        inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+        working_memory_block = get_self_model_block(db, user_id=user_id, section="working_memory")
+
     inner_state_summary = (
-        df(user_id, inner_state_block.content, table="self_model_blocks", field="content")
+        render_self_model_section(inner_state_block, user_id=user_id)
         if inner_state_block
         else None
     )
-
-    working_memory_block = get_self_model_block(db, user_id=user_id, section="working_memory")
     working_memory_summary = (
-        df(
-            user_id,
-            working_memory_block.content,
-            table="self_model_blocks",
-            field="content",
-        )
+        render_self_model_section(working_memory_block, user_id=user_id)
         if working_memory_block
         else None
     )
 
-    # Get emotional context
+    # Get emotional context (read from runtime PG where signals now live)
     from anima_server.services.agent.emotional_intelligence import (
         get_recent_signals,
     )
 
-    signals = get_recent_signals(db, user_id=user_id, limit=1)
+    emotion_db = db
+    _own_emotion_session = None
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        _own_emotion_session = get_runtime_session_factory()()
+        emotion_db = _own_emotion_session
+    except Exception:
+        pass  # fall back to soul DB
+
+    try:
+        signals = get_recent_signals(emotion_db, user_id=user_id, limit=1)
+    finally:
+        if _own_emotion_session is not None:
+            _own_emotion_session.close()
     emotional_summary = None
     if signals:
         s = signals[0]

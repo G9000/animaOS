@@ -13,6 +13,27 @@ from anima_server.services.data_crypto import df
 router = APIRouter(prefix="/api/consciousness", tags=["consciousness"])
 
 
+def _get_optional_runtime_db():
+    """Yield a runtime DB session, or None if runtime is not initialized."""
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        factory = get_runtime_session_factory()
+    except RuntimeError:
+        yield None
+        return
+
+    session = factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 class SelfModelSectionResponse(BaseModel):
     section: str
     content: str
@@ -41,6 +62,38 @@ class EmotionalContextResponse(BaseModel):
     synthesizedContext: str
 
 
+def _section_dict(
+    *,
+    content: str,
+    version: int,
+    updated_by: str,
+    updated_at,
+) -> dict[str, object]:
+    return {
+        "content": content,
+        "version": version,
+        "updatedBy": updated_by,
+        "updatedAt": updated_at.isoformat() if updated_at else None,
+    }
+
+
+def _section_response(
+    *,
+    section: str,
+    content: str,
+    version: int,
+    updated_by: str,
+    updated_at,
+) -> SelfModelSectionResponse:
+    return SelfModelSectionResponse(
+        section=section,
+        content=content,
+        version=version,
+        updatedBy=updated_by,
+        updatedAt=updated_at.isoformat() if updated_at else None,
+    )
+
+
 # --- Self-Model Endpoints ---
 
 
@@ -49,26 +102,83 @@ async def get_full_self_model(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> dict[str, object]:
-    """Get the complete self-model for this user — all sections."""
+    """Get the complete self-model for this user across soul and runtime stores."""
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.self_model import (
         ensure_self_model_exists,
+        get_active_intentions,
         get_all_self_model_blocks,
+        get_growth_log_entries,
+        get_growth_log_text,
+        get_identity_block,
+        get_working_context,
+        render_self_model_section,
     )
 
     ensure_self_model_exists(db, user_id=user_id)
     blocks = get_all_self_model_blocks(db, user_id=user_id)
 
-    sections = {}
+    sections: dict[str, object] = {}
+
     for section_name, block in blocks.items():
-        sections[section_name] = {
-            "content": df(user_id, block.content, table="self_model_blocks", field="content"),
-            "version": block.version,
-            "updatedBy": block.updated_by,
-            "updatedAt": block.updated_at.isoformat() if block.updated_at else None,
-        }
+        if section_name in {"identity", "growth_log", "inner_state", "working_memory", "intentions"}:
+            continue
+        sections[section_name] = _section_dict(
+            content=render_self_model_section(block, user_id=user_id),
+            version=block.version,
+            updated_by=block.updated_by,
+            updated_at=block.updated_at,
+        )
+
+    identity_block = get_identity_block(db, user_id=user_id)
+    if identity_block is not None:
+        sections["identity"] = _section_dict(
+            content=render_self_model_section(identity_block, user_id=user_id),
+            version=identity_block.version,
+            updated_by=identity_block.updated_by,
+            updated_at=identity_block.updated_at,
+        )
+
+    growth_entries = get_growth_log_entries(db, user_id=user_id)
+    if growth_entries:
+        latest = growth_entries[0]
+        sections["growth_log"] = _section_dict(
+            content=get_growth_log_text(db, user_id=user_id),
+            version=len(growth_entries),
+            updated_by=latest.source,
+            updated_at=latest.created_at,
+        )
+    else:
+        sections["growth_log"] = _section_dict(
+            content="",
+            version=1,
+            updated_by="system",
+            updated_at=None,
+        )
+
+    working_context = get_working_context(runtime_db or db, user_id=user_id)
+    for section_name in ("inner_state", "working_memory"):
+        block = working_context.get(section_name)
+        if block is None:
+            continue
+        sections[section_name] = _section_dict(
+            content=render_self_model_section(block, user_id=user_id),
+            version=block.version,
+            updated_by=block.updated_by,
+            updated_at=block.updated_at,
+        )
+
+    intentions_block = get_active_intentions(runtime_db or db, user_id=user_id)
+    if intentions_block is not None:
+        sections["intentions"] = _section_dict(
+            content=render_self_model_section(intentions_block, user_id=user_id),
+            version=intentions_block.version,
+            updated_by=intentions_block.updated_by,
+            updated_at=intentions_block.updated_at,
+        )
 
     return {"userId": user_id, "sections": sections}
 
@@ -79,6 +189,7 @@ async def get_self_model_section(
     section: str,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """Get a single self-model section."""
     require_unlocked_user(request, user_id)
@@ -86,7 +197,13 @@ async def get_self_model_section(
     from anima_server.services.agent.self_model import (
         ALL_SECTIONS,
         ensure_self_model_exists,
+        get_active_intentions,
+        get_growth_log_entries,
+        get_growth_log_text,
+        get_identity_block,
         get_self_model_block,
+        get_working_context,
+        render_self_model_section,
     )
 
     if section not in ALL_SECTIONS:
@@ -96,16 +213,72 @@ async def get_self_model_section(
         )
 
     ensure_self_model_exists(db, user_id=user_id)
+
+    if section == "identity":
+        block = get_identity_block(db, user_id=user_id)
+        if block is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+        return _section_response(
+            section=section,
+            content=render_self_model_section(block, user_id=user_id),
+            version=block.version,
+            updated_by=block.updated_by,
+            updated_at=block.updated_at,
+        )
+
+    if section == "growth_log":
+        entries = get_growth_log_entries(db, user_id=user_id)
+        if entries:
+            latest = entries[0]
+            return _section_response(
+                section=section,
+                content=get_growth_log_text(db, user_id=user_id),
+                version=len(entries),
+                updated_by=latest.source,
+                updated_at=latest.created_at,
+            )
+        return _section_response(
+            section=section,
+            content="",
+            version=1,
+            updated_by="system",
+            updated_at=None,
+        )
+
+    if section in {"inner_state", "working_memory"}:
+        block = get_working_context(runtime_db or db, user_id=user_id).get(section)
+        if block is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+        return _section_response(
+            section=section,
+            content=render_self_model_section(block, user_id=user_id),
+            version=block.version,
+            updated_by=block.updated_by,
+            updated_at=block.updated_at,
+        )
+
+    if section == "intentions":
+        block = get_active_intentions(runtime_db or db, user_id=user_id)
+        if block is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+        return _section_response(
+            section=section,
+            content=render_self_model_section(block, user_id=user_id),
+            version=block.version,
+            updated_by=block.updated_by,
+            updated_at=block.updated_at,
+        )
+
     block = get_self_model_block(db, user_id=user_id, section=section)
     if block is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
 
-    return SelfModelSectionResponse(
+    return _section_response(
         section=block.section,
-        content=df(user_id, block.content, table="self_model_blocks", field="content"),
+        content=render_self_model_section(block, user_id=user_id),
         version=block.version,
-        updatedBy=block.updated_by,
-        updatedAt=block.updated_at.isoformat() if block.updated_at else None,
+        updated_by=block.updated_by,
+        updated_at=block.updated_at,
     )
 
 
@@ -116,6 +289,7 @@ async def update_self_model_section(
     payload: SelfModelUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """User edits a self-model section. Treated as highest-confidence evidence."""
     require_unlocked_user(request, user_id)
@@ -124,7 +298,10 @@ async def update_self_model_section(
         ALL_SECTIONS,
         append_growth_log_entry,
         ensure_self_model_exists,
+        render_self_model_section,
+        set_active_intentions,
         set_self_model_block,
+        set_working_context,
     )
 
     if section not in ALL_SECTIONS:
@@ -134,15 +311,32 @@ async def update_self_model_section(
         )
 
     ensure_self_model_exists(db, user_id=user_id)
-    block = set_self_model_block(
-        db,
-        user_id=user_id,
-        section=section,
-        content=payload.content,
-        updated_by="user_edit",
-    )
 
-    # Log the user edit in the growth log
+    rt = runtime_db or db
+    if section == "intentions":
+        block = set_active_intentions(
+            rt,
+            user_id=user_id,
+            content=payload.content,
+            updated_by="user_edit",
+        )
+    elif section in {"inner_state", "working_memory"}:
+        block = set_working_context(
+            rt,
+            user_id=user_id,
+            section=section,
+            content=payload.content,
+            updated_by="user_edit",
+        )
+    else:
+        block = set_self_model_block(
+            db,
+            user_id=user_id,
+            section=section,
+            content=payload.content,
+            updated_by="user_edit",
+        )
+
     if section != "growth_log":
         append_growth_log_entry(
             db,
@@ -151,13 +345,15 @@ async def update_self_model_section(
         )
 
     db.commit()
+    if runtime_db is not None:
+        runtime_db.commit()
 
-    return SelfModelSectionResponse(
-        section=block.section,
-        content=df(user_id, block.content, table="self_model_blocks", field="content"),
+    return _section_response(
+        section=section,
+        content=render_self_model_section(block, user_id=user_id),
         version=block.version,
-        updatedBy=block.updated_by,
-        updatedAt=block.updated_at.isoformat() if block.updated_at else None,
+        updated_by=block.updated_by,
+        updated_at=block.updated_at,
     )
 
 
@@ -204,7 +400,7 @@ async def update_agent_profile(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    """Update the agent's profile — name, relationship, persona template."""
+    """Update the agent's profile - name, relationship, persona template."""
     require_unlocked_user(request, user_id)
 
     from anima_server.models import AgentProfile
@@ -227,7 +423,6 @@ async def update_agent_profile(
 
     profile.setup_complete = True
 
-    # Regenerate soul/origin block if agent name changed
     if name_changed:
         origin_content = render_origin_block(
             agent_name=profile.agent_name,
@@ -241,13 +436,12 @@ async def update_agent_profile(
             updated_by="agent_setup",
         )
 
-    # Update human block with relationship
     if relationship_changed:
         human_block = get_self_model_block(db, user_id=user_id, section="human")
         if human_block:
             content = df(user_id, human_block.content, table="self_model_blocks", field="content")
             lines = content.split("\n")
-            new_lines = [l for l in lines if not l.startswith("Relationship:")]
+            new_lines = [line for line in lines if not line.startswith("Relationship:")]
             if profile.relationship:
                 new_lines.append(f"Relationship: {profile.relationship}")
             set_self_model_block(
@@ -258,17 +452,20 @@ async def update_agent_profile(
                 updated_by="agent_setup",
             )
 
-    # Update persona if provided
     if payload.personaTemplate is not None:
         from anima_server.services.agent.system_prompt import PromptTemplateError
 
         try:
-            persona_content = render_persona_seed(payload.personaTemplate, agent_name=profile.agent_name)
+            persona_content = render_persona_seed(
+                payload.personaTemplate,
+                agent_name=profile.agent_name,
+            )
         except PromptTemplateError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
             ) from exc
+
         set_self_model_block(
             db,
             user_id=user_id,
@@ -295,6 +492,7 @@ async def get_emotional_state(
     request: Request,
     limit: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> EmotionalContextResponse:
     """Get the AI's current emotional read of the user."""
     require_unlocked_user(request, user_id)
@@ -304,31 +502,40 @@ async def get_emotional_state(
         synthesize_emotional_context,
     )
 
-    signals = get_recent_signals(db, user_id=user_id, limit=limit)
-    context = synthesize_emotional_context(db, user_id=user_id)
+    emotion_db = runtime_db or db
+    signals = get_recent_signals(emotion_db, user_id=user_id, limit=limit)
+    context = synthesize_emotional_context(emotion_db, user_id=user_id)
 
-    # Determine dominant
     dominant = None
     if signals:
         emotion_scores: dict[str, float] = {}
-        for s in signals[:5]:
-            emotion_scores[s.emotion] = emotion_scores.get(s.emotion, 0) + s.confidence
+        for signal in signals[:5]:
+            emotion_scores[signal.emotion] = emotion_scores.get(signal.emotion, 0) + signal.confidence
         if emotion_scores:
             dominant = max(emotion_scores, key=emotion_scores.get)
+
+    from anima_server.models import EmotionalSignal
+
+    def _signal_text(signal, field: str) -> str:
+        """Read evidence/topic, decrypting legacy EmotionalSignal rows."""
+        value = getattr(signal, field, "") or ""
+        if isinstance(signal, EmotionalSignal) and value:
+            return df(user_id, value, table="emotional_signals", field=field)
+        return str(value)
 
     return EmotionalContextResponse(
         dominantEmotion=dominant,
         recentSignals=[
             EmotionalSignalResponse(
-                emotion=s.emotion,
-                confidence=s.confidence,
-                trajectory=s.trajectory,
-                evidenceType=s.evidence_type,
-                evidence=df(user_id, s.evidence, table="emotional_signals", field="evidence"),
-                topic=df(user_id, s.topic, table="emotional_signals", field="topic"),
-                createdAt=s.created_at.isoformat() if s.created_at else None,
+                emotion=signal.emotion,
+                confidence=signal.confidence,
+                trajectory=signal.trajectory,
+                evidenceType=signal.evidence_type,
+                evidence=_signal_text(signal, "evidence"),
+                topic=_signal_text(signal, "topic"),
+                createdAt=signal.created_at.isoformat() if signal.created_at else None,
             )
-            for s in signals
+            for signal in signals
         ],
         synthesizedContext=context,
     )
@@ -342,11 +549,12 @@ async def get_intentions(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> dict[str, str]:
     """Get the AI's current intentions and behavioral rules."""
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.intentions import get_intentions_text
 
-    content = get_intentions_text(db, user_id=user_id)
+    content = get_intentions_text(runtime_db or db, user_id=user_id)
     return {"content": content}

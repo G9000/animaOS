@@ -1,22 +1,16 @@
-"""Emotional intelligence: detect, track, and synthesize user emotional signals.
-
-No other major agent memory system explicitly models user emotional state.
-This module provides:
-- Emotion detection from conversation turns (8 primary emotions)
-- Rolling signal buffer per user
-- Trajectory tracking (escalating, de-escalating, stable, shifted)
-- Emotional context synthesis for the system prompt
-"""
+"""Emotional intelligence: detect, track, and synthesize user emotional signals."""
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import EmotionalSignal
+from anima_server.models.runtime_consciousness import CurrentEmotion
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
@@ -34,19 +28,8 @@ PRIMARY_EMOTIONS = frozenset(
     }
 )
 
-SECONDARY_EMOTIONS = frozenset(
-    {
-        "vulnerable",
-        "proud",
-        "overwhelmed",
-        "playful",
-    }
-)
-
+SECONDARY_EMOTIONS = frozenset({"vulnerable", "proud", "overwhelmed", "playful"})
 ALL_EMOTIONS = PRIMARY_EMOTIONS | SECONDARY_EMOTIONS
-
-# Emotion extraction prompt is now in Jinja2 template: emotion_extraction.md.j2
-# Use PromptLoader.emotion_extraction() instead.
 
 
 def record_emotional_signal(
@@ -61,7 +44,7 @@ def record_emotional_signal(
     trajectory: str = "stable",
     previous_emotion: str | None = None,
     topic: str = "",
-) -> EmotionalSignal | None:
+) -> CurrentEmotion | EmotionalSignal | None:
     """Record an emotional signal if it passes confidence threshold."""
     if confidence < settings.agent_emotional_confidence_threshold:
         return None
@@ -75,7 +58,6 @@ def record_emotional_signal(
     if trajectory not in ("escalating", "de-escalating", "stable", "shifted"):
         trajectory = "stable"
 
-    # Determine trajectory from previous signal if not provided
     if trajectory == "stable" and previous_emotion is None:
         prev = get_latest_signal(db, user_id=user_id)
         if prev is not None:
@@ -83,23 +65,22 @@ def record_emotional_signal(
             if prev.emotion != emotion:
                 trajectory = "shifted"
 
-    signal = EmotionalSignal(
+    model = _emotion_model(db)
+    signal = model(
         user_id=user_id,
         thread_id=thread_id,
         emotion=emotion,
         confidence=confidence,
         evidence_type=evidence_type,
-        evidence=ef(user_id, evidence, table="emotional_signals", field="evidence"),
+        evidence=_stored_text(model, user_id=user_id, field="evidence", value=evidence),
         trajectory=trajectory,
         previous_emotion=previous_emotion,
-        topic=ef(user_id, topic, table="emotional_signals", field="topic"),
+        topic=_stored_text(model, user_id=user_id, field="topic", value=topic),
     )
     db.add(signal)
     db.flush()
 
-    # Enforce buffer size — remove oldest signals beyond limit
     _trim_signal_buffer(db, user_id=user_id)
-
     return signal
 
 
@@ -107,12 +88,13 @@ def get_latest_signal(
     db: Session,
     *,
     user_id: int,
-) -> EmotionalSignal | None:
+) -> CurrentEmotion | EmotionalSignal | None:
     """Get the most recent emotional signal for a user."""
+    model = _emotion_model(db)
     return db.scalar(
-        select(EmotionalSignal)
-        .where(EmotionalSignal.user_id == user_id)
-        .order_by(EmotionalSignal.created_at.desc())
+        select(model)
+        .where(model.user_id == user_id)
+        .order_by(model.created_at.desc())
         .limit(1)
     )
 
@@ -122,14 +104,15 @@ def get_recent_signals(
     *,
     user_id: int,
     limit: int | None = None,
-) -> list[EmotionalSignal]:
+) -> list[CurrentEmotion | EmotionalSignal]:
     """Get recent emotional signals for a user."""
     max_signals = limit or settings.agent_emotional_signal_buffer_size
+    model = _emotion_model(db)
     return list(
         db.scalars(
-            select(EmotionalSignal)
-            .where(EmotionalSignal.user_id == user_id)
-            .order_by(EmotionalSignal.created_at.desc())
+            select(model)
+            .where(model.user_id == user_id)
+            .order_by(model.created_at.desc())
             .limit(max_signals)
         ).all()
     )
@@ -140,34 +123,27 @@ def synthesize_emotional_context(
     *,
     user_id: int,
 ) -> str:
-    """Synthesize recent emotional signals into a context paragraph for the prompt.
-
-    Returns a brief "gut feeling" paragraph about how the user seems, or empty
-    string if insufficient data.
-    """
+    """Synthesize recent emotional signals into a context paragraph."""
     signals = get_recent_signals(db, user_id=user_id, limit=10)
     if not signals:
         return ""
 
-    # Build a summary from recent signals
     lines: list[str] = []
     total_len = 0
     budget = settings.agent_emotional_context_budget
 
-    # Group by recency — most recent first
     for signal in signals:
         conf_label = "strong" if signal.confidence >= 0.7 else "moderate"
         line = (
             f"- {signal.emotion} ({conf_label} signal"
-            f"{', ' + signal.trajectory if signal.trajectory != 'stable' else ''}"
-            f")"
+            f"{', ' + signal.trajectory if signal.trajectory != 'stable' else ''})"
         )
-        topic_text = df(user_id, signal.topic, table="emotional_signals", field="topic")
+        topic_text = _read_text(signal, user_id=user_id, field="topic")
         if topic_text:
             line += f" re: {topic_text}"
-        evidence_text = df(user_id, signal.evidence, table="emotional_signals", field="evidence")
+        evidence_text = _read_text(signal, user_id=user_id, field="evidence")
         if evidence_text and len(evidence_text) < 80:
-            line += f" — {evidence_text}"
+            line += f" - {evidence_text}"
 
         if total_len + len(line) > budget:
             break
@@ -177,14 +153,11 @@ def synthesize_emotional_context(
     if not lines:
         return ""
 
-    # Determine dominant emotion
     emotion_counts: dict[str, float] = {}
-    for s in signals[:5]:
-        emotion_counts[s.emotion] = emotion_counts.get(s.emotion, 0) + s.confidence
+    for signal in signals[:5]:
+        emotion_counts[signal.emotion] = emotion_counts.get(signal.emotion, 0) + signal.confidence
 
     dominant = max(emotion_counts, key=emotion_counts.get) if emotion_counts else "calm"
-
-    # Check trajectory
     recent_trajectory = signals[0].trajectory if len(signals) >= 2 else "stable"
 
     header = f"Dominant recent emotion: {dominant}"
@@ -199,35 +172,53 @@ def _trim_signal_buffer(
     *,
     user_id: int,
 ) -> None:
-    """Remove oldest signals beyond the buffer size limit."""
+    """Remove oldest signals beyond the configured buffer size."""
     from sqlalchemy import delete as sa_delete
     from sqlalchemy import func as sa_func
 
+    model = _emotion_model(db)
     max_size = settings.agent_emotional_signal_buffer_size
     total = (
         db.scalar(
-            select(sa_func.count())
-            .select_from(EmotionalSignal)
-            .where(EmotionalSignal.user_id == user_id)
+            select(sa_func.count()).select_from(model).where(model.user_id == user_id)
         )
         or 0
     )
     if total <= max_size:
         return
 
-    # Find the cutoff: keep the newest max_size signals
     cutoff_id = db.scalar(
-        select(EmotionalSignal.id)
-        .where(EmotionalSignal.user_id == user_id)
-        .order_by(EmotionalSignal.created_at.desc())
+        select(model.id)
+        .where(model.user_id == user_id)
+        .order_by(model.created_at.desc())
         .offset(max_size)
         .limit(1)
     )
     if cutoff_id is not None:
         db.execute(
-            sa_delete(EmotionalSignal).where(
-                EmotionalSignal.user_id == user_id,
-                EmotionalSignal.id <= cutoff_id,
+            sa_delete(model).where(
+                model.user_id == user_id,
+                model.id <= cutoff_id,
             )
         )
         db.flush()
+
+
+def _emotion_model(db: Session):
+    inspector = sa_inspect(db.connection())
+    if inspector.has_table("current_emotions"):
+        return CurrentEmotion
+    return EmotionalSignal
+
+
+def _stored_text(model: type[Any], *, user_id: int, field: str, value: str) -> str:
+    if model is CurrentEmotion:
+        return value
+    return ef(user_id, value, table="emotional_signals", field=field)
+
+
+def _read_text(signal: CurrentEmotion | EmotionalSignal, *, user_id: int, field: str) -> str:
+    value = getattr(signal, field, "")
+    if isinstance(signal, CurrentEmotion):
+        return value or ""
+    return df(user_id, value, table="emotional_signals", field=field)

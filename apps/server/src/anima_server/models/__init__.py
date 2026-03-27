@@ -25,6 +25,11 @@ from anima_server.models.consciousness import (
     SelfModelBlock,
 )
 from anima_server.models.links import DiscordLink, TelegramLink
+from anima_server.models.runtime_consciousness import (
+    ActiveIntention,
+    CurrentEmotion,
+    WorkingContext,
+)
 from anima_server.models.runtime import (
     RuntimeBackgroundTaskRun,
     RuntimeMessage,
@@ -32,11 +37,17 @@ from anima_server.models.runtime import (
     RuntimeStep,
     RuntimeThread,
 )
+from anima_server.models.soul_consciousness import (
+    CoreEmotionalPattern,
+    GrowthLogEntry,
+    IdentityBlock,
+)
 from anima_server.models.task import Task
 from anima_server.models.user import User
 from anima_server.models.user_key import UserKey
 
 __all__ = [
+    "ActiveIntention",
     "AgentMessage",
     "AgentProfile",
     "AgentRun",
@@ -44,9 +55,13 @@ __all__ = [
     "AgentThread",
     "BackgroundTaskRun",
     "Base",
+    "CoreEmotionalPattern",
+    "CurrentEmotion",
     "DiscordLink",
     "EmotionalSignal",
     "ForgetAuditLog",
+    "GrowthLogEntry",
+    "IdentityBlock",
     "KGEntity",
     "KGRelation",
     "MemoryClaim",
@@ -67,4 +82,5 @@ __all__ = [
     "TelegramLink",
     "User",
     "UserKey",
+    "WorkingContext",
 ]
