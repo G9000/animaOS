@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from anima_server.db.base import Base
+from anima_server.db.runtime_base import RuntimeBase
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -21,6 +22,20 @@ def soul_db() -> Session:
     user = User(id=1, username="test", display_name="Test", password_hash="x")
     session.add(user)
     session.commit()
+    yield session
+    session.close()
+    engine.dispose()
+
+
+@pytest.fixture()
+def runtime_db() -> Session:
+    """In-memory SQLite session with runtime consciousness tables."""
+    import anima_server.models.runtime_consciousness  # noqa: F401
+
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    RuntimeBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = factory()
     yield session
     session.close()
     engine.dispose()
@@ -132,3 +147,98 @@ class TestCoreEmotionalPattern:
         assert loaded is not None
         assert loaded.dominant_emotion == "frustrated"
         assert loaded.frequency == 6
+
+
+class TestWorkingContext:
+    def test_create_and_read(self, runtime_db: Session) -> None:
+        from anima_server.models.runtime_consciousness import WorkingContext
+
+        wc = WorkingContext(
+            user_id=1,
+            section="inner_state",
+            content="Feeling reflective.",
+            version=1,
+            updated_by="post_turn",
+        )
+        runtime_db.add(wc)
+        runtime_db.flush()
+
+        loaded = runtime_db.get(WorkingContext, wc.id)
+        assert loaded is not None
+        assert loaded.section == "inner_state"
+        assert loaded.content == "Feeling reflective."
+
+    def test_unique_constraint(self, runtime_db: Session) -> None:
+        """Only one row per (user_id, section)."""
+        from sqlalchemy.exc import IntegrityError
+
+        from anima_server.models.runtime_consciousness import WorkingContext
+
+        runtime_db.add(WorkingContext(user_id=1, section="inner_state", content="a"))
+        runtime_db.flush()
+        runtime_db.add(WorkingContext(user_id=1, section="inner_state", content="b"))
+        with pytest.raises(IntegrityError):
+            runtime_db.flush()
+
+
+class TestActiveIntention:
+    def test_create_and_read(self, runtime_db: Session) -> None:
+        from anima_server.models.runtime_consciousness import ActiveIntention
+
+        ai = ActiveIntention(user_id=1, content="Learn their preferences", version=1)
+        runtime_db.add(ai)
+        runtime_db.flush()
+
+        loaded = runtime_db.get(ActiveIntention, ai.id)
+        assert loaded is not None
+        assert loaded.content == "Learn their preferences"
+
+    def test_unique_per_user(self, runtime_db: Session) -> None:
+        from sqlalchemy.exc import IntegrityError
+
+        from anima_server.models.runtime_consciousness import ActiveIntention
+
+        runtime_db.add(ActiveIntention(user_id=1, content="a"))
+        runtime_db.flush()
+        runtime_db.add(ActiveIntention(user_id=1, content="b"))
+        with pytest.raises(IntegrityError):
+            runtime_db.flush()
+
+
+class TestCurrentEmotion:
+    def test_create_and_read(self, runtime_db: Session) -> None:
+        from anima_server.models.runtime_consciousness import CurrentEmotion
+
+        ce = CurrentEmotion(
+            user_id=1,
+            emotion="excited",
+            confidence=0.8,
+            evidence_type="linguistic",
+            evidence="Used exclamation marks",
+            trajectory="stable",
+            topic="weekend plans",
+        )
+        runtime_db.add(ce)
+        runtime_db.flush()
+
+        loaded = runtime_db.get(CurrentEmotion, ce.id)
+        assert loaded is not None
+        assert loaded.emotion == "excited"
+        assert loaded.confidence == 0.8
+
+    def test_multiple_per_user(self, runtime_db: Session) -> None:
+        """Rolling buffer - many signals per user."""
+        from sqlalchemy import func, select
+
+        from anima_server.models.runtime_consciousness import CurrentEmotion
+
+        for emotion in ["excited", "calm", "curious"]:
+            runtime_db.add(CurrentEmotion(user_id=1, emotion=emotion, confidence=0.6))
+        runtime_db.flush()
+
+        count = runtime_db.scalar(
+            select(func.count())
+            .select_from(CurrentEmotion)
+            .where(CurrentEmotion.user_id == 1)
+        )
+        assert count == 3
