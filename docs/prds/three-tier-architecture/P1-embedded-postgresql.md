@@ -473,7 +473,7 @@ No new database models are created in this phase. The `RuntimeBase` class is def
 ```toml
 dependencies = [
   # ... existing ...
-  "pgserver>=0.2.0",
+  "pgserver>=0.1.4",
   "asyncpg>=0.30.0",
 ]
 ```
