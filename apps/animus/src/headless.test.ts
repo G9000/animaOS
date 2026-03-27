@@ -298,6 +298,35 @@ describe("headless mode", () => {
     expect(toolResultStatus).toBe("error");
   });
 
+  test("exits 1 immediately on AGENT_ERROR (no hang)", async () => {
+    const mock = createMockServer({
+      script: [
+        {
+          type: "error",
+          message: "Runtime exception in agent",
+          code: "AGENT_ERROR",
+        } as ServerMessage,
+        // Note: no turn_complete follows — this is the real server behavior
+      ],
+    });
+    server = mock.server;
+
+    let exitCode = -1;
+    let stderr = "";
+
+    await runHeadless({
+      config: mock.config,
+      prompt: "trigger an error",
+      timeout: 10_000,
+      exit: (code) => { exitCode = code; },
+      write: () => {},
+      writeError: (text) => { stderr += text; },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Runtime exception in agent");
+  });
+
   test("exits 1 on auth failure", async () => {
     const mock = createMockServer({ rejectAuth: true });
     server = mock.server;

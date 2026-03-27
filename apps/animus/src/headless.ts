@@ -102,7 +102,10 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
 
           case "error":
             writeError(`Error: ${msg.message}\n`);
-            if (msg.code === "AUTH_FAILED" || msg.code === "AUTH_REQUIRED") {
+            // Exit on all server errors except BUSY (turn still in progress).
+            // Notably AGENT_ERROR has no follow-up turn_complete, so waiting
+            // would just hang until the global timeout.
+            if (msg.code !== "BUSY") {
               finish(conn, 1);
             }
             break;
