@@ -283,12 +283,17 @@ async def consolidate_pending_ops(
             op.consolidated_at = now
             result.processed_ids.append(op.id)
 
-        soul_db.commit()
+        # Commit runtime first so ops are marked consolidated before soul
+        # is durable. If soul commit fails, ops are marked consolidated but
+        # soul is rolled back — idempotency check prevents re-application.
+        # The reverse (soul first, runtime fails) would leave ops unconsolidated
+        # and cause duplicate application on retry.
         runtime_db.commit()
+        soul_db.commit()
         return result
     except Exception:
-        soul_db.rollback()
         runtime_db.rollback()
+        soul_db.rollback()
         raise
     finally:
         soul_db.close()
