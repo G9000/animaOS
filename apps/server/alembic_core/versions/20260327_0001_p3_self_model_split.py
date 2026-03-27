@@ -152,11 +152,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Restore identity rows to self_model_blocks
+    # Restore identity rows to self_model_blocks (including metadata_json)
     op.execute(
         """
-        INSERT INTO self_model_blocks (user_id, section, content, version, updated_by, created_at, updated_at)
-        SELECT user_id, 'identity', content, version, updated_by, created_at, updated_at
+        INSERT INTO self_model_blocks (user_id, section, content, version, updated_by, metadata_json, created_at, updated_at)
+        SELECT user_id, 'identity', content, version, updated_by, metadata_json, created_at, updated_at
         FROM identity_blocks
         """
     )
