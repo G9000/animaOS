@@ -80,18 +80,24 @@ class EmbeddedPG:
 
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
-            logger.warning(
-                "Stale postmaster.pid found (PID %d not running), removing",
-                pid,
-            )
-            pid_file.unlink(missing_ok=True)
         except PermissionError:
+            # Process exists but is owned by another user — leave the
+            # lockfile in place.  (Must come before the generic OSError
+            # handler because PermissionError is a subclass of OSError.)
             logger.info(
                 "postmaster.pid points to PID %d that exists but is owned by another user; "
                 "leaving lockfile in place.",
                 pid,
             )
+        except (ProcessLookupError, OSError):
+            # ProcessLookupError: PID does not exist (Unix).
+            # OSError: PID does not exist or is invalid (Windows raises
+            #          OSError / WinError instead of ProcessLookupError).
+            logger.warning(
+                "Stale postmaster.pid found (PID %d not running), removing",
+                pid,
+            )
+            pid_file.unlink(missing_ok=True)
 
     @staticmethod
     def to_sync_url(url: str) -> str:

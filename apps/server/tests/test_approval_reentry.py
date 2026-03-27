@@ -640,6 +640,7 @@ async def test_approve_or_deny_turn_raises_on_wrong_user(
                 user_id=user.id + 999,
                 approved=True,
                 db=db,
+                runtime_db=db,
             )
 
 
@@ -672,6 +673,7 @@ async def test_approve_or_deny_turn_raises_on_no_checkpoint(
                 user_id=user.id,
                 approved=True,
                 db=db,
+                runtime_db=db,
             )
 
 

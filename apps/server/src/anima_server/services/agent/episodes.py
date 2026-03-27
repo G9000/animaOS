@@ -165,18 +165,19 @@ def _merge_episodes(
     """
     from sqlalchemy import select
 
-    # Get recent episodes from the same day
-    recent = list(
-        db.scalars(
-            select(MemoryEpisode)
-            .where(
-                MemoryEpisode.user_id == user_id,
-                MemoryEpisode.date == new_episode.date,
-            )
-            .order_by(MemoryEpisode.created_at.desc())
-            .limit(3)
-        ).all()
+    # Get recent episodes from the same day, excluding the new episode itself
+    query = (
+        select(MemoryEpisode)
+        .where(
+            MemoryEpisode.user_id == user_id,
+            MemoryEpisode.date == new_episode.date,
+        )
+        .order_by(MemoryEpisode.created_at.desc())
+        .limit(3)
     )
+    if new_episode.id is not None:
+        query = query.where(MemoryEpisode.id != new_episode.id)
+    recent = list(db.scalars(query).all())
 
     if not recent:
         return new_episode

@@ -4,6 +4,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 
 from anima_server.config import settings
+from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
@@ -120,12 +121,13 @@ def test_chat_reset_clears_scaffold_thread_state() -> None:
             headers=headers,
             json={"message": "again", "userId": user_id},
         )
-        session = get_user_session_factory(user_id)()
+        rt_factory = get_runtime_session_factory()
+        session = rt_factory()
         try:
-            assert session.query(AgentThread).count() == 1
-            assert session.query(AgentMessage).count() == 3
-            assert session.query(AgentRun).count() == 1
-            assert session.query(AgentStep).count() == 1
+            assert session.query(RuntimeThread).count() == 1
+            assert session.query(RuntimeMessage).count() == 3
+            assert session.query(RuntimeRun).count() == 1
+            assert session.query(RuntimeStep).count() == 1
         finally:
             session.close()
 
@@ -212,12 +214,13 @@ def test_chat_persists_runtime_rows() -> None:
             json={"message": "hello", "userId": user_id},
         )
 
-        session = get_user_session_factory(user_id)()
+        rt_factory = get_runtime_session_factory()
+        session = rt_factory()
         try:
-            thread = session.query(AgentThread).one()
-            run = session.query(AgentRun).one()
-            step = session.query(AgentStep).one()
-            messages = session.query(AgentMessage).order_by(AgentMessage.sequence_id).all()
+            thread = session.query(RuntimeThread).one()
+            run = session.query(RuntimeRun).one()
+            step = session.query(RuntimeStep).one()
+            messages = session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
         finally:
             session.close()
 
@@ -231,16 +234,9 @@ def test_chat_persists_runtime_rows() -> None:
         assert step.step_index == 0
         assert thread.next_message_sequence == 4
         assert [message.role for message in messages] == ["user", "assistant", "tool"]
-        assert (
-            df(user_id, messages[0].content_text, table="agent_messages", field="content_text")
-            == "hello"
-        )
-        assert "turn 1" in df(
-            user_id, messages[1].content_text, table="agent_messages", field="content_text"
-        )
-        assert "turn 1" in df(
-            user_id, messages[2].content_text, table="agent_messages", field="content_text"
-        )
+        assert messages[0].content_text == "hello"
+        assert "turn 1" in messages[1].content_text
+        assert "turn 1" in messages[2].content_text
 
 
 def test_chat_stream_returns_sse_events() -> None:
@@ -533,20 +529,25 @@ def test_chat_compacts_thread_context_into_summary() -> None:
                 },
             )
 
-            session = get_user_session_factory(user_id)()
+            rt_factory = get_runtime_session_factory()
+            session = rt_factory()
             try:
-                all_messages = session.query(AgentMessage).order_by(AgentMessage.sequence_id).all()
-                thread = session.query(AgentThread).one()
+                all_messages = (
+                    session.query(RuntimeMessage)
+                    .order_by(RuntimeMessage.sequence_id)
+                    .all()
+                )
+                thread = session.query(RuntimeThread).one()
                 in_context_messages = (
-                    session.query(AgentMessage)
-                    .filter(AgentMessage.is_in_context.is_(True))
-                    .order_by(AgentMessage.sequence_id)
+                    session.query(RuntimeMessage)
+                    .filter(RuntimeMessage.is_in_context.is_(True))
+                    .order_by(RuntimeMessage.sequence_id)
                     .all()
                 )
                 compacted_messages = (
-                    session.query(AgentMessage)
-                    .filter(AgentMessage.is_in_context.is_(False))
-                    .order_by(AgentMessage.sequence_id)
+                    session.query(RuntimeMessage)
+                    .filter(RuntimeMessage.is_in_context.is_(False))
+                    .order_by(RuntimeMessage.sequence_id)
                     .all()
                 )
             finally:
@@ -565,9 +566,7 @@ def test_chat_compacts_thread_context_into_summary() -> None:
     assert "turn 3" in third.json()["response"]
     summary_messages = [message for message in in_context_messages if message.role == "summary"]
     assert len(summary_messages) == 1
-    # Summary text is now encrypted at rest (fix #3). Verify a summary
-    # message exists and is non-empty; the plaintext content is verified by
-    # the unit-level compaction tests which run without encryption.
+    # Summary text is now stored in the runtime DB (plaintext in test mode).
     assert summary_messages[0].content_text
     assert thread.next_message_sequence == all_messages[-1].sequence_id + 1
     assert any(message.role == "user" for message in compacted_messages)
