@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentThread, MemoryDailyLog, User
+from anima_server.models import MemoryDailyLog
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import (
     _build_transcript,
     compact_thread_context_with_llm,
@@ -42,9 +43,13 @@ from sqlalchemy.pool import StaticPool
 # Fixtures
 # ---------------------------------------------------------------------------
 
+# _TEST_USER_COUNTER used for stable unique user IDs in runtime DB
+_TEST_USER_COUNTER = 0
+
 
 @contextmanager
-def _db_session() -> Generator[Session, None, None]:
+def _soul_db_session() -> Generator[Session, None, None]:
+    """Soul DB session (for User, MemoryDailyLog)."""
     engine: Engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -68,20 +73,63 @@ def _db_session() -> Generator[Session, None, None]:
         gc.collect()
 
 
-def _create_user(db: Session, *, user_id: int = 1) -> User:
-    user = User(
-        id=user_id,
-        username=f"testuser{user_id}",
-        display_name="Test User",
-        password_hash="test",
+@contextmanager
+def _db_session() -> Generator[Session, None, None]:
+    """Combined session with both RuntimeBase and Base tables.
+
+    search_conversation_history needs RuntimeBase tables (messages)
+    AND Base tables (memory_daily_logs).  For unit tests we create both
+    sets of tables on the same in-memory SQLite engine.
+    """
+    from anima_server.db.runtime_base import RuntimeBase
+    from anima_server.models import runtime as _rm  # noqa: F401
+
+    engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
-    db.add(user)
-    db.flush()
-    return user
+    # Create soul tables first (Base), then runtime tables (RuntimeBase)
+    Base.metadata.create_all(bind=engine)
+    RuntimeBase.metadata.create_all(bind=engine)
+
+    factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+        # Drop in reverse order to avoid FK issues
+        RuntimeBase.metadata.drop_all(bind=engine)
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+        gc.collect()
 
 
-def _create_thread(db: Session, *, user_id: int = 1, next_seq: int = 1) -> AgentThread:
-    thread = AgentThread(user_id=user_id, status="active", next_message_sequence=next_seq)
+class _FakeUser:
+    """Stub user for runtime-only tests (runtime DB has no User table)."""
+
+    def __init__(self, user_id: int = 0) -> None:
+        global _TEST_USER_COUNTER
+        if user_id:
+            self.id = user_id
+        else:
+            _TEST_USER_COUNTER += 1
+            self.id = _TEST_USER_COUNTER
+
+
+def _create_user(db: Session, *, user_id: int = 1) -> _FakeUser:
+    return _FakeUser(user_id=user_id)
+
+
+def _create_thread(db: Session, *, user_id: int = 1, next_seq: int = 1) -> RuntimeThread:
+    thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=next_seq)
     db.add(thread)
     db.flush()
     return thread
@@ -94,13 +142,15 @@ def _add_message(
     role: str,
     content: str,
     sequence_id: int,
+    user_id: int = 1,
     created_at: datetime | None = None,
     is_in_context: bool = True,
     tool_name: str | None = None,
     content_json: dict[str, Any] | None = None,
-) -> AgentMessage:
-    msg = AgentMessage(
+) -> RuntimeMessage:
+    msg = RuntimeMessage(
         thread_id=thread_id,
+        user_id=user_id,
         run_id=None,
         step_id=None,
         sequence_id=sequence_id,
@@ -172,7 +222,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="cooking pasta",
             )
@@ -196,7 +246,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="",
                 start_date=now.date().isoformat(),
@@ -229,7 +279,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="Google",
                 role_filter="user",
@@ -262,7 +312,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="save",
             )
@@ -296,7 +346,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="sushi",
             )
@@ -316,7 +366,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="promoted",
             )
@@ -349,7 +399,7 @@ class TestSearchConversationHistory:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="cats",
                 start_date="2026-03-10",
@@ -362,7 +412,7 @@ class TestSearchConversationHistory:
             user = _create_user(db)
             # No messages at all
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="nonexistent topic",
             )
@@ -696,10 +746,10 @@ class TestCompactThreadContextWithLlm:
             from sqlalchemy import select
 
             summary_msg = db.scalar(
-                select(AgentMessage).where(
-                    AgentMessage.thread_id == thread.id,
-                    AgentMessage.role == "summary",
-                    AgentMessage.is_in_context.is_(True),
+                select(RuntimeMessage).where(
+                    RuntimeMessage.thread_id == thread.id,
+                    RuntimeMessage.role == "summary",
+                    RuntimeMessage.is_in_context.is_(True),
                 )
             )
             assert summary_msg is not None
@@ -741,10 +791,10 @@ class TestCompactThreadContextWithLlm:
             from sqlalchemy import select
 
             summary_msg = db.scalar(
-                select(AgentMessage).where(
-                    AgentMessage.thread_id == thread.id,
-                    AgentMessage.role == "summary",
-                    AgentMessage.is_in_context.is_(True),
+                select(RuntimeMessage).where(
+                    RuntimeMessage.thread_id == thread.id,
+                    RuntimeMessage.role == "summary",
+                    RuntimeMessage.is_in_context.is_(True),
                 )
             )
             assert summary_msg is not None
@@ -1144,7 +1194,7 @@ class TestSearchDailyLogsEdgeCases:
             db.commit()
 
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="didn't say",
             )
@@ -1170,7 +1220,7 @@ class TestSearchDailyLogsEdgeCases:
 
             # Exact date as both start and end — should be included
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="boundary",
                 start_date="2026-03-15",
@@ -1197,7 +1247,7 @@ class TestSearchDailyLogsEdgeCases:
 
             # Should not raise — invalid dates treated as no filter
             hits = await search_conversation_history(
-                db,
+                db, db,
                 user_id=user.id,
                 query="invalid date",
                 start_date="not-a-date",

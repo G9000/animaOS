@@ -8,9 +8,18 @@ version: "1.0"
 # Phase 2: Runtime Messages
 
 **Status**: Approved
-**Date**: 2026-03-26
+**Date**: 2026-03-26 (updated 2026-03-27)
 **Depends on**: P1 (Embedded PostgreSQL)
 **Blocks**: P3, P6, P7
+**Design Spec**: [2026-03-27-p2-runtime-messages-design.md](../../superpowers/specs/2026-03-27-p2-runtime-messages-design.md)
+
+### Design Updates (2026-03-27)
+
+Three departures from the original PRD, decided during design review:
+
+1. **Sync sessions (psycopg2), not async** — The entire service layer is synchronous. Converting to async belongs in P7 (Concurrency Refactor). Using sync PG sessions keeps the diff minimal and avoids rewiring background tasks, companion, and tool context.
+2. **No feature flag** — `ANIMA_USE_RUNTIME_PG` is removed. Desktop app with embedded PG has no deployment scenario needing a SQLCipher fallback. One code path, less maintenance.
+3. **PG-specific column types** — `TIMESTAMPTZ`, `postgresql.JSON` instead of generic types. Runtime is PG-only; tests use embedded PG.
 
 ## Overview
 
@@ -34,8 +43,7 @@ Phase 2 moves these runtime models to the shared PostgreSQL instance provisioned
 - Runtime database engine/session factory (`db/runtime.py`)
 - Alembic migration environment for the runtime database (separate from the soul database)
 - Rewiring of all service modules that read/write these models
-- Feature flag `ANIMA_USE_RUNTIME_PG` for rollback
-- Updated test fixtures providing runtime sessions
+- Updated test fixtures providing runtime sessions (using embedded PG)
 - Removal of field-level encryption (`ef`/`df`) calls on message content in the PG path (TLS + at-rest encryption replaces this)
 
 ### Out of scope
@@ -64,26 +72,12 @@ db/
 **Key behaviors:**
 
 - `RuntimeBase` is a separate `DeclarativeBase` with its own `MetaData`. This prevents any accidental table creation in the soul database.
-- `get_runtime_engine()` reads `ANIMA_RUNTIME_DATABASE_URL` (default: `postgresql://localhost:5432/anima_runtime`). Returns a standard PG engine with connection pooling (`pool_size=5`, `max_overflow=10`, `pool_pre_ping=True`).
+- `get_runtime_engine()` reads `ANIMA_RUNTIME_DATABASE_URL` (empty string = use embedded PG URL). Returns a sync PG engine (psycopg2) with connection pooling (`pool_size=5`, `max_overflow=10`, `pool_pre_ping=True`).
 - `get_runtime_session_factory()` returns a `sessionmaker` bound to the runtime engine.
 - `get_runtime_db()` is a FastAPI dependency that yields a runtime `Session`. It does not require the unlock token -- runtime data is not encrypted.
 - `ensure_runtime_database()` runs Alembic migrations against the runtime PG on startup.
 
-**Feature flag:**
-
-When `ANIMA_USE_RUNTIME_PG=false`, all runtime session requests fall through to the soul session factory (existing behavior). This is the escape hatch.
-
-```python
-def get_runtime_session_factory(
-    user_id: int | None = None,
-) -> sessionmaker[Session]:
-    if not settings.use_runtime_pg:
-        # Fallback: use soul DB (SQLCipher)
-        if user_id is not None:
-            return ensure_user_database(user_id)
-        return SessionLocal
-    return _pg_runtime_factory
-```
+~~Feature flag removed (see Design Updates above). Single code path — runtime always uses PG.~~
 
 ### 2. Runtime model definitions (`models/runtime.py`)
 
@@ -343,7 +337,7 @@ content = row.content_text or ""
 
 `reserve_message_sequences` queries `AgentThread.next_message_sequence`. This changes to `RuntimeThread.next_message_sequence`. The optimistic-locking pattern (CAS on `next_message_sequence`) works identically on PG and is actually more robust since PG supports `SELECT ... FOR UPDATE` for true row-level locking.
 
-Consider upgrading the CAS loop to `FOR UPDATE` in the PG path:
+Upgrade the CAS loop to `SELECT ... FOR UPDATE` (PG supports true row-level locking):
 
 ```python
 def reserve_message_sequences(
@@ -377,7 +371,7 @@ def reserve_message_sequences(
 This means `search_conversation_history` needs **two sessions**:
 
 ```python
-async def search_conversation_history(
+def search_conversation_history(
     runtime_db: Session,
     soul_db: Session,
     *,
@@ -397,37 +391,23 @@ Both `compact_thread_context` and `compact_thread_context_with_llm` query and mu
 
 The main orchestrator. Currently receives a single `db: Session` from the FastAPI dependency. After P2, it needs both sessions.
 
-**Approach:** Introduce a `RuntimeContext` dataclass that bundles both sessions:
-
-```python
-@dataclass(slots=True)
-class DbPair:
-    soul: Session    # SQLCipher per-user DB (identity, memory)
-    runtime: Session  # PostgreSQL (messages, runs, steps)
-```
-
-The `_execute_agent_turn_locked` function currently threads `db` through every call. After P2, it passes `db_pair.runtime` to persistence/compaction functions and `db_pair.soul` to memory/consolidation functions.
-
-**Alternatively** (simpler, recommended for P2): Since `service.py` already passes `db` to each function individually, the minimal change is to resolve two sessions at the top of `_execute_agent_turn_locked` and pass the correct one to each callee. No new dataclass needed.
+**Approach:** Both sessions are injected from the API route handler and passed through the call chain. No new dataclass needed -- each callee receives the session it needs.
 
 ```python
 async def _execute_agent_turn_locked(
     user_message: str,
     user_id: int,
-    db: Session,         # soul session (from FastAPI dependency)
+    db: Session,          # soul session (from FastAPI dependency)
+    runtime_db: Session,  # runtime session (from FastAPI dependency)
     *,
     ...
 ) -> AgentResult:
-    runtime_db = get_runtime_session(user_id)  # PG session
-    try:
-        # persistence functions get runtime_db
-        thread = get_or_create_thread(runtime_db, user_id)
-        run = create_run(runtime_db, ...)
-        # memory functions get soul db
-        memory_blocks = build_runtime_memory_blocks(db, ...)
-        ...
-    finally:
-        runtime_db.close()
+    # persistence functions get runtime_db
+    thread = get_or_create_thread(runtime_db, user_id)
+    run = create_run(runtime_db, ...)
+    # memory functions get soul db
+    memory_blocks = build_runtime_memory_blocks(db, ...)
+    ...
 ```
 
 #### 4f. `companion.py`
@@ -524,11 +504,10 @@ The runtime `env.py` imports `RuntimeBase.metadata` and connects to the PG engin
 class Settings(BaseSettings):
     ...
     # Runtime database (Phase 2)
-    runtime_database_url: str = "postgresql://localhost:5432/anima_runtime"
+    runtime_database_url: str = ""  # empty = use embedded PG URL
     runtime_database_echo: bool = False
     runtime_pool_size: int = 5
     runtime_pool_max_overflow: int = 10
-    use_runtime_pg: bool = True  # Feature flag; False = fallback to soul DB
 ```
 
 Environment variables:
@@ -536,7 +515,6 @@ Environment variables:
 - `ANIMA_RUNTIME_DATABASE_ECHO`
 - `ANIMA_RUNTIME_POOL_SIZE`
 - `ANIMA_RUNTIME_POOL_MAX_OVERFLOW`
-- `ANIMA_USE_RUNTIME_PG`
 
 ## Files to Create/Modify
 
@@ -544,19 +522,18 @@ Environment variables:
 
 | File | Purpose |
 |---|---|
-| `db/runtime_base.py` | `RuntimeBase` declarative base with PG-appropriate naming convention |
-| `db/runtime.py` | Runtime engine, session factory, FastAPI dependency, startup migration runner |
+| `db/runtime.py` | Runtime sync engine (psycopg2), session factory, FastAPI dependency, startup migration runner (replaces P1 async version) |
 | `models/runtime.py` | `RuntimeThread`, `RuntimeMessage`, `RuntimeRun`, `RuntimeStep`, `RuntimeBackgroundTaskRun` |
 | `alembic_runtime.ini` | Alembic config pointing to runtime PG |
 | `alembic_runtime/env.py` | Runtime migration environment |
 | `alembic_runtime/versions/001_create_runtime_tables.py` | Initial migration creating all five tables |
-| `tests/conftest_runtime.py` | Test fixtures for runtime PG sessions (can use SQLite in-memory for CI) |
+| `tests/conftest_runtime.py` | Test fixtures for runtime PG sessions (using embedded PG) |
 
 ### Modified files
 
 | File | Nature of change |
 |---|---|
-| `config.py` | Add `runtime_database_url`, `use_runtime_pg`, pool settings |
+| `config.py` | Add `runtime_database_url`, pool settings |
 | `models/__init__.py` | Re-export runtime models alongside soul models |
 | `services/agent/persistence.py` | All functions: swap model imports to `Runtime*`, remove `ef`/`df` on content_text |
 | `services/agent/sequencing.py` | Swap `AgentThread` to `RuntimeThread`, optionally upgrade to `FOR UPDATE` |
@@ -578,20 +555,7 @@ Environment variables:
 
 Messages are ephemeral. The compaction system discards old messages and replaces them with summaries. There is no business requirement to preserve existing conversation history across the migration.
 
-**Cutover plan:**
-
-1. Deploy P2 code with `ANIMA_USE_RUNTIME_PG=false` (feature flag off). Existing behavior, all tests pass.
-2. Provision PostgreSQL, set `ANIMA_RUNTIME_DATABASE_URL`. Run `ensure_runtime_database()` to create tables.
-3. Flip `ANIMA_USE_RUNTIME_PG=true`. New conversations write to PG. Old SQLCipher message tables are orphaned but harmless.
-4. After validation period (1 week), remove old SQLCipher message tables via a soul-DB Alembic migration that drops `agent_threads`, `agent_messages`, `agent_runs`, `agent_steps`, `background_task_runs`.
-
-### Rollback plan
-
-Set `ANIMA_USE_RUNTIME_PG=false`. The feature flag routes all runtime queries back to the soul SQLCipher database. Messages created in PG during the flag-on period are inaccessible but not lost (they remain in PG). This is acceptable because messages are ephemeral.
-
-### Handling in-flight turns during cutover
-
-The feature flag is read at session-resolution time, not at import time. A turn that starts before the flag flip will complete using whichever session it resolved at `_execute_agent_turn_locked` entry. No partial writes across databases.
+**Cutover**: Clean break. New code writes to PG immediately. Old SQLCipher message tables are orphaned but harmless. Drop them in a future soul-DB Alembic migration (`agent_threads`, `agent_messages`, `agent_runs`, `agent_steps`, `background_task_runs`).
 
 ## Test Plan
 
@@ -614,29 +578,23 @@ The feature flag is read at session-resolution time, not at import time. A turn 
 12. **Chat history API** -- `GET /api/chat/history` returns messages from runtime DB.
 13. **Home dashboard** -- `GET /api/chat/home` returns `messageCount` from runtime DB and `memoryCount` from soul DB.
 
-### Rollback tests
-
-14. **Feature flag off** -- Set `ANIMA_USE_RUNTIME_PG=false`. Run full agent turn. Assert all data in soul SQLCipher DB, no PG writes.
-15. **Feature flag toggle mid-session** -- Start with flag on, flip to off between turns. Assert each turn writes to the correct database.
-
 ### CI considerations
 
-- Runtime tests can use an in-memory SQLite database with `RuntimeBase.metadata.create_all()` to avoid requiring a PG instance in CI.
-- For true concurrency tests (test 11), use a real PG instance via Docker in the CI pipeline, or mark those tests as `@pytest.mark.pg_required` and skip when PG is unavailable.
+- Runtime tests use embedded PG (same as production).
+- For CI environments where embedded PG is unavailable, use Docker PostgreSQL as fallback.
 
 ## Acceptance Criteria
 
-1. All agent turns (blocking and streaming) write threads, messages, runs, and steps to PostgreSQL when `ANIMA_USE_RUNTIME_PG=true`.
-2. No runtime data (threads, messages, runs, steps) is written to the per-user SQLCipher database when the flag is on.
+1. All agent turns (blocking and streaming) write threads, messages, runs, and steps to PostgreSQL.
+2. No runtime data (threads, messages, runs, steps) is written to the per-user SQLCipher database.
 3. Memory extraction, self-model updates, emotional signals, session notes, and all other identity data continue to write to SQLCipher.
 4. `GET /api/chat/history` returns messages from PostgreSQL.
 5. `search_conversation_history` returns results from both PG (messages) and SQLCipher (daily logs).
 6. Compaction (text-based and LLM-powered) operates correctly on PG-backed messages.
 7. Approval checkpoint flow (save, load, clear, cancel) works with PG-backed runs and messages.
-8. Setting `ANIMA_USE_RUNTIME_PG=false` restores full SQLCipher-only behavior with no PG dependency.
-9. Two concurrent agent turns for the same user do not deadlock or produce duplicate sequence IDs.
-10. All existing tests pass (846+) with the runtime PG path active.
-11. Alembic runtime migrations run automatically on server startup and are idempotent.
+8. Two concurrent agent turns for the same user do not deadlock or produce duplicate sequence IDs.
+9. All existing tests pass (846+) with the runtime PG path active.
+10. Alembic runtime migrations run automatically on server startup and are idempotent.
 
 ## Out of Scope
 

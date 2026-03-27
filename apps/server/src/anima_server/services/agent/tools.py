@@ -545,6 +545,7 @@ def recall_conversation(
     if loop is not None:
         future = asyncio.run_coroutine_threadsafe(
             search_conversation_history(
+                ctx.runtime_db,
                 ctx.db,
                 user_id=ctx.user_id,
                 query=query.strip(),
@@ -559,6 +560,7 @@ def recall_conversation(
     else:
         hits = asyncio.run(
             search_conversation_history(
+                ctx.runtime_db,
                 ctx.db,
                 user_id=ctx.user_id,
                 query=query.strip(),

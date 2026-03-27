@@ -6,19 +6,18 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, AgentRun, AgentStep, AgentThread
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
 from anima_server.services.agent.state import AgentResult, StoredMessage
-from anima_server.services.data_crypto import df, ef
 
 
-def get_or_create_thread(db: Session, user_id: int) -> AgentThread:
-    thread = db.scalar(select(AgentThread).where(AgentThread.user_id == user_id))
+def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
+    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
     if thread is not None:
         return thread
 
-    thread = AgentThread(
+    thread = RuntimeThread(
         user_id=user_id,
         status="active",
     )
@@ -31,24 +30,18 @@ def load_thread_history(
     db: Session, thread_id: int, *, user_id: int | None = None
 ) -> list[StoredMessage]:
     rows = db.scalars(
-        select(AgentMessage)
+        select(RuntimeMessage)
         .where(
-            AgentMessage.thread_id == thread_id,
-            AgentMessage.is_in_context.is_(True),
-            AgentMessage.role.in_(("user", "assistant", "tool")),
+            RuntimeMessage.thread_id == thread_id,
+            RuntimeMessage.is_in_context.is_(True),
+            RuntimeMessage.role.in_(("user", "assistant", "tool")),
         )
-        .order_by(AgentMessage.sequence_id)
+        .order_by(RuntimeMessage.sequence_id)
     ).all()
-
-    # Resolve user_id for field decryption
-    uid = user_id
-    if uid is None:
-        thread = db.get(AgentThread, thread_id)
-        uid = thread.user_id if thread else 0
 
     history: list[StoredMessage] = []
     for row in rows:
-        content = df(uid, row.content_text or "", table="agent_messages", field="content_text")
+        content = row.content_text or ""
         history.append(
             StoredMessage(
                 role=row.role,
@@ -66,22 +59,22 @@ def list_transcript_messages(
     *,
     user_id: int,
     limit: int,
-) -> list[AgentMessage]:
-    thread = db.scalar(select(AgentThread).where(AgentThread.user_id == user_id))
+) -> list[RuntimeMessage]:
+    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
     if thread is None:
         return []
 
     rows = db.scalars(
-        select(AgentMessage)
-        .outerjoin(AgentRun, AgentMessage.run_id == AgentRun.id)
+        select(RuntimeMessage)
+        .outerjoin(RuntimeRun, RuntimeMessage.run_id == RuntimeRun.id)
         .where(
-            AgentMessage.thread_id == thread.id,
-            AgentMessage.role.in_(("user", "assistant", "system", "tool")),
-            AgentMessage.content_text.is_not(None),
-            AgentMessage.content_text != "",
-            or_(AgentMessage.run_id.is_(None), AgentRun.status.notin_(("failed", "cancelled"))),
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.role.in_(("user", "assistant", "system", "tool")),
+            RuntimeMessage.content_text.is_not(None),
+            RuntimeMessage.content_text != "",
+            or_(RuntimeMessage.run_id.is_(None), RuntimeRun.status.notin_(("failed", "cancelled"))),
         )
-        .order_by(desc(AgentMessage.sequence_id))
+        .order_by(desc(RuntimeMessage.sequence_id))
         .limit(limit)
     ).all()
     rows.reverse()
@@ -112,8 +105,8 @@ def create_run(
     provider: str,
     model: str,
     mode: str,
-) -> AgentRun:
-    run = AgentRun(
+) -> RuntimeRun:
+    run = RuntimeRun(
         thread_id=thread_id,
         user_id=user_id,
         provider=provider,
@@ -129,12 +122,12 @@ def create_run(
 def append_user_message(
     db: Session,
     *,
-    thread: AgentThread,
+    thread: RuntimeThread,
     run_id: int,
     content: str,
     sequence_id: int,
     source: str | None = None,
-) -> AgentMessage:
+) -> RuntimeMessage:
     return append_message(
         db,
         thread=thread,
@@ -150,8 +143,8 @@ def append_user_message(
 def persist_agent_result(
     db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
+    thread: RuntimeThread,
+    run: RuntimeRun,
     result: AgentResult,
     initial_sequence_id: int | None,
 ) -> None:
@@ -232,14 +225,14 @@ def persist_agent_result(
     finalize_run(db, run=run, result=result)
 
 
-def mark_run_failed(db: Session, run: AgentRun, error_text: str) -> None:
+def mark_run_failed(db: Session, run: RuntimeRun, error_text: str) -> None:
     run.status = "failed"
     run.error_text = error_text
     run.completed_at = datetime.now(UTC)
     db.add(run)
 
 
-def cancel_run(db: Session, run_id: int) -> AgentRun | None:
+def cancel_run(db: Session, run_id: int) -> RuntimeRun | None:
     """Mark a run as cancelled.  Returns the run, or None if not found.
 
     Idempotent: if the run is already terminal (completed, failed,
@@ -248,7 +241,7 @@ def cancel_run(db: Session, run_id: int) -> AgentRun | None:
     If the run was awaiting approval, the pending approval message is
     marked out of context and the FK is cleared.
     """
-    run = db.get(AgentRun, run_id)
+    run = db.get(RuntimeRun, run_id)
     if run is None:
         return None
     if run.status in ("completed", "failed", "cancelled"):
@@ -256,7 +249,7 @@ def cancel_run(db: Session, run_id: int) -> AgentRun | None:
 
     # Clean up pending approval if present.
     if run.pending_approval_message_id is not None:
-        approval_msg = db.get(AgentMessage, run.pending_approval_message_id)
+        approval_msg = db.get(RuntimeMessage, run.pending_approval_message_id)
         if approval_msg is not None:
             approval_msg.is_in_context = False
             db.add(approval_msg)
@@ -273,12 +266,12 @@ def cancel_run(db: Session, run_id: int) -> AgentRun | None:
 def save_approval_checkpoint(
     db: Session,
     *,
-    thread: AgentThread,
-    run: AgentRun,
+    thread: RuntimeThread,
+    run: RuntimeRun,
     tool_call: ToolCall,
     step_id: int | None,
     sequence_id: int,
-) -> AgentMessage:
+) -> RuntimeMessage:
     """Persist an approval-pending checkpoint as an ``approval`` role message.
 
     The run is updated to ``awaiting_approval`` status with a FK back to
@@ -311,17 +304,17 @@ def save_approval_checkpoint(
 def load_approval_checkpoint(
     db: Session,
     run_id: int,
-) -> tuple[AgentRun, AgentMessage] | None:
+) -> tuple[RuntimeRun, RuntimeMessage] | None:
     """Load the run and its pending approval message.
 
     Returns ``None`` if the run doesn't exist or is not awaiting approval.
     """
-    run = db.get(AgentRun, run_id)
+    run = db.get(RuntimeRun, run_id)
     if run is None or run.status != "awaiting_approval":
         return None
     if run.pending_approval_message_id is None:
         return None
-    approval_msg = db.get(AgentMessage, run.pending_approval_message_id)
+    approval_msg = db.get(RuntimeMessage, run.pending_approval_message_id)
     if approval_msg is None:
         return None
     return run, approval_msg
@@ -329,8 +322,8 @@ def load_approval_checkpoint(
 
 def clear_approval_checkpoint(
     db: Session,
-    run: AgentRun,
-    approval_msg: AgentMessage,
+    run: RuntimeRun,
+    approval_msg: RuntimeMessage,
 ) -> None:
     """Mark approval resolved: message out of context, FK cleared."""
     approval_msg.is_in_context = False
@@ -341,7 +334,7 @@ def clear_approval_checkpoint(
 
 
 def reset_thread(db: Session, user_id: int) -> None:
-    thread = db.scalar(select(AgentThread).where(AgentThread.user_id == user_id))
+    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
     if thread is None:
         return
 
@@ -349,14 +342,14 @@ def reset_thread(db: Session, user_id: int) -> None:
 
 
 def clear_threads(db: Session) -> None:
-    db.execute(delete(AgentThread))
+    db.execute(delete(RuntimeThread))
 
 
 def count_messages_by_role(db: Session, thread_id: int, role: str) -> int:
     count = db.scalar(
-        select(func.count(AgentMessage.id)).where(
-            AgentMessage.thread_id == thread_id,
-            AgentMessage.role == role,
+        select(func.count(RuntimeMessage.id)).where(
+            RuntimeMessage.thread_id == thread_id,
+            RuntimeMessage.role == role,
         )
     )
     return int(count or 0)
@@ -365,7 +358,7 @@ def count_messages_by_role(db: Session, thread_id: int, role: str) -> int:
 def append_message(
     db: Session,
     *,
-    thread: AgentThread,
+    thread: RuntimeThread,
     run_id: int | None,
     step_id: int | None,
     sequence_id: int,
@@ -376,16 +369,16 @@ def append_message(
     tool_call_id: str | None = None,
     tool_args_json: dict[str, object] | None = None,
     source: str | None = None,
-) -> AgentMessage:
+) -> RuntimeMessage:
     timestamp = datetime.now(UTC)
-    uid = thread.user_id
-    message = AgentMessage(
+    message = RuntimeMessage(
         thread_id=thread.id,
+        user_id=thread.user_id,
         run_id=run_id,
         step_id=step_id,
         sequence_id=sequence_id,
         role=role,
-        content_text=ef(uid, content_text, table="agent_messages", field="content_text"),
+        content_text=content_text,
         content_json=content_json,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
@@ -414,7 +407,7 @@ def create_step(
     run_id: int,
     trace: StepTrace,
     prompt_budget: object | None = None,
-) -> AgentStep:
+) -> RuntimeStep:
     request_json: dict[str, object] = {
         "messages": [asdict(message) for message in trace.request_messages],
         "allowed_tools": list(trace.allowed_tools),
@@ -423,7 +416,7 @@ def create_step(
     if prompt_budget is not None:
         request_json["prompt_budget"] = asdict(prompt_budget)
 
-    step = AgentStep(
+    step = RuntimeStep(
         thread_id=thread_id,
         run_id=run_id,
         step_index=trace.step_index,
@@ -444,7 +437,7 @@ def create_step(
 def finalize_run(
     db: Session,
     *,
-    run: AgentRun,
+    run: RuntimeRun,
     result: AgentResult,
 ) -> None:
     prompt_tokens = 0

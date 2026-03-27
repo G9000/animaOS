@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from contextlib import contextmanager
-
-from anima_server.db.base import Base
-from anima_server.models import AgentMessage, User
+from anima_server.models.runtime import RuntimeMessage
 from anima_server.services.agent.persistence import (
     _deserialize_tool_calls,
     append_message,
@@ -28,44 +24,29 @@ from anima_server.services.agent.runtime_types import (
     UsageStats,
 )
 from anima_server.services.agent.state import AgentResult
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from conftest_runtime import runtime_db_session
+from sqlalchemy.orm import Session
 
 # --------------------------------------------------------------------------- #
-# In-memory database helper
+# In-memory database helper (runtime DB — persistence now uses RuntimeBase)
 # --------------------------------------------------------------------------- #
 
+_db_session = runtime_db_session
 
-@contextmanager
-def _db_session() -> Generator[Session, None, None]:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    factory = sessionmaker(
-        bind=engine,
-        autoflush=False,
-        autocommit=False,
-        expire_on_commit=False,
-        class_=Session,
-    )
-    Base.metadata.create_all(bind=engine)
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
+_TEST_USER_COUNTER = 0
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="testuser", password_hash="x", display_name="Test")
-    db.add(user)
-    db.flush()
-    return user
+class _FakeUser:
+    """Stub user with an auto-incrementing id (runtime DB has no User table)."""
+
+    def __init__(self) -> None:
+        global _TEST_USER_COUNTER
+        _TEST_USER_COUNTER += 1
+        self.id = _TEST_USER_COUNTER
+
+
+def _make_user(db: Session) -> _FakeUser:
+    return _FakeUser()
 
 
 # --------------------------------------------------------------------------- #
@@ -447,9 +428,7 @@ def test_reset_thread_no_thread() -> None:
 def test_clear_threads() -> None:
     with _db_session() as db:
         user1 = _make_user(db)
-        user2 = User(username="user2", password_hash="x", display_name="User 2")
-        db.add(user2)
-        db.flush()
+        user2 = _make_user(db)
 
         get_or_create_thread(db, user1.id)
         get_or_create_thread(db, user2.id)
@@ -601,7 +580,7 @@ def test_persist_agent_result_simple() -> None:
         db.commit()
 
         # Verify the assistant message was persisted
-        messages = db.query(AgentMessage).filter_by(thread_id=thread.id).all()
+        messages = db.query(RuntimeMessage).filter_by(thread_id=thread.id).all()
         assert len(messages) == 1
         assert messages[0].role == "assistant"
         assert messages[0].content_text == "Hello!"
@@ -651,9 +630,9 @@ def test_persist_agent_result_with_tool_calls() -> None:
         db.commit()
 
         messages = (
-            db.query(AgentMessage)
+            db.query(RuntimeMessage)
             .filter_by(thread_id=thread.id)
-            .order_by(AgentMessage.sequence_id)
+            .order_by(RuntimeMessage.sequence_id)
             .all()
         )
 

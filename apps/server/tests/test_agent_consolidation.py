@@ -16,6 +16,7 @@ from anima_server.services.agent.consolidation import (
     drain_background_memory_tasks,
 )
 from anima_server.services.agent.memory_store import get_memory_items
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -309,7 +310,7 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
         settings.agent_provider = "scaffold"
         invalidate_agent_runtime_cache()
 
-        with _db_session() as session:
+        with _db_session() as session, runtime_db_session() as runtime_session:
             user = User(
                 username="background-memory",
                 password_hash="not-used",
@@ -325,6 +326,7 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
                 "I prefer short walks. My current focus is finishing the memory pipeline.",
                 user.id,
                 session,
+                runtime_session,
             )
             await drain_background_memory_tasks()
             session.expire_all()

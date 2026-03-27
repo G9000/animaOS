@@ -24,7 +24,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, AgentThread, MemoryItem
+from anima_server.models import MemoryItem
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +96,14 @@ def detect_reask(
 
 
 def collect_feedback_signals(
-    db: Session,
-    *,
     user_id: int,
     user_message: str,
     thread_id: int | None = None,
+    runtime_db: Session | None = None,
 ) -> list[FeedbackSignal]:
     """Collect all feedback signals from a user message in context."""
+    from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+
     signals: list[FeedbackSignal] = []
 
     # Check for correction
@@ -110,28 +111,45 @@ def collect_feedback_signals(
     if correction is not None:
         signals.append(correction)
 
-    # Check for re-ask by comparing to recent user messages
-    if thread_id is None:
-        thread = db.scalar(select(AgentThread).where(AgentThread.user_id == user_id))
-        if thread is not None:
-            thread_id = thread.id
+    # Check for re-ask by comparing to recent user messages (runtime PG)
+    own_session: Session | None = None
+    rt = runtime_db
+    if rt is None:
+        from anima_server.db.runtime import get_runtime_session_factory
 
-    if thread_id is not None:
-        recent = db.scalars(
-            select(AgentMessage.content_text)
-            .where(
-                AgentMessage.thread_id == thread_id,
-                AgentMessage.role == "user",
-                AgentMessage.is_in_context.is_(True),
+        try:
+            own_session = get_runtime_session_factory()()
+            rt = own_session
+        except RuntimeError:
+            pass  # runtime engine not initialized
+
+    try:
+        if thread_id is None and rt is not None:
+            thread = rt.scalar(
+                select(RuntimeThread).where(RuntimeThread.user_id == user_id)
             )
-            .order_by(AgentMessage.sequence_id.desc())
-            .limit(5)
-        ).all()
+            if thread is not None:
+                thread_id = thread.id
 
-        recent_texts = [t for t in recent if t and t != user_message]
-        reask = detect_reask(user_message, recent_texts)
-        if reask is not None:
-            signals.append(reask)
+        if thread_id is not None and rt is not None:
+            recent = rt.scalars(
+                select(RuntimeMessage.content_text)
+                .where(
+                    RuntimeMessage.thread_id == thread_id,
+                    RuntimeMessage.role == "user",
+                    RuntimeMessage.is_in_context.is_(True),
+                )
+                .order_by(RuntimeMessage.sequence_id.desc())
+                .limit(5)
+            ).all()
+
+            recent_texts = [t for t in recent if t and t != user_message]
+            reask = detect_reask(user_message, recent_texts)
+            if reask is not None:
+                signals.append(reask)
+    finally:
+        if own_session is not None:
+            own_session.close()
 
     return signals
 

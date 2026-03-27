@@ -549,7 +549,6 @@ def test_collect_feedback_signals_with_correction() -> None:
         from anima_server.services.agent.feedback_signals import collect_feedback_signals
 
         signals = collect_feedback_signals(
-            db,
             user_id=user.id,
             user_message="No, I said I wanted the shorter version",
             thread_id=thread.id,
@@ -871,7 +870,7 @@ def test_create_task_tool() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             result = create_task("Buy groceries", due_date="2026-04-01", priority="3")
             assert "Buy groceries" in result
@@ -902,7 +901,7 @@ def test_create_task_tool_no_due_date() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             result = create_task("Walk the dog")
             assert "Walk the dog" in result
@@ -930,7 +929,7 @@ def test_create_task_tool_rejects_blank_text() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             with pytest.raises(ValueError, match="Task text cannot be empty"):
                 create_task("   ")
@@ -951,7 +950,7 @@ def test_create_task_tool_rejects_invalid_due_date() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             with pytest.raises(ValueError, match="YYYY-MM-DD"):
                 create_task("Buy groceries", due_date="tomorrow")
@@ -971,7 +970,7 @@ def test_list_tasks_tool() -> None:
         )
         from anima_server.services.agent.tools import create_task, list_tasks
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Task A", priority="4")
             create_task("Task B", due_date="2026-05-01")
@@ -997,7 +996,7 @@ def test_list_tasks_tool_empty() -> None:
         )
         from anima_server.services.agent.tools import list_tasks
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             result = list_tasks()
             assert "No tasks" in result
@@ -1017,7 +1016,7 @@ def test_complete_task_tool() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = complete_task("Buy groceries")
@@ -1047,7 +1046,7 @@ def test_complete_task_tool_fuzzy_match() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries from the store")
             # Fuzzy match — shares key words
@@ -1135,7 +1134,7 @@ def test_complete_task_tool_no_match() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = complete_task("write a novel")
@@ -1422,7 +1421,7 @@ def test_recall_memory_exact_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1442,7 +1441,7 @@ def test_recall_memory_no_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1483,7 +1482,7 @@ def test_recall_memory_category_filter() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1516,7 +1515,7 @@ def test_recall_memory_episode_search() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1549,7 +1548,7 @@ def test_recall_memory_word_overlap_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1568,7 +1567,7 @@ def test_recall_memory_empty_query() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 

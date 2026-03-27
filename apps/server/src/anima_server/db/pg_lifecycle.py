@@ -28,10 +28,10 @@ class EmbeddedPG:
 
     @property
     def database_url(self) -> str:
-        """Return the asyncpg connection URL for the running instance."""
+        """Return the raw connection URL for the running instance."""
         if not self.running:
             raise RuntimeError("Embedded PG is not running")
-        return self._to_asyncpg_url(self._server.get_uri())
+        return self._server.get_uri()
 
     def start(self) -> None:
         """Start the embedded PostgreSQL instance."""
@@ -80,22 +80,30 @@ class EmbeddedPG:
 
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
-            logger.warning(
-                "Stale postmaster.pid found (PID %d not running), removing",
-                pid,
-            )
-            pid_file.unlink(missing_ok=True)
         except PermissionError:
+            # Process exists but is owned by another user — leave the
+            # lockfile in place.  (Must come before the generic OSError
+            # handler because PermissionError is a subclass of OSError.)
             logger.info(
                 "postmaster.pid points to PID %d that exists but is owned by another user; "
                 "leaving lockfile in place.",
                 pid,
             )
+        except (ProcessLookupError, OSError):
+            # ProcessLookupError: PID does not exist (Unix).
+            # OSError: PID does not exist or is invalid (Windows raises
+            #          OSError / WinError instead of ProcessLookupError).
+            logger.warning(
+                "Stale postmaster.pid found (PID %d not running), removing",
+                pid,
+            )
+            pid_file.unlink(missing_ok=True)
 
     @staticmethod
-    def _to_asyncpg_url(psycopg_url: str) -> str:
-        """Convert pgserver's psycopg-style URL to asyncpg format."""
-        if psycopg_url.startswith("postgresql+asyncpg://"):
-            return psycopg_url
-        return psycopg_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    def to_sync_url(url: str) -> str:
+        """Convert any PostgreSQL URL to ``postgresql+psycopg://`` format."""
+        if "+psycopg" in url:
+            return url
+        if "+asyncpg" in url:
+            return url.replace("+asyncpg", "+psycopg", 1)
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)

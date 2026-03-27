@@ -47,9 +47,19 @@ class DeepMonologueResult:
 
 async def _call_llm(prompt: str, system: str) -> str | None:
     """Call the configured LLM with the given prompt and system message."""
-    from anima_server.services.agent.service import call_llm_for_reflection
+    try:
+        from anima_server.services.agent.llm import create_llm
+        from anima_server.services.agent.messages import HumanMessage, SystemMessage
 
-    return await call_llm_for_reflection(prompt, system)
+        llm = create_llm()
+        response = await llm.ainvoke(
+            [SystemMessage(content=system), HumanMessage(content=prompt)]
+        )
+        content = getattr(response, "content", "")
+        return content if isinstance(content, str) else str(content)
+    except Exception:
+        logger.exception("LLM call failed in inner monologue")
+        return None
 
 
 async def run_quick_reflection(
@@ -70,14 +80,14 @@ async def run_quick_reflection(
         return result
 
     try:
-        from anima_server.db.session import get_db_session_context
+        from anima_server.db.session import SessionLocal
         from anima_server.services.agent.prompt_loader import get_prompt_loader
         from anima_server.services.agent.self_model import (
             get_self_model_block,
             set_self_model_block,
         )
 
-        factory = db_factory or get_db_session_context
+        factory = db_factory or SessionLocal
 
         with factory() as db:
             # Load prompt loader with agent name
@@ -234,13 +244,13 @@ async def run_deep_monologue(
     if settings.agent_provider == "scaffold":
         return result
 
-    from anima_server.db.session import get_db_session_context
+    from anima_server.db.session import SessionLocal
     from anima_server.services.agent.prompt_loader import get_prompt_loader
     from anima_server.services.agent.self_model import (
         get_all_self_model_blocks,
     )
 
-    factory = db_factory or get_db_session_context
+    factory = db_factory or SessionLocal
 
     try:
         # ── Phase 1: Read — gather all context in one session ───
@@ -251,13 +261,16 @@ async def run_deep_monologue(
             blocks = get_all_self_model_blocks(db, user_id=user_id)
 
             # Gather user facts
-            from anima_server.services.agent.memory_store import search_memories
+            from anima_server.services.agent.memory_store import get_memory_items
 
-            facts = search_memories(
-                db, user_id=user_id, query="important facts about the user", limit=20
-            )
+            facts = get_memory_items(db, user_id=user_id, limit=20)
             facts_text = (
-                "\n".join(f"- {m.content}" for m in facts) if facts else "No stored facts yet."
+                "\n".join(
+                    f"- {df(user_id, m.content, table='memory_items', field='content')}"
+                    for m in facts
+                )
+                if facts
+                else "No stored facts yet."
             )
 
             # Gather recent episodes
@@ -524,26 +537,32 @@ async def run_deep_monologue(
 async def _get_recent_conversation(
     db: Session, user_id: int, thread_id: str | None, limit: int = 10
 ) -> str:
-    """Fetch recent conversation messages as formatted text."""
+    """Fetch recent conversation from daily logs as formatted text."""
     from sqlalchemy import select
 
-    from anima_server.models import AgentMessage
+    from anima_server.models import MemoryDailyLog
 
     stmt = (
-        select(AgentMessage)
-        .where(AgentMessage.user_id == user_id)
-        .order_by(AgentMessage.created_at.desc())
+        select(MemoryDailyLog)
+        .where(MemoryDailyLog.user_id == user_id)
+        .order_by(MemoryDailyLog.created_at.desc())
         .limit(limit)
     )
-    if thread_id:
-        stmt = stmt.where(AgentMessage.thread_id == thread_id)
 
-    messages = db.scalars(stmt).all()
+    logs = db.scalars(stmt).all()
     lines = []
-    for msg in reversed(messages):
-        role = "User" if msg.role == "user" else "Assistant"
-        text = df(user_id, msg.content_text or "", table="agent_messages", field="content_text")
-        lines.append(f"{role}: {text[:500]}")
+    for log in reversed(logs):
+        user_text = df(
+            user_id, log.user_message or "", table="memory_daily_logs", field="user_message"
+        )
+        assistant_text = df(
+            user_id,
+            log.assistant_response or "",
+            table="memory_daily_logs",
+            field="assistant_response",
+        )
+        lines.append(f"User: {user_text[:500]}")
+        lines.append(f"Assistant: {assistant_text[:500]}")
     return "\n\n".join(lines)
 
 

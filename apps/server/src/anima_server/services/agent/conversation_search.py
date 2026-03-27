@@ -1,6 +1,6 @@
 """Conversation history search for the recall_conversation tool.
 
-Searches AgentMessage rows and MemoryDailyLog entries by text match +
+Searches RuntimeMessage rows and MemoryDailyLog entries by text match +
 optional semantic similarity.  Messages with role "tool" or "summary"
 are excluded to prevent the agent from retrieving its own tool calls.
 """
@@ -14,7 +14,8 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentMessage, AgentThread, MemoryDailyLog
+from anima_server.models import MemoryDailyLog
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,8 @@ def _text_overlap_score(query_lower: str, content_lower: str) -> float:
 
 
 async def search_conversation_history(
-    db: Session,
+    runtime_db: Session,
+    soul_db: Session,
     *,
     user_id: int,
     query: str,
@@ -71,7 +73,7 @@ async def search_conversation_history(
 ) -> list[ConversationHit]:
     """Search past conversations for the given query.
 
-    Combines text-match scoring on AgentMessage rows and MemoryDailyLog
+    Combines text-match scoring on RuntimeMessage rows and MemoryDailyLog
     entries.  Optionally filters by role and date range.
 
     Semantic similarity (embedding-based) is attempted when available but
@@ -81,9 +83,9 @@ async def search_conversation_history(
     parsed_start = _parse_date(start_date)
     parsed_end = _parse_date(end_date)
 
-    # ── Search agent_messages ──
+    # ── Search runtime_messages ──
     message_hits = _search_messages(
-        db,
+        runtime_db,
         user_id=user_id,
         query_lower=query_lower,
         role_filter=role_filter.strip().lower(),
@@ -91,9 +93,9 @@ async def search_conversation_history(
         parsed_end=parsed_end,
     )
 
-    # ── Search memory_daily_logs ──
+    # ── Search memory_daily_logs (soul DB) ──
     log_hits = _search_daily_logs(
-        db,
+        soul_db,
         user_id=user_id,
         query_lower=query_lower,
         role_filter=role_filter.strip().lower(),
@@ -116,8 +118,8 @@ def _search_messages(
     parsed_start: date | None,
     parsed_end: date | None,
 ) -> list[ConversationHit]:
-    """Search AgentMessage rows, excluding tool calls and summaries."""
-    thread = db.scalar(select(AgentThread).where(AgentThread.user_id == user_id))
+    """Search RuntimeMessage rows, excluding tool calls and summaries."""
+    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
     if thread is None:
         return []
 
@@ -129,14 +131,14 @@ def _search_messages(
         allowed_roles = [role_filter]
 
     stmt = (
-        select(AgentMessage)
+        select(RuntimeMessage)
         .where(
-            AgentMessage.thread_id == thread.id,
-            AgentMessage.role.in_(allowed_roles),
-            AgentMessage.content_text.is_not(None),
-            AgentMessage.content_text != "",
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.role.in_(allowed_roles),
+            RuntimeMessage.content_text.is_not(None),
+            RuntimeMessage.content_text != "",
         )
-        .order_by(AgentMessage.created_at.desc())
+        .order_by(RuntimeMessage.created_at.desc())
         .limit(500)  # cap scan to avoid very long histories
     )
     rows = db.scalars(stmt).all()

@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 
 @dataclass(slots=True)
 class ToolContext:
-    db: Session
+    db: Session          # soul session
+    runtime_db: Session  # runtime session
     user_id: int
     thread_id: int
     memory_modified: bool = False

@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import BackgroundTaskRun
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.services.agent.sleep_agent import (
     SLEEPTIME_FREQUENCY,
     _issue_background_task,
@@ -37,6 +38,7 @@ def _clear_turn_counters():
 
 @pytest.fixture()
 def db_engine():
+    """Soul DB engine (for heat scoring, soul-side operations)."""
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -55,6 +57,35 @@ def db_engine():
 def db_factory(db_engine):
     factory = sessionmaker(
         bind=db_engine,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    return factory
+
+
+@pytest.fixture()
+def runtime_db_engine():
+    """Runtime DB engine for RuntimeBackgroundTaskRun and task tracking."""
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_wal(conn, _rec):
+        conn.execute("PRAGMA journal_mode=WAL")
+
+    RuntimeBase.metadata.create_all(engine)
+    return engine
+
+
+@pytest.fixture()
+def rt_factory(runtime_db_engine):
+    """Runtime DB session factory."""
+    factory = sessionmaker(
+        bind=runtime_db_engine,
         autoflush=False,
         expire_on_commit=False,
     )
@@ -104,7 +135,7 @@ class TestShouldRunSleeptime:
 
 class TestIssueBackgroundTask:
     @pytest.mark.asyncio()
-    async def test_successful_task(self, db_factory):
+    async def test_successful_task(self, db_factory, rt_factory):
         async def _dummy_task(*, user_id, db_factory=None):
             return {"ok": True}
 
@@ -113,13 +144,14 @@ class TestIssueBackgroundTask:
             task_type="test_task",
             task_fn=_dummy_task,
             db_factory=db_factory,
+            runtime_db_factory=rt_factory,
         )
 
         assert run_id.startswith("test_task:")
         task_id = int(run_id.split(":")[1])
 
-        with db_factory() as db:
-            run = db.get(BackgroundTaskRun, task_id)
+        with rt_factory() as db:
+            run = db.get(RuntimeBackgroundTaskRun, task_id)
             assert run is not None
             assert run.status == "completed"
             assert run.result_json == {"ok": True}
@@ -128,7 +160,7 @@ class TestIssueBackgroundTask:
             assert run.completed_at is not None
 
     @pytest.mark.asyncio()
-    async def test_failed_task(self, db_factory):
+    async def test_failed_task(self, db_factory, rt_factory):
         async def _failing_task(*, user_id, db_factory=None):
             raise ValueError("test error")
 
@@ -137,18 +169,19 @@ class TestIssueBackgroundTask:
             task_type="fail_task",
             task_fn=_failing_task,
             db_factory=db_factory,
+            runtime_db_factory=rt_factory,
         )
 
         task_id = int(run_id.split(":")[1])
-        with db_factory() as db:
-            run = db.get(BackgroundTaskRun, task_id)
+        with rt_factory() as db:
+            run = db.get(RuntimeBackgroundTaskRun, task_id)
             assert run is not None
             assert run.status == "failed"
             assert "test error" in run.error_message
             assert run.completed_at is not None
 
     @pytest.mark.asyncio()
-    async def test_non_dict_result(self, db_factory):
+    async def test_non_dict_result(self, db_factory, rt_factory):
         """When task_fn returns a non-dict, result_json should be None."""
 
         async def _string_task(*, user_id, db_factory=None):
@@ -159,11 +192,12 @@ class TestIssueBackgroundTask:
             task_type="string_task",
             task_fn=_string_task,
             db_factory=db_factory,
+            runtime_db_factory=rt_factory,
         )
 
         task_id = int(run_id.split(":")[1])
-        with db_factory() as db:
-            run = db.get(BackgroundTaskRun, task_id)
+        with rt_factory() as db:
+            run = db.get(RuntimeBackgroundTaskRun, task_id)
             assert run.status == "completed"
             assert run.result_json is None
 
@@ -173,7 +207,7 @@ class TestIssueBackgroundTask:
 
 class TestTaskFailureIsolation:
     @pytest.mark.asyncio()
-    async def test_one_failure_does_not_cancel_others(self, db_factory):
+    async def test_one_failure_does_not_cancel_others(self, db_factory, rt_factory):
         """One task raising does not prevent others from completing."""
         call_log = []
 
@@ -191,18 +225,21 @@ class TestTaskFailureIsolation:
                 task_type="good1",
                 task_fn=_good_task,
                 db_factory=db_factory,
+                runtime_db_factory=rt_factory,
             ),
             _issue_background_task(
                 user_id=1,
                 task_type="bad1",
                 task_fn=_bad_task,
                 db_factory=db_factory,
+                runtime_db_factory=rt_factory,
             ),
             _issue_background_task(
                 user_id=1,
                 task_type="good2",
                 task_fn=_good_task,
                 db_factory=db_factory,
+                runtime_db_factory=rt_factory,
             ),
             return_exceptions=True,
         )
@@ -214,8 +251,8 @@ class TestTaskFailureIsolation:
         good_ids = [r for r in results if isinstance(r, str) and r.startswith("good")]
         assert len(good_ids) == 2
 
-        with db_factory() as db:
-            runs = list(db.scalars(select(BackgroundTaskRun)).all())
+        with rt_factory() as db:
+            runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
             statuses = {r.task_type: r.status for r in runs}
             assert statuses["good1"] == "completed"
             assert statuses["good2"] == "completed"
@@ -227,7 +264,7 @@ class TestTaskFailureIsolation:
 
 class TestForceMode:
     @pytest.mark.asyncio()
-    async def test_force_bypasses_heat_gate(self, db_factory):
+    async def test_force_bypasses_heat_gate(self, db_factory, rt_factory):
         """With force=True, expensive tasks run even with no heat."""
         with (
             patch(
@@ -284,6 +321,7 @@ class TestForceMode:
                 user_message="test",
                 assistant_response="resp",
                 db_factory=db_factory,
+                runtime_db_factory=rt_factory,
                 force=True,
             )
 
@@ -307,13 +345,13 @@ class TestHeatGating:
 
 
 class TestRestartCursor:
-    def test_no_runs_returns_none(self, db_factory):
-        assert get_last_processed_message_id(1, db_factory=db_factory) is None
+    def test_no_runs_returns_none(self, rt_factory):
+        assert get_last_processed_message_id(1, runtime_db_factory=rt_factory) is None
 
-    def test_round_trip(self, db_factory):
+    def test_round_trip(self, rt_factory):
         # Seed a completed consolidation run
-        with db_factory() as db:
-            run = BackgroundTaskRun(
+        with rt_factory() as db:
+            run = RuntimeBackgroundTaskRun(
                 user_id=1,
                 task_type="consolidation",
                 status="completed",
@@ -327,13 +365,13 @@ class TestRestartCursor:
             db.add(run)
             db.commit()
 
-        msg_id = get_last_processed_message_id(1, thread_id=10, db_factory=db_factory)
+        msg_id = get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory)
         assert msg_id == 42
 
-    def test_thread_scope_isolation(self, db_factory):
+    def test_thread_scope_isolation(self, rt_factory):
         """Cursor for thread 10 should not match thread 20."""
-        with db_factory() as db:
-            run = BackgroundTaskRun(
+        with rt_factory() as db:
+            run = RuntimeBackgroundTaskRun(
                 user_id=1,
                 task_type="consolidation",
                 status="completed",
@@ -348,14 +386,14 @@ class TestRestartCursor:
             db.commit()
 
         # Thread 20 has no cursor
-        assert get_last_processed_message_id(1, thread_id=20, db_factory=db_factory) is None
+        assert get_last_processed_message_id(1, thread_id=20, runtime_db_factory=rt_factory) is None
         # Thread 10 has the cursor
-        assert get_last_processed_message_id(1, thread_id=10, db_factory=db_factory) == 42
+        assert get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory) == 42
 
-    def test_update_cursor(self, db_factory):
+    def test_update_cursor(self, rt_factory):
         # Create a completed run first
-        with db_factory() as db:
-            run = BackgroundTaskRun(
+        with rt_factory() as db:
+            run = RuntimeBackgroundTaskRun(
                 user_id=1,
                 task_type="consolidation",
                 status="completed",
@@ -374,10 +412,10 @@ class TestRestartCursor:
             thread_id=None,
             message_id=50,
             messages_processed=7,
-            db_factory=db_factory,
+            runtime_db_factory=rt_factory,
         )
 
-        msg_id = get_last_processed_message_id(1, thread_id=None, db_factory=db_factory)
+        msg_id = get_last_processed_message_id(1, thread_id=None, runtime_db_factory=rt_factory)
         assert msg_id == 50
 
 
@@ -386,8 +424,8 @@ class TestRestartCursor:
 
 class TestRunSleeptimeAgents:
     @pytest.mark.asyncio()
-    async def test_parallel_tasks_all_run(self, db_factory):
-        """All five parallel tasks should create BackgroundTaskRun records."""
+    async def test_parallel_tasks_all_run(self, db_factory, rt_factory):
+        """All five parallel tasks should create RuntimeBackgroundTaskRun records."""
         with (
             patch(
                 "anima_server.services.agent.sleep_agent._task_consolidation",
@@ -432,6 +470,7 @@ class TestRunSleeptimeAgents:
                 user_message="hello",
                 assistant_response="hi",
                 db_factory=db_factory,
+                runtime_db_factory=rt_factory,
             )
 
         assert len(run_ids) == 5
@@ -444,19 +483,19 @@ class TestRunSleeptimeAgents:
             "episode_gen",
         }
 
-        with db_factory() as db:
-            runs = list(db.scalars(select(BackgroundTaskRun)).all())
+        with rt_factory() as db:
+            runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
             assert len(runs) == 5
             assert all(r.status == "completed" for r in runs)
 
 
-# ── BackgroundTaskRun model ──────────────────────────────────────────
+# ── RuntimeBackgroundTaskRun model ───────────────────────────────────
 
 
 class TestBackgroundTaskRunModel:
-    def test_default_status(self, db_factory):
-        with db_factory() as db:
-            run = BackgroundTaskRun(
+    def test_default_status(self, rt_factory):
+        with rt_factory() as db:
+            run = RuntimeBackgroundTaskRun(
                 user_id=1,
                 task_type="test",
             )

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     data_dir: Path = DEFAULT_DATA_DIR
     runtime_database_url: str = ""
     runtime_pg_data_dir: str = ""
+    runtime_pool_size: int = 5
+    runtime_pool_max_overflow: int = 10
     agent_provider: str = "ollama"
     agent_model: str = "vaultbox/qwen3.5-uncensored:35b"
     agent_persona_template: str = "default"

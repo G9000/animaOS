@@ -214,12 +214,12 @@ class AnimaCompanion:
         self._thread_id = new_thread_id
         logger.info("Companion reset for user %s (new thread=%s)", self._user_id, new_thread_id)
 
-    def warm(self, db: Session) -> None:
+    def warm(self, db: Session, runtime_db: Session) -> None:
         """Pre-populate caches.  Call during server startup or first request."""
         if self._thread_id is None:
             from anima_server.services.agent.persistence import get_or_create_thread
 
-            thread = get_or_create_thread(db, self._user_id)
+            thread = get_or_create_thread(runtime_db, self._user_id)
             self._thread_id = thread.id
 
         # Load static memory blocks (without semantic results — those are per-turn)
@@ -228,11 +228,12 @@ class AnimaCompanion:
             user_id=self._user_id,
             thread_id=self._thread_id,
             semantic_results=None,
+            runtime_db=runtime_db,
         )
         self.set_memory_cache(blocks)
 
         # Load conversation window
-        history = load_thread_history(db, self._thread_id, user_id=self._user_id)
+        history = load_thread_history(runtime_db, self._thread_id, user_id=self._user_id)
         self.set_conversation_window(history)
 
         logger.info(
@@ -242,23 +243,23 @@ class AnimaCompanion:
             len(self._conversation_window),
         )
 
-    def ensure_memory_loaded(self, db: Session) -> tuple[MemoryBlock, ...]:
+    def ensure_memory_loaded(
+        self, db: Session, *, runtime_db: Session | None = None
+    ) -> tuple[MemoryBlock, ...]:
         """Return cached static blocks, reloading from DB if stale."""
         cached = self.get_cached_memory_blocks()
         if cached is not None:
             return cached
 
         if self._thread_id is None:
-            from anima_server.services.agent.persistence import get_or_create_thread
-
-            thread = get_or_create_thread(db, self._user_id)
-            self._thread_id = thread.id
+            return ()
 
         blocks = build_runtime_memory_blocks(
             db,
             user_id=self._user_id,
             thread_id=self._thread_id,
             semantic_results=None,
+            runtime_db=runtime_db,
         )
         self.set_memory_cache(blocks)
         return blocks

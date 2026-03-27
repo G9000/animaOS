@@ -4,8 +4,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
 from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db.user_store import _bootstrapped_roots
@@ -13,7 +11,7 @@ from anima_server.main import create_app
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
-
+from fastapi.testclient import TestClient
 
 SENTINEL_ROUND_TRIP = "SENTINEL_ROUND_TRIP_ALPHA_20260320"
 SENTINEL_WRONG_PASS = "SENTINEL_WRONG_PASS_BETA_20260320"

@@ -6,7 +6,6 @@ from mnemonic import Mnemonic
 from sqlalchemy.orm import Session
 
 from anima_server.services.auth import (
-    build_user_key,
     get_user_keys_by_user_id,
     hash_password,
     to_wrapped_dek_record,

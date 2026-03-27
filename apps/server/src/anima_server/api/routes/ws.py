@@ -241,6 +241,7 @@ async def ws_agent(websocket: WebSocket) -> None:
 
 
 async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
+    from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.services.agent.delegation import ToolDelegator
     from anima_server.services.agent.service import stream_agent
 
@@ -257,11 +258,13 @@ async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
     )
 
     db = get_user_session_factory(conn.user_id)()
+    runtime_db = get_runtime_session_factory()()
     try:
         async for event in stream_agent(
             message,
             conn.user_id,
             db,
+            runtime_db,
             tool_delegate=delegator.delegate,
             delegated_tool_names=action_tool_names,
             extra_tool_schemas=action_tool_schemas,
@@ -279,6 +282,7 @@ async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
             }
         )
     finally:
+        runtime_db.close()
         db.close()
         conn._delegator = None
 

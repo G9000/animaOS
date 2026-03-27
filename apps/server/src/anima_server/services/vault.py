@@ -107,6 +107,11 @@ _IDENTITY_TABLES = frozenset(
     }
 )
 
+# NOTE: After P2, new conversations are stored in the runtime PostgreSQL
+# database (RuntimeThread/RuntimeMessage).  The soul-DB agent_threads and
+# agent_messages tables are legacy and will be empty for new deployments.
+# Chat history is ephemeral by design (compacted away), so omitting it
+# from vault exports is intentional.
 _CONVERSATION_TABLES = frozenset(
     {
         "agentThreads",

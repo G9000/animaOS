@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentMessage, AgentThread, User
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.messages import is_assistant_message, to_runtime_message
@@ -26,6 +26,7 @@ from anima_server.services.agent.runtime_types import (
 from anima_server.services.agent.state import StoredMessage
 from anima_server.services.agent.streaming import AgentStreamEvent
 from anima_server.services.agent.tools import current_datetime, send_message, tool
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -356,22 +357,17 @@ async def test_runtime_preserves_dynamic_identity_without_spending_block_budget(
 
 
 def test_assistant_tool_calls_round_trip_from_persistence() -> None:
-    with _db_session() as session:
-        user = User(
-            username="tool-history",
-            password_hash="not-used",
-            display_name="Tool History",
-        )
-        session.add(user)
-        session.flush()
+    with runtime_db_session() as session:
+        user_id = 42
 
-        thread = AgentThread(user_id=user.id, status="active")
+        thread = RuntimeThread(user_id=user_id, status="active")
         session.add(thread)
         session.flush()
 
         session.add(
-            AgentMessage(
+            RuntimeMessage(
                 thread_id=thread.id,
+                user_id=user_id,
                 sequence_id=1,
                 role="assistant",
                 content_text="",

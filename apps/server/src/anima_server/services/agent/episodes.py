@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.config import settings
+from anima_server.config import settings  # noqa: F401 — tests patch this attribute
 from anima_server.models import MemoryDailyLog, MemoryEpisode
 from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef
@@ -165,18 +165,19 @@ def _merge_episodes(
     """
     from sqlalchemy import select
 
-    # Get recent episodes from the same day
-    recent = list(
-        db.scalars(
-            select(MemoryEpisode)
-            .where(
-                MemoryEpisode.user_id == user_id,
-                MemoryEpisode.date == new_episode.date,
-            )
-            .order_by(MemoryEpisode.created_at.desc())
-            .limit(3)
-        ).all()
+    # Get recent episodes from the same day, excluding the new episode itself
+    query = (
+        select(MemoryEpisode)
+        .where(
+            MemoryEpisode.user_id == user_id,
+            MemoryEpisode.date == new_episode.date,
+        )
+        .order_by(MemoryEpisode.created_at.desc())
+        .limit(3)
     )
+    if new_episode.id is not None:
+        query = query.where(MemoryEpisode.id != new_episode.id)
+    recent = list(db.scalars(query).all())
 
     if not recent:
         return new_episode
