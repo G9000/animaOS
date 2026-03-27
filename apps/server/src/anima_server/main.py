@@ -30,7 +30,7 @@ from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import settings
 from .db.pg_lifecycle import EmbeddedPG
-from .db.runtime import dispose_runtime_engine, init_runtime_engine
+from .db.runtime import dispose_runtime_engine, ensure_runtime_tables, init_runtime_engine
 from .db.user_store import ensure_per_user_databases_ready
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
 
@@ -84,7 +84,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     try:
         if runtime_url:
-            init_runtime_engine(runtime_url, echo=settings.database_echo)
+            init_runtime_engine(
+                runtime_url,
+                echo=settings.database_echo,
+                pool_size=settings.runtime_pool_size,
+                max_overflow=settings.runtime_pool_max_overflow,
+            )
+            ensure_runtime_tables()
     except Exception:
         if embedded_pg is not None:
             embedded_pg.stop()
@@ -100,7 +106,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
         finally:
-            await dispose_runtime_engine()
+            dispose_runtime_engine()
             if embedded_pg is not None:
                 embedded_pg.stop()
 

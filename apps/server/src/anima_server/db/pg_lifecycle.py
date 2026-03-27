@@ -28,10 +28,10 @@ class EmbeddedPG:
 
     @property
     def database_url(self) -> str:
-        """Return the asyncpg connection URL for the running instance."""
+        """Return the raw connection URL for the running instance."""
         if not self.running:
             raise RuntimeError("Embedded PG is not running")
-        return self._to_asyncpg_url(self._server.get_uri())
+        return self._server.get_uri()
 
     def start(self) -> None:
         """Start the embedded PostgreSQL instance."""
@@ -94,8 +94,10 @@ class EmbeddedPG:
             )
 
     @staticmethod
-    def _to_asyncpg_url(psycopg_url: str) -> str:
-        """Convert pgserver's psycopg-style URL to asyncpg format."""
-        if psycopg_url.startswith("postgresql+asyncpg://"):
-            return psycopg_url
-        return psycopg_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    def to_sync_url(url: str) -> str:
+        """Convert any PostgreSQL URL to ``postgresql+psycopg://`` format."""
+        if "+psycopg" in url:
+            return url
+        if "+asyncpg" in url:
+            return url.replace("+asyncpg", "+psycopg", 1)
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)

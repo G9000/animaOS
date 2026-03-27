@@ -1,49 +1,84 @@
+"""Synchronous PostgreSQL engine for the Runtime store.
+
+Uses psycopg (v3) as the DBAPI driver.  The entire service layer is
+synchronous today (async conversion is planned for P7), so we use plain
+:class:`~sqlalchemy.engine.Engine` / :class:`~sqlalchemy.orm.Session`
+instead of the async equivalents.
+"""
+
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+import logging
+from collections.abc import Generator
+from pathlib import Path
 
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
-_runtime_engine: AsyncEngine | None = None
-_runtime_session_factory: async_sessionmaker[AsyncSession] | None = None
+logger = logging.getLogger(__name__)
+
+_runtime_engine: Engine | None = None
+_runtime_session_factory: sessionmaker[Session] | None = None
+
+_ALEMBIC_RUNTIME_INI = Path(__file__).resolve().parents[3] / "alembic_runtime.ini"
 
 
-def init_runtime_engine(database_url: str, *, echo: bool = False) -> None:
-    """Initialize the Runtime store async engine."""
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+def _to_sync_url(url: str) -> str:
+    """Convert any PostgreSQL URL to ``postgresql+psycopg://`` format."""
+    if "+psycopg" in url:
+        return url
+    if "+asyncpg" in url:
+        return url.replace("+asyncpg", "+psycopg", 1)
+    return url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+
+# ---------------------------------------------------------------------------
+# Engine lifecycle
+# ---------------------------------------------------------------------------
+
+def init_runtime_engine(
+    database_url: str,
+    *,
+    echo: bool = False,
+    pool_size: int = 5,
+    max_overflow: int = 10,
+) -> None:
+    """Create the Runtime store sync engine and session factory."""
     global _runtime_engine, _runtime_session_factory
 
-    _runtime_engine = create_async_engine(
-        database_url,
+    sync_url = _to_sync_url(database_url)
+
+    _runtime_engine = create_engine(
+        sync_url,
         echo=echo,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
     )
-    _runtime_session_factory = async_sessionmaker(
+    _runtime_session_factory = sessionmaker(
         bind=_runtime_engine,
-        class_=AsyncSession,
+        autoflush=False,
         expire_on_commit=False,
     )
 
 
-async def dispose_runtime_engine() -> None:
-    """Dispose the Runtime store async engine."""
+def dispose_runtime_engine() -> None:
+    """Dispose the Runtime store engine (synchronous)."""
     global _runtime_engine, _runtime_session_factory
 
     if _runtime_engine is not None:
-        await _runtime_engine.dispose()
+        _runtime_engine.dispose()
         _runtime_engine = None
         _runtime_session_factory = None
 
 
-def get_runtime_engine() -> AsyncEngine:
-    """Return the Runtime store async engine."""
+def get_runtime_engine() -> Engine:
+    """Return the Runtime store engine; raises if not initialised."""
     if _runtime_engine is None:
         raise RuntimeError(
             "Runtime engine not initialized. "
@@ -52,16 +87,46 @@ def get_runtime_engine() -> AsyncEngine:
     return _runtime_engine
 
 
-@asynccontextmanager
-async def get_runtime_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield an async session for the Runtime store."""
+def get_runtime_session_factory() -> sessionmaker[Session]:
+    """Return the Runtime store session factory."""
+    if _runtime_session_factory is None:
+        raise RuntimeError("Runtime session factory not initialized.")
+    return _runtime_session_factory
+
+
+def get_runtime_db() -> Generator[Session, None, None]:
+    """FastAPI dependency that yields a Runtime session.
+
+    Commits on success, rolls back on exception, always closes.
+    """
     if _runtime_session_factory is None:
         raise RuntimeError("Runtime session factory not initialized.")
 
-    async with _runtime_session_factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+    session = _runtime_session_factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Alembic migration helper
+# ---------------------------------------------------------------------------
+
+def ensure_runtime_tables() -> None:
+    """Run Alembic runtime migrations programmatically."""
+    from alembic import command
+    from alembic.config import Config
+
+    engine = get_runtime_engine()
+    cfg = Config(str(_ALEMBIC_RUNTIME_INI))
+
+    with engine.begin() as connection:
+        cfg.attributes["connection"] = connection
+        command.upgrade(cfg, "head")
+
+    logger.info("Runtime Alembic migrations applied.")
