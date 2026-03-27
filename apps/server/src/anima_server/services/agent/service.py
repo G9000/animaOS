@@ -26,6 +26,7 @@ from anima_server.services.agent.companion import (
     invalidate_companion,
 )
 from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
+from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
 from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
 from anima_server.services.agent.persistence import (
@@ -70,7 +71,8 @@ from anima_server.services.agent.tool_context import (
     clear_tool_context,
     set_tool_context,
 )
-from anima_server.services.agent.turn_coordinator import get_user_lock
+from anima_server.services.agent.tools import get_tools
+from anima_server.services.agent.turn_coordinator import get_thread_lock
 from anima_server.services.data_crypto import df
 
 _runner_lock = Lock()
@@ -351,14 +353,18 @@ async def _execute_agent_turn(
     db: Session,
     runtime_db: Session,
     *,
+    thread_id: int | None = None,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
 ) -> AgentResult:
-    user_lock = get_user_lock(user_id)
-    async with user_lock:
+    resolved_thread_id = (
+        thread_id if thread_id is not None else _resolve_thread_id(user_id, runtime_db)
+    )
+    thread_lock = get_thread_lock(resolved_thread_id)
+    async with thread_lock:
         return await _execute_agent_turn_locked(
             user_message,
             user_id,
@@ -370,6 +376,12 @@ async def _execute_agent_turn(
             delegated_tool_names=delegated_tool_names,
             extra_tool_schemas=extra_tool_schemas,
         )
+
+
+def _resolve_thread_id(user_id: int, runtime_db: Session) -> int:
+    """Resolve the main conversation thread ID for lock acquisition."""
+    thread = get_or_create_thread(runtime_db, user_id)
+    return thread.id
 
 
 async def _execute_agent_turn_locked(
@@ -726,17 +738,20 @@ async def _invoke_turn_runtime(
 
     try:
         runner = get_or_build_runner()
+        tool_executor: ToolExecutor | None = None
 
-        # Set per-turn delegation on the executor so delegated tools
-        # are forwarded to the connected client instead of running
-        # server-side.
         prepared_action_schemas: list[dict[str, Any]] = []
         if tool_delegate:
-            runner._tool_executor.set_delegation(tool_delegate, delegated_tool_names)
+            tool_executor = ToolExecutor(
+                get_tools(),
+                delegate=tool_delegate,
+                delegated_tool_names=delegated_tool_names,
+            )
             if extra_tool_schemas:
                 from anima_server.services.agent.tools import prepare_action_tool_schemas
 
                 prepared_action_schemas = prepare_action_tool_schemas(extra_tool_schemas)
+
         try:
             return await runner.invoke(
                 user_message,
@@ -748,6 +763,7 @@ async def _invoke_turn_runtime(
                 cancel_event=cancel_event,
                 memory_refresher=_refresh_memory,
                 extra_tool_schemas=prepared_action_schemas,
+                tool_executor=tool_executor,
             )
         except StepFailedError as exc:
             if not _should_retry_after_compaction(exc):
@@ -776,12 +792,9 @@ async def _invoke_turn_runtime(
                 event_callback=event_callback,
                 cancel_event=cancel_event,
                 memory_refresher=_refresh_memory,
+                extra_tool_schemas=prepared_action_schemas,
+                tool_executor=tool_executor,
             )
-        finally:
-            # Always clear delegation after the turn completes or fails
-            # to avoid leaking per-connection state into subsequent turns.
-            if tool_delegate:
-                runner._tool_executor.clear_delegation()
     except StepFailedError as exc:
         _handle_step_failure(runtime_db, run=run, user_msg=user_msg, err=exc)
         raise exc.cause from exc
