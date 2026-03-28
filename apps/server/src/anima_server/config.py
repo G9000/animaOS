@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     transcript_retention_days: int = -1
     consolidation_health_threshold_minutes: int = 30
     sidecar_nonce: str = ""
+    health_log_dir: str = ""
+    health_log_retention_days: int = 7
+    health_log_level: str = "info"
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",
