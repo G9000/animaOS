@@ -19,7 +19,11 @@ export interface ConnectionEvents {
   onStatusChange: (status: ConnectionStatus) => void;
   onMessage: (message: ServerMessage) => void;
   onError: (error: Error) => void;
+  /** Fired after a successful reconnection (not the initial connect). */
+  onReconnect?: () => void;
 }
+
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 export class ConnectionManager {
   private ws: WebSocket | null = null;
@@ -30,6 +34,9 @@ export class ConnectionManager {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionallyClosed = false;
+  private hasConnectedBefore = false;
+  /** Messages queued while WebSocket was not open. */
+  private sendQueue: ClientMessage[] = [];
 
   constructor(
     config: AnimusConfig,
@@ -43,6 +50,7 @@ export class ConnectionManager {
 
   connect(): void {
     this.intentionallyClosed = false;
+    this.reconnectAttempt = 0;
     this.setStatus("connecting");
 
     const wsUrl = this.config.serverUrl.endsWith("/ws/agent")
@@ -53,11 +61,13 @@ export class ConnectionManager {
 
     this.ws.on("open", () => {
       this.setStatus("authenticating");
-      this.send({
-        type: "auth",
-        unlockToken: this.config.unlockToken,
-        username: this.config.username,
-      } satisfies AuthMessage);
+      this.ws!.send(
+        JSON.stringify({
+          type: "auth",
+          unlockToken: this.config.unlockToken,
+          username: this.config.username,
+        } satisfies AuthMessage),
+      );
     });
 
     this.ws.on("message", (data) => {
@@ -65,10 +75,17 @@ export class ConnectionManager {
         const msg = JSON.parse(data.toString()) as ServerMessage;
 
         if (msg.type === "auth_ok") {
+          const isReconnect = this.hasConnectedBefore;
+          this.hasConnectedBefore = true;
           this.setStatus("connected");
           this.reconnectAttempt = 0;
           // Register tools with the server
           this.send({ type: "tool_schemas", tools: this.toolSchemas });
+          // Flush any queued messages
+          this.flushQueue();
+          if (isReconnect) {
+            this.events.onReconnect?.();
+          }
         }
 
         // Auth failure — stop reconnecting, delete stale config
@@ -106,10 +123,18 @@ export class ConnectionManager {
     });
   }
 
-  send(message: ClientMessage): void {
+  /**
+   * Send a message. If the WebSocket is not open, the message is queued
+   * and will be flushed automatically when the connection is restored.
+   * Returns true if sent immediately, false if queued.
+   */
+  send(message: ClientMessage): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
+      return true;
     }
+    this.sendQueue.push(message);
+    return false;
   }
 
   disconnect(): void {
@@ -118,6 +143,7 @@ export class ConnectionManager {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.sendQueue = [];
     this.ws?.close();
     this.ws = null;
     this.setStatus("disconnected");
@@ -132,7 +158,22 @@ export class ConnectionManager {
     this.events.onStatusChange(status);
   }
 
+  private flushQueue(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    const queue = this.sendQueue;
+    this.sendQueue = [];
+    for (const msg of queue) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+
   private scheduleReconnect(): void {
+    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      this.events.onError(
+        new Error(`Failed to reconnect after ${MAX_RECONNECT_ATTEMPTS} attempts. Use /reconnect or restart.`),
+      );
+      return;
+    }
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30000);
     this.reconnectAttempt++;
     this.reconnectTimer = setTimeout(() => {

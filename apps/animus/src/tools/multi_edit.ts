@@ -37,7 +37,16 @@ export function executeMultiEdit(args: MultiEditArgs): {
         result: `Edit ${i + 1}/${edits.length}: old_string not found in ${file_path}`,
       };
     }
-    dryRun = dryRun.replace(old_string, edits[i].new_string);
+    const occurrences = dryRun.split(old_string).length - 1;
+    if (occurrences > 1) {
+      return {
+        status: "error",
+        result: `Edit ${i + 1}/${edits.length}: old_string matches ${occurrences} locations in ${file_path}. Provide more context to disambiguate.`,
+      };
+    }
+    const replacement = edits[i].new_string;
+    // Use function replacer to avoid $-pattern interpretation
+    dryRun = dryRun.replace(old_string, () => replacement);
   }
 
   // Dry-run succeeded — write the result

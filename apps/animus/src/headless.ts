@@ -7,11 +7,13 @@ import { executeTool } from "./tools/executor";
 import { ACTION_TOOL_SCHEMAS } from "./tools/registry";
 import type { ServerMessage } from "./client/protocol";
 import type { PermissionDecision } from "./tools/permissions";
+import { setAskUserCallback, clearAskUserCallback } from "./tools/ask_user";
 
 export interface HeadlessOptions {
   config: AnimusConfig;
   prompt: string;
   json?: boolean;
+  plan?: boolean;
   timeout?: number;
   /** Injectable for testing — defaults to process.exit */
   exit?: (code: number) => void;
@@ -26,6 +28,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
     config,
     prompt,
     json = false,
+    plan = false,
     timeout = 300_000,
     exit = (code: number) => process.exit(code),
     write = (text: string) => { process.stdout.write(text); },
@@ -33,15 +36,21 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
   } = opts;
 
   let output = "";
+  let reasoning = "";
+  const serverToolCalls: Array<{ id: string; tool: string; args: Record<string, unknown>; result?: string }> = [];
   let promptSent = false;
   let done = false;
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // In headless mode, ask_user auto-returns null (declined)
+  setAskUserCallback(async () => null);
 
   return new Promise<void>((resolve) => {
     const finish = (conn: ConnectionManager, code: number) => {
       if (done) return;
       done = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
+      clearAskUserCallback();
       conn.disconnect();
       exit(code);
       resolve();
@@ -54,6 +63,9 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
       onStatusChange: (status: ConnectionStatus) => {
         if (status === "connected" && !promptSent) {
           promptSent = true;
+          if (plan) {
+            conn.send({ type: "set_mode", mode: "plan" });
+          }
           conn.send({ type: "user_message", message: prompt });
         }
       },
@@ -80,22 +92,61 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
             }
             break;
 
+          case "reasoning":
+            if (json) {
+              reasoning += msg.content;
+            } else {
+              // Write reasoning to stderr so it doesn't pollute stdout piping
+              writeError(`[reasoning] ${msg.content}\n`);
+            }
+            break;
+
+          case "tool_call":
+            // Server-side tool call — log for observability
+            serverToolCalls.push({ id: msg.tool_call_id, tool: msg.tool_name, args: msg.args });
+            if (!json) {
+              writeError(`[server tool] ${msg.tool_name}\n`);
+            }
+            break;
+
+          case "tool_return": {
+            // Match by tool_call_id for correctness when same tool runs concurrently
+            const pending = serverToolCalls.find(
+              (tc) => tc.id === msg.tool_call_id,
+            );
+            if (pending) pending.result = msg.result;
+            break;
+          }
+
           case "tool_execute": {
             const result = await executeTool(msg, headlessApproval);
             conn.send({ type: "tool_result", ...result });
             break;
           }
 
+          case "approval_required":
+            // Auto-deny server-initiated approvals in headless mode
+            conn.send({
+              type: "approval_response",
+              run_id: msg.run_id,
+              tool_call_id: msg.tool_call_id,
+              approved: false,
+              reason: "Auto-denied in headless mode",
+            });
+            writeError(`[approval] Auto-denied ${msg.tool_name} in headless mode\n`);
+            break;
+
           case "turn_complete":
             if (json) {
-              write(
-                JSON.stringify({
-                  response: output,
-                  model: msg.model,
-                  provider: msg.provider,
-                  tools_used: msg.tools_used,
-                }) + "\n",
-              );
+              const payload: Record<string, unknown> = {
+                response: output,
+                model: msg.model,
+                provider: msg.provider,
+                tools_used: msg.tools_used,
+              };
+              if (reasoning) payload.reasoning = reasoning;
+              if (serverToolCalls.length > 0) payload.server_tool_calls = serverToolCalls;
+              write(JSON.stringify(payload) + "\n");
             }
             finish(conn, 0);
             break;

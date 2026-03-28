@@ -27,14 +27,16 @@ export async function executeBash(args: BashArgs): Promise<ToolResult> {
     });
 
     // Race the process against a timeout
-    const timeoutPromise = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), timeout),
-    );
+    let timer: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeout);
+    });
 
     const raceResult = await Promise.race([
       proc.exited.then(() => "done" as const),
       timeoutPromise,
     ]);
+    clearTimeout(timer!);
 
     if (raceResult === "timeout") {
       proc.kill();
