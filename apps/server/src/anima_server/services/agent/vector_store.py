@@ -371,6 +371,7 @@ def delete_memory(
 
 
 _synced_users: set[int] = set()
+_synced_users_lock = Lock()
 
 
 def _maybe_cold_start_sync(user_id: int, db: Session | None) -> None:
@@ -380,16 +381,19 @@ def _maybe_cold_start_sync(user_id: int, db: Session | None) -> None:
     has cached embedding_json data, bulk-insert into PG so pgvector
     search works without waiting for a consolidation cycle.
     """
-    if user_id in _synced_users or _force_in_memory or db is None:
+    if _force_in_memory or db is None:
         return
-    _synced_users.add(user_id)
-
+    with _synced_users_lock:
+        if user_id in _synced_users:
+            return
     try:
         from anima_server.services.agent.embeddings import sync_embeddings_to_runtime
 
         synced = sync_embeddings_to_runtime(db, user_id=user_id)
         if synced > 0:
             logger.info("Cold-start sync: %d embeddings for user %d", synced, user_id)
+        with _synced_users_lock:
+            _synced_users.add(user_id)
     except Exception:
         logger.debug("Cold-start embedding sync failed for user %d", user_id)
 
@@ -514,6 +518,8 @@ def reset_vector_store() -> None:
             _fallback_store.reset()
             _fallback_store = None
         _force_in_memory = False
+    with _synced_users_lock:
+        _synced_users.clear()
 
 
 def use_in_memory_store() -> None:

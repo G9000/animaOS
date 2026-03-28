@@ -22,13 +22,7 @@ TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
 
 
 def _vector_column() -> Any:
-    """Return a pgvector Vector column with the configured dimension.
-
-    Importing pgvector at module level would fail in environments where
-    pgvector is not installed (e.g. lightweight test runs). The lazy
-    import keeps the model importable everywhere; the column type is only
-    resolved when SQLAlchemy actually reflects or creates the table.
-    """
+    """Return a pgvector Vector column with the configured dimension."""
     from pgvector.sqlalchemy import Vector
 
     return Vector(settings.agent_embedding_dim)

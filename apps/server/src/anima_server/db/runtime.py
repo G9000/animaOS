@@ -142,5 +142,5 @@ def ensure_pgvector() -> None:
     except Exception:
         logger.warning(
             "pgvector extension not available. "
-            "Vector search will fall back to brute-force."
+            "Vector search will use in-memory fallback."
         )
