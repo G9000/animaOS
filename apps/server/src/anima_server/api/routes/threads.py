@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
-from anima_server.db import get_runtime_db
+from anima_server.db import get_db, get_runtime_db
+from anima_server.db.session import build_session_factory_for_db
 from anima_server.models.runtime import RuntimeThread
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api/threads", tags=["threads"])
 async def close_thread_endpoint(
     thread_id: int,
     request: Request,
+    db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Close a thread and trigger background consolidation."""
@@ -38,10 +40,12 @@ async def close_thread_endpoint(
     runtime_db.commit()
 
     if changed:
+        soul_db_factory = build_session_factory_for_db(db)
         asyncio.get_running_loop().create_task(
             on_thread_close(
                 thread_id=thread_id,
                 user_id=thread.user_id,
+                soul_db_factory=soul_db_factory,
             )
         )
 

@@ -1254,7 +1254,11 @@ def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) ->
     )
 
 
-async def reset_agent_thread(user_id: int, runtime_db: Session) -> None:
+async def reset_agent_thread(
+    user_id: int,
+    runtime_db: Session,
+    db: Session | None = None,
+) -> None:
     """Rotate to a fresh active thread while preserving the closed thread for archival."""
     thread = runtime_db.scalar(
         select(RuntimeThread).where(
@@ -1275,10 +1279,12 @@ async def reset_agent_thread(user_id: int, runtime_db: Session) -> None:
         if thread_id is not None:
             from anima_server.services.agent.eager_consolidation import on_thread_close
 
+            soul_db_factory = _build_db_factory(db) if db is not None else None
             asyncio.get_running_loop().create_task(
                 on_thread_close(
                     thread_id=thread_id,
                     user_id=user_id,
+                    soul_db_factory=soul_db_factory,
                 )
             )
     except RuntimeError:
