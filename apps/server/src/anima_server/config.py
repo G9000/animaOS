@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     core_require_encryption: bool = True
     agent_extraction_model: str = ""
     agent_extraction_provider: str = ""
+    agent_embedding_dim: int = 768
     agent_session_memory_max_notes: int = 20
     agent_session_memory_budget_chars: int = 1500
     agent_self_model_identity_budget: int = 1000
