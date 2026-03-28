@@ -390,6 +390,8 @@ def _maybe_cold_start_sync(user_id: int, db: Session | None) -> None:
         from anima_server.services.agent.embeddings import sync_embeddings_to_runtime
 
         synced = sync_embeddings_to_runtime(db, user_id=user_id)
+        if synced < 0:
+            return  # PG unavailable — don't mark synced, retry next time
         if synced > 0:
             logger.info("Cold-start sync: %d embeddings for user %d", synced, user_id)
         with _synced_users_lock:

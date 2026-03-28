@@ -439,10 +439,10 @@ def sync_embeddings_to_runtime(
         runtime_db = get_runtime_session_factory()()
     except RuntimeError:
         logger.debug("Runtime PG unavailable for embedding sync for user %d", user_id)
-        return 0
+        return -1
     except Exception:
         logger.debug("Failed to open runtime PG session for user %d", user_id, exc_info=True)
-        return 0
+        return -1
 
     try:
         from anima_server.services.agent.pgvec_store import PgVecStore
@@ -472,7 +472,7 @@ def sync_embeddings_to_runtime(
     except Exception:
         runtime_db.rollback()
         logger.exception("Failed to sync embeddings to runtime PG for user %d", user_id)
-        return 0
+        return -1
     finally:
         runtime_db.close()
 

@@ -41,7 +41,7 @@ def test_sync_returns_zero_when_no_items(monkeypatch) -> None:
     assert sync_embeddings_to_runtime(soul_db, user_id=1) == 0
 
 
-def test_sync_returns_zero_when_runtime_is_unavailable(monkeypatch) -> None:
+def test_sync_returns_negative_when_runtime_is_unavailable(monkeypatch) -> None:
     soul_db = SimpleNamespace(
         scalars=lambda _stmt: SimpleNamespace(
             all=lambda: [_memory_item(item_id=1, user_id=7, embedding_json=[0.1, 0.2])]
@@ -56,7 +56,7 @@ def test_sync_returns_zero_when_runtime_is_unavailable(monkeypatch) -> None:
         lambda: (_ for _ in ()).throw(RuntimeError("runtime unavailable")),
     )
 
-    assert sync_embeddings_to_runtime(soul_db, user_id=7) == 0
+    assert sync_embeddings_to_runtime(soul_db, user_id=7) == -1
 
 
 def test_sync_upserts_valid_embeddings_and_skips_invalid(monkeypatch) -> None:
