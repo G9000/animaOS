@@ -444,6 +444,69 @@ def sync_to_vector_store(
         return 0
 
 
+def sync_embeddings_to_runtime(
+    soul_db: Session,
+    *,
+    user_id: int,
+) -> int:
+    """Sync cached soul embeddings into the runtime pgvector store."""
+    items = list(
+        soul_db.scalars(
+            select(MemoryItem).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.superseded_by.is_(None),
+                MemoryItem.embedding_json.isnot(None),
+            )
+        ).all()
+    )
+
+    if not items:
+        return 0
+
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        runtime_db = get_runtime_session_factory()()
+    except RuntimeError:
+        logger.debug("Runtime PG unavailable for embedding sync for user %d", user_id)
+        return 0
+    except Exception:
+        logger.debug("Failed to open runtime PG session for user %d", user_id, exc_info=True)
+        return 0
+
+    try:
+        from anima_server.services.agent.pgvec_store import PgVecStore
+
+        store = PgVecStore(runtime_db)
+        count = 0
+
+        for item in items:
+            embedding = _parse_embedding(item.embedding_json)
+            if embedding is None:
+                continue
+
+            plaintext = df(user_id, item.content, table="memory_items", field="content")
+            store.upsert(
+                user_id,
+                item_id=item.id,
+                content=plaintext,
+                embedding=embedding,
+                category=item.category,
+                importance=item.importance,
+            )
+            count += 1
+
+        if count > 0:
+            runtime_db.commit()
+        return count
+    except Exception:
+        runtime_db.rollback()
+        logger.exception("Failed to sync embeddings to runtime PG for user %d", user_id)
+        return 0
+    finally:
+        runtime_db.close()
+
+
 def _parse_embedding(raw: Any) -> list[float] | None:
     """Parse an embedding from the JSON column value."""
     if raw is None:
