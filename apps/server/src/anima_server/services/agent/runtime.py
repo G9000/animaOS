@@ -184,7 +184,9 @@ class AgentRuntime:
         cancel_event: asyncio.Event | None = None,
         memory_refresher: MemoryRefresher | None = None,
         extra_tool_schemas: Sequence[dict[str, Any]] = (),
+        tool_executor: ToolExecutor | None = None,
     ) -> AgentResult | DryRunResult:
+        executor = tool_executor or self._tool_executor
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
             memory_blocks=memory_blocks,
         )
@@ -345,6 +347,7 @@ class AgentRuntime:
                     step_index=step_index,
                     event_callback=event_callback,
                     extra_tool_names=extra_tool_names,
+                    tool_executor=executor,
                 )
                 if coerced is not None:
                     all_coerced_calls = tuple(tc for tc, _ in coerced)
@@ -497,7 +500,7 @@ class AgentRuntime:
 
                 if tc_index == 0:
                     step_ctx.progression = StepProgression.TOOLS_STARTED
-                tool_result = await self._tool_executor.execute(
+                tool_result = await executor.execute(
                     tool_call,
                     is_terminal=rules_solver.is_terminal(tool_call.name),
                 )
@@ -638,7 +641,7 @@ class AgentRuntime:
                         )
                         continue
                     try:
-                        deferred_result = await self._tool_executor.execute(
+                        deferred_result = await executor.execute(
                             dtc,
                             is_terminal=False,
                         )
@@ -701,6 +704,7 @@ class AgentRuntime:
         conversation_turn_count: int | None = None,
         event_callback: StreamEventCallback | None = None,
         cancel_event: asyncio.Event | None = None,
+        tool_executor: ToolExecutor | None = None,
     ) -> AgentResult:
         """Resume a turn after an approval decision.
 
@@ -711,6 +715,7 @@ class AgentRuntime:
         On deny: inject a tool-error result with the denial reason and make
         one LLM call so the companion can acknowledge the denial.
         """
+        executor = tool_executor or self._tool_executor
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
             memory_blocks=memory_blocks,
         )
@@ -733,7 +738,7 @@ class AgentRuntime:
         )
 
         if approved:
-            tool_result = await self._tool_executor.execute(
+            tool_result = await executor.execute(
                 tool_call,
                 is_terminal=rules_solver.is_terminal(tool_call.name),
             )
@@ -1077,6 +1082,7 @@ class AgentRuntime:
         step_index: int,
         event_callback: StreamEventCallback | None,
         extra_tool_names: frozenset[str] = frozenset(),
+        tool_executor: ToolExecutor | None = None,
     ) -> list[tuple[ToolCall, ToolExecutionResult]] | None:
         """Detect and execute tool calls that the model output as plain text.
 
@@ -1090,6 +1096,7 @@ class AgentRuntime:
         are not in the server-side registry but can be executed via the
         tool executor's delegation mechanism.
         """
+        executor = tool_executor or self._tool_executor
         if not step_result.assistant_text.strip():
             return None
 
@@ -1126,7 +1133,7 @@ class AgentRuntime:
             )
             # send_message is the only terminal tool in the cognitive loop.
             is_terminal = ptc.name == "send_message"
-            tool_result = await self._tool_executor.execute(
+            tool_result = await executor.execute(
                 tool_call,
                 is_terminal=is_terminal,
             )

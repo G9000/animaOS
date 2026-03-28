@@ -1335,12 +1335,12 @@ def test_growth_log_deduplicates_entries() -> None:
 # --- Invariant Tests: Turn Coordinator ---
 
 
-def test_per_user_lock_is_stable() -> None:
-    from anima_server.services.agent.turn_coordinator import get_user_lock
+def test_per_thread_lock_is_stable() -> None:
+    from anima_server.services.agent.turn_coordinator import get_thread_lock
 
-    lock1 = get_user_lock(1)
-    lock2 = get_user_lock(1)
-    lock3 = get_user_lock(2)
+    lock1 = get_thread_lock(1)
+    lock2 = get_thread_lock(1)
+    lock3 = get_thread_lock(2)
     assert lock1 is lock2
     assert lock1 is not lock3
 

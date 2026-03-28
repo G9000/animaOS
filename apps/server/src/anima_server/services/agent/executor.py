@@ -57,25 +57,18 @@ def unpack_heartbeat_from_kwargs(
 
 
 class ToolExecutor:
-    def __init__(self, tools: list[Any]) -> None:
+    def __init__(
+        self,
+        tools: list[Any],
+        *,
+        delegate: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+        delegated_tool_names: frozenset[str] = frozenset(),
+    ) -> None:
         self._tools = {
             (getattr(tool, "name", "") or getattr(tool, "__name__", "")): tool for tool in tools
         }
-        self._tool_delegate: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None
-        self._delegated_tool_names: frozenset[str] = frozenset()
-
-    def set_delegation(
-        self,
-        delegate: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None,
-        tool_names: frozenset[str] = frozenset(),
-    ) -> None:
-        """Set per-turn delegation. Call with None to clear."""
-        self._tool_delegate = delegate
-        self._delegated_tool_names = tool_names
-
-    def clear_delegation(self) -> None:
-        self._tool_delegate = None
-        self._delegated_tool_names = frozenset()
+        self._delegate = delegate
+        self._delegated_tool_names = delegated_tool_names
 
     async def execute(
         self,
@@ -92,10 +85,10 @@ class ToolExecutor:
         # This MUST happen before the local tool lookup so that action
         # tools (bash, read_file, etc.) which aren't in self._tools
         # are forwarded to the client instead of erroring.
-        if self._tool_delegate and tool_call.name in self._delegated_tool_names:
+        if self._delegate and tool_call.name in self._delegated_tool_names:
             clean_args = dict(tool_call.arguments) if tool_call.arguments else {}
             try:
-                delegated = await self._tool_delegate(tool_call.id, tool_call.name, clean_args)
+                delegated = await self._delegate(tool_call.id, tool_call.name, clean_args)
                 formatted_output = (
                     _package_tool_response(delegated.output)
                     if not delegated.is_error
