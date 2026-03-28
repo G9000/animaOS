@@ -235,6 +235,7 @@ async def run_sleeptime_agents(
                 "user_message": user_message,
                 "assistant_response": assistant_response,
                 "thread_id": thread_id,
+                "runtime_db_factory": runtime_db_factory,
             },
         ),
         ("embedding_backfill", _task_embedding_backfill, {}),
@@ -360,9 +361,27 @@ async def _task_consolidation(
     assistant_response: str = "",
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> dict:
     """Run memory consolidation and return restart cursor payload."""
-    # Skip consolidation when there is no actual message to process
+    from anima_server.services.agent.consolidation import (
+        consolidate_pending_ops,
+        consolidate_turn_memory,
+        consolidate_turn_memory_with_llm,
+    )
+
+    # Always promote pending memory ops to soul, even on force/inactivity paths
+    if runtime_db_factory is not None:
+        from anima_server.db.session import SessionLocal
+
+        soul_factory = db_factory or SessionLocal
+        await consolidate_pending_ops(
+            user_id=user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_db_factory,
+        )
+
+    # Skip LLM consolidation when there is no actual message to process
     # (e.g., the force=True path from the inactivity timer).
     if not user_message and not assistant_response:
         return {
@@ -370,11 +389,6 @@ async def _task_consolidation(
             "last_processed_message_id": None,
             "messages_processed": 0,
         }
-
-    from anima_server.services.agent.consolidation import (
-        consolidate_turn_memory,
-        consolidate_turn_memory_with_llm,
-    )
 
     if settings.agent_provider != "scaffold":
         await consolidate_turn_memory_with_llm(

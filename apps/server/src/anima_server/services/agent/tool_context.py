@@ -19,6 +19,8 @@ class ToolContext:
     runtime_db: Session  # runtime session
     user_id: int
     thread_id: int
+    run_id: int | None = None
+    current_tool_call_id: str | None = None
     memory_modified: bool = False
 
 

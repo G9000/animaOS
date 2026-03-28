@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, get_type_hints
 
 from anima_server.services.agent.rules import ToolRule, build_default_tool_rules
-from anima_server.services.data_crypto import df, ef
+from anima_server.services.data_crypto import df
 
 
 class _SimpleSchema:
@@ -599,35 +599,21 @@ def update_human_memory(content: str) -> str:
     your overall picture of who this person is, update this block.
     Do NOT duplicate the same information in both this tool and save_to_memory.
     """
-    from sqlalchemy import select
-
-    from anima_server.models import SelfModelBlock
+    from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
     ctx = get_tool_context()
-    block = ctx.db.scalar(
-        select(SelfModelBlock).where(
-            SelfModelBlock.user_id == ctx.user_id,
-            SelfModelBlock.section == "human",
-        )
+    create_pending_op(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        op_type="full_replace",
+        target_block="human",
+        content=content.strip(),
+        old_content=None,
+        source_run_id=ctx.run_id,
+        source_tool_call_id=ctx.current_tool_call_id,
     )
-    if block is None:
-        ctx.db.add(
-            SelfModelBlock(
-                user_id=ctx.user_id,
-                section="human",
-                content=ef(
-                    ctx.user_id, content.strip(), table="self_model_blocks", field="content"
-                ),
-                version=1,
-                updated_by="agent_tool",
-            )
-        )
-    else:
-        block.content = ef(ctx.user_id, content.strip(), table="self_model_blocks", field="content")
-        block.version += 1
-        block.updated_by = "agent_tool"
-    ctx.db.flush()
+    ctx.memory_modified = True
 
     from anima_server.services.agent.companion import get_companion
 
@@ -648,44 +634,23 @@ def core_memory_append(label: str, content: str) -> str:
     - core_memory_append("human", "Mentioned they recently adopted a rescue dog named Biscuit.")
     - core_memory_append("persona", "I've noticed I tend to be more playful in evening chats.")
     """
-    from sqlalchemy import select
-
-    from anima_server.models import SelfModelBlock
+    from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
     if label not in ("human", "persona"):
         return f"Invalid label '{label}'. Use 'human' or 'persona'."
 
     ctx = get_tool_context()
-    block = ctx.db.scalar(
-        select(SelfModelBlock).where(
-            SelfModelBlock.user_id == ctx.user_id,
-            SelfModelBlock.section == label,
-        )
+    create_pending_op(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        op_type="append",
+        target_block=label,
+        content=content.strip(),
+        old_content=None,
+        source_run_id=ctx.run_id,
+        source_tool_call_id=ctx.current_tool_call_id,
     )
-    if block is None:
-        ctx.db.add(
-            SelfModelBlock(
-                user_id=ctx.user_id,
-                section=label,
-                content=ef(
-                    ctx.user_id, content.strip(), table="self_model_blocks", field="content"
-                ),
-                version=1,
-                updated_by="core_memory_tool",
-            )
-        )
-    else:
-        existing_text = df(ctx.user_id, block.content, table="self_model_blocks", field="content")
-        block.content = ef(
-            ctx.user_id,
-            (existing_text.rstrip() + "\n" + content.strip()).strip(),
-            table="self_model_blocks",
-            field="content",
-        )
-        block.version += 1
-        block.updated_by = "core_memory_tool"
-    ctx.db.flush()
 
     ctx.memory_modified = True
     from anima_server.services.agent.companion import get_companion
@@ -708,37 +673,36 @@ def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
     - core_memory_replace("human", "Works at Google", "Works at Apple (switched jobs March 2026)")
     - core_memory_replace("persona", "I prefer formal language", "I adapt my formality to match the user's style")
     """
-    from sqlalchemy import select
-
-    from anima_server.models import SelfModelBlock
+    from anima_server.services.agent.memory_blocks import build_merged_block_content
+    from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
     if label not in ("human", "persona"):
         return f"Invalid label '{label}'. Use 'human' or 'persona'."
 
     ctx = get_tool_context()
-    block = ctx.db.scalar(
-        select(SelfModelBlock).where(
-            SelfModelBlock.user_id == ctx.user_id,
-            SelfModelBlock.section == label,
-        )
+    existing_text = build_merged_block_content(
+        ctx.db,
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        section=label,
     )
-    if block is None:
+    if not existing_text:
         return f"No {label} memory block exists yet. Use core_memory_append to create one."
 
-    existing_text = df(ctx.user_id, block.content, table="self_model_blocks", field="content")
     if old_text not in existing_text:
         return f"Could not find the exact text to replace in {label} memory."
 
-    block.content = ef(
-        ctx.user_id,
-        existing_text.replace(old_text, new_text, 1),
-        table="self_model_blocks",
-        field="content",
+    create_pending_op(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        op_type="replace",
+        target_block=label,
+        content=new_text.strip(),
+        old_content=old_text,
+        source_run_id=ctx.run_id,
+        source_tool_call_id=ctx.current_tool_call_id,
     )
-    block.version += 1
-    block.updated_by = "core_memory_tool"
-    ctx.db.flush()
 
     ctx.memory_modified = True
     from anima_server.services.agent.companion import get_companion

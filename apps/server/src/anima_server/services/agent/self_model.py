@@ -587,33 +587,16 @@ def set_self_model_block(
         raise ValueError(f"Invalid section: {section}")
 
     if section in SOUL_SECTIONS:
-        existing = db.scalar(
-            select(SelfModelBlock).where(
-                SelfModelBlock.user_id == user_id,
-                SelfModelBlock.section == section,
-            )
-        )
-        if existing is not None:
-            existing.content = ef(user_id, content, table="self_model_blocks", field="content")
-            existing.version += 1
-            existing.updated_by = updated_by
-            existing.updated_at = datetime.now(UTC)
-            if metadata is not None:
-                existing.metadata_json = metadata
-            db.flush()
-            return existing
+        from anima_server.services.agent.soul_writer import set_soul_block
 
-        block = SelfModelBlock(
+        return set_soul_block(
+            db,
             user_id=user_id,
             section=section,
-            content=ef(user_id, content, table="self_model_blocks", field="content"),
-            version=1,
+            content=content,
             updated_by=updated_by,
-            metadata_json=metadata,
+            metadata=metadata,
         )
-        db.add(block)
-        db.flush()
-        return block
 
     if section == "identity":
         block = set_identity_block(db, user_id=user_id, content=content, updated_by=updated_by)

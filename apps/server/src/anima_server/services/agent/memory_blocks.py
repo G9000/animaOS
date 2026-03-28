@@ -41,12 +41,12 @@ def build_runtime_memory_blocks(
     blocks.append(soul_block)
 
     # Persona block (Priority 0 — living persona, seeded at provisioning, evolves)
-    persona_block = build_persona_block(db, user_id=user_id)
+    persona_block = build_persona_block(db, user_id=user_id, runtime_db=runtime_db)
     if persona_block is not None:
         blocks.append(persona_block)
 
     # Human core block (Priority 0 — agent's living understanding of the user)
-    human_core_block = build_human_core_block(db, user_id=user_id)
+    human_core_block = build_human_core_block(db, user_id=user_id, runtime_db=runtime_db)
     if human_core_block is not None:
         blocks.append(human_core_block)
 
@@ -54,6 +54,10 @@ def build_runtime_memory_blocks(
     user_directive_block = build_user_directive_memory_block(db, user_id=user_id)
     if user_directive_block is not None:
         blocks.append(user_directive_block)
+
+    pending_ops_block = build_pending_ops_block(db, runtime_db, user_id=user_id)
+    if pending_ops_block is not None:
+        blocks.append(pending_ops_block)
 
     # Self-model blocks (Priority 1 — always present, never truncated)
     for sm_block in build_self_model_memory_blocks(db, user_id=user_id, pg_db=runtime_db):
@@ -439,28 +443,58 @@ def build_soul_biography_block(
     )
 
 
-def build_persona_block(
+def _read_soul_block_content(
     db: Session,
     *,
     user_id: int,
-) -> MemoryBlock | None:
-    """Build the living persona block from the DB.
-
-    Seeded from a template at provisioning and evolved through reflection.
-    """
+    section: str,
+) -> tuple[str, bool]:
     from anima_server.models import SelfModelBlock
 
     block = db.scalar(
         select(SelfModelBlock).where(
             SelfModelBlock.user_id == user_id,
-            SelfModelBlock.section == "persona",
+            SelfModelBlock.section == section,
         )
     )
-    plaintext = (
-        df(user_id, block.content, table="self_model_blocks", field="content").strip()
-        if block is not None
-        else ""
-    )
+    if block is None:
+        return "", False
+    return df(user_id, block.content, table="self_model_blocks", field="content").strip(), True
+
+
+def build_merged_block_content(
+    soul_db: Session,
+    runtime_db: Session,
+    *,
+    user_id: int,
+    section: str,
+) -> str:
+    """Return the soul block content with pending ops applied on top."""
+    from anima_server.services.agent.pending_ops import apply_pending_ops, get_pending_ops
+
+    base_content, _exists = _read_soul_block_content(soul_db, user_id=user_id, section=section)
+    pending_ops = get_pending_ops(runtime_db, user_id=user_id, target_block=section)
+    return apply_pending_ops(base_content, pending_ops)
+
+
+def build_persona_block(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_db: Session | None = None,
+) -> MemoryBlock | None:
+    """Build the living persona block from the DB.
+
+    Seeded from a template at provisioning and evolved through reflection.
+    """
+    plaintext, exists = _read_soul_block_content(db, user_id=user_id, section="persona")
+    if runtime_db is not None and exists:
+        plaintext = build_merged_block_content(
+            db,
+            runtime_db,
+            user_id=user_id,
+            section="persona",
+        )
     if not plaintext:
         return None
 
@@ -475,6 +509,7 @@ def build_human_core_block(
     db: Session,
     *,
     user_id: int,
+    runtime_db: Session | None = None,
 ) -> MemoryBlock | None:
     """Build the agent's living understanding of the user.
 
@@ -484,8 +519,6 @@ def build_human_core_block(
        seeded at provisioning and updated mid-conversation via the
        update_human_memory tool.
     """
-    from anima_server.models import SelfModelBlock
-
     # User model profile fields (ground truth set through the UI)
     user = db.get(User, user_id)
     profile_lines: list[str] = []
@@ -500,17 +533,14 @@ def build_human_core_block(
             profile_lines.append(f"Birthday: {user.birthday}")
 
     # Agent-authored understanding (mutable via update_human_memory tool)
-    block = db.scalar(
-        select(SelfModelBlock).where(
-            SelfModelBlock.user_id == user_id,
-            SelfModelBlock.section == "human",
+    agent_understanding, exists = _read_soul_block_content(db, user_id=user_id, section="human")
+    if runtime_db is not None and exists:
+        agent_understanding = build_merged_block_content(
+            db,
+            runtime_db,
+            user_id=user_id,
+            section="human",
         )
-    )
-    agent_understanding = (
-        df(user_id, block.content, table="self_model_blocks", field="content").strip()
-        if block is not None
-        else ""
-    )
 
     parts: list[str] = []
     if profile_lines:
@@ -526,6 +556,59 @@ def build_human_core_block(
         description="What I know about this person — profile facts and my evolving understanding. Use the update_human_memory tool to update the understanding section.",
         value="\n".join(parts),
         read_only=False,
+    )
+
+
+def build_pending_ops_block(
+    soul_db: Session,
+    runtime_db: Session | None,
+    *,
+    user_id: int,
+) -> MemoryBlock | None:
+    """Render pending updates that do not yet have a soul block to merge into.
+
+    Ops are grouped by target_block and applied in order so that a
+    ``full_replace`` correctly supersedes earlier appends, preventing
+    contradictory content from appearing in the prompt.
+    """
+    if runtime_db is None:
+        return None
+
+    from anima_server.services.agent.pending_ops import apply_pending_ops, get_pending_ops
+
+    ops = get_pending_ops(runtime_db, user_id=user_id)
+    if not ops:
+        return None
+
+    # Collect ops for blocks that don't exist in soul yet
+    orphaned_ops: dict[str, list] = {}
+    for op in ops:
+        _content, exists = _read_soul_block_content(
+            soul_db,
+            user_id=user_id,
+            section=op.target_block,
+        )
+        if exists:
+            continue
+        orphaned_ops.setdefault(op.target_block, []).append(op)
+
+    if not orphaned_ops:
+        return None
+
+    # Apply ops in order per block to get the final collapsed content
+    lines: list[str] = []
+    for block_name, block_ops in orphaned_ops.items():
+        collapsed = apply_pending_ops("", block_ops)
+        if collapsed:
+            lines.append(f"- [{block_name}] (pending): {collapsed}")
+
+    if not lines:
+        return None
+
+    return MemoryBlock(
+        label="pending_memory_updates",
+        description="Memory updates from recent conversations that have not yet been fully integrated. Treat these as current knowledge.",
+        value="\n".join(lines),
     )
 
 

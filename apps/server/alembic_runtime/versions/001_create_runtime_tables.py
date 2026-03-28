@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSON, TIMESTAMPTZ
+from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
+
+TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
 
 # revision identifiers, used by Alembic.
 revision = "001"

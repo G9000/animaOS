@@ -438,11 +438,11 @@ async def _run_deep_monologue_legacy(
 
         # ── Phase 3: Write — short-lived session for DB updates ──
         with factory() as db:
-            from anima_server.models import SelfModelBlock
             from anima_server.services.agent.self_model import (
                 append_growth_log_entry,
                 set_self_model_block,
             )
+            from anima_server.services.agent.soul_writer import set_soul_block
 
             if parsed.get("identity_update"):
                 set_self_model_block(
@@ -455,44 +455,13 @@ async def _run_deep_monologue_legacy(
                 result.identity_updated = True
 
             if parsed.get("persona_update"):
-                if has_persona_block:
-                    # Re-load the persona block in this session for update
-                    from sqlalchemy import select as sa_select2
-
-                    fresh_persona = db.scalar(
-                        sa_select2(SelfModelBlock).where(
-                            SelfModelBlock.user_id == user_id,
-                            SelfModelBlock.section == "persona",
-                        )
-                    )
-                    if fresh_persona is not None:
-                        from anima_server.services.data_crypto import ef
-
-                        fresh_persona.content = ef(
-                            user_id,
-                            parsed["persona_update"],
-                            table="self_model_blocks",
-                            field="content",
-                        )
-                        fresh_persona.version += 1
-                        fresh_persona.updated_by = "sleep_time"
-                else:
-                    from anima_server.services.data_crypto import ef
-
-                    db.add(
-                        SelfModelBlock(
-                            user_id=user_id,
-                            section="persona",
-                            content=ef(
-                                user_id,
-                                parsed["persona_update"],
-                                table="self_model_blocks",
-                                field="content",
-                            ),
-                            version=1,
-                            updated_by="sleep_time",
-                        )
-                    )
+                set_soul_block(
+                    db,
+                    user_id=user_id,
+                    section="persona",
+                    content=parsed["persona_update"],
+                    updated_by="sleep_time",
+                )
                 result.persona_updated = True
 
             if parsed.get("inner_state_update"):
@@ -750,7 +719,7 @@ async def run_deep_monologue(
             return result
 
         with factory() as db:
-            from anima_server.models import SelfModelBlock
+            from anima_server.services.agent.soul_writer import set_soul_block
 
             if parsed.get("identity_update"):
                 set_self_model_block(
@@ -763,43 +732,13 @@ async def run_deep_monologue(
                 result.identity_updated = True
 
             if parsed.get("persona_update"):
-                if has_persona_block:
-                    from sqlalchemy import select as sa_select
-
-                    fresh_persona = db.scalar(
-                        sa_select(SelfModelBlock).where(
-                            SelfModelBlock.user_id == user_id,
-                            SelfModelBlock.section == "persona",
-                        )
-                    )
-                    if fresh_persona is not None:
-                        from anima_server.services.data_crypto import ef
-
-                        fresh_persona.content = ef(
-                            user_id,
-                            parsed["persona_update"],
-                            table="self_model_blocks",
-                            field="content",
-                        )
-                        fresh_persona.version += 1
-                        fresh_persona.updated_by = "sleep_time"
-                else:
-                    from anima_server.services.data_crypto import ef
-
-                    db.add(
-                        SelfModelBlock(
-                            user_id=user_id,
-                            section="persona",
-                            content=ef(
-                                user_id,
-                                parsed["persona_update"],
-                                table="self_model_blocks",
-                                field="content",
-                            ),
-                            version=1,
-                            updated_by="sleep_time",
-                        )
-                    )
+                set_soul_block(
+                    db,
+                    user_id=user_id,
+                    section="persona",
+                    content=parsed["persona_update"],
+                    updated_by="sleep_time",
+                )
                 result.persona_updated = True
 
             if parsed.get("growth_log_entry"):

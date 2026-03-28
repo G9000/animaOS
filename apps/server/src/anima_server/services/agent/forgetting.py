@@ -167,8 +167,15 @@ def redact_derived_references(
         if strategy == "flag_for_regeneration":
             block.needs_regeneration = True
         elif strategy == "immediate_redact":
-            block.content = "[redacted]"
-            block.updated_at = datetime.now(UTC)
+            from anima_server.services.agent.soul_writer import full_replace_soul_block
+
+            full_replace_soul_block(
+                db,
+                user_id=block.user_id,
+                section=block.section,
+                content="[redacted]",
+                updated_by="forgetting",
+            )
         count += 1
 
     if count > 0:

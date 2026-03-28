@@ -25,6 +25,7 @@ from anima_server.models.consciousness import (
     SelfModelBlock,
 )
 from anima_server.models.links import DiscordLink, TelegramLink
+from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.runtime_consciousness import (
     ActiveIntention,
     CurrentEmotion,
@@ -71,6 +72,7 @@ __all__ = [
     "MemoryItem",
     "MemoryItemTag",
     "MemoryVector",
+    "PendingMemoryOp",
     "RuntimeBackgroundTaskRun",
     "RuntimeMessage",
     "RuntimeRun",

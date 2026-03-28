@@ -296,6 +296,7 @@ async def update_self_model_section(
 
     from anima_server.services.agent.self_model import (
         ALL_SECTIONS,
+        SOUL_SECTIONS,
         append_growth_log_entry,
         ensure_self_model_exists,
         render_self_model_section,
@@ -303,6 +304,7 @@ async def update_self_model_section(
         set_self_model_block,
         set_working_context,
     )
+    from anima_server.services.agent.soul_writer import set_soul_block
 
     if section not in ALL_SECTIONS:
         raise HTTPException(
@@ -323,6 +325,14 @@ async def update_self_model_section(
     elif section in {"inner_state", "working_memory"}:
         block = set_working_context(
             rt,
+            user_id=user_id,
+            section=section,
+            content=payload.content,
+            updated_by="user_edit",
+        )
+    elif section in SOUL_SECTIONS:
+        block = set_soul_block(
+            db,
             user_id=user_id,
             section=section,
             content=payload.content,
