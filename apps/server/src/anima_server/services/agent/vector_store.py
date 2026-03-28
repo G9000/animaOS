@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -371,6 +370,30 @@ def delete_memory(
         pass
 
 
+_synced_users: set[int] = set()
+
+
+def _maybe_cold_start_sync(user_id: int, db: Session | None) -> None:
+    """Lazily sync embeddings from soul to PG on first search per user.
+
+    If the RuntimeEmbedding table is empty for this user but the soul DB
+    has cached embedding_json data, bulk-insert into PG so pgvector
+    search works without waiting for a consolidation cycle.
+    """
+    if user_id in _synced_users or _force_in_memory or db is None:
+        return
+    _synced_users.add(user_id)
+
+    try:
+        from anima_server.services.agent.embeddings import sync_embeddings_to_runtime
+
+        synced = sync_embeddings_to_runtime(db, user_id=user_id)
+        if synced > 0:
+            logger.info("Cold-start sync: %d embeddings for user %d", synced, user_id)
+    except Exception:
+        logger.debug("Cold-start embedding sync failed for user %d", user_id)
+
+
 def search_similar(
     user_id: int,
     *,
@@ -380,6 +403,7 @@ def search_similar(
     db: Session | None = None,
     runtime_db: Session | None = None,
 ) -> list[dict[str, Any]]:
+    _maybe_cold_start_sync(user_id, db)
     store, owned_session = _get_store(db, runtime_db=runtime_db)
     try:
         results = store.search_by_vector(

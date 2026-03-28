@@ -84,6 +84,7 @@ def _start_embedded_pg() -> EmbeddedPG | None:
     return pg
 
 
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     embedded_pg = _start_embedded_pg()

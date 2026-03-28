@@ -11,6 +11,7 @@ import hashlib
 import logging
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -36,33 +37,28 @@ class PgVecStore(VectorStore):
         importance: int = 3,
     ) -> None:
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        existing = self._db.scalar(
-            select(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "memory_item",
-                RuntimeEmbedding.source_id == item_id,
-            )
+        stmt = pg_insert(RuntimeEmbedding).values(
+            user_id=user_id,
+            source_type="memory_item",
+            source_id=item_id,
+            content_hash=content_hash,
+            embedding=embedding,
+            content_preview=content[:200],
+            category=category,
+            importance=importance,
         )
-        if existing is not None:
-            existing.embedding = embedding
-            existing.content_hash = content_hash
-            existing.content_preview = content[:200]
-            existing.category = category
-            existing.importance = importance
-            existing.updated_at = func.now()
-        else:
-            self._db.add(
-                RuntimeEmbedding(
-                    user_id=user_id,
-                    source_type="memory_item",
-                    source_id=item_id,
-                    content_hash=content_hash,
-                    embedding=embedding,
-                    content_preview=content[:200],
-                    category=category,
-                    importance=importance,
-                )
-            )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "source_type", "source_id"],
+            set_={
+                "embedding": stmt.excluded.embedding,
+                "content_hash": stmt.excluded.content_hash,
+                "content_preview": stmt.excluded.content_preview,
+                "category": stmt.excluded.category,
+                "importance": stmt.excluded.importance,
+                "updated_at": func.now(),
+            },
+        )
+        self._db.execute(stmt)
         self._db.flush()
 
     def delete(self, user_id: int, *, item_id: int) -> None:

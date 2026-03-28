@@ -19,7 +19,18 @@ branch_labels = None
 depends_on = None
 
 
+def _get_embedding_dim() -> int:
+    """Read the configured embedding dimension, defaulting to 768."""
+    try:
+        from anima_server.config import settings
+        return settings.agent_embedding_dim
+    except Exception:
+        return 768
+
+
 def upgrade() -> None:
+    dim = _get_embedding_dim()
+
     # Enable pgvector extension (idempotent)
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
@@ -31,8 +42,7 @@ def upgrade() -> None:
         sa.Column("source_id", sa.BigInteger, nullable=False),
         sa.Column("content_hash", sa.String(64), nullable=False),
         # Vector column — raw SQL because Alembic doesn't natively support pgvector types.
-        # Dimension is set to 768 (nomic-embed-text default).
-        # Users with a different embedding model must re-embed after changing config.
+        # Dimension is read from config (agent_embedding_dim, default 768).
         sa.Column("embedding", sa.LargeBinary, nullable=False),
         sa.Column("content_preview", sa.String(200), nullable=False, server_default=""),
         sa.Column("category", sa.String(24), nullable=False, server_default="fact"),
@@ -45,7 +55,7 @@ def upgrade() -> None:
     # Alembic's create_table doesn't support custom pgvector types, so we
     # drop the placeholder and add the actual vector column via raw SQL.
     op.drop_column("embeddings", "embedding")
-    op.execute("ALTER TABLE embeddings ADD COLUMN embedding vector(768) NOT NULL")
+    op.execute(f"ALTER TABLE embeddings ADD COLUMN embedding vector({dim}) NOT NULL")
 
     # Indexes
     op.create_index("ix_embeddings_user_id", "embeddings", ["user_id"])

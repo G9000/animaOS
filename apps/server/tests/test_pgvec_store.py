@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 from anima_server.services.agent.vector_store import (
     InMemoryVectorStore,
-    VectorSearchResult,
     VectorStore,
 )
 
