@@ -176,3 +176,81 @@ def emit(
 ) -> None:
     """Module-level convenience for ``get_event_logger().emit(...)``."""
     get_event_logger().emit(category, event, level, **kwargs)
+
+
+# ── Structured Log Handler ──────────────────────────────────────────
+
+import traceback as _traceback_mod
+
+_LOGGER_CATEGORY_MAP: dict[str, EventCategory] = {
+    "anima_server.services.agent.runtime": "llm",
+    "anima_server.services.agent.llm": "llm",
+    "anima_server.services.agent.executor": "tool",
+    "anima_server.services.agent.consolidation": "memory",
+    "anima_server.services.agent.embeddings": "memory",
+    "anima_server.services.agent.sleep_agent": "background",
+    "anima_server.services.agent.sleep_tasks": "background",
+    "anima_server.services.agent.service": "agent",
+}
+
+_PYTHON_TO_EVENT_LEVEL: dict[int, EventLevel] = {
+    logging.DEBUG: "trace",
+    logging.INFO: "info",
+    logging.WARNING: "warn",
+    logging.ERROR: "error",
+    logging.CRITICAL: "error",
+}
+
+
+def _resolve_category(logger_name: str) -> EventCategory:
+    """Map a Python logger name to an EventCategory."""
+    # Exact match
+    if logger_name in _LOGGER_CATEGORY_MAP:
+        return _LOGGER_CATEGORY_MAP[logger_name]
+
+    # Prefix match (logger_name starts with a mapped key + ".")
+    for prefix, category in _LOGGER_CATEGORY_MAP.items():
+        if logger_name.startswith(prefix + "."):
+            return category
+
+    # Fallback rules
+    if logger_name.startswith("anima_server.db"):
+        return "db"
+    if logger_name.startswith("anima_server.api.routes"):
+        return "http"
+    if logger_name.startswith("anima_server.services.agent"):
+        return "agent"
+
+    return "http"
+
+
+class StructuredLogHandler(logging.Handler):
+    """Intercepts Python logging calls and forwards them as structured events."""
+
+    def __init__(self, event_logger: EventLogger) -> None:
+        super().__init__()
+        self._event_logger = event_logger
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = _PYTHON_TO_EVENT_LEVEL.get(record.levelno, "info")
+            category = _resolve_category(record.name)
+
+            data: dict[str, Any] = {
+                "message": record.getMessage(),
+                "logger": record.name,
+            }
+
+            if record.exc_info and record.exc_info[1] is not None:
+                data["traceback"] = "".join(
+                    _traceback_mod.format_exception(*record.exc_info)
+                )
+
+            self._event_logger.emit(
+                category=category,
+                event="log",
+                level=level,
+                data=data,
+            )
+        except Exception:
+            self.handleError(record)
