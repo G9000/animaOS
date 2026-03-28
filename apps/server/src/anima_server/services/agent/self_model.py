@@ -1001,10 +1001,10 @@ def _maybe_decrypt_migrated(
     During the P3 migration, content is copied as-is from self_model_blocks
     (where it may have been encrypted with AAD "self_model_blocks:user_id:field")
     into new tables that store plaintext.  On first read, if the value looks
-    like ciphertext (starts with "enc1:" or "enc2:"), we decrypt it using the
-    original AAD and return plaintext.
+    like ciphertext (starts with "enc2:"), we decrypt it using the original
+    AAD and return plaintext.
     """
-    if not value or not (value.startswith("enc1:") or value.startswith("enc2:")):
+    if not value or not value.startswith("enc2:"):
         return value
     try:
         return df(user_id, value, table=table, field=field)

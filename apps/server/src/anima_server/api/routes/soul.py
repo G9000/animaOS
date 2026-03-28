@@ -40,7 +40,7 @@ class UserDirectiveUpdateRequest(BaseModel):
 
 def _looks_like_encrypted_field_payload(value: str) -> bool:
     parts = value.split(":", 3)
-    if len(parts) != 4 or parts[0] not in {"enc1", "enc2"}:
+    if len(parts) != 4 or parts[0] != "enc2":
         return False
     try:
         for segment in parts[1:]:
@@ -51,7 +51,7 @@ def _looks_like_encrypted_field_payload(value: str) -> bool:
 
 
 def _read_user_directive_content(user_id: int, raw_content: str) -> str:
-    if not raw_content.startswith(("enc1:", "enc2:")):
+    if not raw_content.startswith("enc2:"):
         return raw_content
     if not _looks_like_encrypted_field_payload(raw_content):
         logger.warning(

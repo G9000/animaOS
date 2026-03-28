@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from argon2.low_level import Type, hash_secret_raw
-from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -26,8 +25,7 @@ KEY_LENGTH = 32
 SALT_LENGTH = 16
 IV_LENGTH = 12
 AUTH_TAG_LENGTH = 16
-ENCRYPTED_TEXT_PREFIX = "enc1"
-ENCRYPTED_TEXT_PREFIX_AAD = "enc2"
+ENCRYPTED_PREFIX = "enc2"
 
 # Vault/succession use stronger parameters — these payloads may be stored
 # offline for years and deserve additional brute-force resistance.
@@ -199,25 +197,16 @@ def unwrap_dek(
         key_length=record.kdf_key_length,
     )
     aad = _build_dek_wrap_aad(user_id, domain)
-    try:
-        return AESGCM(kek).decrypt(iv, ciphertext + tag, aad)
-    except InvalidTag:
-        logger.warning(
-            "Falling back to legacy DEK unwrap without AAD for user_id=%s domain=%s",
-            user_id,
-            domain,
-        )
-        return AESGCM(kek).decrypt(iv, ciphertext + tag, None)
+    return AESGCM(kek).decrypt(iv, ciphertext + tag, aad)
 
 
 def encrypt_text_with_dek(plaintext: str, dek: bytes, *, aad: bytes | None = None) -> str:
     iv = os.urandom(IV_LENGTH)
     encrypted = AESGCM(dek).encrypt(iv, plaintext.encode("utf-8"), aad)
     ciphertext, tag = encrypted[:-AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
-    prefix = ENCRYPTED_TEXT_PREFIX_AAD if aad is not None else ENCRYPTED_TEXT_PREFIX
     return ":".join(
         [
-            prefix,
+            ENCRYPTED_PREFIX,
             base64.b64encode(iv).decode("ascii"),
             base64.b64encode(tag).decode("ascii"),
             base64.b64encode(ciphertext).decode("ascii"),
@@ -227,17 +216,13 @@ def encrypt_text_with_dek(plaintext: str, dek: bytes, *, aad: bytes | None = Non
 
 def decrypt_text_with_dek(serialized: str, dek: bytes, *, aad: bytes | None = None) -> str:
     # Plaintext passthrough — not encrypted
-    if not serialized.startswith(f"{ENCRYPTED_TEXT_PREFIX}:") and not serialized.startswith(
-        f"{ENCRYPTED_TEXT_PREFIX_AAD}:"
-    ):
+    if not serialized.startswith(f"{ENCRYPTED_PREFIX}:"):
         return serialized
     prefix, iv_b64, tag_b64, ciphertext_b64 = serialized.split(":", 3)
-    if prefix not in (ENCRYPTED_TEXT_PREFIX, ENCRYPTED_TEXT_PREFIX_AAD):
+    if prefix != ENCRYPTED_PREFIX:
         raise ValueError("Invalid encrypted payload format.")
     iv = base64.b64decode(iv_b64)
     tag = base64.b64decode(tag_b64)
     ciphertext = base64.b64decode(ciphertext_b64)
-    # enc1 = legacy without AAD; enc2 = AAD-bound
-    effective_aad = aad if prefix == ENCRYPTED_TEXT_PREFIX_AAD else None
-    plaintext = AESGCM(dek).decrypt(iv, ciphertext + tag, effective_aad)
+    plaintext = AESGCM(dek).decrypt(iv, ciphertext + tag, aad)
     return plaintext.decode("utf-8")

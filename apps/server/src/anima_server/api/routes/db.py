@@ -17,8 +17,7 @@ from anima_server.db import get_db
 from anima_server.models import User
 from anima_server.services.auth import verify_password
 from anima_server.services.crypto import (
-    ENCRYPTED_TEXT_PREFIX,
-    ENCRYPTED_TEXT_PREFIX_AAD,
+    ENCRYPTED_PREFIX,
     decrypt_text_with_dek,
 )
 from anima_server.services.data_crypto import resolve_domain
@@ -58,9 +57,7 @@ def _is_encrypted(value: object) -> bool:
     """Return True if *value* looks like a field-level encrypted string."""
     if not isinstance(value, str):
         return False
-    return value.startswith(f"{ENCRYPTED_TEXT_PREFIX}:") or value.startswith(
-        f"{ENCRYPTED_TEXT_PREFIX_AAD}:"
-    )
+    return value.startswith(f"{ENCRYPTED_PREFIX}:")
 
 
 _FROM_RE = re.compile(
@@ -179,47 +176,13 @@ def _try_decrypt_cell(
     deks: list[bytes],
     aad: bytes | None,
 ) -> str:
-    """Try to decrypt a single cell with multiple DEKs and AAD variants."""
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    # Try each DEK with AAD first, then without
+    """Try to decrypt a single cell with the available DEKs."""
     for dek in deks:
-        if aad is not None:
-            try:
-                return decrypt_text_with_dek(val, dek, aad=aad)
-            except Exception:
-                pass
-        # Fallback: try without AAD (for legacy enc1 data)
         try:
-            return decrypt_text_with_dek(val, dek)
+            return decrypt_text_with_dek(val, dek, aad=aad)
         except Exception:
             pass
-
-    # Last resort: if we have AAD, try common variations
-    if aad is not None:
-        # Try with different AAD formats (legacy compatibility)
-        aad_str = aad.decode("utf-8")
-        parts = aad_str.split(":")
-        if len(parts) == 3:
-            table, _user_id, field = parts
-            # Try without user_id in AAD
-            alt_aads = [
-                f"{table}::{field}".encode(),
-                f"{table}:{field}".encode(),
-                field.encode("utf-8"),
-            ]
-            for alt_aad in alt_aads:
-                for dek in deks:
-                    try:
-                        result = decrypt_text_with_dek(val, dek, aad=alt_aad)
-                        logger.info(f"Decrypted with alternative AAD: {alt_aad}")
-                        return result
-                    except Exception:
-                        pass
-
-    logger.debug(f"Failed to decrypt value with {len(deks)} DEKs")
+    logger.debug("Failed to decrypt value with %d DEKs", len(deks))
     return val
 
 
