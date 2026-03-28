@@ -14,6 +14,8 @@ import { executeBgStart, executeBgOutput, executeBgStop, executeBgList } from ".
 import { checkPermission, type PermissionDecision } from "./permissions";
 import { substituteSecretsInArgs, redactSecrets } from "./secrets";
 import { hooks } from "../hooks";
+import { validateArgs } from "./validation";
+import { TOOL_SCHEMA_MAP } from "./registry";
 
 export interface ExecutionResult {
   tool_call_id: string;
@@ -61,6 +63,15 @@ export async function executeTool(
       status: "error",
       result: "Tool execution denied by permission policy",
     };
+  }
+
+  // Validate args against schema before dispatch
+  const schema = TOOL_SCHEMA_MAP.get(tool_name);
+  if (schema) {
+    const validationError = validateArgs(tool_name, args, schema.parameters as Record<string, unknown>);
+    if (validationError) {
+      return { tool_call_id, status: "error", result: validationError };
+    }
   }
 
   // Emit tool:before hook

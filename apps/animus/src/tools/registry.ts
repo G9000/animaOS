@@ -272,3 +272,8 @@ export const ACTION_TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
 ];
+
+/** Lookup map built from ACTION_TOOL_SCHEMAS for O(1) access by tool name. */
+export const TOOL_SCHEMA_MAP = new Map(
+  ACTION_TOOL_SCHEMAS.map((s) => [s.name, s]),
+);
