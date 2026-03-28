@@ -5,6 +5,13 @@ import { runHeadless } from "./headless";
 
 const args = process.argv.slice(2);
 const serverFlag = args.indexOf("--server");
+
+// Validate --server has a value
+if (serverFlag >= 0 && (!args[serverFlag + 1] || args[serverFlag + 1].startsWith("--"))) {
+  console.error("Error: --server requires a URL argument (e.g. --server ws://localhost:3031)");
+  process.exit(1);
+}
+
 const serverUrl = serverFlag >= 0 ? args[serverFlag + 1] : undefined;
 
 async function main() {
@@ -41,7 +48,6 @@ async function main() {
   }
 
   // Collect flags
-  const flagArgs = new Set(["--server", "--json", "--timeout"]);
   const prompt = args.find((a, i) => {
     if (a.startsWith("--")) return false;
     // Skip values that follow a flag expecting a value
@@ -53,6 +59,7 @@ async function main() {
   // Headless mode: first non-flag arg is the prompt
   if (prompt) {
     const jsonMode = args.includes("--json");
+    const planMode = args.includes("--plan");
     const timeoutIdx = args.indexOf("--timeout");
     const timeout = timeoutIdx >= 0 ? parseInt(args[timeoutIdx + 1], 10) : undefined;
 
@@ -60,6 +67,7 @@ async function main() {
       config,
       prompt,
       json: jsonMode,
+      plan: planMode,
       timeout: timeout && !isNaN(timeout) ? timeout : undefined,
     });
     return;
