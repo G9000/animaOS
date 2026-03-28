@@ -65,7 +65,7 @@ export function App({ config }: AppProps) {
       },
       onMessage: async (msg: ServerMessage) => {
         // Emit message:received hook
-        hooks.emit("message:received", { type: msg.type, ...msg }).catch(() => {});
+        hooks.emit("message:received", { ...msg }).catch(() => {});
 
         switch (msg.type) {
           case "stream_token":
