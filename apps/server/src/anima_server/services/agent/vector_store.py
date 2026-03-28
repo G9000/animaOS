@@ -1,22 +1,8 @@
 """Persistent vector store for semantic memory search.
 
-Embeddings live in the per-user ``anima.db`` via the ``MemoryVector``
-SQLAlchemy model.  This means vectors are:
-
-- Encrypted when the Core is encrypted (SQLCipher).
-- Per-user isolated (each user has their own database file).
-- Included automatically in vault export/import.
-- Managed through the same SQLAlchemy session as everything else.
-
-Two backends:
-
-- ``OrmVecStore``: Production store using the per-user SQLAlchemy session.
-- ``InMemoryVectorStore``: Process-local fallback for tests.
-
-The public helper functions (``upsert_memory``, ``search_similar``, etc.)
-accept an optional ``db`` session.  When provided, they use ``OrmVecStore``
-directly.  When omitted, they fall back to the in-memory store (for tests
-that call ``use_in_memory_store()``).
+Primary backend selection prefers the runtime PostgreSQL store when it is
+available, then falls back to the encrypted soul database, and finally to an
+in-memory store for tests.
 """
 
 from __future__ import annotations
@@ -439,6 +425,7 @@ class InMemoryVectorStore(VectorStore):
 # ---------------------------------------------------------------------------
 
 _fallback_store: InMemoryVectorStore | None = None
+_force_in_memory = False
 _fallback_lock = Lock()
 
 
@@ -454,16 +441,42 @@ def _get_fallback_store() -> InMemoryVectorStore:
         return _fallback_store
 
 
-def _get_store(db: Session | None) -> VectorStore:
-    """Return the appropriate store for the given session.
+def _try_get_runtime_session() -> Session | None:
+    """Attempt to obtain a runtime PG session. Returns ``None`` if unavailable."""
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
 
-    If a SQLAlchemy session is provided, wraps it in ``OrmVecStore``
-    so vectors go into the per-user anima.db.  Otherwise falls back
-    to the in-memory store (used in tests via ``use_in_memory_store``).
-    """
+        return get_runtime_session_factory()()
+    except Exception:
+        return None
+
+
+def _get_store(
+    db: Session | None,
+    *,
+    runtime_db: Session | None = None,
+) -> tuple[VectorStore, Session | None]:
+    """Return ``(store, owned_runtime_session)`` for the active backend."""
+    if runtime_db is not None:
+        from anima_server.services.agent.pgvec_store import PgVecStore
+
+        return PgVecStore(runtime_db), None
+
+    if _force_in_memory:
+        return _get_fallback_store(), None
+
+    rt_session = _try_get_runtime_session()
+    if rt_session is not None:
+        try:
+            from anima_server.services.agent.pgvec_store import PgVecStore
+
+            return PgVecStore(rt_session), rt_session
+        except Exception:
+            rt_session.close()
+
     if db is not None:
-        return OrmVecStore(db)
-    return _get_fallback_store()
+        return OrmVecStore(db), None
+    return _get_fallback_store(), None
 
 
 def upsert_memory(
@@ -475,15 +488,27 @@ def upsert_memory(
     category: str = "fact",
     importance: int = 3,
     db: Session | None = None,
+    runtime_db: Session | None = None,
 ) -> None:
-    _get_store(db).upsert(
-        user_id,
-        item_id=item_id,
-        content=content,
-        embedding=embedding,
-        category=category,
-        importance=importance,
-    )
+    store, owned_session = _get_store(db, runtime_db=runtime_db)
+    try:
+        store.upsert(
+            user_id,
+            item_id=item_id,
+            content=content,
+            embedding=embedding,
+            category=category,
+            importance=importance,
+        )
+        if owned_session is not None:
+            owned_session.commit()
+    except Exception:
+        if owned_session is not None:
+            owned_session.rollback()
+        raise
+    finally:
+        if owned_session is not None:
+            owned_session.close()
     try:
         from anima_server.services.agent.bm25_index import invalidate_index
 
@@ -492,11 +517,25 @@ def upsert_memory(
         pass
 
 
-def delete_memory(user_id: int, *, item_id: int, db: Session | None = None) -> None:
+def delete_memory(
+    user_id: int,
+    *,
+    item_id: int,
+    db: Session | None = None,
+    runtime_db: Session | None = None,
+) -> None:
+    store, owned_session = _get_store(db, runtime_db=runtime_db)
     try:
-        _get_store(db).delete(user_id, item_id=item_id)
+        store.delete(user_id, item_id=item_id)
+        if owned_session is not None:
+            owned_session.commit()
     except Exception:
+        if owned_session is not None:
+            owned_session.rollback()
         logger.debug("Failed to delete item %d from vector store", item_id)
+    finally:
+        if owned_session is not None:
+            owned_session.close()
     try:
         from anima_server.services.agent.bm25_index import invalidate_index
 
@@ -512,23 +551,29 @@ def search_similar(
     limit: int = 10,
     category: str | None = None,
     db: Session | None = None,
+    runtime_db: Session | None = None,
 ) -> list[dict[str, Any]]:
-    results = _get_store(db).search_by_vector(
-        user_id,
-        query_embedding=query_embedding,
-        limit=limit,
-        category=category,
-    )
-    return [
-        {
-            "id": r.item_id,
-            "content": r.content,
-            "category": r.category,
-            "importance": r.importance,
-            "similarity": r.similarity,
-        }
-        for r in results
-    ]
+    store, owned_session = _get_store(db, runtime_db=runtime_db)
+    try:
+        results = store.search_by_vector(
+            user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+            category=category,
+        )
+        return [
+            {
+                "id": r.item_id,
+                "content": r.content,
+                "category": r.category,
+                "importance": r.importance,
+                "similarity": r.similarity,
+            }
+            for r in results
+        ]
+    finally:
+        if owned_session is not None:
+            owned_session.close()
 
 
 def search_by_text(
@@ -538,23 +583,29 @@ def search_by_text(
     limit: int = 10,
     category: str | None = None,
     db: Session | None = None,
+    runtime_db: Session | None = None,
 ) -> list[dict[str, Any]]:
-    results = _get_store(db).search_by_text(
-        user_id,
-        query_text=query_text,
-        limit=limit,
-        category=category,
-    )
-    return [
-        {
-            "id": r.item_id,
-            "content": r.content,
-            "category": r.category,
-            "importance": r.importance,
-            "similarity": r.similarity,
-        }
-        for r in results
-    ]
+    store, owned_session = _get_store(db, runtime_db=runtime_db)
+    try:
+        results = store.search_by_text(
+            user_id,
+            query_text=query_text,
+            limit=limit,
+            category=category,
+        )
+        return [
+            {
+                "id": r.item_id,
+                "content": r.content,
+                "category": r.category,
+                "importance": r.importance,
+                "similarity": r.similarity,
+            }
+            for r in results
+        ]
+    finally:
+        if owned_session is not None:
+            owned_session.close()
 
 
 def rebuild_user_index(
@@ -562,8 +613,20 @@ def rebuild_user_index(
     items: list[tuple[int, str, list[float], str, int]],
     *,
     db: Session | None = None,
+    runtime_db: Session | None = None,
 ) -> int:
-    result = _get_store(db).rebuild(user_id, items)
+    store, owned_session = _get_store(db, runtime_db=runtime_db)
+    try:
+        result = store.rebuild(user_id, items)
+        if owned_session is not None:
+            owned_session.commit()
+    except Exception:
+        if owned_session is not None:
+            owned_session.rollback()
+        raise
+    finally:
+        if owned_session is not None:
+            owned_session.close()
     try:
         from anima_server.services.agent.bm25_index import invalidate_index
 
@@ -573,28 +636,38 @@ def rebuild_user_index(
     return result
 
 
-def get_collection(user_id: int, *, db: Session | None = None) -> Any:
+def get_collection(
+    user_id: int,
+    *,
+    db: Session | None = None,
+    runtime_db: Session | None = None,
+) -> Any:
     """Legacy shim for code that calls get_collection(uid).count()."""
-    store = _get_store(db)
-
     class _CollectionProxy:
         def count(self) -> int:
-            return store.count(user_id)
+            store, owned_session = _get_store(db, runtime_db=runtime_db)
+            try:
+                return store.count(user_id)
+            finally:
+                if owned_session is not None:
+                    owned_session.close()
 
     return _CollectionProxy()
 
 
 def reset_vector_store() -> None:
     """Reset the in-memory fallback store. Used in tests."""
-    global _fallback_store
+    global _fallback_store, _force_in_memory
     with _fallback_lock:
         if _fallback_store is not None:
             _fallback_store.reset()
             _fallback_store = None
+        _force_in_memory = False
 
 
 def use_in_memory_store() -> None:
     """Force the in-memory backend (for tests that don't want disk IO)."""
-    global _fallback_store
+    global _fallback_store, _force_in_memory
     with _fallback_lock:
+        _force_in_memory = True
         _fallback_store = InMemoryVectorStore()
