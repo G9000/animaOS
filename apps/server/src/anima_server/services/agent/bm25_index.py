@@ -23,7 +23,7 @@ def _tokenize(text: str) -> list[str]:
 
 
 class BM25Index:
-    """Per-user BM25 index built lazily from MemoryVector content."""
+    """Per-user BM25 index built lazily from RuntimeEmbedding content."""
 
     def __init__(self) -> None:
         self._bm25: BM25Okapi | None = None
@@ -81,10 +81,10 @@ def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
     """Lazy-load the BM25 index for a user.
 
     Data source priority:
-    1. RuntimeEmbedding in PG (if runtime engine is available)
-    2. MemoryVector in soul DB (fallback)
-    3. InMemoryVectorStore (when _force_in_memory is active, e.g. tests)
+    1. RuntimeEmbedding in PG (primary)
+    2. InMemoryVectorStore (tests / degraded mode)
 
+    MemoryVector (SQLCipher) is deprecated as of P6 and no longer queried.
     Thread-safe via _indices_lock.
     """
     with _indices_lock:
@@ -93,7 +93,7 @@ def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
 
     docs: list[tuple[int, str]] = []
 
-    # Try RuntimeEmbedding in PG first
+    # Try RuntimeEmbedding in PG
     try:
         from anima_server.db.runtime import get_runtime_session_factory
         from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -111,21 +111,7 @@ def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
     except Exception:
         pass
 
-    # Fallback to MemoryVector in soul DB
-    if not docs:
-        try:
-            from anima_server.models import MemoryVector
-
-            rows = db.execute(
-                select(MemoryVector.item_id, MemoryVector.content).where(
-                    MemoryVector.user_id == user_id
-                )
-            ).all()
-            docs = [(row[0], row[1]) for row in rows]
-        except Exception:
-            pass
-
-    # Last resort: in-memory vector store (tests with _force_in_memory)
+    # Fallback: in-memory vector store (tests / degraded mode)
     if not docs:
         try:
             from anima_server.services.agent.vector_store import _fallback_store

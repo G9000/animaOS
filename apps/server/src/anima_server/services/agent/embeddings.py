@@ -1,7 +1,7 @@
 """Vector embedding support for semantic memory search.
 
 Generates embeddings via LLM providers and stores them in both:
-- MemoryVector table in per-user anima.db (for fast similarity search)
+- RuntimeEmbedding table in PostgreSQL via pgvector (for fast ANN search)
 - MemoryItem.embedding_json (for portability / brute-force fallback)
 
 All supported providers (ollama, openrouter, vllm) expose an
@@ -323,7 +323,7 @@ async def embed_memory_item(
     """Generate and store an embedding for a single memory item.
 
     Stores in both the embedding_json column (for portability/fallback)
-    and the MemoryVector table (for fast search).
+    and the RuntimeEmbedding table in PG (for fast search via pgvector).
     Returns True if successful.
     """
     plaintext = df(item.user_id, item.content, table="memory_items", field="content")

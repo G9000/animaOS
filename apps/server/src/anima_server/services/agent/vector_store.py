@@ -460,26 +460,30 @@ def _get_store(
 
     Priority order:
     1. Explicit ``runtime_db`` → PgVecStore (caller manages session)
-    2. Soul ``db`` provided → try PG via runtime session, fall back to OrmVecStore
-    3. No DB at all → InMemoryVectorStore fallback (tests)
+    2. PG available → PgVecStore via auto-obtained runtime session
+    3. Degraded / tests → InMemoryVectorStore fallback
+
+    OrmVecStore (MemoryVector in SQLCipher) is deprecated as of P6.
     """
     if runtime_db is not None:
         from anima_server.services.agent.pgvec_store import PgVecStore
 
         return PgVecStore(runtime_db), None
 
+    if _force_in_memory:
+        return _get_fallback_store(), None
+
+    rt_session = _try_get_runtime_session()
+    if rt_session is not None:
+        try:
+            from anima_server.services.agent.pgvec_store import PgVecStore
+
+            return PgVecStore(rt_session), rt_session
+        except Exception:
+            rt_session.close()
+
     if db is not None:
-        if not _force_in_memory:
-            rt_session = _try_get_runtime_session()
-            if rt_session is not None:
-                try:
-                    from anima_server.services.agent.pgvec_store import PgVecStore
-
-                    return PgVecStore(rt_session), rt_session
-                except Exception:
-                    rt_session.close()
-        return OrmVecStore(db), None
-
+        logger.debug("PG unavailable; vector store degraded to in-memory fallback")
     return _get_fallback_store(), None
 
 
