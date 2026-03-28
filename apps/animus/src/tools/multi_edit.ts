@@ -37,7 +37,9 @@ export function executeMultiEdit(args: MultiEditArgs): {
         result: `Edit ${i + 1}/${edits.length}: old_string not found in ${file_path}`,
       };
     }
-    dryRun = dryRun.replace(old_string, edits[i].new_string);
+    const replacement = edits[i].new_string;
+    // Use function replacer to avoid $-pattern interpretation
+    dryRun = dryRun.replace(old_string, () => replacement);
   }
 
   // Dry-run succeeded — write the result

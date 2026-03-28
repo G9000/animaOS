@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from "react";
-import { Box, useApp } from "ink";
+import { Box, useApp, useInput } from "ink";
 import { Header } from "./Header";
 import { Chat, type ChatEntry } from "./Chat";
 import { Input } from "./Input";
@@ -11,10 +11,22 @@ import { addSessionRule, type PermissionDecision } from "../tools/permissions";
 import { ACTION_TOOL_SCHEMAS } from "../tools/registry";
 import type { AnimusConfig } from "../client/auth";
 import type { ServerMessage, ToolExecuteMessage } from "../client/protocol";
+import { setAskUserCallback, clearAskUserCallback } from "../tools/ask_user";
+import { hooks } from "../hooks";
 
 interface AppProps {
   config: AnimusConfig;
 }
+
+const SLASH_COMMANDS: Record<string, string> = {
+  "/quit": "Exit animus",
+  "/exit": "Exit animus",
+  "/clear": "Clear chat history",
+  "/plan": "Toggle plan mode",
+  "/cancel": "Cancel current operation",
+  "/reconnect": "Force reconnect to server",
+  "/help": "Show available commands",
+};
 
 export function App({ config }: AppProps) {
   const { exit } = useApp();
@@ -26,16 +38,35 @@ export function App({ config }: AppProps) {
   const [connection, setConnection] = useState<ConnectionManager | null>(null);
   const [model, setModel] = useState<string | undefined>();
   const [mode, setMode] = useState<"normal" | "plan">("normal");
+  // For ask_user: question displayed + resolver to return the answer
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [questionResolver, setQuestionResolver] = useState<((answer: string | null) => void) | null>(null);
 
   const addEntry = useCallback((entry: ChatEntry) => {
     setEntries((prev) => [...prev, entry]);
   }, []);
 
   useEffect(() => {
+    // Wire ask_user to TUI
+    setAskUserCallback(async (question: string) => {
+      return new Promise<string | null>((resolve) => {
+        setPendingQuestion(question);
+        setQuestionResolver(() => resolve);
+      });
+    });
+
     const conn = new ConnectionManager(config, ACTION_TOOL_SCHEMAS, {
       onStatusChange: setStatus,
       onError: (err) => addEntry({ type: "error", content: err.message }),
+      onReconnect: () => {
+        // Reset UI state on reconnect — server won't resend turn_complete
+        setIsThinking(false);
+        addEntry({ type: "assistant", content: "[Reconnected to server]" });
+      },
       onMessage: async (msg: ServerMessage) => {
+        // Emit message:received hook
+        hooks.emit("message:received", { type: msg.type, ...msg }).catch(() => {});
+
         switch (msg.type) {
           case "stream_token":
             setIsThinking(false);
@@ -73,6 +104,33 @@ export function App({ config }: AppProps) {
               return [...prev, { type: "reasoning", content: msg.content, streaming: true }];
             });
             break;
+          case "tool_call":
+            // Server-side tool call — show for observability
+            addEntry({
+              type: "tool_call",
+              content: "",
+              toolName: msg.tool_name,
+              toolArgs: msg.args,
+              toolStatus: "running",
+            });
+            break;
+          case "tool_return":
+            // Update the matching server tool_call entry
+            setEntries((prev) => {
+              const updated = [...prev];
+              for (let j = updated.length - 1; j >= 0; j--) {
+                if (
+                  updated[j].type === "tool_call" &&
+                  updated[j].toolName === msg.tool_name &&
+                  updated[j].toolStatus === "running"
+                ) {
+                  updated[j] = { ...updated[j], content: msg.result, toolStatus: "success" };
+                  break;
+                }
+              }
+              return updated;
+            });
+            break;
           case "tool_execute":
             addEntry({
               type: "tool_call",
@@ -90,7 +148,6 @@ export function App({ config }: AppProps) {
               });
               setEntries((prev) => {
                 const updated = [...prev];
-                // Find the last running tool_call entry for this tool
                 let idx = -1;
                 for (let j = updated.length - 1; j >= 0; j--) {
                   if (updated[j].type === "tool_call" && updated[j].toolName === msg.tool_name && updated[j].toolStatus === "running") {
@@ -105,6 +162,24 @@ export function App({ config }: AppProps) {
               });
               conn.send({ type: "tool_result", ...result });
             }
+            break;
+          case "approval_required":
+            // Server-initiated approval — show approval UI
+            setPendingApproval({
+              type: "tool_execute",
+              tool_call_id: msg.tool_call_id,
+              tool_name: msg.tool_name,
+              args: msg.args,
+            });
+            setApprovalResolver(() => (decision: PermissionDecision) => {
+              conn.send({
+                type: "approval_response",
+                run_id: msg.run_id,
+                tool_call_id: msg.tool_call_id,
+                approved: decision !== "deny",
+                reason: decision === "deny" ? "User denied" : undefined,
+              });
+            });
             break;
           case "turn_complete":
             setIsThinking(false);
@@ -129,12 +204,42 @@ export function App({ config }: AppProps) {
         }
       },
     });
+
+    // Emit session:start hook
+    hooks.emit("session:start", {
+      serverUrl: config.serverUrl,
+      username: config.username || "unknown",
+    }).catch(() => {});
+
     conn.connect();
     setConnection(conn);
-    return () => conn.disconnect();
+    return () => {
+      hooks.emit("session:end", { reason: "user" }).catch(() => {});
+      clearAskUserCallback();
+      conn.disconnect();
+    };
   }, [config, addEntry]);
 
+  // Ctrl+C to cancel current operation
+  useInput((_input, key) => {
+    if (key.ctrl && _input === "c") {
+      if (isThinking) {
+        connection?.send({ type: "cancel" });
+        setIsThinking(false);
+        addEntry({ type: "assistant", content: "[Cancelled]" });
+      }
+    }
+  });
+
   const handleSubmit = useCallback((text: string) => {
+    // If there's a pending ask_user question, resolve it
+    if (pendingQuestion && questionResolver) {
+      questionResolver(text);
+      setPendingQuestion(null);
+      setQuestionResolver(null);
+      return;
+    }
+
     if (text === "/quit" || text === "/exit") {
       exit();
       return;
@@ -150,10 +255,39 @@ export function App({ config }: AppProps) {
       addEntry({ type: "assistant", content: `Mode: ${next}` });
       return;
     }
+    if (text === "/cancel") {
+      if (isThinking) {
+        connection?.send({ type: "cancel" });
+        setIsThinking(false);
+        addEntry({ type: "assistant", content: "[Cancelled]" });
+      } else {
+        addEntry({ type: "assistant", content: "Nothing to cancel" });
+      }
+      return;
+    }
+    if (text === "/reconnect") {
+      connection?.disconnect();
+      connection?.connect();
+      addEntry({ type: "assistant", content: "Reconnecting..." });
+      return;
+    }
+    if (text === "/help") {
+      const helpText = Object.entries(SLASH_COMMANDS)
+        .map(([cmd, desc]) => `  ${cmd.padEnd(14)} ${desc}`)
+        .join("\n");
+      addEntry({ type: "assistant", content: `Available commands:\n${helpText}` });
+      return;
+    }
+    // Unknown slash command
+    if (text.startsWith("/")) {
+      addEntry({ type: "error", content: `Unknown command: ${text}. Type /help for available commands.` });
+      return;
+    }
+
     addEntry({ type: "user", content: text });
     setIsThinking(true);
     connection?.send({ type: "user_message", message: text });
-  }, [connection, addEntry, exit, mode]);
+  }, [connection, addEntry, exit, mode, isThinking, pendingQuestion, questionResolver]);
 
   const handleApproval = useCallback((decision: "allow" | "deny" | "always") => {
     if (decision === "always" && pendingApproval) {
@@ -176,7 +310,16 @@ export function App({ config }: AppProps) {
           onDecision={handleApproval}
         />
       )}
-      <Input onSubmit={handleSubmit} disabled={isThinking || !!pendingApproval} />
+      {pendingQuestion && (
+        <Box marginLeft={2}>
+          <Box>{`[?] ${pendingQuestion}`}</Box>
+        </Box>
+      )}
+      <Input
+        onSubmit={handleSubmit}
+        disabled={isThinking || (!!pendingApproval && !pendingQuestion)}
+        placeholder={pendingQuestion ? "Type your answer..." : undefined}
+      />
     </Box>
   );
 }

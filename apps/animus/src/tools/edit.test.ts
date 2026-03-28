@@ -52,18 +52,35 @@ describe("edit tool", () => {
     expect(result.result).toContain("old_string not found");
   });
 
-  test("only replaces first occurrence", () => {
+  test("rejects ambiguous match (multiple occurrences)", () => {
     const filePath = join(tempDir, "test.txt");
     writeFileSync(filePath, "aaa", "utf-8");
 
-    executeEdit({
+    const result = executeEdit({
       file_path: filePath,
       old_string: "a",
       new_string: "b",
     });
 
-    // String.replace with a string only replaces first match
-    expect(readFileSync(filePath, "utf-8")).toBe("baa");
+    expect(result.status).toBe("error");
+    expect(result.result).toContain("matches 3 locations");
+    // File should be unchanged
+    expect(readFileSync(filePath, "utf-8")).toBe("aaa");
+  });
+
+  test("handles dollar-sign patterns in new_string literally", () => {
+    const filePath = join(tempDir, "test.txt");
+    writeFileSync(filePath, "const x = foo;", "utf-8");
+
+    const result = executeEdit({
+      file_path: filePath,
+      old_string: "const x = foo;",
+      new_string: "const x = $& bar;",
+    });
+
+    expect(result.status).toBe("success");
+    // Should be literal $& not the matched text
+    expect(readFileSync(filePath, "utf-8")).toBe("const x = $& bar;");
   });
 
   test("multi-line replacement", () => {

@@ -347,6 +347,150 @@ describe("headless mode", () => {
     expect(stderr).toContain("Invalid credentials");
   });
 
+  test("includes reasoning in JSON output", async () => {
+    const mock = createMockServer({
+      script: [
+        { type: "reasoning", content: "Let me think..." } as ServerMessage,
+        { type: "stream_token", token: "Answer" } as ServerMessage,
+        {
+          type: "turn_complete",
+          response: "Answer",
+          model: "test",
+          provider: "test",
+          tools_used: [],
+        } as ServerMessage,
+      ],
+    });
+    server = mock.server;
+
+    let stdout = "";
+    let stderr = "";
+
+    await runHeadless({
+      config: mock.config,
+      prompt: "test",
+      json: true,
+      timeout: 10_000,
+      exit: () => {},
+      write: (text) => { stdout += text; },
+      writeError: (text) => { stderr += text; },
+    });
+
+    const parsed = JSON.parse(stdout.trim());
+    expect(parsed.reasoning).toBe("Let me think...");
+  });
+
+  test("writes reasoning to stderr in plain mode", async () => {
+    const mock = createMockServer({
+      script: [
+        { type: "reasoning", content: "Thinking..." } as ServerMessage,
+        {
+          type: "turn_complete",
+          response: "",
+          model: "test",
+          provider: "test",
+          tools_used: [],
+        } as ServerMessage,
+      ],
+    });
+    server = mock.server;
+
+    let stderr = "";
+
+    await runHeadless({
+      config: mock.config,
+      prompt: "test",
+      timeout: 10_000,
+      exit: () => {},
+      write: () => {},
+      writeError: (text) => { stderr += text; },
+    });
+
+    expect(stderr).toContain("[reasoning] Thinking...");
+  });
+
+  test("auto-denies approval_required in headless mode", async () => {
+    let gotApprovalResponse = false;
+
+    const mock = createMockServer({
+      script: [
+        {
+          type: "approval_required",
+          tool_call_id: "tc-approve",
+          tool_name: "dangerous_op",
+          args: {},
+          run_id: 42,
+        } as ServerMessage,
+      ],
+      onMessage: (msg) => {
+        if (msg.type === "approval_response") {
+          gotApprovalResponse = true;
+          expect(msg.approved).toBe(false);
+          return [
+            {
+              type: "turn_complete",
+              response: "denied",
+              model: "test",
+              provider: "test",
+              tools_used: [],
+            } as ServerMessage,
+          ];
+        }
+        return [];
+      },
+    });
+    server = mock.server;
+
+    let stderr = "";
+
+    await runHeadless({
+      config: mock.config,
+      prompt: "test",
+      timeout: 10_000,
+      exit: () => {},
+      write: () => {},
+      writeError: (text) => { stderr += text; },
+    });
+
+    expect(gotApprovalResponse).toBe(true);
+    expect(stderr).toContain("Auto-denied");
+  });
+
+  test("sends set_mode before prompt when --plan is set", async () => {
+    const receivedMessages: Array<Record<string, unknown>> = [];
+
+    const mock = createMockServer({
+      script: [
+        {
+          type: "turn_complete",
+          response: "done",
+          model: "test",
+          provider: "test",
+          tools_used: [],
+        } as ServerMessage,
+      ],
+      onMessage: (msg) => {
+        receivedMessages.push(msg);
+        return [];
+      },
+    });
+    server = mock.server;
+
+    await runHeadless({
+      config: mock.config,
+      prompt: "plan something",
+      plan: true,
+      timeout: 10_000,
+      exit: () => {},
+      write: () => {},
+      writeError: () => {},
+    });
+
+    const setModeMsg = receivedMessages.find((m) => m.type === "set_mode");
+    expect(setModeMsg).toBeDefined();
+    expect(setModeMsg!.mode).toBe("plan");
+  });
+
   test(
     "exits 124 on timeout",
     async () => {
