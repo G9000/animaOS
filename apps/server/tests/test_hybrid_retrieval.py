@@ -854,42 +854,5 @@ class TestHybridSearchIntegration:
                 found_ids = {item.id for item, _ in result.items}
                 assert item.id in found_ids
 
-    @pytest.mark.asyncio
-    async def test_hybrid_search_bruteforce_fallback(self):
-        """When vector store search returns nothing, brute-force over embedding_json works."""
-        from anima_server.services.agent.embeddings import hybrid_search
-
-        with _db_session() as db:
-            user = _make_user(db)
-            # Items with embedding_json but NOT indexed in vector store
-            item = _make_item(
-                db,
-                user.id,
-                "brute force item",
-                embedding=[0.9, 0.1, 0.0],
-            )
-            db.commit()
-
-            # search_similar returns empty (nothing indexed), forcing fallback
-            async def mock_embed(text: str) -> list[float] | None:
-                return [0.9, 0.1, 0.0]
-
-            with (
-                patch(
-                    "anima_server.services.agent.embeddings.generate_embedding",
-                    side_effect=mock_embed,
-                ),
-                patch(
-                    "anima_server.services.agent.vector_store.search_similar",
-                    return_value=[],
-                ),
-            ):
-                result = await hybrid_search(
-                    db,
-                    user_id=user.id,
-                    query="test",
-                    limit=10,
-                    similarity_threshold=0.0,
-                )
-                found_ids = {it.id for it, _ in result.items}
-                assert item.id in found_ids
+    # Brute-force fallback test removed — P6 eliminated O(n) brute-force
+    # over embedding_json in favor of pgvector ANN search.

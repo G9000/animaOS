@@ -2,7 +2,7 @@
 
 Generates embeddings via LLM providers and stores them in both:
 - RuntimeEmbedding table in PostgreSQL via pgvector (for fast ANN search)
-- MemoryItem.embedding_json (for portability / brute-force fallback)
+- MemoryItem.embedding_json (portable cache for .anima/ transfers)
 
 All supported providers (ollama, openrouter, vllm) expose an
 OpenAI-compatible /v1/embeddings endpoint, so we use a single
@@ -247,73 +247,43 @@ async def semantic_search(
     limit: int = 10,
     similarity_threshold: float = 0.3,
 ) -> list[tuple[MemoryItem, float]]:
-    """Search memory items by semantic similarity.
-
-    Uses the per-user vector store first, falls back to brute-force cosine
-    over embedding_json if the vector store has no data.
-    """
+    """Search memory items by semantic similarity via pgvector."""
     query_embedding = await generate_embedding(query)
     if query_embedding is None:
         return []
 
-    # Try vector store first (per-user anima.db)
-    try:
-        from anima_server.services.agent.vector_store import search_similar
+    from anima_server.services.agent.vector_store import search_similar
 
-        vs_results = search_similar(
-            user_id,
-            query_embedding=query_embedding,
-            limit=limit,
-            db=db,
-        )
-        if vs_results:
-            item_ids = [r["id"] for r in vs_results if r["similarity"] >= similarity_threshold]
-            if item_ids:
-                items_by_id = {
-                    item.id: item
-                    for item in db.scalars(
-                        select(MemoryItem).where(MemoryItem.id.in_(item_ids))
-                    ).all()
-                }
-                from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR as _HVF
-
-                results: list[tuple[MemoryItem, float]] = []
-                for r in vs_results:
-                    if r["similarity"] >= similarity_threshold and r["id"] in items_by_id:
-                        item = items_by_id[r["id"]]
-                        if item.heat not in (None, 0.0) and item.heat < _HVF:
-                            continue
-                        results.append((item, r["similarity"]))
-                return results[:limit]
-    except Exception:
-        logger.debug("Vector store search failed, falling back to brute-force")
-
-    # Fallback: brute-force over embedding_json column
-    items = list(
-        db.scalars(
-            select(MemoryItem).where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.superseded_by.is_(None),
-                MemoryItem.embedding_json.isnot(None),
-            )
-        ).all()
+    vs_results = search_similar(
+        user_id,
+        query_embedding=query_embedding,
+        limit=limit,
+        db=db,
     )
+    if not vs_results:
+        return []
 
-    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR as _HVF2
+    item_ids = [r["id"] for r in vs_results if r["similarity"] >= similarity_threshold]
+    if not item_ids:
+        return []
 
-    scored: list[tuple[MemoryItem, float]] = []
-    for item in items:
-        if item.heat not in (None, 0.0) and item.heat < _HVF2:
-            continue
-        item_embedding = _parse_embedding(item.embedding_json)
-        if item_embedding is None:
-            continue
-        sim = cosine_similarity(query_embedding, item_embedding)
-        if sim >= similarity_threshold:
-            scored.append((item, sim))
+    items_by_id = {
+        item.id: item
+        for item in db.scalars(
+            select(MemoryItem).where(MemoryItem.id.in_(item_ids))
+        ).all()
+    }
 
-    scored.sort(key=lambda pair: pair[1], reverse=True)
-    return scored[:limit]
+    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+
+    results: list[tuple[MemoryItem, float]] = []
+    for r in vs_results:
+        if r["similarity"] >= similarity_threshold and r["id"] in items_by_id:
+            item = items_by_id[r["id"]]
+            if item.heat not in (None, 0.0) and item.heat < HEAT_VISIBILITY_FLOOR:
+                continue
+            results.append((item, r["similarity"]))
+    return results[:limit]
 
 
 async def embed_memory_item(
@@ -701,28 +671,6 @@ async def hybrid_search(
             ]
         except Exception:
             logger.debug("Semantic search failed in hybrid_search")
-
-        # Brute-force fallback if vector store is empty
-        if not semantic_ranked:
-            items_with_emb = list(
-                db.scalars(
-                    select(MemoryItem).where(
-                        MemoryItem.user_id == user_id,
-                        MemoryItem.superseded_by.is_(None),
-                        MemoryItem.embedding_json.isnot(None),
-                    )
-                ).all()
-            )
-            bruteforce: list[tuple[int, float]] = []
-            for item in items_with_emb:
-                emb = _parse_embedding(item.embedding_json)
-                if emb is None:
-                    continue
-                sim = cosine_similarity(query_embedding, emb)
-                if sim >= similarity_threshold:
-                    bruteforce.append((item.id, sim))
-            bruteforce.sort(key=lambda x: x[1], reverse=True)
-            semantic_ranked = bruteforce[:limit]
 
     # --- Keyword leg (BM25) ---
     keyword_ranked: list[tuple[int, float]] = []
