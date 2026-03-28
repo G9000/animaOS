@@ -1,15 +1,15 @@
-"""Persistent vector store for semantic memory search.
+"""Vector store for semantic memory search.
 
-Primary backend selection prefers the runtime PostgreSQL store when it is
-available, then falls back to the encrypted soul database, and finally to an
-in-memory store for tests.
+Primary backend: ``PgVecStore`` (pgvector in embedded PostgreSQL).
+Test backend: ``InMemoryVectorStore`` (process-local, no persistence).
+
+``OrmVecStore`` (MemoryVector in SQLCipher) was removed in P6.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-import struct
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import Lock
@@ -25,16 +25,6 @@ logger = logging.getLogger(__name__)
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-
-def _serialize_f32(vec: list[float]) -> bytes:
-    """Pack a float list into little-endian float32 bytes."""
-    return struct.pack(f"<{len(vec)}f", *vec)
-
-
-def _deserialize_f32(data: bytes) -> list[float]:
-    """Unpack little-endian float32 bytes back to a float list."""
-    n = len(data) // 4
-    return list(struct.unpack(f"<{n}f", data))
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -125,178 +115,7 @@ class VectorStore(ABC):
 
 
 # ---------------------------------------------------------------------------
-# ORM-backed store (per-user anima.db)
-# ---------------------------------------------------------------------------
-
-
-class OrmVecStore(VectorStore):
-    """Vector store backed by the per-user SQLAlchemy database.
-
-    Each method receives a ``Session`` bound to the correct
-    per-user ``anima.db``, so vectors are encrypted, isolated,
-    and exported together with everything else.
-    """
-
-    def __init__(self, db: Session) -> None:
-        self._db = db
-
-    def upsert(
-        self,
-        user_id: int,
-        *,
-        item_id: int,
-        content: str,
-        embedding: list[float],
-        category: str = "fact",
-        importance: int = 3,
-    ) -> None:
-        from anima_server.models import MemoryVector
-
-        blob = _serialize_f32(embedding)
-        existing = self._db.get(MemoryVector, item_id)
-        if existing is not None:
-            existing.content = content
-            existing.category = category
-            existing.importance = importance
-            existing.embedding = blob
-        else:
-            self._db.add(
-                MemoryVector(
-                    item_id=item_id,
-                    user_id=user_id,
-                    content=content,
-                    category=category,
-                    importance=importance,
-                    embedding=blob,
-                )
-            )
-        self._db.flush()
-
-    def delete(self, user_id: int, *, item_id: int) -> None:
-        from anima_server.models import MemoryVector
-
-        self._db.execute(
-            delete(MemoryVector).where(
-                MemoryVector.item_id == item_id,
-                MemoryVector.user_id == user_id,
-            )
-        )
-        self._db.flush()
-
-    def search_by_vector(
-        self,
-        user_id: int,
-        *,
-        query_embedding: list[float],
-        limit: int = 10,
-        category: str | None = None,
-    ) -> list[VectorSearchResult]:
-        from anima_server.models import MemoryVector
-
-        stmt = select(MemoryVector).where(MemoryVector.user_id == user_id)
-        if category is not None:
-            stmt = stmt.where(MemoryVector.category == category)
-        rows = self._db.scalars(stmt).all()
-
-        scored: list[tuple[float, VectorSearchResult]] = []
-        for row in rows:
-            emb = _deserialize_f32(row.embedding)
-            sim = _cosine_similarity(query_embedding, emb)
-            scored.append(
-                (
-                    sim,
-                    VectorSearchResult(
-                        item_id=row.item_id,
-                        content=row.content,
-                        category=row.category,
-                        importance=row.importance,
-                        similarity=round(sim, 4),
-                    ),
-                )
-            )
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r in scored[:limit]]
-
-    def search_by_text(
-        self,
-        user_id: int,
-        *,
-        query_text: str,
-        limit: int = 10,
-        category: str | None = None,
-    ) -> list[VectorSearchResult]:
-        from anima_server.models import MemoryVector
-
-        stmt = select(MemoryVector).where(MemoryVector.user_id == user_id)
-        if category is not None:
-            stmt = stmt.where(MemoryVector.category == category)
-        rows = self._db.scalars(stmt).all()
-
-        scored: list[tuple[float, VectorSearchResult]] = []
-        for row in rows:
-            sim = _text_similarity(query_text, row.content)
-            if sim > 0.0:
-                scored.append(
-                    (
-                        sim,
-                        VectorSearchResult(
-                            item_id=row.item_id,
-                            content=row.content,
-                            category=row.category,
-                            importance=row.importance,
-                            similarity=round(sim, 4),
-                        ),
-                    )
-                )
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r in scored[:limit]]
-
-    def rebuild(
-        self,
-        user_id: int,
-        items: list[tuple[int, str, list[float], str, int]],
-    ) -> int:
-        from anima_server.models import MemoryVector
-
-        self._db.execute(delete(MemoryVector).where(MemoryVector.user_id == user_id))
-        for item_id, content, embedding, category, importance in items:
-            blob = _serialize_f32(embedding)
-            self._db.add(
-                MemoryVector(
-                    item_id=item_id,
-                    user_id=user_id,
-                    content=content,
-                    category=category,
-                    importance=importance,
-                    embedding=blob,
-                )
-            )
-        self._db.flush()
-        return len(items)
-
-    def count(self, user_id: int) -> int:
-        from sqlalchemy import func as sa_func
-
-        from anima_server.models import MemoryVector
-
-        return (
-            self._db.scalar(
-                select(sa_func.count())
-                .select_from(MemoryVector)
-                .where(MemoryVector.user_id == user_id)
-            )
-            or 0
-        )
-
-    def reset(self) -> None:
-        from anima_server.models import MemoryVector
-
-        self._db.execute(delete(MemoryVector))
-        self._db.flush()
-
-
-# ---------------------------------------------------------------------------
-# In-memory fallback store (for tests)
+# In-memory store (for tests)
 # ---------------------------------------------------------------------------
 
 
