@@ -7,7 +7,7 @@
 //  - Enforces at-most-one in_progress (warns, doesn't reject)
 //  - read_todos companion for the agent to check current state
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export interface TodoItem {
@@ -112,7 +112,6 @@ export function resetTodos(): void {
   loaded = true; // mark as loaded so ensureLoaded() won't re-read the old file
   try {
     if (existsSync(TODOS_FILE)) {
-      const { unlinkSync } = require("node:fs");
       unlinkSync(TODOS_FILE);
     }
   } catch { /* best-effort */ }

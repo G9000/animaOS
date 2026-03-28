@@ -8,7 +8,7 @@ export interface BashArgs {
   cwd?: string;
 }
 
-export interface ToolResult {
+interface ToolResult {
   status: "success" | "error";
   result: string;
   stdout?: string[];

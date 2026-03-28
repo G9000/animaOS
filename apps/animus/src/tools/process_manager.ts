@@ -12,7 +12,7 @@
 
 import { truncateOutput, LIMITS } from "./truncation";
 
-export interface ToolResult {
+interface ToolResult {
   status: "success" | "error";
   result: string;
 }
