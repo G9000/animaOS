@@ -753,6 +753,27 @@ def continue_reasoning() -> str:
     return "Continuing reasoning. Use your tools or send_message when ready."
 
 
+async def check_system_health(user_id: int) -> str:
+    """Run system health checks and return a formatted report.
+
+    Checks database integrity, LLM connectivity, and background task status.
+    """
+    from anima_server.services.health.checks import (
+        check_background_tasks,
+        check_db_integrity,
+        check_llm_connectivity,
+    )
+    from anima_server.services.health.registry import HealthCheckRegistry
+
+    registry = HealthCheckRegistry()
+    registry.register("db_integrity", check_db_integrity)
+    registry.register("llm_connectivity", lambda uid: check_llm_connectivity(uid))
+    registry.register("background_tasks", lambda uid: check_background_tasks(uid))
+
+    report = await registry.run_all(user_id=user_id)
+    return registry.format_report(report)
+
+
 def inject_inner_thoughts_into_tools(
     tools: list[Any],
     inner_thoughts_key: str = "thinking",
@@ -861,6 +882,7 @@ def get_extension_tools() -> list[Any]:
         update_human_memory,
         current_datetime,
         recall_transcript,
+        check_system_health,
     ]
 
 

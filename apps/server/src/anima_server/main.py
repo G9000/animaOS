@@ -22,6 +22,7 @@ from .api.routes.core import router as core_router
 from .api.routes.db import router as db_router
 from .api.routes.forgetting import router as forgetting_router
 from .api.routes.graph import router as graph_router
+from .api.routes.health import router as health_router
 from .api.routes.memory import router as memory_router
 from .api.routes.soul import router as soul_router
 from .api.routes.tasks import router as tasks_router
@@ -59,7 +60,8 @@ def get_cors_origins() -> list[str]:
 
 
 # Paths exempt from sidecar-nonce validation.
-_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health"})
+_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed", "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
+_NONCE_EXEMPT_PREFIXES = ("/api/health/",)
 logger = logging.getLogger(__name__)
 
 
@@ -170,7 +172,8 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     # type: ignore[override]
     async def dispatch(self, request: Request, call_next):
         nonce = settings.sidecar_nonce
-        if nonce and request.url.path not in _NONCE_EXEMPT_PATHS:
+        path = request.url.path
+        if nonce and path not in _NONCE_EXEMPT_PATHS and not path.startswith(_NONCE_EXEMPT_PREFIXES):
             header_value = (request.headers.get("x-anima-nonce") or "").strip()
             if not hmac.compare_digest(header_value, nonce):
                 return JSONResponse(
@@ -260,6 +263,7 @@ def create_app() -> FastAPI:
     app.include_router(db_router)
     app.include_router(forgetting_router)
     app.include_router(graph_router)
+    app.include_router(health_router)
     app.include_router(memory_router)
     app.include_router(soul_router)
     app.include_router(tasks_router)
