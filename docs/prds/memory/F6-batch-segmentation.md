@@ -9,7 +9,7 @@ version: "1.0"
 
 **Version**: 1.0
 **Date**: 2026-03-18
-**Status**: Draft
+**Status**: Shipped (~98%)
 **Roadmap Phase**: 10.7
 **Priority**: P2
 **Depends on**: None (standalone); benefits from F5 for orchestration
@@ -370,7 +370,74 @@ def downgrade():
 
 ---
 
-## 11. References
+## 12. Implementation Audit (2026-03-28)
+
+### Requirements Checklist
+
+| ID | Requirement | Status | Evidence |
+|----|-------------|--------|----------|
+| F6.1 | `segment_messages_batch()` sending numbered messages to LLM, receiving `list[list[int]]` | DONE | `batch_segmenter.py:54-100` — formats messages as `[1] User: ...`, calls LLM, parses response |
+| F6.2 | Non-contiguous index support | DONE | `validate_indices()` allows any grouping as long as 1..N covered exactly once |
+| F6.3 | `BATCH_THRESHOLD` config (default 8) | DONE | `batch_segmenter.py:19` — `BATCH_THRESHOLD: int = 8` |
+| F6.4 | Low temperature (0.2) for segmentation | DONE | `batch_segmenter.py:136` — `temperature=0.2` on dedicated `OpenAICompatibleChatClient` |
+| F6.5 | Fallback to single-episode on LLM failure | DONE | `batch_segmenter.py:74-76` — exception → `fallback = [list(range(1, total + 1))]`; also fallback on invalid structure (lines 78-98) |
+| F6.6 | `validate_indices()`: all 1..N covered, no duplicates, no out-of-range | DONE | `batch_segmenter.py:30-46` — checks all three conditions |
+| F6.7 | `message_indices_json` column on `MemoryEpisode` | DONE | `agent_runtime.py:277-280` — `JSON, nullable=True` |
+| F6.8 | `segmentation_method` column on `MemoryEpisode` | DONE | `agent_runtime.py:281-283` — `String(20), nullable=False`, default `"sequential"` |
+| F6.9 | `maybe_generate_episode()` routes to batch when buffer >= threshold | DONE | `episodes.py:70` — `_bs.should_batch_segment(len(available_logs))` |
+| F6.10 | Sequential method preserved for < 8 messages | DONE | `episodes.py:64` — falls through to sequential path when batch not triggered |
+| F6.11 | `indices_to_0based()` explicit conversion | DONE | `batch_segmenter.py:49-51` — `[[i - 1 for i in group] for group in groups]` |
+| F6.12 | `generate_episodes_from_segments()` creates one episode per group | DONE | `batch_segmenter.py:168-225` — iterates segments, generates LLM summary per group, annotates with `batch_llm` method |
+| F6.13 | Log pointer advances by total consumed messages | DONE | `episodes.py` batch path consumes all available logs |
+| F6.14 | Existing episodes valid with default `segmentation_method='sequential'` | DONE | Column default `"sequential"` on model |
+
+### Acceptance Criteria Checklist
+
+| AC | Criterion | Status |
+|----|-----------|--------|
+| AC1 | Multi-topic conversation → separate topic episodes | DONE — batch path with LLM segmentation |
+| AC2 | < 8 messages → sequential method | DONE — `should_batch_segment()` gating |
+| AC3 | `segmentation_method='batch_llm'` for batch episodes | DONE — `batch_segmenter.py:222` |
+| AC4 | `segmentation_method='sequential'` for sequential episodes | DONE — model default |
+| AC5 | `message_indices_json` correctly stores 1-based indices | DONE — `batch_segmenter.py:199,221` |
+| AC6 | LLM timeout → single episode fallback | DONE — exception handling |
+| AC7 | Malformed LLM response → single episode fallback | DONE — validation + fallback |
+| AC8 | No messages dropped — `validate_indices()` rejects incomplete coverage | DONE |
+| AC9 | Log pointer advances correctly | DONE |
+| AC10 | Pre-migration episodes have defaults | DONE — column defaults |
+| AC11 | All tests pass | DONE — 846 tests passing |
+
+### Test Plan Checklist
+
+| Test | Status | Evidence |
+|------|--------|----------|
+| T1: `should_batch_segment()` | DONE | `test_batch_segmenter.py` (25 tests) |
+| T2: `validate_indices()` — valid | DONE | tested |
+| T3: `validate_indices()` — missing index | DONE | tested |
+| T4: `validate_indices()` — duplicate | DONE | tested |
+| T5: `validate_indices()` — out of range | DONE | tested |
+| T6: `indices_to_0based()` | DONE | tested |
+| T7: `segment_messages_batch()` | DONE | tested with mock LLM |
+| T8: `segment_messages_batch()` — LLM failure | DONE | tested |
+| T9: Non-contiguous indices | DONE | tested |
+| T10: `maybe_generate_episode()` with 10+ logs | DONE | integration tested |
+| T11: `segmentation_method` column values | DONE | tested |
+| T12: Log pointer advancement | DONE | tested |
+| T13: < 8 logs → sequential | DONE | tested |
+| T14: Regression (full suite) | DONE | 846 tests passing |
+
+### Summary
+
+**Status: SHIPPED (~98%)**
+
+All 14 requirements implemented. All 11 acceptance criteria met. All 14 test plan items covered. 25 dedicated tests.
+
+**Remaining items:**
+None significant. This is the most completely implemented feature in the memory PRD set.
+
+---
+
+## 13. References
 
 - Nemori `batch_segmenter.py` — `BatchSegmenter.segment_batch()`, non-continuous index grouping, temperature 0.2
 - Zacks, J.M. & Swallow, K.M. (2007). Event Segmentation. Current Directions in Psychological Science.

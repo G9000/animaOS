@@ -9,7 +9,7 @@ version: "1.0"
 
 **Version**: 1.0
 **Date**: 2026-03-18
-**Status**: Draft
+**Status**: Shipped (~93%)
 **Roadmap Phase**: 9.5
 **Priority**: P1
 **Depends on**: None (independent); benefits from F1 for entity-name BM25 matching
@@ -534,7 +534,96 @@ A higher-level "world model narrative" — a synthesized prose summary of the us
 
 ---
 
-## 12. References
+## 13. Implementation Audit (2026-03-28)
+
+### Requirements Checklist
+
+| ID | Requirement | Status | Evidence |
+|----|-------------|--------|----------|
+| F4.1 | `KGEntity` model with all columns | DONE | `agent_runtime.py:597-621` — all columns: name, name_normalized, entity_type, description, mentions, embedding_json, UniqueConstraint, index |
+| F4.2 | `KGRelation` model with all columns | DONE | `agent_runtime.py:624-654` — all columns: source_id, destination_id, relation_type, mentions, source_memory_id, FK constraints, indexes |
+| F4.3 | `extract_entities_and_relations()` using LLM | DONE | `knowledge_graph.py:610-701` — JSON prompt with response parsing (not tool calling — uses F4.19 fallback approach). Jinja2 template `extract_entities.md.j2` |
+| F4.4 | `normalize_entity_name()` for dedup keys | DONE | `knowledge_graph.py:29-41` — lowercase, spaces→underscores, collapse multiples |
+| F4.5 | `upsert_entity()` with normalized-name dedup + mentions increment | DONE | `knowledge_graph.py:140-183` — exact normalized match + fuzzy `_find_similar_entity()` fallback, increments mentions |
+| F4.6 | `upsert_relation()` with lookup + mentions increment | DONE | `knowledge_graph.py:185-255` — looks up source/dest entities, dedup by source+dest+relation_type, increments mentions |
+| F4.7 | `deduplicate_entity()` via embedding similarity (threshold 0.85) | **NOT DONE** | No `deduplicate_entity()` function. Dedup uses `_find_similar_entity()` with token-level Jaccard (threshold 0.7) + substring containment — NOT embedding-based. `embedding_json` column exists on `KGEntity` but is never populated or queried for similarity. |
+| F4.8 | `search_graph()` with max_depth=2, limit=20 | DONE | `knowledge_graph.py:257-363` — bidirectional SQL JOIN traversal, depth param, limit param |
+| F4.9 | `graph_context_for_query()` extracting entity names + returning context strings | DONE | `knowledge_graph.py:448-496` — calls `_extract_entity_names_from_query()` → `search_graph()` → `rerank_graph_results()`, returns formatted strings |
+| F4.10 | `ingest_conversation_graph()` as background task | DONE | `knowledge_graph.py:825+` — full pipeline; `sleep_agent.py:243-244` — runs as `graph_ingestion` task |
+| F4.11 | `knowledge_graph` memory block in prompt | DONE | `memory_blocks.py:763-795` — `build_knowledge_graph_block()` calls `graph_context_for_query()` |
+| F4.12 | Cap entity extraction at 5 per turn | DONE | `knowledge_graph.py:669` — `entities[:5]` cap |
+| F4.13 | Bidirectional graph traversal | DONE | `search_graph()` queries both `source_id` and `destination_id` directions |
+| F4.14 | REST API endpoints for entities and relations | DONE | `api/routes/graph.py` — overview, entity list, relation list endpoints |
+| F4.15 | Vault export/import support for KG tables | **NOT DONE** | No references to `kg_entities`/`kg_relations` in any vault/export code. KG data would be lost on vault export/import. |
+| F4.16 | `rerank_graph_results()` — BM25 reranking of graph results | DONE | `knowledge_graph.py:388-446` — BM25 tokenized reranking with `_mention_boost()` multiplier |
+| F4.17 | `prune_stale_relations()` — LLM-driven pruning during ingestion | DONE | `knowledge_graph.py:736-822` — loads relations touching current entities, LLM decides which to delete, uses `prune_relations.md.j2` template |
+| F4.18 | ID hallucination protection — sequential int mapping | DONE | `knowledge_graph.py:707-730` — `_map_ids_to_sequential()` + `_map_ids_back()`, used in `prune_stale_relations()` |
+| F4.19 | Tool-calling fallback — JSON prompt when no tool support | DONE | `extract_entities_and_relations()` uses JSON prompt parsing directly (the default path, not a fallback) |
+| F4.20 | Storage architecture constraint — SQLite only | DONE | All data in SQLite tables, no external graph DB |
+
+### Acceptance Criteria Checklist
+
+| AC | Criterion | Status |
+|----|-----------|--------|
+| AC1 | Entity "Alice" exists with mentions >= 2 after repeated conversations | COVERED — `upsert_entity()` increments mentions |
+| AC2 | Relations correctly created | COVERED — `upsert_relation()` tested |
+| AC3 | "Family" query traverses graph to find Alice | COVERED — `graph_context_for_query()` tested |
+| AC4 | "NYC" / "New York City" deduplicated | **PARTIAL** — token Jaccard dedup catches some aliases, but no embedding-based dedup (F4.7 gap) |
+| AC5 | 5-entity cap enforced | DONE — `entities[:5]` |
+| AC6 | Graph traversal < 50ms for 1K entities | NOT MEASURED — no benchmark test |
+| AC7 | `knowledge_graph` block appears when relevant | DONE — tested |
+| AC8 | Block omitted when no relevant entities | DONE — returns `None` when no context |
+| AC9 | Vault export includes KG tables | **NOT DONE** — F4.15 gap |
+| AC10 | All existing tests pass | DONE — 846 tests passing |
+| AC11 | "I left Google" prunes `works_at` relation | COVERED — `prune_stale_relations()` with LLM |
+| AC12 | BM25-reranked graph results | DONE — `rerank_graph_results()` |
+| AC13 | Sequential int IDs in LLM prompts | DONE — `_map_ids_to_sequential()` |
+
+### Test Plan Checklist
+
+| Test | Status | Evidence |
+|------|--------|----------|
+| T1: `normalize_entity_name()` | DONE | `test_knowledge_graph.py` (35 tests total) |
+| T2: `upsert_entity()` mentions increment | DONE | tested |
+| T3: `upsert_relation()` lookup | DONE | tested |
+| T4: `search_graph()` depth=1 | DONE | tested |
+| T5: `search_graph()` depth=2 | DONE | tested |
+| T6: `search_graph()` bidirectional | DONE | tested |
+| T7: `deduplicate_entity()` via embeddings | **NOT DONE** — no embedding dedup exists |
+| T8: `extract_entities_and_relations()` | DONE | tested with mock LLM |
+| T9: `ingest_conversation_graph()` | DONE | tested |
+| T10: Prompt assembly with graph block | DONE | tested |
+| T11: Vault export/import | **NOT DONE** — no vault support |
+| T12: Existing blocks not broken | DONE | regression tests pass |
+| T13: Performance benchmark | NOT DONE — no benchmark |
+| T14: `rerank_graph_results()` | DONE | tested |
+| T15: `prune_stale_relations()` | DONE | tested |
+| T16: Stale relation pruning integration | DONE | tested |
+| T17: ID mapping round-trip | DONE | tested |
+
+### Beyond PRD (Implemented but not specified)
+
+| Extra | Location | Notes |
+|-------|----------|-------|
+| `_find_similar_entity()` | `knowledge_graph.py:76` | Token-level Jaccard fuzzy matching + substring containment boost for entity dedup — used INSTEAD of embedding-based dedup. Simpler, no embedding cost. |
+| `_mention_boost()` | `knowledge_graph.py:365` | Mention-count-based boost multiplier in BM25 reranking — higher-mention triples ranked higher |
+| `_extract_entity_names_from_query()` | `knowledge_graph.py:498` | Substring matching of known entity names against query — simple NER alternative |
+| REST API routes | `api/routes/graph.py` | Overview, entity list, relation list endpoints (PRD marked this as "Could") |
+
+### Summary
+
+**Status: SHIPPED (~93%)**
+
+20 requirements, 18 implemented. 35 dedicated tests. Full pipeline integrated into sleep-time orchestrator with LLM extraction, dedup, upsert, traversal, reranking, pruning, and prompt injection.
+
+**Remaining items:**
+1. **F4.7**: Entity dedup via embedding similarity not implemented. Uses token-level Jaccard instead (`_find_similar_entity()` with threshold 0.7). This misses cases like "NYC" ↔ "New York City" where tokens don't overlap. `embedding_json` column exists on `KGEntity` but is never populated. Could be added as an enhancement to `_find_similar_entity()`.
+2. **F4.15**: Vault export/import does not include `kg_entities` / `kg_relations`. KG data would be lost on vault transfer. Needs to be added to the vault export handler.
+3. **AC6/T13**: No performance benchmark for graph traversal latency.
+
+---
+
+## 14. References
 
 - Mem0 `graph_memory.py` — `MemoryGraph.add()`, `EXTRACT_ENTITIES_TOOL`, entity dedup via embedding similarity
 - Mem0 `graph_memory.py` lines 117-130 — BM25 reranking of graph search results

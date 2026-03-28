@@ -9,13 +9,13 @@ version: "1.0"
 
 **Version**: 1.0
 **Date**: 2026-03-28
-**Status**: Draft
+**Status**: Not Started (0%)
 **Roadmap Phase**: 10.8
 **Priority**: P1 - High
 **Depends on**: None (uses existing consolidation pipeline)
 **Blocked by**: Nothing
 **Blocks**: Nothing (enhances Phase 7 proactive companion)
-**Inspired by**: EverMemOS (arXiv:2601.02163) — Foresight signal extraction from MemCells
+**Inspired by**: Agent memory research (arXiv:2601.02163) — foresight signal extraction with temporal anchoring
 
 ---
 
@@ -106,7 +106,7 @@ The extraction prompt must resolve relative dates to absolute dates. The current
 - "end of month" → last day of current month
 - "every morning" → flag as recurring, no end date
 
-EverMemOS's dual-format approach is worth adopting: store both the original relative expression and the resolved absolute date for retrieval flexibility.
+The dual-format approach from prior research is worth adopting: store both the original relative expression and the resolved absolute date for retrieval flexibility.
 
 ### 3.4 Lifecycle
 
@@ -174,8 +174,43 @@ If a match is found, update the existing signal rather than creating a duplicate
 
 ---
 
-## 6. References
+## 6. Implementation Audit (2026-03-28)
 
-- EverMemOS (arXiv:2601.02163) — Foresight signal extraction with start/end dates and evidence grounding
+### Summary: NOT STARTED (0%)
+
+Zero implementation exists. No table, no model, no extraction, no consumption. Grep for `foresight` and `ForesightSignal` across the entire server codebase returns zero results.
+
+### Implementation Plan vs. Codebase
+
+| Step | What's needed | Status |
+|------|---------------|--------|
+| 1. Migration | `foresight_signals` table | NOT DONE — no migration |
+| 2. Model | `ForesightSignal` SQLAlchemy model | NOT DONE — no model |
+| 3. Extraction | Foresight key in consolidation LLM schema + persistence | NOT DONE — consolidation extracts facts + emotions only |
+| 4. Memory block | `build_foresight_block()` in `memory_blocks.py` | NOT DONE |
+| 5. Proactive | Query foresight signals in `proactive.py` for greetings/nudges | NOT DONE — proactive gathers episodes, tasks, emotional signals, self-model; no foresight |
+| 6. API | GET/PUT endpoints in consciousness routes | NOT DONE |
+
+### Adjacent Systems That Exist
+
+- **Intentions** (`services/agent/intentions.py`, `set_intention` tool): provides goal tracking with optional deadlines. Agent-initiated (AI calls `set_intention`), not auto-extracted. No start/end date ranges, no evidence text, no lifecycle transitions. PRD notes foresight is "complementary, not overlapping."
+- **Tasks** (`models/task.py`, `create_task` tool): user-facing task list with `due_date`, `priority`. Not temporal prediction — requires explicit creation.
+
+### Success Criteria Status
+
+| Criterion | Status |
+|-----------|--------|
+| Foresight extracted during consolidation | NOT DONE |
+| Active signals appear in system prompt | NOT DONE |
+| Automatic lifecycle transitions (active → occurred → expired) | NOT DONE |
+| Proactive greeting references upcoming events | NOT DONE |
+| Deduplication of repeated event mentions | NOT DONE |
+| User can view/edit via consciousness API | NOT DONE |
+
+---
+
+## 7. References
+
+- Agent memory systems research (arXiv:2601.02163) — foresight signal extraction with start/end dates and evidence grounding
 - AnimaOS Phase 7 (Proactive Companion) — greeting, nudge, and brief endpoints
 - AnimaOS intentions system — existing goal/intention lifecycle (foresight is complementary, not overlapping)

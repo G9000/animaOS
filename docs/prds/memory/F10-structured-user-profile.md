@@ -9,13 +9,13 @@ version: "1.0"
 
 **Version**: 1.0
 **Date**: 2026-03-28
-**Status**: Draft
+**Status**: Partial (~15%) — claims system provides partial structured storage
 **Roadmap Phase**: 10.10
 **Priority**: P2 - Medium
 **Depends on**: None
 **Blocked by**: Nothing
 **Blocks**: Improves retrieval precision, proactive companion quality, eval accuracy
-**Inspired by**: EverMemOS (arXiv:2601.02163) — progressive user profiling with structured categories and evidence linking
+**Inspired by**: Agent memory research (arXiv:2601.02163) — progressive user profiling with structured categories and evidence linking
 
 ---
 
@@ -44,9 +44,9 @@ This works but has limitations:
 - **No evidence linking** — There is no record of which conversation produced each piece of information. If something is wrong, you can't trace it back.
 - **No category typing** — Skills, preferences, relationships, work context, and personality traits are mixed together. Retrieval cannot filter by type.
 
-### What EverMemOS Does
+### What Prior Art Does
 
-EverMemOS extracts structured profiles during consolidation with typed categories:
+Research implementations (arXiv:2601.02163) extract structured profiles during consolidation with typed categories:
 
 | Category | What it captures | Example |
 |----------|-----------------|---------|
@@ -90,7 +90,7 @@ New table: `user_profile_fields`
 
 ### 3.2 Profile Categories
 
-Tailored to AnimaOS's companion use case (not EverMemOS's team/project focus):
+Tailored to AnimaOS's companion use case (not a team/project focus):
 
 | Category | What it captures | Examples |
 |----------|-----------------|---------|
@@ -124,7 +124,7 @@ The LLM receives:
 1. The conversation transcript (already provided for fact extraction)
 2. The current profile fields for this user (so it can decide update vs. add vs. no_change)
 
-**Inertia principle** (from EverMemOS): existing profile fields are considered correct but incomplete. The LLM should only add new information or update with explicit evidence — never remove or contradict without strong justification.
+**Inertia principle** (from prior research): existing profile fields are considered correct but incomplete. The LLM should only add new information or update with explicit evidence — never remove or contradict without strong justification.
 
 ### 3.4 Relationship to Existing `human` Block
 
@@ -202,9 +202,62 @@ Structured profiles improve benchmark scores in specific ways:
 
 ---
 
-## 7. References
+## 7. Implementation Audit (2026-03-28)
 
-- EverMemOS (arXiv:2601.02163) — progressive user profiling with 8+ structured categories, evidence linking, inertia principle
+### Summary: PARTIAL (~15%)
+
+No direct F10 implementation exists. However, the `MemoryClaim` + `MemoryClaimEvidence` system provides partial structured storage that covers ~15% of the vision.
+
+### Implementation Plan vs. Codebase
+
+| Step | What's needed | Status |
+|------|---------------|--------|
+| 1. Migration | `user_profile_fields` table | NOT DONE — no migration, no table |
+| 2. Model | `UserProfileField` SQLAlchemy model | NOT DONE — no model |
+| 3. Extraction | `profile_updates` key in consolidation LLM schema | NOT DONE — consolidation extracts facts + emotions, not typed profile fields |
+| 4. Prompt rendering | `build_profile_block()` — structured fields rendered as prose | NOT DONE — `build_human_core_block()` renders User model fields + free-text `human` block |
+| 5. API | GET/PUT/DELETE endpoints for profile fields | NOT DONE — no profile endpoints in consciousness routes |
+| 6. Reconciliation | `human` block → structured profile reconciliation | NOT DONE |
+
+### What Exists That Partially Addresses F10
+
+| Component | What it provides | What F10 adds |
+|-----------|-----------------|---------------|
+| **`MemoryClaim`** (`agent_runtime.py:371-455`) | Structured claims with `subject_type`, `namespace` (fact/preference/goal/relationship), `slot` (age/occupation/location), `value_text`, `confidence`, `status`, `canonical_key`, `superseded_by_id` | F10's 7 categories (relationship, skill, preference, personality, work_context, life_context, communication_style), evidence quotes, prose rendering |
+| **`MemoryClaimEvidence`** (`agent_runtime.py:458-480`) | Source evidence with `source_text`, `source_kind` per claim | F10's `evidence_threads` + `evidence_quotes` — similar concept, different shape |
+| **`claims.py`** (`services/agent/claims.py`) | `upsert_claim()` with canonical keys like `user:fact:occupation`. Slot-detection patterns for age, birthday, occupation, employer, location, name, gender, likes, prefers, dislikes | F10's systematic extraction across 7 categories |
+| **`update_human_memory` tool** (`tools.py`) | Agent writes free-text user understanding mid-conversation | F10 preserves this as "fast scratchpad" — separate from structured profile |
+| **`build_human_core_block()`** (`memory_blocks.py:508-559`) | Combines User model fields (name, gender, age, birthday) + agent-authored `human` SelfModelBlock | F10 replaces this with prose rendering from structured profile fields |
+| **`synthesize_profile()`** (`sleep_tasks.py`) | Merges related facts during sleep tasks (compaction, not extraction) | F10 adds systematic extraction pipeline, not just compaction |
+
+### Gap Analysis
+
+| F10 Feature | Claims System Coverage | Gap |
+|-------------|----------------------|-----|
+| 7 profile categories | 4 namespaces (fact, preference, goal, relationship) | Missing: skill, personality, work_context, life_context, communication_style |
+| Systematic extraction in consolidation | Claims are dual-written alongside facts — not independently extracted by category | No category-driven extraction pipeline |
+| Inertia principle (preserve existing fields) | No existing profile context sent to extraction LLM | LLM extracts blind — no awareness of existing profile |
+| Prose rendering for system prompt | `build_human_core_block()` renders raw User fields + free text | No prose generation from structured data |
+| User-facing profile API | No profile endpoints | No view/edit/delete for structured profile |
+| Evidence linking to threads | `MemoryClaimEvidence.source_text` exists | No thread_id linkage |
+| Confidence scoring | `MemoryClaim.confidence` exists | Populated but not used for retrieval ranking |
+
+### Success Criteria Status
+
+| Criterion | Status |
+|-----------|--------|
+| Profile fields extracted during consolidation with category + evidence | NOT DONE |
+| Profile renders as prose block in system prompt | NOT DONE |
+| Existing information preserved across extractions (inertia) | NOT DONE |
+| User can view/edit/delete via consciousness API | NOT DONE |
+| Evidence linking to source conversations | PARTIAL — `MemoryClaimEvidence` exists but not profile-scoped |
+| Category-filtered retrieval | NOT DONE |
+
+---
+
+## 8. References
+
+- Agent memory systems research (arXiv:2601.02163) — progressive user profiling with 8+ structured categories, evidence linking, inertia principle
 - MemoryOS — 90-dimension personality profiling (Big Five + 85 custom dimensions)
 - AnimaOS `services/agent/memory_blocks.py` — existing `human` block rendering
 - AnimaOS `services/agent/tools.py` — `update_human_memory` tool definition
