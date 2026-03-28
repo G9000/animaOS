@@ -565,17 +565,23 @@ def build_pending_ops_block(
     *,
     user_id: int,
 ) -> MemoryBlock | None:
-    """Render pending updates that do not yet have a soul block to merge into."""
+    """Render pending updates that do not yet have a soul block to merge into.
+
+    Ops are grouped by target_block and applied in order so that a
+    ``full_replace`` correctly supersedes earlier appends, preventing
+    contradictory content from appearing in the prompt.
+    """
     if runtime_db is None:
         return None
 
-    from anima_server.services.agent.pending_ops import get_pending_ops
+    from anima_server.services.agent.pending_ops import apply_pending_ops, get_pending_ops
 
     ops = get_pending_ops(runtime_db, user_id=user_id)
     if not ops:
         return None
 
-    lines: list[str] = []
+    # Collect ops for blocks that don't exist in soul yet
+    orphaned_ops: dict[str, list] = {}
     for op in ops:
         _content, exists = _read_soul_block_content(
             soul_db,
@@ -584,8 +590,17 @@ def build_pending_ops_block(
         )
         if exists:
             continue
-        state = "pending append" if op.op_type == "append" else "pending update"
-        lines.append(f"- [{op.target_block}] ({state}): {op.content}")
+        orphaned_ops.setdefault(op.target_block, []).append(op)
+
+    if not orphaned_ops:
+        return None
+
+    # Apply ops in order per block to get the final collapsed content
+    lines: list[str] = []
+    for block_name, block_ops in orphaned_ops.items():
+        collapsed = apply_pending_ops("", block_ops)
+        if collapsed:
+            lines.append(f"- [{block_name}] (pending): {collapsed}")
 
     if not lines:
         return None
