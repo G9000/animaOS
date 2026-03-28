@@ -456,26 +456,30 @@ def _get_store(
     *,
     runtime_db: Session | None = None,
 ) -> tuple[VectorStore, Session | None]:
-    """Return ``(store, owned_runtime_session)`` for the active backend."""
+    """Return ``(store, owned_runtime_session)`` for the active backend.
+
+    Priority order:
+    1. Explicit ``runtime_db`` → PgVecStore (caller manages session)
+    2. Soul ``db`` provided → try PG via runtime session, fall back to OrmVecStore
+    3. No DB at all → InMemoryVectorStore fallback (tests)
+    """
     if runtime_db is not None:
         from anima_server.services.agent.pgvec_store import PgVecStore
 
         return PgVecStore(runtime_db), None
 
-    if _force_in_memory:
-        return _get_fallback_store(), None
-
-    rt_session = _try_get_runtime_session()
-    if rt_session is not None:
-        try:
-            from anima_server.services.agent.pgvec_store import PgVecStore
-
-            return PgVecStore(rt_session), rt_session
-        except Exception:
-            rt_session.close()
-
     if db is not None:
+        if not _force_in_memory:
+            rt_session = _try_get_runtime_session()
+            if rt_session is not None:
+                try:
+                    from anima_server.services.agent.pgvec_store import PgVecStore
+
+                    return PgVecStore(rt_session), rt_session
+                except Exception:
+                    rt_session.close()
         return OrmVecStore(db), None
+
     return _get_fallback_store(), None
 
 

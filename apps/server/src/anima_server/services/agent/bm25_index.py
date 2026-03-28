@@ -105,7 +105,7 @@ def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
     except Exception:
         rows = None
 
-    if rows is None:
+    if not rows:
         from anima_server.models import MemoryVector
 
         rows = db.execute(
