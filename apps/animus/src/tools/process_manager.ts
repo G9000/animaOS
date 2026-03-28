@@ -11,6 +11,7 @@
 // this is lightweight — just managed child processes with ring-buffered output.
 
 import { truncateOutput, LIMITS } from "./truncation";
+import { getShellLauncher } from "./shell";
 
 interface ToolResult {
   status: "success" | "error";
@@ -43,7 +44,7 @@ export function executeBgStart(args: BgStartArgs): ToolResult {
   const { command, cwd = process.cwd() } = args;
   const id = `bg-${nextId++}`;
 
-  const proc = Bun.spawn(["bash", "-c", command], {
+  const proc = Bun.spawn([...getShellLauncher(), command], {
     cwd,
     env: { ...process.env },
     stdout: "pipe",

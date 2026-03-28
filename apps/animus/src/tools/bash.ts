@@ -1,6 +1,7 @@
 // apps/animus/src/tools/bash.ts
 
 import { truncateOutput, LIMITS } from "./truncation";
+import { getShellLauncher } from "./shell";
 
 export interface BashArgs {
   command: string;
@@ -19,7 +20,7 @@ export async function executeBash(args: BashArgs): Promise<ToolResult> {
   const { command, timeout = 120000, cwd = process.cwd() } = args;
 
   try {
-    const proc = Bun.spawn(["bash", "-c", command], {
+    const proc = Bun.spawn([...getShellLauncher(), command], {
       cwd,
       env: { ...process.env },
       stdout: "pipe",
