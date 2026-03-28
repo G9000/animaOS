@@ -1205,10 +1205,14 @@ def sync_agent_thread_sequence_counters(db: Session) -> None:
 def _rebuild_vector_indices(db: Session, snapshot: dict[str, Any]) -> None:
     """Rebuild vector indices in per-user anima.db from imported embedding data."""
     try:
-        from anima_server.services.agent.embeddings import sync_to_vector_store
+        from anima_server.services.agent.embeddings import (
+            sync_embeddings_to_runtime,
+            sync_to_vector_store,
+        )
 
         user_ids = {int(u["id"]) for u in snapshot.get("users", []) if isinstance(u, dict)}
         for uid in user_ids:
+            sync_embeddings_to_runtime(db, user_id=uid)
             sync_to_vector_store(db, user_id=uid)
     except Exception:
         import logging

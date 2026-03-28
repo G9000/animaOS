@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
+from types import SimpleNamespace
 
 import pytest
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import User
 from anima_server.services.storage import get_user_data_dir
+from anima_server.services import vault as vault_module
 from anima_server.services.vault import decrypt_string, encrypt_string
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
@@ -227,3 +229,29 @@ def test_encrypt_string_uses_checksum_and_decrypt_string_accepts_legacy_integrit
     legacy_envelope["integrity"] = legacy_envelope.pop("checksum")
 
     assert decrypt_string(legacy_envelope, "vault-pass") == "secret"
+
+
+def test_rebuild_vector_indices_syncs_runtime_before_vector_store(monkeypatch) -> None:
+    import anima_server.services.agent.embeddings as embeddings_module
+
+    calls: list[tuple[str, int]] = []
+
+    def _sync_runtime(db, *, user_id: int) -> int:
+        assert isinstance(db, SimpleNamespace)
+        calls.append(("runtime", user_id))
+        return 1
+
+    def _sync_vector_store(db, *, user_id: int) -> int:
+        assert isinstance(db, SimpleNamespace)
+        calls.append(("vector", user_id))
+        return 1
+
+    monkeypatch.setattr(embeddings_module, "sync_embeddings_to_runtime", _sync_runtime)
+    monkeypatch.setattr(embeddings_module, "sync_to_vector_store", _sync_vector_store)
+
+    vault_module._rebuild_vector_indices(
+        SimpleNamespace(),
+        {"users": [{"id": 42}, {"id": 42}, "skip-me"]},
+    )
+
+    assert calls == [("runtime", 42), ("vector", 42)]
