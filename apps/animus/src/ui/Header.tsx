@@ -6,6 +6,7 @@ interface HeaderProps {
   connectionStatus: ConnectionStatus;
   model?: string;
   cwd: string;
+  mode?: "normal" | "plan";
 }
 
 const STATUS_COLORS: Record<ConnectionStatus, string> = {
@@ -15,10 +16,11 @@ const STATUS_COLORS: Record<ConnectionStatus, string> = {
   disconnected: "red",
 };
 
-export function Header({ connectionStatus, model, cwd }: HeaderProps) {
+export function Header({ connectionStatus, model, cwd, mode }: HeaderProps) {
   return (
     <Box borderStyle="single" paddingX={1} flexDirection="row" justifyContent="space-between">
       <Text bold>anima</Text>
+      {mode === "plan" && <Text color="magenta" bold>[PLAN]</Text>}
       <Text>{model ?? "no model"}</Text>
       <Text color={STATUS_COLORS[connectionStatus]}>{connectionStatus}</Text>
       <Text dimColor>{cwd}</Text>

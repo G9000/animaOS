@@ -7,8 +7,10 @@ import { executeEdit } from "./edit";
 import { executeGrep } from "./grep";
 import { executeGlob } from "./glob";
 import { executeListDir } from "./list_dir";
+import { executeMultiEdit } from "./multi_edit";
 import { executeAskUser } from "./ask_user";
 import { checkPermission, type PermissionDecision } from "./permissions";
+import { hooks } from "../hooks";
 
 export interface ExecutionResult {
   tool_call_id: string;
@@ -47,6 +49,10 @@ export async function executeTool(
     };
   }
 
+  // Emit tool:before hook
+  await hooks.emit("tool:before", { toolName: tool_name, args, toolCallId: tool_call_id });
+  const startTime = Date.now();
+
   try {
     let result: {
       status: "success" | "error";
@@ -81,6 +87,11 @@ export async function executeTool(
       case "list_dir":
         result = executeListDir(a as Parameters<typeof executeListDir>[0]);
         break;
+      case "multi_edit":
+        result = executeMultiEdit(
+          a as Parameters<typeof executeMultiEdit>[0],
+        );
+        break;
       case "ask_user":
         result = await executeAskUser(
           a as Parameters<typeof executeAskUser>[0],
@@ -90,8 +101,26 @@ export async function executeTool(
         result = { status: "error", result: `Unknown tool: ${tool_name}` };
     }
 
+    // Emit tool:after hook
+    await hooks.emit("tool:after", {
+      toolName: tool_name,
+      args,
+      toolCallId: tool_call_id,
+      status: result.status,
+      durationMs: Date.now() - startTime,
+    });
+
     return { tool_call_id, ...result };
   } catch (err) {
+    // Emit tool:after hook for errors too
+    await hooks.emit("tool:after", {
+      toolName: tool_name,
+      args,
+      toolCallId: tool_call_id,
+      status: "error",
+      durationMs: Date.now() - startTime,
+    });
+
     return {
       tool_call_id,
       status: "error",

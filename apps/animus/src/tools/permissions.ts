@@ -1,10 +1,11 @@
 // apps/animus/src/tools/permissions.ts
 import { resolve, relative } from "node:path";
+import { loadPermissionRules, matchesRule, type PermissionRules } from "./permission_rules";
 
 export type PermissionDecision = "allow" | "deny" | "ask";
 
 const READ_ONLY_TOOLS = new Set(["read_file", "grep", "glob", "list_dir"]);
-const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit"]);
 
 const SAFE_BASH_PATTERNS = [
   /^(ls|pwd|echo|cat|head|tail|wc|date|whoami|which|type|file)\b/,
@@ -31,6 +32,21 @@ export function clearSessionRules(): void {
   sessionRules.clear();
 }
 
+// Lazily loaded file-based rules (loaded once per process)
+let _fileRules: PermissionRules | null = null;
+
+function getFileRules(): PermissionRules {
+  if (!_fileRules) {
+    _fileRules = loadPermissionRules();
+  }
+  return _fileRules;
+}
+
+/** Force-reload file rules (useful after config changes) */
+export function reloadFileRules(): void {
+  _fileRules = null;
+}
+
 export function checkPermission(
   toolName: string,
   args: Record<string, unknown>,
@@ -38,6 +54,18 @@ export function checkPermission(
   if (toolName === "ask_user") return "allow";
   if (READ_ONLY_TOOLS.has(toolName)) return "allow";
   if (sessionRules.has(toolName)) return "allow";
+
+  const rules = getFileRules();
+
+  // File-based deny rules take highest priority (after read-only)
+  if (rules.deny.some((r) => matchesRule(r, toolName, args))) {
+    return "deny";
+  }
+
+  // File-based allow rules
+  if (rules.allow.some((r) => matchesRule(r, toolName, args))) {
+    return "allow";
+  }
 
   if (WRITE_TOOLS.has(toolName)) {
     const filePath = args.file_path as string | undefined;

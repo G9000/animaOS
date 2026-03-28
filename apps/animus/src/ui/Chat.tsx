@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { ToolCall } from "./ToolCall";
 
 export interface ChatEntry {
-  type: "user" | "assistant" | "tool_call" | "error";
+  type: "user" | "assistant" | "tool_call" | "error" | "reasoning";
   content: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -43,6 +43,15 @@ export function Chat({ entries }: ChatProps) {
                 result={entry.content}
                 status={entry.toolStatus}
               />
+            );
+          case "reasoning":
+            return (
+              <Box key={i} marginY={0} paddingLeft={2}>
+                <Text dimColor italic>
+                  {entry.streaming ? "Thinking: " : "Thought: "}
+                  {entry.content}
+                </Text>
+              </Box>
             );
           case "error":
             return (
