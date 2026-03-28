@@ -40,8 +40,9 @@ class TranscriptExportResult:
 def messages_to_transcript_dicts(messages: list["RuntimeMessage"]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for message in messages:
+        role = "assistant" if message.role == "tool" and message.tool_name == "send_message" else message.role
         payload: dict[str, object] = {
-            "role": message.role,
+            "role": role,
             "content": message.content_text or "",
             "ts": _isoformat_utc(message.created_at),
             "seq": message.sequence_id,
@@ -52,7 +53,8 @@ def messages_to_transcript_dicts(messages: list["RuntimeMessage"]) -> list[dict[
                 payload["tool_calls"] = tool_calls
             if isinstance(tool_calls, list) and message.content_text:
                 payload["thinking"] = message.content_text
-        if message.role == "tool":
+                payload["content"] = ""
+        if message.role == "tool" and message.tool_name != "send_message":
             if message.tool_name:
                 payload["tool_name"] = message.tool_name
             if message.tool_call_id:
@@ -75,6 +77,8 @@ def export_transcript(
     user_id: int,
     dek: bytes | None,
     transcripts_dir: Path,
+    episode_ids: list[str] | None = None,
+    summary: str | None = None,
 ) -> TranscriptExportResult:
     transcripts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,6 +109,8 @@ def export_transcript(
                 thread_id=thread_id,
                 user_id=user_id,
                 encryption_mode=encryption_mode,
+                episode_ids=episode_ids,
+                summary=summary,
             ),
             ensure_ascii=False,
             indent=2,
@@ -147,6 +153,8 @@ def _build_sidecar(
     thread_id: int,
     user_id: int,
     encryption_mode: str,
+    episode_ids: list[str] | None = None,
+    summary: str | None = None,
 ) -> dict:
     timestamps = [str(message.get("ts", "")) for message in messages if message.get("ts")]
     roles = _distinct_roles(messages)
@@ -159,9 +167,9 @@ def _build_sidecar(
         "message_count": len(messages),
         "roles": roles,
         "keywords": _extract_keywords(messages),
-        "summary": _build_summary(messages),
+        "summary": summary.strip() if summary and summary.strip() else _build_summary(messages),
         "chunk_offsets": [0],
-        "episodic_memory_ids": [],
+        "episodic_memory_ids": episode_ids or [],
         "archived_at": datetime.now(UTC).isoformat(),
         "encryption": {
             "domain": "conversations",

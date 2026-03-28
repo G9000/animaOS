@@ -42,6 +42,13 @@ from anima_server.db.runtime_base import RuntimeBase
 class RuntimeThread(RuntimeBase):
     __tablename__ = "runtime_threads"
     __table_args__ = (
+        Index(
+            "uq_runtime_threads_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
         Index("ix_runtime_threads_user_status", "user_id", "status"),
     )
 

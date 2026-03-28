@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
+from anima_server.models.agent_runtime import MemoryEpisode
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.consolidation import consolidate_pending_ops
 from anima_server.services.agent.episodes import maybe_generate_episode
@@ -20,7 +21,7 @@ from anima_server.services.agent.transcript_archive import (
     export_transcript,
     messages_to_transcript_dicts,
 )
-from anima_server.services.data_crypto import get_active_dek
+from anima_server.services.data_crypto import df, get_active_dek
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,9 @@ async def on_thread_close(
             exc_info=True,
         )
 
+    episode: MemoryEpisode | None = None
     try:
-        await maybe_generate_episode(
+        episode = await maybe_generate_episode(
             user_id=user_id,
             thread_id=thread_id,
             db_factory=resolved_soul_db_factory,
@@ -82,15 +84,25 @@ async def on_thread_close(
     try:
         messages = list_transcript_messages(db, thread_id=thread_id)
         dek = get_active_dek(user_id, "conversations")
+        episode_ids = _episode_ids(episode)
+        sidecar_summary = _episode_summary(episode, user_id=user_id)
 
         if messages:
-            export_transcript(
+            export_result = export_transcript(
                 messages=messages_to_transcript_dicts(messages),
                 thread_id=thread_id,
                 user_id=user_id,
                 dek=dek,
                 transcripts_dir=_get_transcripts_dir(),
+                episode_ids=episode_ids,
+                summary=sidecar_summary,
             )
+            if episode is not None and episode.id is not None:
+                _link_episode_to_transcript(
+                    episode_id=episode.id,
+                    transcript_ref=export_result.enc_path.name,
+                    soul_db_factory=resolved_soul_db_factory,
+                )
             if dek is None:
                 logger.warning(
                     "Exported plaintext transcript for thread %d because no conversations DEK is active",
@@ -114,6 +126,35 @@ async def on_thread_close(
         db.close()
 
 
+def _episode_ids(episode: MemoryEpisode | None) -> list[str]:
+    if episode is None or episode.id is None:
+        return []
+    return [str(episode.id)]
+
+
+def _episode_summary(episode: MemoryEpisode | None, *, user_id: int) -> str | None:
+    if episode is None or not episode.summary:
+        return None
+    summary = df(user_id, episode.summary, table="memory_episodes", field="summary").strip()
+    return summary or None
+
+
+def _link_episode_to_transcript(
+    *,
+    episode_id: int,
+    transcript_ref: str,
+    soul_db_factory: Callable[..., object],
+) -> None:
+    with soul_db_factory() as db:
+        if not isinstance(db, Session):
+            raise TypeError("Expected SQLAlchemy Session from soul_db_factory")
+        episode = db.get(MemoryEpisode, episode_id)
+        if episode is None:
+            return
+        episode.transcript_ref = transcript_ref
+        db.commit()
+
+
 async def inactivity_sweep(
     *,
     runtime_db_factory: Callable[..., Session] | None = None,
@@ -125,46 +166,65 @@ async def inactivity_sweep(
     resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory()
     cutoff = datetime.now(UTC) - timedelta(minutes=inactivity_minutes)
 
+    stale_threads: list[tuple[int, int]] = []
+    retry_threads: list[tuple[int, int]] = []
     db = resolved_runtime_db_factory()
     try:
-        stale_threads = db.scalars(
-            select(RuntimeThread).where(
-                RuntimeThread.status == "active",
-                RuntimeThread.last_message_at.isnot(None),
-                RuntimeThread.last_message_at < cutoff,
-            )
-        ).all()
+        stale_threads = [
+            (int(thread_id), int(user_id))
+            for thread_id, user_id in db.execute(
+                select(RuntimeThread.id, RuntimeThread.user_id).where(
+                    RuntimeThread.status == "active",
+                    RuntimeThread.last_message_at.isnot(None),
+                    RuntimeThread.last_message_at < cutoff,
+                )
+            ).all()
+        ]
+        retry_threads = [
+            (int(thread_id), int(user_id))
+            for thread_id, user_id in db.execute(
+                select(RuntimeThread.id, RuntimeThread.user_id).where(
+                    RuntimeThread.status == "closed",
+                    RuntimeThread.is_archived.is_(False),
+                )
+            ).all()
+        ]
 
-        for thread in stale_threads:
+        closed_at = datetime.now(UTC)
+        for thread_id, _user_id in stale_threads:
+            thread = db.get(RuntimeThread, thread_id)
+            if thread is None:
+                continue
             thread.status = "closed"
-            thread.closed_at = datetime.now(UTC)
+            thread.closed_at = closed_at
 
         db.commit()
     except Exception:
         logger.exception("Inactivity sweep failed")
         db.rollback()
-        db.close()
         return 0
     finally:
         db.close()
 
-    for thread in stale_threads:
+    for thread_id, user_id in stale_threads + retry_threads:
         try:
             await on_thread_close(
-                thread_id=thread.id,
-                user_id=thread.user_id,
+                thread_id=thread_id,
+                user_id=user_id,
                 runtime_db_factory=resolved_runtime_db_factory,
                 soul_db_factory=resolved_soul_db_factory,
             )
         except Exception:
             logger.warning(
-                "Failed to consolidate closed stale thread %d",
-                thread.id,
+                "Failed to consolidate closed thread %d",
+                thread_id,
                 exc_info=True,
             )
 
     if stale_threads:
         logger.info("Inactivity sweep closed %d threads", len(stale_threads))
+    if retry_threads:
+        logger.info("Inactivity sweep retried archival for %d closed threads", len(retry_threads))
     return len(stale_threads)
 
 

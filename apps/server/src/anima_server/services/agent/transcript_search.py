@@ -21,6 +21,17 @@ class TranscriptSnippet:
     text: str
 
 
+class TranscriptSearchResults(list[TranscriptSnippet]):
+    def __init__(
+        self,
+        snippets: list[TranscriptSnippet] | None = None,
+        *,
+        total_matches: int = 0,
+    ) -> None:
+        super().__init__(snippets or [])
+        self.total_matches = total_matches
+
+
 def _keyword_overlap_score(query: str, keywords: list[str]) -> float:
     """Score a sidecar's keywords against the search query."""
     query_words = set(re.findall(r"[a-zA-Z]{3,}", query.lower()))
@@ -83,7 +94,7 @@ def search_transcripts(
 ) -> list[TranscriptSnippet]:
     """Search archived transcripts and return context-windowed snippets."""
     if not transcripts_dir.exists():
-        return []
+        return TranscriptSearchResults()
 
     cutoff = datetime.now(UTC) - timedelta(days=days_back)
     candidates: list[tuple[float, Path, dict]] = []
@@ -115,10 +126,11 @@ def search_transcripts(
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     if not candidates:
-        return []
+        return TranscriptSearchResults()
 
     snippets: list[TranscriptSnippet] = []
     chars_used = 0
+    total_matches = 0
 
     for _score, enc_path, meta in candidates[:max_transcripts]:
         thread_id = int(meta.get("thread_id", 0))
@@ -143,9 +155,6 @@ def search_transcripts(
         date_str = str(meta.get("date_start", "unknown"))[:10]
 
         for _hit_score, hit_idx in scored_hits:
-            if chars_used >= budget_chars or len(snippets) >= max_snippets:
-                break
-
             start = max(0, hit_idx - snippet_context)
             end = min(len(messages), hit_idx + snippet_context + 1)
             window_indices = set(range(start, end))
@@ -159,8 +168,9 @@ def search_transcripts(
                 for idx in range(start, end)
             ]
             text = "\n".join(lines)
-            if chars_used + len(text) > budget_chars:
-                break
+            total_matches += 1
+            if len(snippets) >= max_snippets or chars_used + len(text) > budget_chars:
+                continue
 
             snippets.append(
                 TranscriptSnippet(
@@ -171,17 +181,21 @@ def search_transcripts(
             )
             chars_used += len(text)
 
-        if chars_used >= budget_chars or len(snippets) >= max_snippets:
-            break
-
-    return snippets
+    return TranscriptSearchResults(snippets, total_matches=total_matches)
 
 
 def format_snippets(snippets: list[TranscriptSnippet]) -> str:
     """Format transcript snippets for tool output."""
     if not snippets:
         return "No matching transcripts found."
-    return "\n\n".join(
+    parts = [
         f"[{snippet.date}, thread {snippet.thread_id}]\n{snippet.text}"
         for snippet in snippets
+    ]
+    total_matches = max(getattr(snippets, "total_matches", len(snippets)), len(snippets))
+    remaining = total_matches - len(snippets)
+    if remaining > 0:
+        parts.append(f"({remaining} more matches found, use a more specific query to narrow results)")
+    return "\n\n".join(
+        parts
     )

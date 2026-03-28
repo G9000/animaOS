@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from anima_server.db.base import Base
@@ -12,6 +13,7 @@ from anima_server.models import runtime as _runtime_models  # noqa: F401
 from sqlalchemy import BigInteger, create_engine
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -103,6 +105,18 @@ class TestRuntimeThreadSchema:
             select(RuntimeThread).where(RuntimeThread.user_id == 1)
         ).all()
         assert len(threads) == 2
+
+    def test_only_one_active_thread_per_user(self, runtime_db: Session) -> None:
+        from anima_server.models.runtime import RuntimeThread
+
+        runtime_db.add(RuntimeThread(user_id=1, status="active"))
+        runtime_db.flush()
+
+        runtime_db.add(RuntimeThread(user_id=1, status="active"))
+        with pytest.raises(IntegrityError):
+            runtime_db.flush()
+
+        runtime_db.rollback()
 
 
 class TestSettingsSchema:
@@ -424,6 +438,59 @@ class TestTranscriptExport:
         parsed = json.loads(result.strip())
         assert parsed["thinking"] == "inner thought"
 
+    def test_send_message_tool_results_export_as_assistant(self) -> None:
+        from datetime import UTC, datetime
+
+        from anima_server.models.runtime import RuntimeMessage
+        from anima_server.services.agent.transcript_archive import messages_to_transcript_dicts
+
+        messages = [
+            RuntimeMessage(
+                thread_id=1,
+                user_id=1,
+                sequence_id=1,
+                role="tool",
+                tool_name="send_message",
+                tool_call_id="call-1",
+                content_text="Visible assistant reply",
+                created_at=datetime.now(UTC),
+            )
+        ]
+
+        exported = messages_to_transcript_dicts(messages)
+        assert exported[0]["role"] == "assistant"
+        assert exported[0]["content"] == "Visible assistant reply"
+
+    def test_assistant_tool_call_thinking_is_hidden_from_visible_content(self) -> None:
+        from datetime import UTC, datetime
+
+        from anima_server.models.runtime import RuntimeMessage
+        from anima_server.services.agent.transcript_archive import messages_to_transcript_dicts
+
+        messages = [
+            RuntimeMessage(
+                thread_id=1,
+                user_id=1,
+                sequence_id=1,
+                role="assistant",
+                content_text="private reasoning",
+                content_json={
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "name": "send_message",
+                            "arguments": {"content": "Visible reply"},
+                        }
+                    ]
+                },
+                created_at=datetime.now(UTC),
+            )
+        ]
+
+        exported = messages_to_transcript_dicts(messages)
+        assert exported[0]["thinking"] == "private reasoning"
+        assert exported[0]["content"] == ""
+
 
 class TestTranscriptSearch:
     def _create_test_transcript(
@@ -601,6 +668,41 @@ class TestTranscriptSearch:
         assert len(snippets) > 0
         assert any("bakery" in snippet.text.lower() for snippet in snippets)
 
+    def test_format_snippets_mentions_omitted_matches(
+        self,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_search import format_snippets, search_transcripts
+
+        self._create_test_transcript(
+            transcripts_dir,
+            test_dek,
+            thread_id=42,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"keyword match number {i} with extra filler text",
+                    "ts": f"2026-03-28T10:{i:02d}:00Z",
+                    "seq": i,
+                }
+                for i in range(1, 7)
+            ],
+        )
+
+        snippets = search_transcripts(
+            query="keyword match",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            max_snippets=2,
+            snippet_context=0,
+            budget_chars=120,
+        )
+
+        formatted = format_snippets(snippets)
+        assert "more matches found" in formatted
+
 
 class TestRecallTranscriptTool:
     def test_tool_in_extension_tools(self) -> None:
@@ -619,6 +721,31 @@ class TestRecallTranscriptTool:
 
         assert "query" in schema["properties"]
         assert "days_back" in schema["properties"]
+
+    def test_invalid_days_back_defaults_to_30(self, managed_tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from anima_server.services.agent.tools import recall_transcript
+
+        with (
+            patch(
+                "anima_server.services.agent.tool_context.get_tool_context",
+                return_value=SimpleNamespace(user_id=1),
+            ),
+            patch(
+                "anima_server.services.data_crypto.get_active_dek",
+                return_value=None,
+            ),
+            patch(
+                "anima_server.services.agent.transcript_search.search_transcripts",
+                return_value=[],
+            ) as mock_search,
+            patch("anima_server.config.settings") as mock_settings,
+        ):
+            mock_settings.data_dir = managed_tmp_path
+            recall_transcript("bakery order", days_back="invalid")
+
+        assert mock_search.call_args.kwargs["days_back"] == 30
 
 
 class TestThreadCloseEndpoint:
@@ -735,6 +862,7 @@ class TestEagerConsolidation:
             patch(
                 "anima_server.services.agent.eager_consolidation.maybe_generate_episode",
                 new_callable=AsyncMock,
+                return_value=None,
             ),
             patch(
                 "anima_server.services.agent.eager_consolidation.get_active_dek",
@@ -756,6 +884,79 @@ class TestEagerConsolidation:
         refreshed = runtime_db.get(RuntimeThread, thread.id)
         assert refreshed is not None
         assert refreshed.is_archived is True
+
+    def test_on_thread_close_links_episode_to_transcript_sidecar(
+        self,
+        runtime_db: Session,
+        soul_db: Session,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from anima_server.models.agent_runtime import MemoryEpisode
+        from anima_server.models.runtime import RuntimeMessage
+        from anima_server.services.agent.eager_consolidation import on_thread_close
+        from anima_server.services.agent.persistence import get_or_create_thread
+
+        thread = get_or_create_thread(runtime_db, user_id=1)
+        runtime_db.add(
+            RuntimeMessage(
+                thread_id=thread.id,
+                user_id=1,
+                sequence_id=1,
+                role="user",
+                content_text="Let's keep this archived",
+            )
+        )
+        runtime_db.commit()
+
+        episode = MemoryEpisode(
+            user_id=1,
+            thread_id=thread.id,
+            date="2026-03-28",
+            summary="Episode summary from consolidation",
+        )
+        soul_db.add(episode)
+        soul_db.commit()
+
+        with (
+            patch(
+                "anima_server.services.agent.eager_consolidation.consolidate_pending_ops",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "anima_server.services.agent.eager_consolidation.maybe_generate_episode",
+                new_callable=AsyncMock,
+                return_value=episode,
+            ),
+            patch(
+                "anima_server.services.agent.eager_consolidation.get_active_dek",
+                return_value=test_dek,
+            ),
+            patch(
+                "anima_server.services.agent.eager_consolidation._get_transcripts_dir",
+                return_value=transcripts_dir,
+            ),
+        ):
+            asyncio.run(
+                on_thread_close(
+                    thread_id=thread.id,
+                    user_id=1,
+                    runtime_db_factory=lambda: runtime_db,
+                    soul_db_factory=lambda: soul_db,
+                )
+            )
+
+        meta_path = next(transcripts_dir.glob("*.meta.json"))
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        refreshed_episode = soul_db.get(MemoryEpisode, episode.id)
+        assert refreshed_episode is not None
+        assert refreshed_episode.transcript_ref == next(transcripts_dir.glob("*.jsonl.enc")).name
+        assert meta["episodic_memory_ids"] == [str(episode.id)]
+        assert meta["summary"] == "Episode summary from consolidation"
 
 
 class TestBackgroundSweeps:
@@ -819,6 +1020,37 @@ class TestBackgroundSweeps:
             )
 
         assert count == 0
+
+    def test_inactivity_sweep_retries_closed_unarchived_threads(
+        self, runtime_db: Session
+    ) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from anima_server.models.runtime import RuntimeThread
+        from anima_server.services.agent.eager_consolidation import inactivity_sweep
+
+        thread = RuntimeThread(user_id=1, status="closed", is_archived=False)
+        runtime_db.add(thread)
+        runtime_db.commit()
+        runtime_db_factory = lambda: runtime_db
+
+        with patch(
+            "anima_server.services.agent.eager_consolidation.on_thread_close",
+            new_callable=AsyncMock,
+        ) as mock_on_thread_close:
+            count = asyncio.run(
+                inactivity_sweep(
+                    runtime_db_factory=runtime_db_factory,
+                    inactivity_minutes=5,
+                )
+            )
+
+        assert count == 0
+        assert mock_on_thread_close.await_count == 1
+        assert mock_on_thread_close.await_args.kwargs["thread_id"] == thread.id
+        assert mock_on_thread_close.await_args.kwargs["user_id"] == thread.user_id
+        assert mock_on_thread_close.await_args.kwargs["runtime_db_factory"] is runtime_db_factory
 
     def test_prune_only_archived_messages(self, runtime_db: Session) -> None:
         import asyncio
@@ -885,6 +1117,29 @@ class TestBackgroundSweeps:
         assert count == 0
         assert (transcripts_dir / "2025-01-01_thread-1.jsonl.enc").exists()
 
+    def test_transcript_retention_deletes_old(self, transcripts_dir: Path) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from anima_server.services.agent.eager_consolidation import prune_expired_transcripts
+
+        transcript_path = transcripts_dir / "2025-01-01_thread-1.jsonl.enc"
+        meta_path = transcripts_dir / "2025-01-01_thread-1.meta.json"
+        transcript_path.write_bytes(b"data")
+        meta_path.write_text(
+            '{"archived_at": "2025-01-01T00:00:00+00:00"}',
+            encoding="utf-8",
+        )
+
+        with patch("anima_server.services.agent.eager_consolidation.settings") as mock_settings:
+            mock_settings.transcript_retention_days = 1
+            mock_settings.data_dir = transcripts_dir.parent
+            count = asyncio.run(prune_expired_transcripts())
+
+        assert count == 1
+        assert not transcript_path.exists()
+        assert not meta_path.exists()
+
 
 class TestResetThreadLifecycle:
     def test_reset_agent_thread_closes_current_thread(self, runtime_db: Session) -> None:
@@ -911,3 +1166,63 @@ class TestResetThreadLifecycle:
         replacement = get_or_create_thread(runtime_db, user_id=1)
         assert replacement.id != thread.id
         assert replacement.status == "active"
+
+    def test_reset_agent_thread_creates_replacement_thread_immediately(
+        self, runtime_db: Session
+    ) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from anima_server.models.runtime import RuntimeThread
+        from anima_server.services.agent.persistence import get_or_create_thread
+        from anima_server.services.agent.service import reset_agent_thread
+
+        thread = get_or_create_thread(runtime_db, user_id=1)
+        runtime_db.commit()
+
+        with patch(
+            "anima_server.services.agent.eager_consolidation.on_thread_close",
+            new_callable=AsyncMock,
+        ):
+            asyncio.run(reset_agent_thread(1, runtime_db))
+
+        active_threads = runtime_db.scalars(
+            select(RuntimeThread).where(
+                RuntimeThread.user_id == 1,
+                RuntimeThread.status == "active",
+            )
+        ).all()
+
+        assert len(active_threads) == 1
+        assert active_threads[0].id != thread.id
+
+
+class TestThreadCloseRoute:
+    def test_close_thread_returns_404_for_other_users_thread(self, runtime_db: Session) -> None:
+        import asyncio
+
+        from fastapi import HTTPException
+        from starlette.requests import Request
+
+        from anima_server.api.routes.threads import close_thread_endpoint
+        from anima_server.models.runtime import RuntimeThread
+        from anima_server.services.sessions import unlock_session_store
+
+        thread = RuntimeThread(user_id=2, status="active")
+        runtime_db.add(thread)
+        runtime_db.commit()
+
+        token = unlock_session_store.create(1, {})
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": f"/api/threads/{thread.id}/close",
+                "headers": [(b"x-anima-unlock", token.encode("utf-8"))],
+            }
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(close_thread_endpoint(thread.id, request=request, runtime_db=runtime_db))
+
+        assert exc_info.value.status_code == 404

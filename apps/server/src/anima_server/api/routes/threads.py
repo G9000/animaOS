@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import RuntimeThread
 from anima_server.services.agent.eager_consolidation import on_thread_close
@@ -26,11 +26,10 @@ async def close_thread_endpoint(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Close a thread and trigger background consolidation."""
+    unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
-    if thread is None:
+    if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(status_code=404, detail="Thread not found")
-
-    require_unlocked_user(request, thread.user_id)
 
     if thread.status == "closed":
         return {"status": "already_closed", "thread_id": thread_id}

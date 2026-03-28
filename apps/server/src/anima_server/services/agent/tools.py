@@ -599,13 +599,17 @@ def recall_transcript(query: str, days_back: int = 30) -> str:
 
     ctx = get_tool_context()
     dek = get_active_dek(ctx.user_id, "conversations")
+    try:
+        parsed_days_back = int(days_back)
+    except (TypeError, ValueError):
+        parsed_days_back = 30
 
     snippets = search_transcripts(
         query=query,
         user_id=ctx.user_id,
         dek=dek,
         transcripts_dir=settings.data_dir / "transcripts",
-        days_back=days_back,
+        days_back=parsed_days_back,
     )
     return format_snippets(snippets)
 

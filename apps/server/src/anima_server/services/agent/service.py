@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 import contextlib
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
@@ -1254,21 +1255,32 @@ def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) ->
 
 
 async def reset_agent_thread(user_id: int, runtime_db: Session) -> None:
-    thread = get_or_create_thread(runtime_db, user_id)
-    thread_id = thread.id
+    """Rotate to a fresh active thread while preserving the closed thread for archival."""
+    thread = runtime_db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
 
-    close_thread(runtime_db, thread_id=thread_id)
+    thread_id: int | None = None
+    if thread is not None:
+        thread_id = thread.id
+        close_thread(runtime_db, thread_id=thread_id)
+
+    get_or_create_thread(runtime_db, user_id)
     runtime_db.commit()
 
     try:
-        from anima_server.services.agent.eager_consolidation import on_thread_close
+        if thread_id is not None:
+            from anima_server.services.agent.eager_consolidation import on_thread_close
 
-        asyncio.get_running_loop().create_task(
-            on_thread_close(
-                thread_id=thread_id,
-                user_id=user_id,
+            asyncio.get_running_loop().create_task(
+                on_thread_close(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                )
             )
-        )
     except RuntimeError:
         pass
 
