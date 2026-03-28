@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from uuid import uuid4
 import pytest
 from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
+from anima_server.db import runtime as runtime_module
 from anima_server.db.pg_lifecycle import EmbeddedPG
 from anima_server.db.runtime import (
     dispose_runtime_engine,
@@ -252,6 +254,39 @@ def test_dispose_runtime_engine_cleans_up(runtime_database_url: str) -> None:
         get_runtime_engine()
 
 
+def test_ensure_pgvector_enables_vector_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = MagicMock()
+    context_manager = MagicMock()
+    context_manager.__enter__.return_value = connection
+    context_manager.__exit__.return_value = None
+    engine = MagicMock()
+    engine.begin.return_value = context_manager
+
+    monkeypatch.setattr(runtime_module, "get_runtime_engine", lambda: engine)
+
+    runtime_module.ensure_pgvector()
+
+    statement = connection.execute.call_args.args[0]
+    assert str(statement) == "CREATE EXTENSION IF NOT EXISTS vector"
+
+
+def test_ensure_pgvector_logs_warning_when_extension_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = MagicMock()
+    engine.begin.side_effect = RuntimeError("pgvector unavailable")
+
+    monkeypatch.setattr(runtime_module, "get_runtime_engine", lambda: engine)
+
+    with caplog.at_level(logging.WARNING):
+        runtime_module.ensure_pgvector()
+
+    assert "Vector search will fall back to brute-force." in caplog.text
+
+
 @requires_runtime_backend
 def test_dual_engine_coexistence(
     managed_tmp_path: Path,
@@ -323,6 +358,7 @@ def test_config_auto_derives_url_from_embedded_pg(
             "init_runtime_engine",
             lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
         )
+        monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
         monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
@@ -379,6 +415,7 @@ def test_explicit_runtime_url_skips_embedded_pg(
             "init_runtime_engine",
             lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
         )
+        monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
         monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
@@ -398,6 +435,71 @@ def test_explicit_runtime_url_skips_embedded_pg(
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
         dispose_runtime_engine_mock.assert_called_once_with()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
+def test_runtime_startup_enables_pgvector_before_runtime_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    explicit_url = "postgresql://anima:test@localhost:5432/anima_runtime"
+    startup_calls: list[str] = []
+    cancel_pending_reflection = AsyncMock()
+    drain_background_memory_tasks = AsyncMock()
+    dispose_runtime_engine_mock = MagicMock()
+
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+
+    try:
+        settings.data_dir = managed_tmp_path / "anima-data"
+        settings.runtime_database_url = explicit_url
+        settings.runtime_pg_data_dir = ""
+        dispose_cached_engines()
+        main_module = _reload_main_module()
+
+        monkeypatch.setattr(
+            main_module,
+            "init_runtime_engine",
+            lambda database_url, *, echo=False, **kw: startup_calls.append(
+                f"init:{database_url}"
+            ),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_pgvector",
+            lambda: startup_calls.append("pgvector"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_tables",
+            lambda: startup_calls.append("migrate"),
+        )
+        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(
+            "anima_server.services.agent.reflection.cancel_pending_reflection",
+            cancel_pending_reflection,
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.drain_background_memory_tasks",
+            drain_background_memory_tasks,
+        )
+
+        app = main_module.create_app()
+
+        with TestClient(app):
+            assert startup_calls == [
+                f"init:{explicit_url}",
+                "pgvector",
+                "migrate",
+            ]
     finally:
         settings.data_dir = original_data_dir
         settings.runtime_database_url = original_runtime_database_url

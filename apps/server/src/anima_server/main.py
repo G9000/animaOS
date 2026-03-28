@@ -32,7 +32,12 @@ from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import settings
 from .db.pg_lifecycle import EmbeddedPG
-from .db.runtime import dispose_runtime_engine, ensure_runtime_tables, init_runtime_engine
+from .db.runtime import (
+    dispose_runtime_engine,
+    ensure_pgvector,
+    ensure_runtime_tables,
+    init_runtime_engine,
+)
 from .db.user_store import ensure_per_user_databases_ready
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
 
@@ -79,6 +84,7 @@ def _start_embedded_pg() -> EmbeddedPG | None:
     return pg
 
 
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     embedded_pg = _start_embedded_pg()
@@ -93,6 +99,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 pool_size=settings.runtime_pool_size,
                 max_overflow=settings.runtime_pool_max_overflow,
             )
+            ensure_pgvector()
             ensure_runtime_tables()
     except Exception:
         if embedded_pg is not None:

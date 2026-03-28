@@ -11,6 +11,7 @@ import logging
 from threading import Lock
 
 from rank_bm25 import BM25Okapi
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ def _tokenize(text: str) -> list[str]:
 
 
 class BM25Index:
-    """Per-user BM25 index built lazily from MemoryVector content."""
+    """Per-user BM25 index built lazily from RuntimeEmbedding content."""
 
     def __init__(self) -> None:
         self._bm25: BM25Okapi | None = None
@@ -79,24 +80,50 @@ _indices_lock: Lock = Lock()
 def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
     """Lazy-load the BM25 index for a user.
 
-    On cache miss: query all MemoryVector rows for the user, build index.
+    Data source priority:
+    1. RuntimeEmbedding in PG (primary)
+    2. InMemoryVectorStore (tests / degraded mode)
+
+    MemoryVector (SQLCipher) is deprecated as of P6 and no longer queried.
     Thread-safe via _indices_lock.
     """
     with _indices_lock:
         if user_id in _user_indices:
             return _user_indices[user_id]
 
-    # Build outside the lock (DB query may be slow)
-    from sqlalchemy import select
+    docs: list[tuple[int, str]] = []
 
-    from anima_server.models import MemoryVector
+    # Try RuntimeEmbedding in PG
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+        from anima_server.models.runtime_embedding import RuntimeEmbedding
 
-    rows = db.execute(
-        select(MemoryVector.item_id, MemoryVector.content).where(MemoryVector.user_id == user_id)
-    ).all()
+        runtime_db = get_runtime_session_factory()()
+        try:
+            rows = runtime_db.execute(
+                select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
+                    RuntimeEmbedding.user_id == user_id
+                )
+            ).all()
+            docs = [(row[0], row[1]) for row in rows]
+        finally:
+            runtime_db.close()
+    except Exception:
+        pass
+
+    # Fallback: in-memory vector store (tests / degraded mode)
+    if not docs:
+        try:
+            from anima_server.services.agent.vector_store import _fallback_store
+
+            if _fallback_store is not None:
+                user_store = _fallback_store._data.get(user_id, {})
+                docs = [(rec.item_id, rec.content) for rec in user_store.values()]
+        except Exception:
+            pass
 
     index = BM25Index()
-    index.build([(row[0], row[1]) for row in rows])
+    index.build(docs)
 
     with _indices_lock:
         _user_indices[user_id] = index

@@ -12,7 +12,7 @@ import logging
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -130,3 +130,17 @@ def ensure_runtime_tables() -> None:
         command.upgrade(cfg, "head")
 
     logger.info("Runtime Alembic migrations applied.")
+
+
+def ensure_pgvector() -> None:
+    """Enable the pgvector extension. Idempotent."""
+    engine = get_runtime_engine()
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        logger.info("pgvector extension enabled.")
+    except Exception:
+        logger.warning(
+            "pgvector extension not available. "
+            "Vector search will use in-memory fallback."
+        )

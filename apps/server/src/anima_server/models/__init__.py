@@ -26,11 +26,6 @@ from anima_server.models.consciousness import (
 )
 from anima_server.models.links import DiscordLink, TelegramLink
 from anima_server.models.pending_memory_op import PendingMemoryOp
-from anima_server.models.runtime_consciousness import (
-    ActiveIntention,
-    CurrentEmotion,
-    WorkingContext,
-)
 from anima_server.models.runtime import (
     RuntimeBackgroundTaskRun,
     RuntimeMessage,
@@ -38,6 +33,12 @@ from anima_server.models.runtime import (
     RuntimeStep,
     RuntimeThread,
 )
+from anima_server.models.runtime_consciousness import (
+    ActiveIntention,
+    CurrentEmotion,
+    WorkingContext,
+)
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.models.soul_consciousness import (
     CoreEmotionalPattern,
     GrowthLogEntry,
@@ -74,6 +75,7 @@ __all__ = [
     "MemoryVector",
     "PendingMemoryOp",
     "RuntimeBackgroundTaskRun",
+    "RuntimeEmbedding",
     "RuntimeMessage",
     "RuntimeRun",
     "RuntimeStep",
