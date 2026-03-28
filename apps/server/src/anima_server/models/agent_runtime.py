@@ -284,6 +284,7 @@ class MemoryEpisode(Base):
         default="sequential",
         server_default=text("'sequential'"),
     )  # "sequential" or "batch_llm"
+    transcript_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     needs_regeneration: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

@@ -551,7 +551,7 @@ You have different levels of memory:
 
 8. **Atomic writes prevent corruption**: If the server crashes mid-export, no partial `.enc` file is left behind. Only fully-written files exist.
 
-9. **No regression**: All existing tests (846+) continue to pass. Thread reset behavior (`reset_agent_thread`) is preserved for explicit user "reset" actions; thread close is a new, separate code path.
+9. **No regression**: All existing tests (846+) continue to pass. Thread reset (`reset_agent_thread`) now closes and archives the thread before creating a fresh one — this is an intentional improvement over destructive deletion, ensuring no conversation data is lost. The "New Chat" / "Reset" actions trigger the same close-and-archive pipeline as explicit thread close.
 
 10. **Graceful degradation without DEK**: If no encryption key is active (pre-login or passphrase not set), transcript export and search skip encryption and work with plaintext JSONL. The system does not crash.
 

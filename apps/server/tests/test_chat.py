@@ -121,10 +121,12 @@ def test_chat_reset_clears_scaffold_thread_state() -> None:
         rt_factory = get_runtime_session_factory()
         session = rt_factory()
         try:
-            assert session.query(RuntimeThread).count() == 1
-            assert session.query(RuntimeMessage).count() == 3
-            assert session.query(RuntimeRun).count() == 1
-            assert session.query(RuntimeStep).count() == 1
+            threads = session.query(RuntimeThread).order_by(RuntimeThread.id).all()
+            assert len(threads) == 2
+            assert [thread.status for thread in threads] == ["closed", "active"]
+            assert session.query(RuntimeMessage).count() == 6
+            assert session.query(RuntimeRun).count() == 2
+            assert session.query(RuntimeStep).count() == 2
         finally:
             session.close()
 

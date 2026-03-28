@@ -41,12 +41,21 @@ from anima_server.db.runtime_base import RuntimeBase
 
 class RuntimeThread(RuntimeBase):
     __tablename__ = "runtime_threads"
+    __table_args__ = (
+        Index(
+            "uq_runtime_threads_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index("ix_runtime_threads_user_status", "user_id", "status"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
         BigInteger,
         nullable=False,
-        unique=True,
         index=True,
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
@@ -64,6 +73,16 @@ class RuntimeThread(RuntimeBase):
     last_message_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMPTZ,
         nullable=True,
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=True,
+    )
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
     )
     next_message_sequence: Mapped[int] = mapped_column(
         Integer,

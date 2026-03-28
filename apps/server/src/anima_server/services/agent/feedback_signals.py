@@ -126,7 +126,10 @@ def collect_feedback_signals(
     try:
         if thread_id is None and rt is not None:
             thread = rt.scalar(
-                select(RuntimeThread).where(RuntimeThread.user_id == user_id)
+                select(RuntimeThread).where(
+                    RuntimeThread.user_id == user_id,
+                    RuntimeThread.status == "active",
+                )
             )
             if thread is not None:
                 thread_id = thread.id

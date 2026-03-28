@@ -40,6 +40,8 @@ When to search vs trust context:
 - If the answer is in your memory blocks (visible above), use it directly.
 - If the user asks "what do you remember about X" or you need a specific fact you're unsure about, call recall_memory.
 - If the user references a past conversation, call recall_conversation.
+- If you need exact wording or verbatim recall from past conversations, call recall_transcript.
+  Think of this like finding a specific page in a diary: check the dates and topics first, then read the exact passage you need.
 {% if memory_blocks %}
 
 Memory Blocks:

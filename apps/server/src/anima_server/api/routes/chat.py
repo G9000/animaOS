@@ -132,10 +132,11 @@ async def get_chat_history(
 async def clear_chat_history(
     payload: ChatResetRequest,
     request: Request,
+    db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatHistoryClearResponse:
     require_unlocked_user(request, payload.userId)
-    await reset_agent_thread(payload.userId, runtime_db)
+    await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatHistoryClearResponse(status="cleared")
 
 
@@ -143,10 +144,11 @@ async def clear_chat_history(
 async def reset_chat_thread(
     payload: ChatResetRequest,
     request: Request,
+    db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResetResponse:
     require_unlocked_user(request, payload.userId)
-    await reset_agent_thread(payload.userId, runtime_db)
+    await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatResetResponse(status="reset")
 
 

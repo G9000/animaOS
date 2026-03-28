@@ -586,6 +586,35 @@ def recall_conversation(
 
 
 @tool
+def recall_transcript(query: str, days_back: int = 30) -> str:
+    """Search past conversation transcripts for specific details.
+    Use this when you need exact wording or verbatim recall from
+    past conversations, not just general memory of what happened.
+    Returns relevant snippets, not full conversations.
+    """
+    from anima_server.config import settings
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.agent.transcript_search import format_snippets, search_transcripts
+    from anima_server.services.data_crypto import get_active_dek
+
+    ctx = get_tool_context()
+    dek = get_active_dek(ctx.user_id, "conversations")
+    try:
+        parsed_days_back = int(days_back)
+    except (TypeError, ValueError):
+        parsed_days_back = 30
+
+    snippets = search_transcripts(
+        query=query,
+        user_id=ctx.user_id,
+        dek=dek,
+        transcripts_dir=settings.data_dir / "transcripts",
+        days_back=parsed_days_back,
+    )
+    return format_snippets(snippets)
+
+
+@tool
 def update_human_memory(content: str) -> str:
     """Update your holistic mental model of the user. This is your high-level
     understanding — a living summary of who this person is. The content should be
@@ -831,6 +860,7 @@ def get_extension_tools() -> list[Any]:
         dismiss_note,
         update_human_memory,
         current_datetime,
+        recall_transcript,
     ]
 
 

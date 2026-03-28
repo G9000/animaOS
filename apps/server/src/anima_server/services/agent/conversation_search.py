@@ -119,7 +119,12 @@ def _search_messages(
     parsed_end: date | None,
 ) -> list[ConversationHit]:
     """Search RuntimeMessage rows, excluding tool calls and summaries."""
-    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
+    thread = db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
     if thread is None:
         return []
 

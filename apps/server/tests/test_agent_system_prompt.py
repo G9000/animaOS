@@ -53,6 +53,7 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "No assumptions" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
+    assert "recall_transcript" in prompt
 
 
 def test_build_system_prompt_omits_empty_optional_sections() -> None:

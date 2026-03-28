@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, desc, func, or_, select
+from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
@@ -13,7 +13,12 @@ from anima_server.services.agent.state import AgentResult, StoredMessage
 
 
 def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
-    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
+    thread = db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
     if thread is not None:
         return thread
 
@@ -57,12 +62,34 @@ def load_thread_history(
 def list_transcript_messages(
     db: Session,
     *,
-    user_id: int,
-    limit: int,
+    thread_id: int | None = None,
+    user_id: int | None = None,
+    limit: int | None = None,
 ) -> list[RuntimeMessage]:
-    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
-    if thread is None:
-        return []
+    if thread_id is not None:
+        has_content = and_(
+            RuntimeMessage.content_text.is_not(None),
+            RuntimeMessage.content_text != "",
+        )
+        return list(
+            db.scalars(
+                select(RuntimeMessage)
+                .where(
+                    RuntimeMessage.thread_id == thread_id,
+                    RuntimeMessage.role.notin_(("system", "approval")),
+                    or_(
+                        RuntimeMessage.is_in_context.is_(True),
+                        has_content,
+                    ),
+                )
+                .order_by(RuntimeMessage.sequence_id)
+            ).all()
+        )
+
+    if user_id is None or limit is None:
+        raise TypeError("list_transcript_messages requires thread_id or user_id with limit")
+
+    thread = get_or_create_thread(db, user_id)
 
     rows = db.scalars(
         select(RuntimeMessage)
@@ -95,6 +122,23 @@ def list_transcript_messages(
             row.role == "tool" and row.tool_name is not None and row.tool_name != "send_message"
         )
     ]
+
+
+def close_thread(db: Session, *, thread_id: int) -> bool:
+    """Mark a thread as closed.
+
+    Returns True if the thread changed state, False if the thread is missing
+    or was already closed.
+    """
+    thread = db.get(RuntimeThread, thread_id)
+    if thread is None or thread.status == "closed":
+        return False
+
+    thread.status = "closed"
+    thread.closed_at = datetime.now(UTC)
+    db.add(thread)
+    db.flush()
+    return True
 
 
 def create_run(
