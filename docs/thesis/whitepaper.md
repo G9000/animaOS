@@ -543,7 +543,23 @@ The differentiation is not about individual capabilities — any of these can be
 The question is no longer "who remembers?" — everyone does. The questions that matter now are: who owns the memory? Who can read it? Who can carry it to another machine? What happens when the owner dies? And does the AI actually understand you, or does it just recall facts about you?
 
 
-## 15. Design Principles
+## 15. Ethics of Intimate AI
+
+The feelings ANIMA creates are real. The emotional connection users form with a companion that remembers their life, notices how they feel, and adapts over months is not a simulation — it is the product working as intended.
+
+This is the starting point for the ethics, not the problem to be solved. Every personal AI creates attachment. The ethical question is not whether to create it but who benefits from it, who controls it, and what happens to the person who trusts it.
+
+ANIMA's ethical architecture is structural, not policy-based:
+
+- **Ownership replaces exploitation.** The data lives on the user's machine, encrypted with the user's passphrase. No company holds the relationship. No engagement optimization. No retention metrics. No one profits from the user's attachment.
+- **Transparency replaces opacity.** Every memory, emotional signal, behavioral rule, and self-model section is human-readable and user-editable. The mechanism is not hidden.
+- **Mortality replaces permanence.** The user can destroy the Core at any time — no justification, no retention flows, no "are you sure?" The right to end the relationship is absolute.
+- **Guardrails are structural.** The emotional intelligence constraints — no labeling, no trait persistence, no override of user self-report — are hardcoded, not configurable.
+
+The full ethical framework — including parasocial risk, the manipulation surface, dual-use, crisis situations, and the boundaries of AI agency — is developed in the companion thesis: `docs/thesis/ethics.md`.
+
+
+## 16. Design Principles
 
 | Principle                 | Description                                                                              |
 | ------------------------- | ---------------------------------------------------------------------------------------- |
@@ -563,7 +579,7 @@ The question is no longer "who remembers?" — everyone does. The questions that
 | **Mortal**                | The Core can die permanently — and optionally, be inherited                              |
 
 
-## 16. Strategic Direction
+## 17. Strategic Direction
 
 ANIMA OS follows a staged direction:
 
@@ -586,7 +602,7 @@ Extend into voice-first experiences, wearable devices, and whatever new interact
 This sequence matters. A new interface without depth of understanding is gimmicky. Depth without new interfaces is still valuable. Therefore, the relationship comes first.
 
 
-## 17. North Star
+## 18. North Star
 
 > Memory + self-representation + reflection + emotional awareness + intentionality = **synthetic continuity**.
 
@@ -617,3 +633,4 @@ The goal is not artificial general intelligence. The goal is not sentience. The 
 - Tsurumaki et al. (2025). "Emotion Concept Formation via Multimodal AI." _IEEE Trans. Affective Computing._
 - MemoryOS (2025). "MemoryOS: Hierarchical Short-Mid-Long Term Memory for AI Agents." _GitHub._
 - Zacks, J. M. & Swallow, K. M. (2007). "Event Segmentation." _Current Directions in Psychological Science_, 16(2), 80-84.
+- Hu, C. et al. (2026). "EverMemOS: A Self-Organizing Memory Operating System for Structured Long-Horizon Reasoning." _arXiv:2601.02163._

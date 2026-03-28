@@ -31,6 +31,8 @@ Downloaded 2026-03-18. Papers supporting the AnimaOS thesis research report.
 | "From Storage to Experience: Evolution of LLM Agent Memory" | 2026 | [Preprints.org](https://www.preprints.org/manuscript/202601.0618) |
 | ICLR 2026 MemAgents Workshop Proposal | 2026 | [OpenReview](https://openreview.net/pdf?id=U51WxL382H) |
 
+| `evermemos-2026.pdf` | EverMemOS: Self-Organizing Memory OS (93% LoCoMo SOTA) | 2026 | [arXiv:2601.02163](https://arxiv.org/abs/2601.02163) |
+
 ## Web Articles (Non-PDF)
 
 | Article | Source |

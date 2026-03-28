@@ -325,6 +325,53 @@ Implementation pattern (from Nemori source analysis): Nemori's `BatchSegmenter.s
 
 Deliverable: topic-coherent episodes that reflect actual conversation structure rather than fixed turn counts, improving episodic memory retrieval quality.
 
+## Phase 10.8: Foresight Signals
+
+Status: planned — [PRD: F8](../prds/memory/F8-foresight-signals.md)
+
+Goals:
+
+- extract time-bounded predictions from conversation during consolidation (e.g., "user has a presentation next Thursday")
+- structured `foresight_signals` table with start/end dates, evidence, and lifecycle status
+- active signals injected into system prompt as temporal awareness block
+- proactive companion (Phase 7) consumes signals for greetings and follow-ups
+- automatic lifecycle: active → occurred → expired
+
+Rationale: EverMemOS demonstrated that Foresight signals — temporal predictions extracted from conversation — enable anticipatory behavior. AnimaOS's intentions system tracks goals but does not capture specific future events with bounded timeframes. Foresight signals bridge the gap between "the AI remembers" and "the AI anticipates."
+
+Deliverable: the AI knows what is coming up in the user's life and can act on it without being told.
+
+## Phase 10.9: Episode Extraction Upgrade
+
+Status: planned — [PRD: F9](../prds/memory/F9-episode-extraction-upgrade.md)
+
+Goals:
+
+- dual-time format: store both relative expressions and resolved absolute dates ("tomorrow (April 3, 2026)")
+- entity-grounded narration: use names instead of pronouns for retrieval precision
+- conciseness rules: explicit constraints to prevent episode bloat (max 200 words single-topic)
+- post-generation quality checks (pronoun density, length, time anchor verification)
+
+Rationale: EverMemOS's SOTA episode prompts enforce entity grounding and dual-time format. AnimaOS's current episodes use pronoun-heavy narration and unresolved relative dates, hurting retrieval precision for temporal and factual queries.
+
+Deliverable: higher-quality episodes that are more retrievable, more temporally precise, and less bloated.
+
+## Phase 10.10: Structured User Profile
+
+Status: planned — [PRD: F10](../prds/memory/F10-structured-user-profile.md)
+
+Goals:
+
+- structured `user_profile_fields` table with typed categories (relationship, skill, preference, personality, work_context, life_context, communication_style)
+- evidence linking: each field traces back to source conversations
+- progressive extraction during consolidation with inertia principle (existing fields preserved unless contradicted)
+- renders as prose block in system prompt (GWT natural-language requirement)
+- viewable and editable via consciousness API
+
+Rationale: EverMemOS's progressive user profiling with 8+ structured categories and evidence linking produces more comprehensive and retrievable user models than AnimaOS's free-text `human` block. Structured profiles enable category-filtered retrieval and auditable corrections.
+
+Deliverable: a structured, evidence-backed user profile that progressively builds from conversation and replaces the free-text human block as the source of truth.
+
 ## Phase 11: Embodied Extensions
 
 Status: future
@@ -368,4 +415,5 @@ These remain the product bar even where the current code has not fully reached i
 - See `docs/architecture/memory/memory-repo-analysis.md` for the comparative analysis of Letta, Mem0, Nemori, MemOS, and MemoryOS source code
 - See `docs/prds/memory-architecture.md` for the PRD covering Features F1–F7 (Phases 9.5–10.7)
 - See `docs/architecture/memory/memory-implementation-plan.md` for the detailed engineering spec (function signatures, schemas, test plans)
+- See `docs/thesis/ethics.md` for the ethical framework: ownership, transparency, parasocial risk, and the manipulation surface
 - See `docs/thesis/references/` for downloaded research papers supporting the thesis

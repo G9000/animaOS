@@ -5,7 +5,7 @@ import { getCollection } from "astro:content";
 const allDocs = await getCollection("docs");
 
 // Logical reading order
-const order = ["whitepaper", "three-tier-architecture", "inner-life", "portable-core", "succession-protocol"];
+const order = ["whitepaper", "three-tier-architecture", "inner-life", "portable-core", "succession-protocol", "ethics"];
 const docs = order
   .map((slug) => allDocs.find((d) => d.id === slug))
   .filter(Boolean);
