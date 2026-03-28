@@ -13,6 +13,7 @@ class RegisterRequest(BaseModel):
     userDirective: str = Field(default="")
     relationship: str = Field(default="companion", max_length=100)
     personaTemplate: str = Field(default="default", max_length=50)
+    agentType: Literal["companion", "mirror"] = "companion"
 
 
 class CreateAIChatMessage(BaseModel):

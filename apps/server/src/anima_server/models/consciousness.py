@@ -88,6 +88,9 @@ class AgentProfile(Base):
     agent_name: Mapped[str] = mapped_column(String(50), nullable=False, default="Anima")
     creator_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     relationship: Mapped[str] = mapped_column(String(100), nullable=False, default="companion")
+    agent_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="companion", server_default="companion"
+    )  # companion, mirror
     setup_complete: Mapped[bool] = mapped_column(default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

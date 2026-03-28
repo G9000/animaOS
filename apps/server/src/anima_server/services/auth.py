@@ -89,6 +89,7 @@ def create_user(
     user_directive: str = "",
     relationship: str = "companion",
     persona_template: str = "default",
+    agent_type: str = "companion",
     *,
     user_id: int | None = None,
 ) -> tuple[User, dict[str, bytes]]:
@@ -119,6 +120,7 @@ def create_user(
             agent_name=agent_name,
             creator_name=display_name,
             relationship=relationship,
+            agent_type=agent_type,
         )
     )
 
@@ -128,7 +130,7 @@ def create_user(
     # (which calls ef()). The vault export handles both plaintext and
     # encrypted content transparently.
     soul_content = render_origin_block(
-        agent_name=agent_name, creator_name=display_name)
+        agent_name=agent_name, creator_name=display_name, agent_type=agent_type)
     db.add(
         SelfModelBlock(
             user_id=user.id,
@@ -140,6 +142,10 @@ def create_user(
     )
 
     # Seed persona from template (mutable — evolves through reflection)
+    # Auto-select mirror template when agent_type is mirror and template is default
+    if agent_type == "mirror" and persona_template == "default":
+        persona_template = "mirror"
+
     # Validate template name to prevent path traversal
     from anima_server.services.agent.system_prompt import resolve_persona_template_path
 
@@ -149,7 +155,9 @@ def create_user(
         raise ValueError(
             f"Invalid persona template: {persona_template!r}") from exc
 
-    persona_content = render_persona_seed(persona_template, agent_name=agent_name)
+    persona_content = render_persona_seed(
+        persona_template, agent_name=agent_name, creator_name=display_name
+    )
     db.add(
         SelfModelBlock(
             user_id=user.id,

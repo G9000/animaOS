@@ -112,23 +112,31 @@ def render_memory_blocks_template(memory_blocks: list[dict[str, object]]) -> str
     )
 
 
-def build_persona_prompt(template_name: str, agent_name: str = "Anima") -> str:
+def build_persona_prompt(
+    template_name: str, agent_name: str = "Anima", creator_name: str = ""
+) -> str:
     template_path = resolve_persona_template_path(template_name)
-    return render_template(template_path, {"agent_name": agent_name})
+    return render_template(
+        template_path,
+        {"agent_name": agent_name, "creator_name": creator_name or "their creator"},
+    )
 
 
-def render_persona_seed(template_name: str, agent_name: str = "Anima") -> str:
+def render_persona_seed(
+    template_name: str, agent_name: str = "Anima", creator_name: str = ""
+) -> str:
     """Render a persona template into content to be stored in the DB.
 
     Used once at provisioning time. The stored content becomes the living
     persona block that evolves through reflection.
     """
-    return build_persona_prompt(template_name, agent_name=agent_name)
+    return build_persona_prompt(template_name, agent_name=agent_name, creator_name=creator_name)
 
 
 def render_origin_block(
     agent_name: str = "Anima",
     creator_name: str = "",
+    agent_type: str = "companion",
 ) -> str:
     """Render the immutable origin block from the seed template."""
     from anima_server.services.core import get_core_birth_date
@@ -140,6 +148,7 @@ def render_origin_block(
             "agent_name": agent_name,
             "birth_date": birth_date,
             "creator_name": creator_name or "their creator",
+            "agent_type": agent_type,
         },
     )
 

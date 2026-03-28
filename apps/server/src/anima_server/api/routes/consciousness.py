@@ -393,12 +393,14 @@ async def get_agent_profile(
             "agentName": "Anima",
             "relationship": "companion",
             "personaTemplate": "default",
+            "agentType": "companion",
             "setupComplete": False,
         }
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
         "personaTemplate": "default",
+        "agentType": profile.agent_type,
         "setupComplete": profile.setup_complete,
     }
 
@@ -437,6 +439,7 @@ async def update_agent_profile(
         origin_content = render_origin_block(
             agent_name=profile.agent_name,
             creator_name=profile.creator_name,
+            agent_type=profile.agent_type,
         )
         set_self_model_block(
             db,
@@ -469,6 +472,7 @@ async def update_agent_profile(
             persona_content = render_persona_seed(
                 payload.personaTemplate,
                 agent_name=profile.agent_name,
+                creator_name=profile.creator_name,
             )
         except PromptTemplateError as exc:
             raise HTTPException(
@@ -489,6 +493,7 @@ async def update_agent_profile(
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
+        "agentType": profile.agent_type,
         "setupComplete": True,
     }
 

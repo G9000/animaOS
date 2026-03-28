@@ -128,6 +128,7 @@ def register_account(
     user_directive: str = "",
     relationship: str = "companion",
     persona_template: str = "default",
+    agent_type: str = "companion",
 ) -> tuple[dict[str, object], dict[str, bytes], str]:
     """Register a new account. Returns (user_data, deks, recovery_phrase)."""
     if is_provisioned():
@@ -158,6 +159,7 @@ def register_account(
             user_directive=user_directive,
             relationship=relationship,
             persona_template=persona_template,
+            agent_type=agent_type,
             user_id=user_id,
         )
 
