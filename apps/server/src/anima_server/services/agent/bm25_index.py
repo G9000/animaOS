@@ -11,6 +11,7 @@ import logging
 from threading import Lock
 
 from rank_bm25 import BM25Okapi
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -79,21 +80,39 @@ _indices_lock: Lock = Lock()
 def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
     """Lazy-load the BM25 index for a user.
 
-    On cache miss: query all MemoryVector rows for the user, build index.
+    Prefers RuntimeEmbedding (PG) as the data source.
+    Falls back to MemoryVector (soul DB) if PG is unavailable.
     Thread-safe via _indices_lock.
     """
     with _indices_lock:
         if user_id in _user_indices:
             return _user_indices[user_id]
 
-    # Build outside the lock (DB query may be slow)
-    from sqlalchemy import select
+    rows = None
+    try:
+        from anima_server.db.runtime import get_runtime_session_factory
+        from anima_server.models.runtime_embedding import RuntimeEmbedding
 
-    from anima_server.models import MemoryVector
+        runtime_db = get_runtime_session_factory()()
+        try:
+            rows = runtime_db.execute(
+                select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
+                    RuntimeEmbedding.user_id == user_id
+                )
+            ).all()
+        finally:
+            runtime_db.close()
+    except Exception:
+        rows = None
 
-    rows = db.execute(
-        select(MemoryVector.item_id, MemoryVector.content).where(MemoryVector.user_id == user_id)
-    ).all()
+    if rows is None:
+        from anima_server.models import MemoryVector
+
+        rows = db.execute(
+            select(MemoryVector.item_id, MemoryVector.content).where(
+                MemoryVector.user_id == user_id
+            )
+        ).all()
 
     index = BM25Index()
     index.build([(row[0], row[1]) for row in rows])
