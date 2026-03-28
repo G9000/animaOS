@@ -1,5 +1,10 @@
 // apps/animus/src/tools/edit.ts
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  normalizeLineEndings,
+  unescapeOverEscaped,
+  buildNotFoundError,
+} from "./edit_hints";
 
 export interface EditArgs {
   file_path: string;
@@ -11,15 +16,16 @@ export function executeEdit(args: EditArgs): {
   status: "success" | "error";
   result: string;
 } {
-  const { file_path, old_string, new_string } = args;
+  const { file_path, new_string } = args;
   if (!existsSync(file_path)) {
     return { status: "error", result: `File not found: ${file_path}` };
   }
-  const content = readFileSync(file_path, "utf-8");
-  if (!content.includes(old_string)) {
-    return { status: "error", result: `old_string not found in ${file_path}` };
-  }
-  // Count occurrences to warn on ambiguous matches
+
+  // Normalize line endings for cross-platform compatibility
+  const content = normalizeLineEndings(readFileSync(file_path, "utf-8"));
+  let old_string = normalizeLineEndings(args.old_string);
+
+  // Check for ambiguous matches first
   const occurrences = content.split(old_string).length - 1;
   if (occurrences > 1) {
     return {
@@ -27,8 +33,31 @@ export function executeEdit(args: EditArgs): {
       result: `old_string matches ${occurrences} locations in ${file_path}. Provide more context to disambiguate.`,
     };
   }
-  // Use function replacer to avoid $-pattern interpretation in new_string
-  const updated = content.replace(old_string, () => new_string);
-  writeFileSync(file_path, updated, "utf-8");
-  return { status: "success", result: `Edited ${file_path}` };
+
+  // Exact match — apply it
+  if (occurrences === 1) {
+    const updated = content.replace(old_string, () => new_string);
+    writeFileSync(file_path, updated, "utf-8");
+    return { status: "success", result: `Edited ${file_path}` };
+  }
+
+  // Not found — try over-escape auto-fix
+  const unescaped = unescapeOverEscaped(old_string);
+  if (unescaped !== old_string && content.includes(unescaped)) {
+    const unescapedOccurrences = content.split(unescaped).length - 1;
+    if (unescapedOccurrences === 1) {
+      const updated = content.replace(unescaped, () => new_string);
+      writeFileSync(file_path, updated, "utf-8");
+      return { status: "success", result: `Edited ${file_path}` };
+    }
+    if (unescapedOccurrences > 1) {
+      return {
+        status: "error",
+        result: `old_string (after fixing escaping) matches ${unescapedOccurrences} locations in ${file_path}. Provide more context to disambiguate.`,
+      };
+    }
+  }
+
+  // Still not found — return diagnostic hint
+  return { status: "error", result: buildNotFoundError(file_path, old_string, content) };
 }

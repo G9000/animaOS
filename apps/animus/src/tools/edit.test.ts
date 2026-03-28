@@ -96,4 +96,59 @@ describe("edit tool", () => {
     expect(result.status).toBe("success");
     expect(readFileSync(filePath, "utf-8")).toBe("replaced1\nreplaced2\nline3");
   });
+
+  test("auto-fixes over-escaped newlines from LLM", () => {
+    const filePath = join(tempDir, "test.txt");
+    writeFileSync(filePath, "line1\nline2\nline3", "utf-8");
+
+    const result = executeEdit({
+      file_path: filePath,
+      old_string: "line1\\nline2",  // LLM sent \\n instead of \n
+      new_string: "replaced",
+    });
+
+    expect(result.status).toBe("success");
+    expect(readFileSync(filePath, "utf-8")).toBe("replaced\nline3");
+  });
+
+  test("normalizes \\r\\n line endings", () => {
+    const filePath = join(tempDir, "test.txt");
+    writeFileSync(filePath, "line1\r\nline2\r\nline3", "utf-8");
+
+    const result = executeEdit({
+      file_path: filePath,
+      old_string: "line1\nline2",  // Agent sends \n
+      new_string: "replaced",
+    });
+
+    expect(result.status).toBe("success");
+  });
+
+  test("returns smart quote hint when applicable", () => {
+    const filePath = join(tempDir, "test.txt");
+    writeFileSync(filePath, "it\u2019s a smart quote", "utf-8");
+
+    const result = executeEdit({
+      file_path: filePath,
+      old_string: "it's a smart quote",  // straight quote
+      new_string: "replaced",
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.result).toContain("smart");
+  });
+
+  test("returns whitespace hint when applicable", () => {
+    const filePath = join(tempDir, "test.txt");
+    writeFileSync(filePath, "  function  foo()  {\n    return 1;\n  }", "utf-8");
+
+    const result = executeEdit({
+      file_path: filePath,
+      old_string: "function foo() {\n  return 1;\n}",
+      new_string: "replaced",
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.result).toContain("whitespace");
+  });
 });
