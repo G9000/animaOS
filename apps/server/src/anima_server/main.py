@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import importlib.util
 import logging
@@ -25,6 +26,7 @@ from .api.routes.memory import router as memory_router
 from .api.routes.soul import router as soul_router
 from .api.routes.tasks import router as tasks_router
 from .api.routes.telegram import router as telegram_router
+from .api.routes.threads import router as threads_router
 from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
@@ -81,6 +83,7 @@ def _start_embedded_pg() -> EmbeddedPG | None:
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     embedded_pg = _start_embedded_pg()
     runtime_url = embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
+    sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
         if runtime_url:
@@ -97,12 +100,40 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         raise
 
     try:
+        async def _periodic_inactivity_sweep() -> None:
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    from .services.agent.eager_consolidation import inactivity_sweep
+
+                    await inactivity_sweep()
+                except Exception:
+                    logger.warning("Inactivity sweep error", exc_info=True)
+
+        async def _periodic_prune_sweep() -> None:
+            while True:
+                await asyncio.sleep(6 * 3600)
+                try:
+                    from .services.agent.eager_consolidation import (
+                        prune_expired_messages,
+                        prune_expired_transcripts,
+                    )
+
+                    await prune_expired_messages()
+                    await prune_expired_transcripts()
+                except Exception:
+                    logger.warning("Prune sweep error", exc_info=True)
+
+        sweep_tasks.append(asyncio.create_task(_periodic_inactivity_sweep()))
+        sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
         yield
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
         from .services.agent.reflection import cancel_pending_reflection
 
         try:
+            for task in sweep_tasks:
+                task.cancel()
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
         finally:
@@ -226,6 +257,7 @@ def create_app() -> FastAPI:
     app.include_router(soul_router)
     app.include_router(tasks_router)
     app.include_router(telegram_router)
+    app.include_router(threads_router)
     app.include_router(users_router)
     app.include_router(vault_router)
     app.include_router(ws_router)

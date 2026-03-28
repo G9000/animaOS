@@ -241,3 +241,23 @@ def decrypt_text_with_dek(serialized: str, dek: bytes, *, aad: bytes | None = No
     effective_aad = aad if prefix == ENCRYPTED_TEXT_PREFIX_AAD else None
     plaintext = AESGCM(dek).decrypt(iv, ciphertext + tag, effective_aad)
     return plaintext.decode("utf-8")
+
+
+def encrypt_blob(plaintext: bytes, dek: bytes, *, aad: bytes | None = None) -> bytes:
+    """Encrypt raw bytes with AES-256-GCM.
+
+    Returns ``IV || ciphertext || auth_tag``.
+    """
+    iv = os.urandom(IV_LENGTH)
+    ct_and_tag = AESGCM(dek).encrypt(iv, plaintext, aad)
+    return iv + ct_and_tag
+
+
+def decrypt_blob(data: bytes, dek: bytes, *, aad: bytes | None = None) -> bytes:
+    """Decrypt raw bytes produced by :func:`encrypt_blob`."""
+    if len(data) < IV_LENGTH:
+        raise ValueError("Encrypted data too short")
+
+    iv = data[:IV_LENGTH]
+    ct_and_tag = data[IV_LENGTH:]
+    return AESGCM(dek).decrypt(iv, ct_and_tag, aad)

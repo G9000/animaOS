@@ -150,12 +150,20 @@ async def _issue_background_task(
             run.started_at = datetime.now(UTC)
             rt_db.commit()
 
+    task_runtime_db_factory = kwargs.pop("_task_runtime_db_factory", None)
+
     # Execute the task function (no session held open here)
     try:
-        result = await task_fn(
-            user_id=user_id,
-            db_factory=db_factory,
+        task_kwargs = {
+            "user_id": user_id,
+            "db_factory": db_factory,
             **kwargs,
+        }
+        if task_runtime_db_factory is not None:
+            task_kwargs["runtime_db_factory"] = task_runtime_db_factory
+
+        result = await task_fn(
+            **task_kwargs,
         )
         status = "completed"
         if isinstance(result, dict):
@@ -235,7 +243,7 @@ async def run_sleeptime_agents(
                 "user_message": user_message,
                 "assistant_response": assistant_response,
                 "thread_id": thread_id,
-                "runtime_db_factory": runtime_db_factory,
+                "_task_runtime_db_factory": runtime_db_factory,
             },
         ),
         ("embedding_backfill", _task_embedding_backfill, {}),

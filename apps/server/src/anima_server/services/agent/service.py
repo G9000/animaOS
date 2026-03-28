@@ -33,6 +33,7 @@ from anima_server.services.agent.persistence import (
     append_user_message,
     cancel_run,
     clear_approval_checkpoint,
+    close_thread,
     count_messages_by_role,
     create_run,
     get_or_create_thread,
@@ -40,7 +41,6 @@ from anima_server.services.agent.persistence import (
     load_approval_checkpoint,
     mark_run_failed,
     persist_agent_result,
-    reset_thread,
     save_approval_checkpoint,
 )
 from anima_server.services.agent.reflection import schedule_reflection
@@ -138,7 +138,12 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
     # Look up existing thread without creating one.
     from sqlalchemy import select as sa_select
 
-    thread = runtime_db.scalar(sa_select(RuntimeThread).where(RuntimeThread.user_id == user_id))
+    thread = runtime_db.scalar(
+        sa_select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
 
     history: list[StoredMessage] = []
     memory_blocks: tuple[MemoryBlock, ...] = ()
@@ -1249,8 +1254,24 @@ def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) ->
 
 
 async def reset_agent_thread(user_id: int, runtime_db: Session) -> None:
-    reset_thread(runtime_db, user_id)
+    thread = get_or_create_thread(runtime_db, user_id)
+    thread_id = thread.id
+
+    close_thread(runtime_db, thread_id=thread_id)
     runtime_db.commit()
+
+    try:
+        from anima_server.services.agent.eager_consolidation import on_thread_close
+
+        asyncio.get_running_loop().create_task(
+            on_thread_close(
+                thread_id=thread_id,
+                user_id=user_id,
+            )
+        )
+    except RuntimeError:
+        pass
+
     companion = get_companion(user_id)
     if companion is not None:
         companion.reset()

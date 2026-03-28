@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -132,13 +133,14 @@ def managed_test_client(
 
     # Import lazily so pytest collection does not initialize the app
     # against the developer data directory.
-    from anima_server.main import create_app
+    import anima_server.main as main_module
 
-    app = create_app()
+    app = main_module.create_app()
 
     try:
-        with TestClient(app) as client:
-            yield client
+        with patch.object(main_module, "_start_embedded_pg", return_value=None):
+            with TestClient(app) as client:
+                yield client
     finally:
         unlock_session_store.clear()
         clear_sqlcipher_key()
