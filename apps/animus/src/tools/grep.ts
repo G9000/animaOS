@@ -7,13 +7,17 @@ export interface GrepArgs {
   include?: string;
 }
 
+let _hasRg: boolean | null = null;
+
 function hasRipgrep(): boolean {
+  if (_hasRg !== null) return _hasRg;
   try {
     execFileSync("rg", ["--version"], { encoding: "utf-8", timeout: 5000 });
-    return true;
+    _hasRg = true;
   } catch {
-    return false;
+    _hasRg = false;
   }
+  return _hasRg;
 }
 
 export function executeGrep(args: GrepArgs): {

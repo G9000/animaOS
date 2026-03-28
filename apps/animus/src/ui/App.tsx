@@ -109,20 +109,20 @@ export function App({ config }: AppProps) {
             addEntry({
               type: "tool_call",
               content: "",
+              toolCallId: msg.tool_call_id,
               toolName: msg.tool_name,
               toolArgs: msg.args,
               toolStatus: "running",
             });
             break;
           case "tool_return":
-            // Update the matching server tool_call entry
+            // Match by tool_call_id for correctness when same tool runs concurrently
             setEntries((prev) => {
               const updated = [...prev];
               for (let j = updated.length - 1; j >= 0; j--) {
                 if (
                   updated[j].type === "tool_call" &&
-                  updated[j].toolName === msg.tool_name &&
-                  updated[j].toolStatus === "running"
+                  updated[j].toolCallId === msg.tool_call_id
                 ) {
                   updated[j] = { ...updated[j], content: msg.result, toolStatus: "success" };
                   break;
@@ -135,6 +135,7 @@ export function App({ config }: AppProps) {
             addEntry({
               type: "tool_call",
               content: "",
+              toolCallId: msg.tool_call_id,
               toolName: msg.tool_name,
               toolArgs: msg.args,
               toolStatus: "running",
@@ -150,7 +151,7 @@ export function App({ config }: AppProps) {
                 const updated = [...prev];
                 let idx = -1;
                 for (let j = updated.length - 1; j >= 0; j--) {
-                  if (updated[j].type === "tool_call" && updated[j].toolName === msg.tool_name && updated[j].toolStatus === "running") {
+                  if (updated[j].type === "tool_call" && updated[j].toolCallId === msg.tool_call_id) {
                     idx = j;
                     break;
                   }

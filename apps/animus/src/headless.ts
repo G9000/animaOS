@@ -37,7 +37,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
 
   let output = "";
   let reasoning = "";
-  const serverToolCalls: Array<{ tool: string; args: Record<string, unknown>; result?: string }> = [];
+  const serverToolCalls: Array<{ id: string; tool: string; args: Record<string, unknown>; result?: string }> = [];
   let promptSent = false;
   let done = false;
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -103,16 +103,16 @@ export async function runHeadless(opts: HeadlessOptions): Promise<void> {
 
           case "tool_call":
             // Server-side tool call — log for observability
-            serverToolCalls.push({ tool: msg.tool_name, args: msg.args });
+            serverToolCalls.push({ id: msg.tool_call_id, tool: msg.tool_name, args: msg.args });
             if (!json) {
               writeError(`[server tool] ${msg.tool_name}\n`);
             }
             break;
 
           case "tool_return": {
-            // Match to the pending server tool call
+            // Match by tool_call_id for correctness when same tool runs concurrently
             const pending = serverToolCalls.find(
-              (tc) => tc.tool === msg.tool_name && !tc.result,
+              (tc) => tc.id === msg.tool_call_id,
             );
             if (pending) pending.result = msg.result;
             break;

@@ -50,6 +50,7 @@ export class ConnectionManager {
 
   connect(): void {
     this.intentionallyClosed = false;
+    this.reconnectAttempt = 0;
     this.setStatus("connecting");
 
     const wsUrl = this.config.serverUrl.endsWith("/ws/agent")

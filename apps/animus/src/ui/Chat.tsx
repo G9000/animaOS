@@ -5,6 +5,7 @@ import { ToolCall } from "./ToolCall";
 export interface ChatEntry {
   type: "user" | "assistant" | "tool_call" | "error" | "reasoning";
   content: string;
+  toolCallId?: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   toolStatus?: "running" | "success" | "error";
