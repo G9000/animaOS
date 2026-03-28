@@ -1,5 +1,7 @@
 // apps/animus/src/tools/bash.ts
 
+import { truncateOutput, LIMITS } from "./truncation";
+
 export interface BashArgs {
   command: string;
   timeout?: number;
@@ -12,8 +14,6 @@ export interface ToolResult {
   stdout?: string[];
   stderr?: string[];
 }
-
-const MAX_OUTPUT_LINES = 500;
 
 export async function executeBash(args: BashArgs): Promise<ToolResult> {
   const { command, timeout = 120000, cwd = process.cwd() } = args;
@@ -55,15 +55,16 @@ export async function executeBash(args: BashArgs): Promise<ToolResult> {
     const stdoutArr = stdoutText ? [stdoutText] : [];
     const stderrArr = stderrText ? [stderrText] : [];
 
-    let output = stdoutText;
-    const lines = output.split("\n");
-    if (lines.length > MAX_OUTPUT_LINES) {
-      output = `[...truncated ${lines.length - MAX_OUTPUT_LINES} lines...]\n${lines.slice(-MAX_OUTPUT_LINES).join("\n")}`;
-    }
+    // Smart truncation — preserves error-relevant lines in the middle
+    const { content: output } = truncateOutput(stdoutText || stderrText, {
+      maxChars: LIMITS.bash.chars,
+      maxLines: LIMITS.bash.lines,
+      toolName: "bash",
+    });
 
     return {
       status: exitCode === 0 ? "success" : "error",
-      result: output || stderrText,
+      result: output,
       stdout: stdoutArr,
       stderr: stderrArr,
     };

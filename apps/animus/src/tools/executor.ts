@@ -9,7 +9,10 @@ import { executeGlob } from "./glob";
 import { executeListDir } from "./list_dir";
 import { executeMultiEdit } from "./multi_edit";
 import { executeAskUser } from "./ask_user";
+import { executeTodoWrite, executeTodoRead } from "./todo";
+import { executeBgStart, executeBgOutput, executeBgStop, executeBgList } from "./process_manager";
 import { checkPermission, type PermissionDecision } from "./permissions";
+import { substituteSecretsInArgs, redactSecrets } from "./secrets";
 import { hooks } from "../hooks";
 
 export interface ExecutionResult {
@@ -25,11 +28,22 @@ export type ApprovalCallback = (
   args: Record<string, unknown>,
 ) => Promise<PermissionDecision>;
 
+// Tools where we should substitute $SECRET_NAME in args
+const SECRET_TOOLS = new Set(["bash", "bg_start"]);
+// Tools where we should redact secrets from output
+const REDACT_TOOLS = new Set(["bash", "bg_start", "bg_output"]);
+
 export async function executeTool(
   msg: ToolExecuteMessage,
   onApproval?: ApprovalCallback,
 ): Promise<ExecutionResult> {
-  const { tool_call_id, tool_name, args } = msg;
+  const { tool_call_id, tool_name } = msg;
+  let { args } = msg;
+
+  // Secret substitution for shell-like tools
+  if (SECRET_TOOLS.has(tool_name)) {
+    args = substituteSecretsInArgs(args);
+  }
 
   const decision = checkPermission(tool_name, args);
   if (decision === "ask" && onApproval) {
@@ -97,8 +111,33 @@ export async function executeTool(
           a as Parameters<typeof executeAskUser>[0],
         );
         break;
+      case "todo_write":
+        result = executeTodoWrite(a as Parameters<typeof executeTodoWrite>[0]);
+        break;
+      case "todo_read":
+        result = executeTodoRead();
+        break;
+      case "bg_start":
+        result = executeBgStart(a as Parameters<typeof executeBgStart>[0]);
+        break;
+      case "bg_output":
+        result = executeBgOutput(a as Parameters<typeof executeBgOutput>[0]);
+        break;
+      case "bg_stop":
+        result = executeBgStop(a as Parameters<typeof executeBgStop>[0]);
+        break;
+      case "bg_list":
+        result = executeBgList();
+        break;
       default:
         result = { status: "error", result: `Unknown tool: ${tool_name}` };
+    }
+
+    // Redact secrets from output of shell-like tools
+    if (REDACT_TOOLS.has(tool_name)) {
+      result.result = redactSecrets(result.result);
+      if (result.stdout) result.stdout = result.stdout.map(redactSecrets);
+      if (result.stderr) result.stderr = result.stderr.map(redactSecrets);
     }
 
     // Emit tool:after hook
