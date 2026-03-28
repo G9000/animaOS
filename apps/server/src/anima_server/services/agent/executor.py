@@ -11,6 +11,7 @@ from typing import Any
 
 from anima_server.config import settings
 from anima_server.services.agent.runtime_types import ToolCall, ToolExecutionResult
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,10 @@ class ToolExecutor:
                 timeout=timeout,
             )
         except TimeoutError:
+            health_emit("tool", "timeout", "warn", data={
+                "tool": tool_call.name,
+                "timeout_s": settings.agent_tool_timeout,
+            })
             return ToolExecutionResult(
                 call_id=tool_call.id,
                 name=tool_call.name,
@@ -176,6 +181,10 @@ class ToolExecutor:
                 is_error=True,
             )
         except Exception as exc:
+            health_emit("tool", "error", "error", data={
+                "tool": tool_call.name,
+                "error": str(exc),
+            })
             return ToolExecutionResult(
                 call_id=tool_call.id,
                 name=tool_call.name,

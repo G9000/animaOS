@@ -21,6 +21,7 @@ from anima_server.services.agent.memory_store import (
     supersede_memory_item,
 )
 from anima_server.services.data_crypto import df
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
@@ -848,8 +849,11 @@ async def run_background_memory_consolidation(
         if companion is not None:
             companion.invalidate_memory()
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Background memory consolidation failed for user %s", user_id)
+        health_emit("memory", "consolidation", "error", user_id=user_id, data={
+            "error": str(exc),
+        })
 
     # Opportunistic embedding backfill for items without embeddings
     try:

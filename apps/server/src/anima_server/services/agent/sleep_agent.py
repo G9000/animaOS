@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from anima_server.config import settings
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,11 @@ async def _issue_background_task(
         rt_db.commit()
         run_id = run.id
 
+    health_emit("background", "task_start", "trace", user_id=user_id, data={
+        "task_type": task_type,
+        "run_id": run_id,
+    })
+
     # Mark running
     status = "running"
     result_json: dict | None = None
@@ -166,6 +172,10 @@ async def _issue_background_task(
             **task_kwargs,
         )
         status = "completed"
+        health_emit("background", "task_complete", "trace", user_id=user_id, data={
+            "task_type": task_type,
+            "run_id": run_id,
+        })
         if isinstance(result, dict):
             result_json = result
     except Exception as exc:
@@ -177,6 +187,11 @@ async def _issue_background_task(
             run_id,
             user_id,
         )
+        health_emit("background", "task_failed", "error", user_id=user_id, data={
+            "task_type": task_type,
+            "run_id": run_id,
+            "error": str(exc),
+        })
 
     # Always update final status
     try:

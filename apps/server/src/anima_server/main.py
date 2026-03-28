@@ -32,6 +32,7 @@ from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import settings
+from .services.health.event_logger import emit as health_emit
 from .db.pg_lifecycle import EmbeddedPG
 from .db.runtime import (
     dispose_runtime_engine,
@@ -220,6 +221,10 @@ def create_app() -> FastAPI:
             content: dict[str, object] = {"error": exc.detail}
         else:
             content = {"error": "Request failed", "details": exc.detail}
+        health_emit("http", "error_response", "warn", data={
+            "status_code": exc.status_code,
+            "detail": str(exc.detail)[:200],
+        })
         return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RequestValidationError)
