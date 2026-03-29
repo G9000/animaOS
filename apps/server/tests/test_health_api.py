@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from conftest import managed_test_client
 
@@ -29,6 +29,12 @@ def _make_report(status: HealthStatus = "healthy") -> HealthReport:
     return HealthReport(status=status, checks=checks)
 
 
+def _mock_session(user_id: int = 1) -> MagicMock:
+    session = MagicMock()
+    session.user_id = user_id
+    return session
+
+
 def test_health_detailed_returns_report_structure() -> None:
     mock_report = _make_report("healthy")
 
@@ -37,7 +43,10 @@ def test_health_detailed_returns_report_structure() -> None:
 
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.health._get_registry"
+            "anima_server.api.routes.health.require_unlocked_session",
+            return_value=_mock_session(),
+        ), patch(
+            "anima_server.api.routes.health.get_default_registry"
         ) as mock_get_registry:
             mock_registry = AsyncMock()
             mock_registry.run_all = AsyncMock(return_value=mock_report)
@@ -68,7 +77,10 @@ def test_health_check_one_returns_single_check() -> None:
 
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.health._get_registry"
+            "anima_server.api.routes.health.require_unlocked_session",
+            return_value=_mock_session(),
+        ), patch(
+            "anima_server.api.routes.health.get_default_registry"
         ) as mock_get_registry:
             mock_registry = AsyncMock()
             mock_registry.run_one = AsyncMock(return_value=mock_result)
@@ -100,6 +112,9 @@ def test_health_logs_summary_returns_counts() -> None:
             el.flush()
 
             with patch(
+                "anima_server.api.routes.health.require_unlocked_session",
+                return_value=_mock_session(),
+            ), patch(
                 "anima_server.api.routes.health.get_event_logger", return_value=el
             ):
                 response = client.get("/api/health/logs/summary?hours=1")
@@ -126,6 +141,9 @@ def test_health_logs_returns_event_list() -> None:
             el.flush()
 
             with patch(
+                "anima_server.api.routes.health.require_unlocked_session",
+                return_value=_mock_session(),
+            ), patch(
                 "anima_server.api.routes.health.get_event_logger", return_value=el
             ):
                 response = client.get("/api/health/logs?category=llm&since_hours=1")
@@ -150,7 +168,10 @@ def test_health_detailed_with_degraded_status() -> None:
 
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.health._get_registry"
+            "anima_server.api.routes.health.require_unlocked_session",
+            return_value=_mock_session(),
+        ), patch(
+            "anima_server.api.routes.health.get_default_registry"
         ) as mock_get_registry:
             mock_registry = AsyncMock()
             mock_registry.run_all = AsyncMock(return_value=mock_report)
@@ -162,3 +183,16 @@ def test_health_detailed_with_degraded_status() -> None:
         data = response.json()
         assert data["status"] == "degraded"
         assert data["checks"]["llm_connectivity"]["status"] == "degraded"
+
+
+def test_health_endpoints_require_auth() -> None:
+    """Verify that all health endpoints return 401 without a session token."""
+    with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
+        for path in [
+            "/api/health/detailed",
+            "/api/health/check/db_integrity",
+            "/api/health/logs",
+            "/api/health/logs/summary",
+        ]:
+            response = client.get(path)
+            assert response.status_code == 401, f"{path} should require auth"

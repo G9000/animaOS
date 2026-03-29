@@ -753,24 +753,21 @@ def continue_reasoning() -> str:
     return "Continuing reasoning. Use your tools or send_message when ready."
 
 
-async def check_system_health(user_id: int) -> str:
+@tool
+def check_system_health() -> str:
     """Run system health checks and return a formatted report.
 
     Checks database integrity, LLM connectivity, and background task status.
     """
-    from anima_server.services.health.checks import (
-        check_background_tasks,
-        check_db_integrity,
-        check_llm_connectivity,
-    )
-    from anima_server.services.health.registry import HealthCheckRegistry
+    import asyncio
 
-    registry = HealthCheckRegistry()
-    registry.register("db_integrity", check_db_integrity)
-    registry.register("llm_connectivity", lambda uid: check_llm_connectivity(uid))
-    registry.register("background_tasks", lambda uid: check_background_tasks(uid))
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.health.registry import get_default_registry
 
-    report = await registry.run_all(user_id=user_id)
+    ctx = get_tool_context()
+    registry = get_default_registry()
+
+    report = asyncio.run(registry.run_all(user_id=ctx.user_id))
     return registry.format_report(report)
 
 

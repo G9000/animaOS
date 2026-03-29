@@ -18,6 +18,21 @@ _STATUS_LABELS: dict[HealthStatus, str] = {
 }
 
 
+def get_default_registry() -> HealthCheckRegistry:
+    """Build a registry with all v1 health checks registered."""
+    from anima_server.services.health.checks import (
+        check_background_tasks,
+        check_db_integrity,
+        check_llm_connectivity,
+    )
+
+    registry = HealthCheckRegistry()
+    registry.register("db_integrity", check_db_integrity)
+    registry.register("llm_connectivity", lambda uid: check_llm_connectivity(uid))
+    registry.register("background_tasks", lambda uid: check_background_tasks(uid))
+    return registry
+
+
 class HealthCheckRegistry:
     """Coordinator that runs registered health checks and aggregates results."""
 

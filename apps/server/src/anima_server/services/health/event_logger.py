@@ -105,7 +105,7 @@ class EventLogger:
                         try:
                             data = json.loads(raw_line)
                             record = EventRecord(**data)
-                        except (json.JSONDecodeError, Exception):
+                        except Exception:
                             continue
 
                         if category and record.category != category:

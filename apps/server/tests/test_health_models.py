@@ -94,3 +94,11 @@ def test_health_report_all_healthy():
     }
     report = HealthReport.from_checks(checks)
     assert report.status == "healthy"
+
+
+def test_health_report_from_empty_checks():
+    from anima_server.services.health.models import HealthReport
+
+    report = HealthReport.from_checks({})
+    assert report.status == "healthy"
+    assert report.checks == {}

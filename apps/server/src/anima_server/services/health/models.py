@@ -58,5 +58,7 @@ class HealthReport(BaseModel):
 
     @classmethod
     def from_checks(cls, checks: dict[str, CheckResult]) -> HealthReport:
+        if not checks:
+            return cls(status="healthy", checks={})
         worst = max(checks.values(), key=lambda c: _STATUS_RANK[c.status])
         return cls(status=worst.status, checks=checks)
