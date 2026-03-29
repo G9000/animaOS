@@ -98,3 +98,11 @@ def test_correction_and_extraction_get_distinct_hashes(pg_session: Session) -> N
     hash_llm = _content_hash(1, "fact", "llm", "likes cats")
     hash_correction = _content_hash(1, "fact", "correction", "likes cats")
     assert hash_llm != hash_correction
+
+
+def test_pending_memory_op_has_content_hash() -> None:
+    """PendingMemoryOp model has content_hash column."""
+    from anima_server.models.pending_memory_op import PendingMemoryOp
+
+    columns = {c.name for c in PendingMemoryOp.__table__.columns}
+    assert "content_hash" in columns
