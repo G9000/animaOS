@@ -131,6 +131,65 @@ def ensure_runtime_tables() -> None:
 
     logger.info("Runtime Alembic migrations applied.")
 
+    _reconcile_embedding_dimension(engine)
+
+
+def _reconcile_embedding_dimension(engine: Engine) -> None:
+    """Drop and recreate the embeddings table if the vector dimension changed.
+
+    The PG embeddings table is a runtime cache — source of truth is
+    ``MemoryItem.embedding_json`` in SQLite.  Safe to recreate; a
+    background sync will repopulate it.
+
+    Uses ``create_all`` (not Alembic) to recreate the table, because
+    Alembic's ``upgrade head`` is a no-op when already at head.  The
+    column type on the ORM model is updated in-place before creating
+    so the new table gets the correct dimension.
+    """
+    from anima_server.config import resolve_embedding_dim
+
+    expected_dim = resolve_embedding_dim()
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT atttypmod FROM pg_attribute "
+                    "WHERE attrelid = 'embeddings'::regclass "
+                    "AND attname = 'embedding'"
+                )
+            ).fetchone()
+            if row is None:
+                return
+            pg_dim = row[0]
+            if pg_dim == expected_dim:
+                return
+            logger.warning(
+                "Embedding dimension mismatch: PG column has %d, "
+                "model expects %d — recreating embeddings table",
+                pg_dim,
+                expected_dim,
+            )
+        from pgvector.sqlalchemy import Vector
+
+        from anima_server.db.runtime_base import RuntimeBase
+        from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+        RuntimeEmbedding.__table__.c.embedding.type = Vector(expected_dim)
+
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS embeddings CASCADE"))
+        RuntimeBase.metadata.create_all(
+            engine, tables=[RuntimeEmbedding.__table__]
+        )
+        logger.info(
+            "Embeddings table recreated with dimension %d. "
+            "Background sync will repopulate.",
+            expected_dim,
+        )
+    except Exception:
+        logger.debug("Embedding dimension check skipped", exc_info=True)
+
 
 def ensure_pgvector() -> None:
     """Enable the pgvector extension. Idempotent."""

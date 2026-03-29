@@ -22,10 +22,12 @@ TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
 
 
 def _vector_column() -> Any:
-    """Return a pgvector Vector column with the configured dimension."""
+    """Return a pgvector Vector column with the auto-detected dimension."""
     from pgvector.sqlalchemy import Vector
 
-    return Vector(settings.agent_embedding_dim)
+    from anima_server.config import resolve_embedding_dim
+
+    return Vector(resolve_embedding_dim())
 
 
 class RuntimeEmbedding(RuntimeBase):

@@ -13,6 +13,7 @@ class StopReason(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     CANCELLED = "cancelled"
     EMPTY_RESPONSE = "empty_response"
+    NO_TERMINAL_TOOL = "no_terminal_tool"
 
 
 class StepProgression(IntEnum):
@@ -43,7 +44,6 @@ class ToolExecutionResult:
     is_terminal: bool = False
     memory_modified: bool = False
     inner_thinking: str | None = None
-    heartbeat_requested: bool = False
 
 
 @dataclass(frozen=True, slots=True)

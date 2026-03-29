@@ -246,7 +246,7 @@ sequenceDiagram
     Note over SW: Trigger fires (inactivity / threshold / compaction / pre-turn check)
 
     SW->>PG: Load PendingMemoryOps (unconsolidated)
-    SW->>PG: Load MemoryCandidates (extracted/queued)
+    SW->>PG: Load MemoryCandidates (extracted/queued/retriable-failed)
     SW->>Soul: Read canonical state for dedup
     loop Per item (ops first, then candidates)
         SW->>Soul: Write (per-item commit)
@@ -292,7 +292,11 @@ Thread-switch detection (`_last_active_thread` dict) is fragile:
 The pre-turn check is simpler and handles all cases:
 ```sql
 SELECT COUNT(*) FROM memory_candidates
-WHERE user_id = ? AND status IN ('extracted', 'queued')
+WHERE user_id = ?
+  AND (
+    status IN ('extracted', 'queued')
+    OR (status = 'failed' AND retry_count < MAX_RETRY_COUNT)
+  )
 ```
 - If 0 → skip (no latency added)
 - If > 0 → run Soul Writer before prompt assembly (fast — no LLM, just dedup + write)

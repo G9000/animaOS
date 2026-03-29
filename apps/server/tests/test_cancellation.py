@@ -101,13 +101,13 @@ def _terminal_step(text: str) -> StepExecutionResult:
 def _thinking_step() -> StepExecutionResult:
     """A non-terminal tool-calling step that makes the loop continue.
 
-    Uses ``request_heartbeat=True`` so the runtime knows to continue
-    to the next step (heartbeat-driven continuation).
+    Under V3 semantics, non-terminal tools auto-continue the loop
+    without needing any special parameter.
     """
     return StepExecutionResult(
         assistant_text="",
         tool_calls=(
-            ToolCall(id="tc-think", name="dummy_think", arguments={"request_heartbeat": True}),
+            ToolCall(id="tc-think", name="dummy_think", arguments={}),
         ),
         usage=UsageStats(prompt_tokens=10, completion_tokens=5),
     )

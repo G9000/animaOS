@@ -127,7 +127,6 @@ async def test_append_memory_respond_pipeline() -> None:
                                     "thinking": "User mentioned they have a dog named Biscuit.",
                                     "label": "human",
                                     "content": "Has a dog named Biscuit.",
-                                    "request_heartbeat": True,
                                 },
                             ),
                         )
@@ -257,7 +256,6 @@ async def test_core_memory_replace_pipeline() -> None:
                                     "label": "human",
                                     "old_text": "Works at Google",
                                     "new_text": "Works at Apple (switched March 2026)",
-                                    "request_heartbeat": True,
                                 },
                             ),
                         )

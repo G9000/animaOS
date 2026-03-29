@@ -177,10 +177,14 @@ def test_build_conversation_messages_prunes_stale_tool_rule_violations() -> None
 
     messages = build_conversation_messages(history, "second", system_prompt="Be nice.")
 
-    assert len(messages) == 4
+    # Both tool messages are orphaned (no preceding assistant with tool_calls)
+    # so the sanitizer strips them to prevent OpenAI 400 errors.
+    assert len(messages) == 3
+    assert isinstance(messages[0], SystemMessage)
     assert isinstance(messages[1], HumanMessage)
-    assert isinstance(messages[2], ToolMessage)
-    assert messages[2].content == "Approval required before running tool: send_email"
+    assert messages[1].content == "first"
+    assert isinstance(messages[2], HumanMessage)
+    assert messages[2].content == "second"
 
 
 # --------------------------------------------------------------------------- #
