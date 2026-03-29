@@ -68,3 +68,55 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# Embedding dimension resolution (lives here to avoid circular imports
+# between models/ and services/agent/)
+# ---------------------------------------------------------------------------
+
+KNOWN_EMBEDDING_DIMS: dict[str, int] = {
+    "nomic-embed-text": 768,
+    "mxbai-embed-large": 1024,
+    "all-minilm": 384,
+    "snowflake-arctic-embed": 1024,
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+    "openai/text-embedding-3-small": 1536,
+    "openai/text-embedding-3-large": 3072,
+}
+
+_DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
+    "ollama": "nomic-embed-text",
+    "openrouter": "openai/text-embedding-3-small",
+    "openai": "text-embedding-3-small",
+    "vllm": "text-embedding-3-small",
+}
+
+_detected_embedding_dim: int | None = None
+
+
+def set_detected_embedding_dim(dim: int) -> None:
+    global _detected_embedding_dim
+    _detected_embedding_dim = dim
+
+
+def clear_detected_embedding_dim() -> None:
+    global _detected_embedding_dim
+    _detected_embedding_dim = None
+
+
+def resolve_embedding_dim() -> int:
+    """Return the embedding dimension for the active model.
+
+    Priority: detected at runtime > known lookup > config fallback.
+    """
+    if _detected_embedding_dim is not None:
+        return _detected_embedding_dim
+    model = settings.agent_extraction_model.strip()
+    if not model:
+        model = _DEFAULT_EMBEDDING_MODELS.get(settings.agent_provider, "nomic-embed-text")
+    if model in KNOWN_EMBEDDING_DIMS:
+        return KNOWN_EMBEDDING_DIMS[model]
+    return settings.agent_embedding_dim

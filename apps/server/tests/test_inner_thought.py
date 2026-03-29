@@ -207,7 +207,6 @@ async def test_tool_then_respond_with_thinking() -> None:
                         name="lookup",
                         arguments={
                             "thinking": "Need to search for this.",
-                            "request_heartbeat": True,
                         },
                     ),
                 )

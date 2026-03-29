@@ -53,11 +53,35 @@ def build_conversation_messages(
     )
     if user_message is not None:
         messages.append(make_user_message(user_message))
-    return messages
+    return _sanitize_tool_message_ordering(messages)
 
 
 def _is_stale_tool_rule_violation_message(message: StoredMessage) -> bool:
     return message.role == "tool" and message.content.startswith(_TOOL_RULE_VIOLATION_PREFIX)
+
+
+def _sanitize_tool_message_ordering(messages: list[Any]) -> list[Any]:
+    """Strip orphaned tool messages that lack a preceding assistant tool_calls.
+
+    OpenAI-compatible APIs require every ``tool`` role message to follow an
+    ``assistant`` message containing ``tool_calls``.  After compaction or
+    summary-based history truncation, tool messages can become orphaned.
+    Drop them to prevent 400 errors.
+    """
+    result: list[Any] = []
+    saw_tool_calls = False
+    for msg in messages:
+        msg_type = getattr(msg, "type", "")
+        if msg_type == "ai":
+            saw_tool_calls = bool(getattr(msg, "tool_calls", None))
+            result.append(msg)
+        elif msg_type == "tool":
+            if saw_tool_calls:
+                result.append(msg)
+        else:
+            saw_tool_calls = False
+            result.append(msg)
+    return result
 
 
 def to_runtime_message(message: StoredMessage) -> Any:

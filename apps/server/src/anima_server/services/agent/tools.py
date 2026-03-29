@@ -743,15 +743,6 @@ def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
     return f"Replaced text in {label} memory. It will be visible in your next step."
 
 
-@tool
-def continue_reasoning() -> str:
-    """Continue your reasoning chain without sending a message to the user.
-    Use this when you need to take multiple steps (e.g., search memory,
-    then decide, then respond). Calling this tool gives you another
-    reasoning step before you must send_message.
-    """
-    return "Continuing reasoning. Use your tools or send_message when ready."
-
 
 def inject_inner_thoughts_into_tools(
     tools: list[Any],
@@ -790,47 +781,6 @@ def inject_inner_thoughts_into_tools(
     return tools
 
 
-_HEARTBEAT_KEY = "request_heartbeat"
-_HEARTBEAT_DESCRIPTION = (
-    "Request an immediate follow-up step after this tool executes. "
-    "Set to true when you need to chain tools (e.g. search then update). "
-    "Set to false or omit when you are done and ready to send_message."
-)
-
-
-def inject_heartbeat_into_tools(
-    tools: list[Any],
-    terminal_tool_names: set[str] | None = None,
-) -> list[Any]:
-    """Inject ``request_heartbeat`` as an optional boolean parameter on
-    every non-terminal tool schema.
-
-    Terminal tools (e.g. ``send_message``) are excluded — they always
-    end the turn.  The parameter is appended last (after all other
-    params) so the model fills in the real arguments first.
-    """
-    terminal = terminal_tool_names or {"send_message"}
-    for t in tools:
-        name = getattr(t, "name", "") or getattr(t, "__name__", "")
-        if name in terminal:
-            continue
-        schema_obj = getattr(t, "args_schema", None)
-        if schema_obj is None or not hasattr(schema_obj, "model_json_schema"):
-            continue
-        schema = schema_obj.model_json_schema()
-        props = schema.get("properties")
-        if not isinstance(props, dict):
-            continue
-        if _HEARTBEAT_KEY in props:
-            continue  # already injected
-        props[_HEARTBEAT_KEY] = {
-            "type": "boolean",
-            "description": _HEARTBEAT_DESCRIPTION,
-        }
-        # Not required — defaults to false (stop after this tool)
-        t.args_schema = _SimpleSchema(schema)
-    return tools
-
 
 def get_core_tools() -> list[Any]:
     """Return the minimal cognitive tool set.
@@ -868,7 +818,6 @@ def get_tools() -> list[Any]:
     """Return all tools available to the agent (core + extensions)."""
     tools = get_core_tools() + get_extension_tools()
     inject_inner_thoughts_into_tools(tools)
-    inject_heartbeat_into_tools(tools)
     return tools
 
 
@@ -877,7 +826,7 @@ def prepare_action_tool_schemas(
     inner_thoughts_key: str = "thinking",
 ) -> list[dict[str, Any]]:
     """Convert client-registered action tool schemas into OpenAI function
-    format with ``thinking`` and ``heartbeat`` params injected.
+    format with ``thinking`` param injected.
 
     Returns dicts that LangChain's ``bind_tools`` accepts directly alongside
     native tool objects.
@@ -902,13 +851,6 @@ def prepare_action_tool_schemas(
             if inner_thoughts_key not in required:
                 required = [inner_thoughts_key, *required]
             params["required"] = required
-
-        # Inject heartbeat as optional param
-        if s.get("name") != "send_message" and _HEARTBEAT_KEY not in props:
-            params["properties"][_HEARTBEAT_KEY] = {
-                "type": "boolean",
-                "description": _HEARTBEAT_DESCRIPTION,
-            }
 
         result.append(
             {

@@ -126,7 +126,7 @@ def build_thought_event(step_index: int, thought: str) -> AgentStreamEvent:
 
 def build_tool_call_event(step_index: int, tool_call: ToolCall) -> AgentStreamEvent:
     # Strip injected kwargs from the client-facing event.
-    _injected = {"thinking", "request_heartbeat"}
+    _injected = {"thinking"}
     args = {k: v for k, v in tool_call.arguments.items() if k not in _injected}
     data: dict[str, object] = {
         "stepIndex": step_index,
@@ -323,7 +323,7 @@ def _preview_text(text: str, *, limit: int = _TRACE_PREVIEW_LIMIT) -> str:
     return f"{text[:limit]}..."
 
 
-_INJECTED_KWARG_KEYS = ("thinking", "request_heartbeat")
+_INJECTED_KWARG_KEYS = ("thinking",)
 
 
 def _redact_injected_kwargs_from_raw(raw: str) -> str:
