@@ -37,13 +37,14 @@ async def health_logs(
     since_hours: float = 24,
     limit: int = Query(default=100, le=1000),
 ) -> list[dict[str, Any]]:
-    require_unlocked_session(request)
+    session = require_unlocked_session(request)
     el = get_event_logger()
     since = datetime.now(UTC) - timedelta(hours=since_hours)
     events = el.query_events(
         category=category,
         level=level,
         since=since,
+        user_id=session.user_id,
         limit=limit,
     )
     return [e.model_dump(mode="json") for e in events]
@@ -51,6 +52,10 @@ async def health_logs(
 
 @router.get("/logs/summary")
 async def health_logs_summary(request: Request, hours: float = 24) -> dict[str, int]:
+    # NOTE: Summary shows aggregate warn/error counts across all users.
+    # This is intentional — it's operational data (category-level counts),
+    # not user-private event details. The shared JSONL log doesn't support
+    # efficient per-user aggregation. For user-specific events, use /logs.
     require_unlocked_session(request)
     el = get_event_logger()
     since = datetime.now(UTC) - timedelta(hours=hours)

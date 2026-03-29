@@ -136,8 +136,8 @@ def test_health_logs_returns_event_list() -> None:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             el = EventLogger(log_dir=Path(tmpdir), min_level="trace")
-            el.emit("llm", "invoke", "info")
-            el.emit("llm", "failure", "error", data={"reason": "500"})
+            el.emit("llm", "invoke", "info", user_id=1)
+            el.emit("llm", "failure", "error", data={"reason": "500"}, user_id=1)
             el.flush()
 
             with patch(

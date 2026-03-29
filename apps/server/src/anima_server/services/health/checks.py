@@ -162,6 +162,7 @@ async def check_background_tasks(
             failed_count = (
                 db.query(RuntimeBackgroundTaskRun)
                 .filter(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
                     RuntimeBackgroundTaskRun.status == "failed",
                     RuntimeBackgroundTaskRun.completed_at >= one_hour_ago,
                 )
@@ -172,6 +173,7 @@ async def check_background_tasks(
             stuck_count = (
                 db.query(RuntimeBackgroundTaskRun)
                 .filter(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
                     RuntimeBackgroundTaskRun.status == "running",
                     RuntimeBackgroundTaskRun.started_at < stuck_cutoff,
                 )
@@ -182,6 +184,7 @@ async def check_background_tasks(
             last_completed = (
                 db.query(RuntimeBackgroundTaskRun.completed_at)
                 .filter(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
                     RuntimeBackgroundTaskRun.status == "completed",
                     RuntimeBackgroundTaskRun.task_type == "consolidation",
                 )

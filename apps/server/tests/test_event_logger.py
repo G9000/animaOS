@@ -116,6 +116,31 @@ def test_query_events_limit(log_dir: Path):
     assert len(results) == 3
 
 
+def test_query_events_filters_by_user_id(log_dir: Path):
+    from anima_server.services.health.event_logger import EventLogger
+
+    logger = EventLogger(log_dir=log_dir, min_level="trace")
+    logger.emit("llm", "invoke", "trace", user_id=1)
+    logger.emit("llm", "invoke", "trace", user_id=2)
+    logger.emit("llm", "failure", "error", user_id=1)
+    logger.emit("tool", "execute", "trace")  # no user_id
+    logger.flush()
+
+    # Filter by user 1 -> should get 2 events
+    results = logger.query_events(user_id=1)
+    assert len(results) == 2
+    assert all(r.user_id == 1 for r in results)
+
+    # Filter by user 2 -> should get 1 event
+    results = logger.query_events(user_id=2)
+    assert len(results) == 1
+    assert results[0].user_id == 2
+
+    # No user_id filter -> should get all 4
+    results = logger.query_events()
+    assert len(results) == 4
+
+
 def test_cleanup_old_files(log_dir: Path):
     from anima_server.services.health.event_logger import EventLogger
 

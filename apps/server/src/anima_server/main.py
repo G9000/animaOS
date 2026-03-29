@@ -109,6 +109,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             embedded_pg.stop()
         raise
 
+    from .services.health.event_logger import (
+        EventLogger,
+        StructuredLogHandler,
+        get_event_logger,
+    )
+
+    health_handler: StructuredLogHandler | None = None
+    health_logger: EventLogger | None = None
+
     try:
         async def _periodic_inactivity_sweep() -> None:
             while True:
@@ -138,11 +147,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
 
         # Install structured health event logger
-        from .services.health.event_logger import (
-            StructuredLogHandler,
-            get_event_logger,
-        )
-
         health_logger = get_event_logger()
         health_logger.cleanup_old_logs()
         health_handler = StructuredLogHandler(health_logger)
@@ -160,8 +164,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
         finally:
-            logging.getLogger("anima_server").removeHandler(health_handler)
-            health_logger.flush()
+            if health_handler is not None:
+                logging.getLogger("anima_server").removeHandler(health_handler)
+            if health_logger is not None:
+                health_logger.flush()
             dispose_runtime_engine()
             if embedded_pg is not None:
                 embedded_pg.stop()

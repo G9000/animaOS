@@ -1057,6 +1057,10 @@ class AgentRuntime:
 
                     ctx.progression = StepProgression.RESPONSE_RECEIVED
 
+                health_emit("llm", "invoke", "trace", data={
+                    "attempt": attempt,
+                    "model": getattr(self._adapter, '_model', None),
+                })
                 return step_result
 
             except _CancelledDuringStream:

@@ -87,6 +87,7 @@ class EventLogger:
         event: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        user_id: int | None = None,
         limit: int = 100,
     ) -> list[EventRecord]:
         # Flush pending buffer first so queries see recent events
@@ -117,6 +118,8 @@ class EventLogger:
                         if since and record.ts < since:
                             continue
                         if until and record.ts > until:
+                            continue
+                        if user_id is not None and record.user_id != user_id:
                             continue
 
                         results.append(record)

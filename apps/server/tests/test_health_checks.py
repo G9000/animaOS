@@ -185,3 +185,50 @@ async def test_background_tasks_unhealthy_stuck():
 
     result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
     assert result.status == "unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_background_tasks_filtered_by_user_id():
+    """Tasks from another user should not affect the queried user's report."""
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.services.health.checks import check_background_tasks
+
+    factory = get_runtime_session_factory()
+    with factory() as db:
+        # User 2 has a stuck task and failed tasks
+        db.add(RuntimeBackgroundTaskRun(
+            user_id=2,
+            task_type="consolidation",
+            status="running",
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+        ))
+        for _ in range(3):
+            db.add(RuntimeBackgroundTaskRun(
+                user_id=2,
+                task_type="consolidation",
+                status="failed",
+                started_at=datetime.now(UTC) - timedelta(minutes=30),
+                completed_at=datetime.now(UTC) - timedelta(minutes=20),
+                error_message="test failure",
+            ))
+        # User 1 has a healthy completed task
+        db.add(RuntimeBackgroundTaskRun(
+            user_id=1,
+            task_type="consolidation",
+            status="completed",
+            started_at=datetime.now(UTC) - timedelta(minutes=10),
+            completed_at=datetime.now(UTC) - timedelta(minutes=5),
+        ))
+        db.commit()
+
+    # User 1 should be healthy despite user 2's issues
+    result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
+    assert result.status == "healthy"
+    assert result.details["failed_last_hour"] == 0
+    assert result.details["stuck_tasks"] == 0
+
+    # User 2 should be unhealthy (stuck task)
+    result2 = await check_background_tasks(user_id=2, runtime_db_factory=factory)
+    assert result2.status == "unhealthy"
+    assert result2.details["stuck_tasks"] >= 1
