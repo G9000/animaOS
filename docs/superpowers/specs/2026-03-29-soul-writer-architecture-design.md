@@ -1,10 +1,10 @@
 # Soul Writer Architecture — Signal-Based Memory Promotion
 
 **Date**: 2026-03-29
-**Status**: Approved (Revision 6 — Final)
+**Status**: Approved (Revision 7 — Final)
 **Priority**: P0 — Foundational Architecture
 **Supersedes**: `docs/superpowers/specs/2026-03-29-soul-write-serialization-design.md` (obsoleted)
-**Reviews**: Codex (GPT-5.4) x5, Opus (Software Architect) x3
+**Reviews**: Codex (GPT-5.4) x6, Opus (Software Architect) x3
 
 ---
 
@@ -124,18 +124,18 @@ graph TB
 
 **Inactivity/sleep path (currently: every 3rd turn OR on 5-min idle → NEW: idle-only):**
 
-Under the new architecture, ALL orchestrator tasks move to idle-only triggers. `SLEEPTIME_FREQUENCY` (the per-N-turns counter) is removed — orchestrator tasks only run when Soul Writer triggers fire (inactivity, compaction, pre-turn check, shutdown, threshold). This eliminates per-turn background SQLCipher writes from the orchestrator entirely.
+Under the new architecture, ALL orchestrator tasks move to **inactivity-only**. `SLEEPTIME_FREQUENCY` (the per-N-turns counter) is removed. Orchestrator tasks (KG, episodes, heat decay, etc.) run ONLY after the inactivity timer fires — NOT on pre-turn check, compaction, or threshold triggers. Those triggers run Soul Writer (promotion) only. This eliminates per-turn background SQLCipher writes from the orchestrator entirely.
 
 | Operation | Function | New Trigger |
 |-----------|----------|-------------|
-| KG entity/relation upserts | `knowledge_graph.py` | Soul Writer trigger (idle-only) |
-| Heat decay | `sleep_agent.py` | Soul Writer trigger (idle-only) |
-| Episode generation | `episodes.py` | Soul Writer trigger (idle-only) |
-| Contradiction scan | `sleep_tasks.py` | Soul Writer trigger (heat-gated, idle-only) |
-| Profile synthesis | `sleep_tasks.py` | Soul Writer trigger (heat-gated, idle-only) |
-| Deep monologue | `inner_monologue.py` | Soul Writer trigger (24h-gated, idle-only) |
-| Emotional pattern promotion | `promote_emotional_patterns()` | Soul Writer trigger (idle-only) |
-| Forgetting/suppression | `forgetting.py` | Soul Writer trigger (idle-only) |
+| KG entity/relation upserts | `knowledge_graph.py` | Inactivity trigger only |
+| Heat decay | `sleep_agent.py` | Inactivity trigger only |
+| Episode generation | `episodes.py` | Inactivity trigger only |
+| Contradiction scan | `sleep_tasks.py` | Inactivity trigger only (heat-gated) |
+| Profile synthesis | `sleep_tasks.py` | Inactivity trigger only (heat-gated) |
+| Deep monologue | `inner_monologue.py` | Inactivity trigger only (24h-gated) |
+| Emotional pattern promotion | `promote_emotional_patterns()` | Inactivity trigger only |
+| Forgetting/suppression | `forgetting.py` | Inactivity trigger only |
 
 **User-initiated (API/UI — infrequent, intentional):**
 
@@ -366,6 +366,7 @@ Currently calls `promote_session_note()` which calls `add_memory_item` → direc
 - Change base class from `Base` to `RuntimeBase`
 - Move model to a runtime model file
 - `thread_id` FK currently references SQLCipher `threads` table — must reference PG `RuntimeThread` instead
+- `promoted_to_item_id` FK references SQLCipher `memory_items.id` — becomes a logical reference (not enforced FK) since `memory_items` stays in SQLCipher. Under async promotion, note deactivation happens when `save_to_memory` creates the `MemoryCandidate`, not when Soul Writer promotes it.
 - Alembic migration on both engines (drop from SQLCipher, create on PG)
 - Update `session_memory.py` to use runtime DB session
 
@@ -415,7 +416,10 @@ CREATE TABLE memory_candidates (
     source_message_ids  INTEGER[],  -- RuntimeMessage IDs that produced this
     extraction_model    TEXT,
     content_hash        TEXT NOT NULL,
-        -- sha256(user_id:category:normalized_content)
+        -- sha256(user_id:category:importance_source:normalized_content)
+        -- importance_source is included so a correction candidate
+        -- with the same content as an extraction candidate gets a
+        -- distinct hash — preserving supersedes_item_id semantics
     status              TEXT NOT NULL DEFAULT 'extracted',
         -- extracted / queued / promoted / rejected / superseded / failed
     last_error          TEXT,
@@ -662,7 +666,7 @@ def plan_candidate_promotion(soul_db, candidate, user_id) -> PromotionDecision:
     if candidate.importance_source == "correction" and candidate.supersedes_item_id:
         # Verify target item still exists and is active
         target = soul_db.get(MemoryItem, candidate.supersedes_item_id)
-        if target is not None and not getattr(target, "suppressed", False):
+        if target is not None and target.superseded_by is None:
             return PromotionDecision(action="supersede",
                                      old_item=target,
                                      reason=f"correction supersedes item {target.id}")
@@ -701,8 +705,8 @@ def plan_candidate_promotion(soul_db, candidate, user_id) -> PromotionDecision:
         # Narrow slot match only (uses _FACT_SLOT_PATTERNS from memory_store.py:
         # age, birthday, occupation, employer, location, name, gender).
         # Freeform categories: append, don't replace.
-        from anima_server.services.agent.memory_store import _match_fact_slot  # same package, private but stable
-        if _match_fact_slot(candidate.content) is not None:
+        from anima_server.services.agent.memory_store import _extract_fact_slot  # same package, private but stable
+        if _extract_fact_slot(candidate.content) is not None:
             return PromotionDecision(action="supersede",
                                      old_item=write_analysis.matched_item,
                                      reason=f"slot match supersedes item {write_analysis.matched_item.id}")
@@ -807,6 +811,10 @@ async def run_background_extraction(
                                 source="regex")
 
     # 2. LLM extraction → MemoryCandidate rows in PG
+    #    Uses predict_calibrate_extraction when available (F3),
+    #    falls back to extract_memories_via_llm (direct extraction).
+    #    Both paths create MemoryCandidates with the appropriate
+    #    importance_source ("predict_calibrate" or "llm").
     if settings.agent_provider != "scaffold":
         llm_result = await extract_memories_via_llm(
             user_message=user_message,
@@ -824,7 +832,7 @@ async def run_background_extraction(
 
     # 4. Check threshold trigger
     candidate_count = count_eligible_candidates(user_id)
-    if candidate_count >= CANDIDATE_THRESHOLD:
+    if candidate_count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
         await run_soul_writer(user_id)
 ```
 
@@ -841,7 +849,7 @@ def create_memory_candidate(user_id, *, content, category, importance,
     content_hash (active statuses only) prevents duplicates at the DB level.
     """
     normalized = normalize_fragment(content)
-    content_hash = sha256(f"{user_id}:{category}:{normalized}")
+    content_hash = sha256(f"{user_id}:{category}:{importance_source}:{normalized}")
 
     candidate = MemoryCandidate(
         user_id=user_id, content=content, category=category,
@@ -904,6 +912,8 @@ if compaction_result is not None:
 
 ```python
 async def on_shutdown():
+    # get_active_user_ids: new helper — query RuntimeThread for
+    # distinct user_ids with recent activity (last 24h).
     for user_id in get_active_user_ids():
         await run_soul_writer(user_id)
     await drain_background_memory_tasks()
@@ -911,7 +921,7 @@ async def on_shutdown():
 
 ### Threshold (in background extraction)
 
-Checked inline after extraction. If count >= CANDIDATE_THRESHOLD, triggers Soul Writer.
+Checked inline after extraction. If count >= `SOUL_WRITER_CANDIDATE_THRESHOLD`, triggers Soul Writer.
 
 ---
 
@@ -1063,7 +1073,7 @@ Existing settings unchanged:
 - Move `SessionNote` from `Base` (SQLCipher) to `RuntimeBase` (PG) — update FK from `threads` → `RuntimeThread`, Alembic on both engines
 - Existing session notes in SQLCipher: abandoned (ephemeral, acceptable loss)
 - `set_intention` / `complete_goal` → **exempt** (read-modify-write on structured markdown, low frequency, see exemptions table)
-- **Invariant**: Automated memory extraction, save_to_memory, memory corrections, feedback signals, emotional patterns, and session notes all route through PG. Only exempt writes (task CRUD, set_intention, complete_goal) touch SQLCipher on the conversation path.
+- **Invariant**: Automated memory extraction, save_to_memory, memory corrections, feedback signals, and session notes all route through PG. Emotional pattern promotion moves from per-turn to inactivity-only (via Soul Writer). Only exempt writes (task CRUD, set_intention, complete_goal) touch SQLCipher on the conversation path.
 
 ### Phase 7: Cleanup
 - Remove `_commit_with_retry` from `sleep_agent.py`
