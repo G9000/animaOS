@@ -136,6 +136,19 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
         sweep_tasks.append(asyncio.create_task(_periodic_inactivity_sweep()))
         sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
+
+        # Install structured health event logger
+        from .services.health.event_logger import (
+            StructuredLogHandler,
+            get_event_logger,
+        )
+
+        health_logger = get_event_logger()
+        health_logger.cleanup_old_logs()
+        health_handler = StructuredLogHandler(health_logger)
+        health_handler.setLevel(logging.WARNING)
+        logging.getLogger("anima_server").addHandler(health_handler)
+
         yield
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
@@ -147,6 +160,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
         finally:
+            logging.getLogger("anima_server").removeHandler(health_handler)
+            health_logger.flush()
             dispose_runtime_engine()
             if embedded_pg is not None:
                 embedded_pg.stop()

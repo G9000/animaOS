@@ -21,6 +21,7 @@ def test_handler_captures_warning(log_dir: Path):
     handler = StructuredLogHandler(el)
 
     test_logger = logging.getLogger("anima_server.services.agent.runtime")
+    test_logger.disabled = False  # Alembic fileConfig may disable existing loggers
     test_logger.addHandler(handler)
     test_logger.setLevel(logging.WARNING)
     try:
@@ -43,6 +44,7 @@ def test_handler_captures_exception(log_dir: Path):
     handler = StructuredLogHandler(el)
 
     test_logger = logging.getLogger("anima_server.services.agent.executor")
+    test_logger.disabled = False  # Alembic fileConfig may disable existing loggers
     test_logger.addHandler(handler)
     test_logger.setLevel(logging.ERROR)
     try:
@@ -67,6 +69,7 @@ def test_handler_maps_unknown_logger_to_agent(log_dir: Path):
     handler = StructuredLogHandler(el)
 
     test_logger = logging.getLogger("anima_server.services.agent.something_new")
+    test_logger.disabled = False  # Alembic fileConfig may disable existing loggers
     test_logger.addHandler(handler)
     test_logger.setLevel(logging.WARNING)
     try:
@@ -86,6 +89,7 @@ def test_handler_maps_db_logger(log_dir: Path):
     handler = StructuredLogHandler(el)
 
     test_logger = logging.getLogger("anima_server.db.session")
+    test_logger.disabled = False  # Alembic fileConfig may disable existing loggers
     test_logger.addHandler(handler)
     test_logger.setLevel(logging.WARNING)
     try:
@@ -105,6 +109,7 @@ def test_handler_maps_route_logger_to_http(log_dir: Path):
     handler = StructuredLogHandler(el)
 
     test_logger = logging.getLogger("anima_server.api.routes.chat")
+    test_logger.disabled = False  # Alembic fileConfig may disable existing loggers
     test_logger.addHandler(handler)
     test_logger.setLevel(logging.WARNING)
     try:
