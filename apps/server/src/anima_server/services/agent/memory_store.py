@@ -186,6 +186,7 @@ def store_memory_item(
     allow_update: bool = False,
     defer_on_similar: bool = False,
     tags: list[str] | None = None,
+    dry_run: bool = False,
 ) -> MemoryWriteResult:
     cleaned_content = _clean_memory_text(content)
     analysis = analyze_memory_item(
@@ -206,6 +207,12 @@ def store_memory_item(
         if not allow_update or analysis.matched_item is None:
             return MemoryWriteResult(
                 action="conflict",
+                matched_item=analysis.matched_item,
+                reason=analysis.reason,
+            )
+        if dry_run:
+            return MemoryWriteResult(
+                action="superseded",
                 matched_item=analysis.matched_item,
                 reason=analysis.reason,
             )
@@ -233,6 +240,13 @@ def store_memory_item(
 
     if analysis.action == "rejected":
         return MemoryWriteResult(action="rejected", reason=analysis.reason)
+
+    if dry_run:
+        return MemoryWriteResult(
+            action="added",
+            similar_items=analysis.similar_items,
+            reason=analysis.reason,
+        )
 
     item = MemoryItem(
         user_id=user_id,

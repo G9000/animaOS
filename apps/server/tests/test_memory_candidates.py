@@ -145,3 +145,33 @@ async def test_sync_access_metadata(pg_session: Session) -> None:
     )
     assert result["items_synced"] == 1
     assert result["access_counts"] == {42: 3}
+
+
+def test_store_memory_item_dry_run_does_not_write() -> None:
+    """store_memory_item(dry_run=True) returns analysis without writing."""
+    from sqlalchemy import create_engine, func, select
+    from sqlalchemy.orm import sessionmaker
+
+    from anima_server.db.base import Base
+    from anima_server.models import MemoryItem, User
+    from anima_server.services.agent.memory_store import store_memory_item
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+
+    with factory() as session:
+        user = User(username="dry-run-test", password_hash="x", display_name="Test")
+        session.add(user)
+        session.flush()
+
+        result = store_memory_item(
+            session, user_id=user.id, content="Likes cats",
+            category="preference", source="extraction",
+            dry_run=True,
+        )
+        assert result.action == "added"
+        count = session.scalar(select(func.count(MemoryItem.id)))
+        assert count == 0
+
+    Base.metadata.drop_all(bind=engine)
