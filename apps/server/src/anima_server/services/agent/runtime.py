@@ -42,6 +42,7 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
 )
 from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
     build_chunk_event,
@@ -258,6 +259,8 @@ class AgentRuntime:
         _prev_failed_tool: str | None = None
 
         for step_index in range(self._max_steps):
+            if step_index == 0:
+                health_emit("agent", "turn_start", "trace", user_id=user_id)
             # --- Cancellation check (step boundary) ---
             if cancel_event is not None and cancel_event.is_set():
                 stop_reason = StopReason.CANCELLED
@@ -283,6 +286,9 @@ class AgentRuntime:
                 and len(allowed_set) > 1
             ):
                 allowed_set = allowed_set - {last_failed_tool}
+                health_emit("tool", "excluded", "warn", data={
+                    "tool": last_failed_tool,
+                }, user_id=user_id)
             allowed_tool_names = tuple(sorted(allowed_set))
             force_tool_call = bool(allowed_tool_names) and (
                 rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
@@ -710,6 +716,10 @@ class AgentRuntime:
         if not response:
             response = _default_response(stop_reason)
 
+        health_emit("agent", "turn_complete", "trace", user_id=user_id, data={
+            "steps": step_index + 1,
+            "stop_reason": stop_reason.value if stop_reason else None,
+        })
         return AgentResult(
             response=response,
             model=self._adapter.model,
@@ -1079,6 +1089,10 @@ class AgentRuntime:
 
                     ctx.progression = StepProgression.RESPONSE_RECEIVED
 
+                health_emit("llm", "invoke", "trace", data={
+                    "attempt": attempt,
+                    "model": getattr(self._adapter, '_model', None),
+                })
                 return step_result
 
             except _CancelledDuringStream:
@@ -1091,6 +1105,11 @@ class AgentRuntime:
                 if content_streamed:
                     raise
                 if is_last_attempt or not _is_retryable_error(exc):
+                    health_emit("llm", "failure", "error", data={
+                        "attempt": attempt,
+                        "error": str(exc),
+                        "retryable": _is_retryable_error(exc),
+                    })
                     raise
                 delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                 logger.warning(
@@ -1100,6 +1119,12 @@ class AgentRuntime:
                     exc,
                     delay,
                 )
+                health_emit("llm", "retry", "warn", data={
+                    "attempt": attempt,
+                    "retry_limit": retry_limit + 1,
+                    "error": str(exc),
+                    "backoff_s": delay,
+                })
                 await asyncio.sleep(delay)
 
         # Should never reach here, but satisfy the type checker.

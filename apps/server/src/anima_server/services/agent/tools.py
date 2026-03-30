@@ -744,6 +744,24 @@ def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
 
 
 
+@tool
+def check_system_health() -> str:
+    """Run system health checks and return a formatted report.
+
+    Checks database integrity, LLM connectivity, and background task status.
+    """
+    import asyncio
+
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.health.registry import get_default_registry
+
+    ctx = get_tool_context()
+    registry = get_default_registry()
+
+    report = asyncio.run(registry.run_all(user_id=ctx.user_id))
+    return registry.format_report(report)
+
+
 def inject_inner_thoughts_into_tools(
     tools: list[Any],
     inner_thoughts_key: str = "thinking",
@@ -811,6 +829,7 @@ def get_extension_tools() -> list[Any]:
         update_human_memory,
         current_datetime,
         recall_transcript,
+        check_system_health,
     ]
 
 

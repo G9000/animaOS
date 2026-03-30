@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 
 from anima_server.config import settings
 from anima_server.services.data_crypto import df
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +528,15 @@ async def run_background_extraction(
         if count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
             from anima_server.services.agent.soul_writer import run_soul_writer
             asyncio.create_task(run_soul_writer(user_id))
+
+    except Exception as exc:
+        logger.exception("Background memory consolidation failed for user %s", user_id)
+        health_emit("memory", "consolidation", "error", user_id=user_id, data={
+            "error": str(exc),
+        })
+
+    # Embedding backfill moved to inactivity-only path (reflection.py)
+    # to avoid per-turn SQLCipher writes from the conversation hot path.
 
 
 async def _backfill_user_embeddings(

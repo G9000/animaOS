@@ -75,6 +75,7 @@ from anima_server.services.agent.tool_context import (
 from anima_server.services.agent.tools import get_tools
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df
+from anima_server.services.health.event_logger import emit as health_emit
 
 _runner_lock = Lock()
 _cached_runner: AgentRuntime | None = None
@@ -825,6 +826,7 @@ async def _invoke_turn_runtime(
         except StepFailedError as exc:
             if not _should_retry_after_compaction(exc):
                 raise
+            health_emit("llm", "context_overflow", "warn", user_id=user_id)
             # Context overflow: compact and retry once.
             compacted = _emergency_compact(runtime_db, thread=thread, run=run)
             if not compacted:
@@ -833,6 +835,9 @@ async def _invoke_turn_runtime(
                 "Context overflow detected — compacted %d messages, retrying",
                 compacted.compacted_message_count,
             )
+            health_emit("llm", "compaction", "info", user_id=user_id, data={
+                "compacted_messages": compacted.compacted_message_count,
+            })
 
             # Post-compaction: promote pending candidates
             try:
