@@ -22,9 +22,7 @@ MAX_RETRY_COUNT = 3
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
-    if user_id not in _user_locks:
-        _user_locks[user_id] = asyncio.Lock()
-    return _user_locks[user_id]
+    return _user_locks.setdefault(user_id, asyncio.Lock())
 
 
 @dataclass(slots=True)
@@ -173,7 +171,7 @@ async def _run_soul_writer_inner(
         with soul_factory() as soul_db:
             from anima_server.services.agent.access_sync import sync_access_metadata
 
-            result.access_sync = await sync_access_metadata(
+            result.access_sync = sync_access_metadata(
                 user_id=user_id,
                 runtime_db=runtime_db,
                 soul_db=soul_db,
@@ -252,22 +250,36 @@ def _process_pending_op(
             result.ops_skipped += 1
             return
 
-    # Idempotency check 2: for append ops, check if content already in block
+    # Idempotency check 2: content-based check against current block state
     with soul_db_factory() as soul_db:
-        if op.op_type == "append":
-            block = _get_soul_block(soul_db, user_id=user_id, section=op.target_block)
-            if block is not None:
-                current_content = df(
-                    user_id, block.content,
-                    table="self_model_blocks", field="content",
-                )
-                if op.content.strip() in current_content:
-                    op.consolidated = True
-                    op.consolidated_at = now
-                    journal.journal_status = "confirmed"
-                    journal.reason = "idempotent skip — content already in block"
-                    result.ops_skipped += 1
-                    return
+        block = _get_soul_block(soul_db, user_id=user_id, section=op.target_block)
+        if block is not None:
+            current_content = df(
+                user_id, block.content,
+                table="self_model_blocks", field="content",
+            )
+            if op.op_type == "append" and op.content.strip() in current_content:
+                op.consolidated = True
+                op.consolidated_at = now
+                journal.journal_status = "confirmed"
+                journal.reason = "idempotent skip — content already in block"
+                result.ops_skipped += 1
+                return
+            if op.op_type == "full_replace" and current_content.strip() == op.content.strip():
+                op.consolidated = True
+                op.consolidated_at = now
+                journal.journal_status = "confirmed"
+                journal.reason = "idempotent skip — block already has target content"
+                result.ops_skipped += 1
+                return
+            if op.op_type == "replace" and op.old_content and op.old_content.strip() not in current_content:
+                # Old content no longer present — replace already applied or block changed
+                op.consolidated = True
+                op.consolidated_at = now
+                journal.journal_status = "confirmed"
+                journal.reason = "idempotent skip — old content not in block (already replaced)"
+                result.ops_skipped += 1
+                return
 
         # Apply the op
         if op.op_type == "append":
@@ -441,7 +453,10 @@ def _process_candidate(
                         user_id=user_id,
                     )
                 except Exception:
-                    pass
+                    logger.warning(
+                        "suppress_memory failed for item %s (superseded by %s)",
+                        write_result.matched_item.id, new_item.id, exc_info=True,
+                    )
 
         soul_db.commit()
 
@@ -514,14 +529,20 @@ def plan_candidate_promotion(
         from anima_server.services.agent.memory_store import _extract_fact_slot
 
         if _extract_fact_slot(candidate.content) is not None:
+            # similar action populates similar_items (not matched_item)
+            old = (
+                write_analysis.similar_items[0]
+                if write_analysis.similar_items
+                else write_analysis.matched_item
+            )
+            if old is not None:
+                return PromotionDecision(
+                    action="supersede",
+                    old_item=old,
+                    reason=f"slot match supersedes item {old.id}",
+                )
             return PromotionDecision(
-                action="supersede",
-                old_item=write_analysis.matched_item,
-                reason=(
-                    f"slot match supersedes item {write_analysis.matched_item.id}"
-                    if write_analysis.matched_item
-                    else "slot match"
-                ),
+                action="promote", reason="slot match but no target item found"
             )
         return PromotionDecision(
             action="promote", reason="similar but no structured slot — append"

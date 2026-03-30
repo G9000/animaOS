@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer, nullable=False),
         sa.Column("key", sa.String(128), nullable=False),
         sa.Column("value", sa.Text, nullable=False),
-        sa.Column("note_type", sa.String(24), nullable=False, server_default="observation"),
+        sa.Column("note_type", sa.String(24), nullable=False, server_default="'observation'"),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
         sa.Column("promoted_to_item_id", sa.Integer, nullable=True),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
