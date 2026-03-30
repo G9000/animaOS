@@ -488,46 +488,47 @@ async def run_background_extraction(
     except RuntimeError:
         return
 
-    with rt_factory() as rt_db:
-        # 1. Regex extraction
-        extracted = extract_turn_memory(user_message)
-        for fact in extracted.facts:
-            create_memory_candidate(rt_db, user_id=user_id, content=fact,
-                                    category="fact", importance=3,
-                                    importance_source="regex", source="regex")
-        for pref in extracted.preferences:
-            create_memory_candidate(rt_db, user_id=user_id, content=pref,
-                                    category="preference", importance=3,
-                                    importance_source="regex", source="regex")
+    try:
+        with rt_factory() as rt_db:
+            # 1. Regex extraction
+            extracted = extract_turn_memory(user_message)
+            for fact in extracted.facts:
+                create_memory_candidate(rt_db, user_id=user_id, content=fact,
+                                        category="fact", importance=3,
+                                        importance_source="regex", source="regex")
+            for pref in extracted.preferences:
+                create_memory_candidate(rt_db, user_id=user_id, content=pref,
+                                        category="preference", importance=3,
+                                        importance_source="regex", source="regex")
 
-        # 2. LLM extraction
-        if settings.agent_provider != "scaffold":
-            try:
-                llm_result = await extract_memories_via_llm(
-                    user_message=user_message,
-                    assistant_response=assistant_response,
-                )
-                for item in llm_result.memories:
-                    content = item.get("content", "")
-                    if not content or not isinstance(content, str):
-                        continue
-                    create_memory_candidate(
-                        rt_db, user_id=user_id,
-                        content=content,
-                        category=item.get("category", "fact"),
-                        importance=item.get("importance", 3),
-                        importance_source="llm", source="llm",
+            # 2. LLM extraction
+            if settings.agent_provider != "scaffold":
+                try:
+                    llm_result = await extract_memories_via_llm(
+                        user_message=user_message,
+                        assistant_response=assistant_response,
                     )
-            except Exception:
-                logger.exception("LLM extraction failed for user %s", user_id)
+                    for item in llm_result.memories:
+                        content = item.get("content", "")
+                        if not content or not isinstance(content, str):
+                            continue
+                        create_memory_candidate(
+                            rt_db, user_id=user_id,
+                            content=content,
+                            category=item.get("category", "fact"),
+                            importance=item.get("importance", 3),
+                            importance_source="llm", source="llm",
+                        )
+                except Exception:
+                    logger.exception("LLM extraction failed for user %s", user_id)
 
-        rt_db.commit()
+            rt_db.commit()
 
-        # 3. Threshold check
-        count = count_eligible_candidates(rt_db, user_id=user_id)
-        if count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
-            from anima_server.services.agent.soul_writer import run_soul_writer
-            asyncio.create_task(run_soul_writer(user_id))
+            # 3. Threshold check
+            count = count_eligible_candidates(rt_db, user_id=user_id)
+            if count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
+                from anima_server.services.agent.soul_writer import run_soul_writer
+                asyncio.create_task(run_soul_writer(user_id))
 
     except Exception as exc:
         logger.exception("Background memory consolidation failed for user %s", user_id)
