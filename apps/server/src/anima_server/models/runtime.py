@@ -192,6 +192,7 @@ class RuntimeMessage(RuntimeBase):
         ),
         Index("ix_runtime_messages_user_created", "user_id", "created_at"),
         Index("ix_runtime_messages_thread_context", "thread_id", "is_in_context"),
+        Index("ix_runtime_messages_thread_archived_history", "thread_id", "is_archived_history"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -223,6 +224,12 @@ class RuntimeMessage(RuntimeBase):
     tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     tool_args_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     is_in_context: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_archived_history: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     token_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
