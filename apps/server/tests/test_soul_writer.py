@@ -663,3 +663,238 @@ async def test_per_item_error_isolation() -> None:
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Access sync runs even with no candidates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_access_sync_runs_with_no_candidates() -> None:
+    """Access sync should run even when there are no candidates or ops."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="access-sync", password_hash="x", display_name="Access Sync")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Has a cat",
+            category="fact",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    # Create access log rows in runtime DB (no candidates)
+    with runtime_factory() as runtime_db:
+        for _ in range(3):
+            runtime_db.add(
+                MemoryAccessLog(
+                    user_id=user_id,
+                    memory_item_id=item_id,
+                    accessed_at=datetime.now(UTC),
+                    synced=False,
+                )
+            )
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.candidates_promoted == 0
+    assert result.ops_processed == 0
+    assert result.access_sync.get("items_synced", 0) == 1
+    assert result.access_sync.get("access_counts", {}).get(item_id) == 3
+
+    # Verify reference_count updated in soul DB
+    with soul_factory() as soul_db:
+        updated_item = soul_db.get(MemoryItem, item_id)
+        assert updated_item is not None
+        assert updated_item.reference_count == 3
+
+    # Verify access log rows purged
+    with runtime_factory() as runtime_db:
+        remaining = runtime_db.scalars(
+            select(MemoryAccessLog).where(MemoryAccessLog.user_id == user_id)
+        ).all()
+        assert len(remaining) == 0
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Ops processed before candidates (ordering guarantee)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ops_processed_before_candidates() -> None:
+    """PendingMemoryOps should be processed before MemoryCandidates."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="order-test", password_hash="x", display_name="Order Test")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user_id,
+                section="human",
+                content="Name: Alice",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.commit()
+
+    # Create both an op and a candidate
+    with runtime_factory() as runtime_db:
+        op = PendingMemoryOp(
+            user_id=user_id,
+            op_type="append",
+            target_block="human",
+            content="\nAge: 30",
+            content_hash=_pending_op_hash(user_id, "human", "append", "\nAge: 30"),
+        )
+        runtime_db.add(op)
+
+        candidate = MemoryCandidate(
+            user_id=user_id,
+            content="Works at Google",
+            category="fact",
+            importance=3,
+            importance_source="llm",
+            source="llm",
+            content_hash=_content_hash(user_id, "fact", "llm", "Works at Google"),
+            status="extracted",
+        )
+        runtime_db.add(candidate)
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.ops_processed == 1
+    assert result.candidates_promoted == 1
+    assert result.errors == []
+
+    # Verify both were applied
+    with soul_factory() as soul_db:
+        block = soul_db.scalar(
+            select(SelfModelBlock).where(
+                SelfModelBlock.user_id == user_id,
+                SelfModelBlock.section == "human",
+            )
+        )
+        assert block is not None
+        assert "Age: 30" in block.content
+
+        items = soul_db.scalars(
+            select(MemoryItem).where(MemoryItem.user_id == user_id)
+        ).all()
+        assert len(items) >= 1
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Failed candidate retried up to MAX_RETRY_COUNT then permanent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_retried_then_permanent() -> None:
+    """Failed candidates retry up to MAX_RETRY_COUNT, then stay failed permanently."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retry-test", password_hash="x", display_name="Retry Test")
+        soul_db.add(user)
+        soul_db.commit()
+        user_id = user.id
+
+    # Create a candidate already at retry_count=2 (MAX_RETRY_COUNT - 1)
+    with runtime_factory() as runtime_db:
+        candidate = MemoryCandidate(
+            user_id=user_id,
+            content="Will fail again",
+            category="fact",
+            importance=3,
+            importance_source="llm",
+            source="llm",
+            content_hash=_content_hash(user_id, "fact", "llm", "Will fail again"),
+            status="failed",
+            retry_count=2,
+            last_error="previous failure",
+        )
+        runtime_db.add(candidate)
+        runtime_db.commit()
+        candidate_id = candidate.id
+
+    # Patch to make it fail again
+    import anima_server.services.agent.soul_writer as sw_module
+
+    original_process = sw_module._process_candidate
+
+    def _always_fail(candidate, *, user_id, runtime_db, soul_db_factory, result):
+        raise RuntimeError("Persistent failure")
+
+    sw_module._process_candidate = _always_fail
+    try:
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+    finally:
+        sw_module._process_candidate = original_process
+
+    assert result.candidates_failed == 1
+
+    # Verify retry_count is now 3 (>= MAX_RETRY_COUNT)
+    with runtime_factory() as runtime_db:
+        c = runtime_db.get(MemoryCandidate, candidate_id)
+        assert c is not None
+        assert c.retry_count == 3
+        assert c.status == "failed"
+
+    # Run again — should NOT pick it up (retry_count >= MAX_RETRY_COUNT)
+    result2 = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    # No candidates processed at all
+    assert result2.candidates_promoted == 0
+    assert result2.candidates_failed == 0
+    assert result2.candidates_rejected == 0
+
+    soul_engine.dispose()
+    runtime_engine.dispose()

@@ -94,12 +94,16 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+# DEPRECATED: Use run_soul_writer() instead. This function bypasses Soul Writer's
+# journal and idempotency checks. Kept only for direct testing.
 async def consolidate_pending_ops(
     *,
     user_id: int,
     soul_db_factory: Callable[..., object],
     runtime_db_factory: Callable[..., object],
 ) -> PendingOpsConsolidationResult:
+    # DEPRECATED: Use run_soul_writer() instead. This function bypasses Soul Writer's
+    # journal and idempotency checks. Kept only for direct testing.
     """Promote pending runtime memory ops into the soul store."""
     from anima_server.models import PendingMemoryOp
     from anima_server.services.agent.pending_ops import get_pending_ops

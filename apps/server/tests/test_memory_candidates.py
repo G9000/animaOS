@@ -131,8 +131,7 @@ def test_touch_memory_items_writes_to_pg_access_log(pg_session: Session) -> None
     assert mock_item.reference_count == 5
 
 
-@pytest.mark.asyncio
-async def test_sync_access_metadata(pg_session: Session) -> None:
+def test_sync_access_metadata(pg_session: Session) -> None:
     """sync_access_metadata aggregates PG access logs into counts."""
     from anima_server.services.agent.access_sync import sync_access_metadata
 
@@ -140,7 +139,7 @@ async def test_sync_access_metadata(pg_session: Session) -> None:
         pg_session.add(MemoryAccessLog(user_id=1, memory_item_id=42, synced=False))
     pg_session.flush()
 
-    result = await sync_access_metadata(
+    result = sync_access_metadata(
         user_id=1, runtime_db=pg_session, soul_db=None, dry_run=True,
     )
     assert result["items_synced"] == 1

@@ -833,6 +833,15 @@ async def _invoke_turn_runtime(
                 "Context overflow detected — compacted %d messages, retrying",
                 compacted.compacted_message_count,
             )
+
+            # Post-compaction: promote pending candidates
+            try:
+                from anima_server.services.agent.soul_writer import run_soul_writer
+
+                await run_soul_writer(user_id)
+            except Exception:
+                logger.debug("Post-emergency-compaction Soul Writer failed", exc_info=True)
+
             turn_ctx = _rebuild_turn_context_after_compaction(
                 runtime_db,
                 user_id=user_id,
@@ -911,6 +920,15 @@ async def _proactive_compact_if_needed(
         result.estimated_tokens_before,
         result.estimated_tokens_after,
     )
+
+    # Post-compaction: promote pending candidates so the rebuilt context
+    # reflects the latest soul state.
+    try:
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        await run_soul_writer(user_id)
+    except Exception:
+        logger.debug("Post-compaction Soul Writer failed", exc_info=True)
 
     return _rebuild_turn_context_after_compaction(
         runtime_db,
