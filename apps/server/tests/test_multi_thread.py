@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from anima_server.models.runtime import RuntimeThread
+import pytest
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.persistence import (
     append_message,
     create_run,
@@ -12,6 +13,7 @@ from anima_server.services.agent.persistence import (
     load_thread_history,
 )
 from conftest_runtime import runtime_db_session
+from sqlalchemy.orm import Session
 
 _db_session = runtime_db_session
 
@@ -22,6 +24,40 @@ def _uid() -> int:
     global _COUNTER
     _COUNTER += 1
     return _COUNTER
+
+
+@pytest.fixture()
+def db() -> Session:  # type: ignore[misc]
+    """Provide a runtime session backed by in-memory SQLite for reactivation tests."""
+    from anima_server.db.runtime_base import RuntimeBase
+    from collections.abc import Generator
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        echo=False,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA busy_timeout = 30000")
+        cursor.close()
+
+    RuntimeBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+        engine.dispose()
 
 
 def test_load_thread_history_excludes_archived_history() -> None:
@@ -110,3 +146,89 @@ def test_create_thread_returns_active_thread() -> None:
         assert thread.id is not None
         assert thread.user_id == uid
         assert thread.status == "active"
+
+
+def test_reactivate_thread_with_pg_messages(db: Session) -> None:
+    """If PG messages still exist (within TTL), reactivation sets status=active only."""
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+    from sqlalchemy import select
+
+    uid = _uid()
+    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
+    db.add(thread)
+    db.flush()
+
+    # Message still in PG (within TTL window)
+    msg = RuntimeMessage(
+        thread_id=thread.id,
+        user_id=uid,
+        sequence_id=1,
+        role="user",
+        content_text="old message still in PG",
+        is_in_context=True,
+        is_archived_history=False,
+    )
+    db.add(msg)
+    db.flush()
+
+    reactivate_thread_if_needed(db, thread=thread, user_id=uid, transcripts_dir=None, dek=None)
+
+    assert thread.status == "active"
+    assert thread.is_archived is False
+    # No extra messages were inserted (PG messages suffice)
+    msgs = db.scalars(
+        select(RuntimeMessage).where(RuntimeMessage.thread_id == thread.id)
+    ).all()
+    assert len(msgs) == 1
+
+
+def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
+    """If PG messages are gone, rehydrate from JSONL and insert summary."""
+    import json
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+    from sqlalchemy import select
+
+    uid = _uid()
+    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
+    db.add(thread)
+    db.flush()
+
+    # Write JSONL and meta sidecar
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir()
+    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
+    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
+
+    messages = [
+        {"role": "user", "content": "old user message", "ts": "2026-01-01T00:00:00Z", "seq": 1},
+        {"role": "assistant", "content": "old reply", "ts": "2026-01-01T00:01:00Z", "seq": 2},
+    ]
+    jsonl_path.write_text(
+        "\n".join(json.dumps(m) for m in messages), encoding="utf-8"
+    )
+    meta_path.write_text(
+        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Talked about old stuff"}),
+        encoding="utf-8",
+    )
+
+    reactivate_thread_if_needed(
+        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None
+    )
+
+    assert thread.status == "active"
+    assert thread.is_archived is False
+
+    all_msgs = db.scalars(
+        select(RuntimeMessage)
+        .where(RuntimeMessage.thread_id == thread.id)
+        .order_by(RuntimeMessage.sequence_id)
+    ).all()
+
+    # 2 archived history + 1 summary system message
+    assert len(all_msgs) == 3
+    archived = [m for m in all_msgs if m.is_archived_history]
+    summary_msg = [m for m in all_msgs if not m.is_archived_history]
+    assert len(archived) == 2
+    assert len(summary_msg) == 1
+    assert summary_msg[0].role == "system"
+    assert "Talked about old stuff" in (summary_msg[0].content_text or "")
