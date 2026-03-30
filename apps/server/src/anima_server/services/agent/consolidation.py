@@ -367,7 +367,6 @@ async def consolidate_turn_memory_with_llm(
             logger.debug("Failed to record emotional signal from extraction")
 
     if not llm_items:
-        _promote_runtime_emotional_patterns(user_id=user_id, db_factory=db_factory)
         return result
     regex_contents = {c.lower() for c in result.facts_added + result.preferences_added}
 
@@ -534,7 +533,6 @@ async def consolidate_turn_memory_with_llm(
 
         db.commit()
 
-    _promote_runtime_emotional_patterns(user_id=user_id, db_factory=db_factory)
     return result
 
 

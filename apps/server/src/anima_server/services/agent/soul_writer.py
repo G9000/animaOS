@@ -179,6 +179,27 @@ async def _run_soul_writer_inner(
                 soul_db=soul_db,
             )
 
+    # Phase 4: Promote emotional patterns (if due)
+    try:
+        from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
+
+        with rt_factory() as runtime_db:
+            with soul_factory() as soul_db:
+                promoted = promote_emotional_patterns(
+                    soul_db=soul_db,
+                    pg_db=runtime_db,
+                    user_id=user_id,
+                )
+                if promoted > 0:
+                    soul_db.commit()
+                    runtime_db.commit()
+                    logger.info(
+                        "Soul Writer promoted %d emotional patterns for user %s",
+                        promoted, user_id,
+                    )
+    except Exception:
+        logger.debug("Emotional pattern promotion failed for user %s", user_id, exc_info=True)
+
 
 def _process_pending_op(
     op,
