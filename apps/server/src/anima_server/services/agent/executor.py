@@ -35,27 +35,6 @@ def unpack_inner_thoughts_from_kwargs(
     return str(value) if not isinstance(value, str) else value
 
 
-def unpack_heartbeat_from_kwargs(
-    tool_call: ToolCall,
-    heartbeat_key: str = "request_heartbeat",
-) -> bool:
-    """Pop the ``request_heartbeat`` kwarg from *tool_call.arguments*.
-
-    Returns True if the model requested a follow-up step, False otherwise.
-    Handles stringified booleans (``"true"``, ``"True"``) that some
-    models produce instead of native JSON booleans.
-    """
-    if not isinstance(tool_call.arguments, dict):
-        return False
-    value = tool_call.arguments.pop(heartbeat_key, None)
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() == "true"
-    return bool(value)
-
 
 class ToolExecutor:
     def __init__(
@@ -80,7 +59,6 @@ class ToolExecutor:
         # Strip injected kwargs early — before any error path can
         # echo them back in raw_arguments or error messages.
         thinking = unpack_inner_thoughts_from_kwargs(tool_call)
-        heartbeat = unpack_heartbeat_from_kwargs(tool_call)
 
         # Check if this tool should be delegated to a connected client.
         # This MUST happen before the local tool lookup so that action
@@ -102,7 +80,6 @@ class ToolExecutor:
                     output=formatted_output,
                     is_error=delegated.is_error,
                     inner_thinking=thinking,
-                    heartbeat_requested=heartbeat,
                 )
             except Exception as exc:
                 return ToolExecutionResult(
@@ -111,7 +88,6 @@ class ToolExecutor:
                     output=_package_error_response(f"Tool delegation failed: {exc}"),
                     is_error=True,
                     inner_thinking=thinking,
-                    heartbeat_requested=heartbeat,
                 )
 
         tool = self._tools.get(tool_call.name)
@@ -206,7 +182,6 @@ class ToolExecutor:
             is_terminal=is_terminal,
             memory_modified=flags["memory_modified"],
             inner_thinking=thinking,
-            heartbeat_requested=heartbeat,
         )
 
     async def execute_parallel(
@@ -305,7 +280,7 @@ def _validate_tool_arguments(
     tool: Any,
     arguments: dict[str, Any],
     *,
-    ignore_keys: tuple[str, ...] = ("thinking", "request_heartbeat"),
+    ignore_keys: tuple[str, ...] = ("thinking",),
 ) -> str | None:
     required_arguments = _get_required_tool_arguments(tool)
     if not required_arguments:

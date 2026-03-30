@@ -25,6 +25,21 @@ _MAX_TRANSCRIPT_CHARS = 12000
 _TOOL_CONTENT_CLAMP = 100
 
 
+def _safe_split(
+    conversation_rows: list,
+    keep_last: int,
+) -> tuple[list, list]:
+    """Split conversation rows into compacted/kept without orphaning tool messages.
+
+    Pushes the cut point earlier if it would land between an assistant
+    message (with tool_calls) and its tool results.
+    """
+    split_at = len(conversation_rows) - keep_last
+    while split_at > 0 and conversation_rows[split_at].role == "tool":
+        split_at -= 1
+    return conversation_rows[:split_at], conversation_rows[split_at:]
+
+
 @dataclass(frozen=True, slots=True)
 class CompactionResult:
     compacted_message_count: int
@@ -103,8 +118,7 @@ def compact_thread_context(
     if len(conversation_rows) <= keep_last_messages:
         return None
 
-    compacted_rows = conversation_rows[:-keep_last_messages]
-    kept_rows = conversation_rows[-keep_last_messages:]
+    compacted_rows, kept_rows = _safe_split(conversation_rows, keep_last_messages)
     if not compacted_rows:
         return None
 
@@ -383,8 +397,7 @@ async def compact_thread_context_with_llm(
     if len(conversation_rows) <= keep_last_messages:
         return None
 
-    compacted_rows = conversation_rows[:-keep_last_messages]
-    kept_rows = conversation_rows[-keep_last_messages:]
+    compacted_rows, kept_rows = _safe_split(conversation_rows, keep_last_messages)
     if not compacted_rows:
         return None
 

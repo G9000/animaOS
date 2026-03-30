@@ -159,6 +159,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         from .services.agent.reflection import cancel_pending_reflection
 
         try:
+            # Flush pending Soul Writer candidates for all active users
+            try:
+                from .services.agent.soul_writer import run_soul_writer
+                from .db.runtime import get_runtime_session_factory
+                from .models.runtime import RuntimeThread
+                from sqlalchemy import select as _sel
+
+                rt_factory = get_runtime_session_factory()
+                with rt_factory() as rt_db:
+                    active_user_ids = list(rt_db.scalars(
+                        _sel(RuntimeThread.user_id).where(RuntimeThread.status == "active")
+                    ).all())
+                for uid in set(active_user_ids):
+                    try:
+                        await run_soul_writer(uid)
+                    except Exception:
+                        logger.debug("Shutdown Soul Writer failed for user %s", uid)
+            except Exception:
+                logger.debug("Shutdown Soul Writer sweep failed", exc_info=True)
+
             for task in sweep_tasks:
                 task.cancel()
             await cancel_pending_reflection()

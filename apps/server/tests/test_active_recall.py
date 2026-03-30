@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryDailyLog
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import (
     _build_transcript,
@@ -49,7 +48,7 @@ _TEST_USER_COUNTER = 0
 
 @contextmanager
 def _soul_db_session() -> Generator[Session, None, None]:
-    """Soul DB session (for User, MemoryDailyLog)."""
+    """Soul DB session (for User, etc.)."""
     engine: Engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -77,9 +76,9 @@ def _soul_db_session() -> Generator[Session, None, None]:
 def _db_session() -> Generator[Session, None, None]:
     """Combined session with both RuntimeBase and Base tables.
 
-    search_conversation_history needs RuntimeBase tables (messages)
-    AND Base tables (memory_daily_logs).  For unit tests we create both
-    sets of tables on the same in-memory SQLite engine.
+    search_conversation_history needs RuntimeBase tables (messages).
+    For unit tests we create both sets of tables on the same in-memory
+    SQLite engine.
     """
     from anima_server.db.runtime_base import RuntimeBase
     from anima_server.models import runtime as _rm  # noqa: F401
@@ -353,16 +352,27 @@ class TestSearchConversationHistory:
             assert len(hits) >= 1
 
     @pytest.mark.asyncio
-    async def test_search_daily_logs(self):
+    async def test_search_runtime_messages(self):
+        """Search finds RuntimeMessage rows (MemoryDailyLog path removed)."""
         with _db_session() as db:
             user = _create_user(db)
-            log = MemoryDailyLog(
+            thread = _create_thread(db, user_id=user.id)
+            _add_message(
+                db,
+                thread_id=thread.id,
                 user_id=user.id,
-                date="2026-03-15",
-                user_message="I got promoted at work today!",
-                assistant_response="Congratulations! That's wonderful news.",
+                role="user",
+                content="I got promoted at work today!",
+                sequence_id=1,
             )
-            db.add(log)
+            _add_message(
+                db,
+                thread_id=thread.id,
+                user_id=user.id,
+                role="assistant",
+                content="Congratulations! That's wonderful news.",
+                sequence_id=2,
+            )
             db.commit()
 
             hits = await search_conversation_history(
@@ -1178,19 +1188,29 @@ class TestRecallConversationLimitParsing:
             assert mock_search.call_args.kwargs["limit"] == 10
 
 
-class TestSearchDailyLogsEdgeCases:
+class TestSearchEdgeCases:
     @pytest.mark.asyncio
-    async def test_empty_user_message_in_log(self):
-        """Daily log with empty user_message shouldn't crash."""
+    async def test_empty_content_message(self):
+        """Message with empty content shouldn't crash search."""
         with _db_session() as db:
             user = _create_user(db)
-            log = MemoryDailyLog(
+            thread = _create_thread(db, user_id=user.id)
+            _add_message(
+                db,
+                thread_id=thread.id,
                 user_id=user.id,
-                date="2026-03-15",
-                user_message="",
-                assistant_response="The user didn't say anything specific.",
+                role="user",
+                content="",
+                sequence_id=1,
             )
-            db.add(log)
+            _add_message(
+                db,
+                thread_id=thread.id,
+                user_id=user.id,
+                role="assistant",
+                content="The user didn't say anything specific.",
+                sequence_id=2,
+            )
             db.commit()
 
             hits = await search_conversation_history(

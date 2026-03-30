@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
 from anima_server.models import SelfModelBlock
-from anima_server.services.agent.soul_writer import set_soul_block
+from anima_server.services.agent.soul_blocks import set_soul_block
 from anima_server.services.data_crypto import df
 from anima_server.services.storage import get_user_data_dir
 

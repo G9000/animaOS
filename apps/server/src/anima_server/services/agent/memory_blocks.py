@@ -129,17 +129,21 @@ def build_runtime_memory_blocks(
         if semantic_block is not None:
             blocks.append(semantic_block)
 
-    facts_block = build_facts_memory_block(db, user_id=user_id, query_embedding=query_embedding, agent_type=agent_type)
+    facts_block = build_facts_memory_block(
+        db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
+    )
     if facts_block is not None:
         blocks.append(facts_block)
 
     preferences_block = build_preferences_memory_block(
-        db, user_id=user_id, query_embedding=query_embedding, agent_type=agent_type,
+        db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
     )
     if preferences_block is not None:
         blocks.append(preferences_block)
 
-    goals_block = build_goals_memory_block(db, user_id=user_id, query_embedding=query_embedding, agent_type=agent_type)
+    goals_block = build_goals_memory_block(
+        db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
+    )
     if goals_block is not None:
         blocks.append(goals_block)
 
@@ -148,7 +152,7 @@ def build_runtime_memory_blocks(
         blocks.append(tasks_block)
 
     relationships_block = build_relationships_memory_block(
-        db, user_id=user_id, query_embedding=query_embedding, agent_type=agent_type,
+        db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
     )
     if relationships_block is not None:
         blocks.append(relationships_block)
@@ -170,7 +174,10 @@ def build_runtime_memory_blocks(
     if episodes_block is not None:
         blocks.append(episodes_block)
 
-    session_block = build_session_memory_block(db, thread_id=thread_id, user_id=user_id, agent_type=agent_type)
+    # Session notes live in PG (runtime_session_notes); skip when no runtime DB.
+    session_block = build_session_memory_block(
+        runtime_db, thread_id=thread_id, user_id=user_id, agent_type=agent_type,
+    ) if runtime_db is not None else None
     if session_block is not None:
         blocks.append(session_block)
 
@@ -211,6 +218,7 @@ def build_facts_memory_block(
     *,
     user_id: int,
     query_embedding: list[float] | None = None,
+    runtime_db: Session | None = None,
     agent_type: str = "companion",
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
@@ -218,7 +226,7 @@ def build_facts_memory_block(
     )
     if not items:
         return None
-    touch_memory_items(db, items)
+    touch_memory_items(db, items, runtime_db=runtime_db)
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
@@ -236,6 +244,7 @@ def build_preferences_memory_block(
     *,
     user_id: int,
     query_embedding: list[float] | None = None,
+    runtime_db: Session | None = None,
     agent_type: str = "companion",
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
@@ -243,7 +252,7 @@ def build_preferences_memory_block(
     )
     if not items:
         return None
-    touch_memory_items(db, items)
+    touch_memory_items(db, items, runtime_db=runtime_db)
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
@@ -261,6 +270,7 @@ def build_goals_memory_block(
     *,
     user_id: int,
     query_embedding: list[float] | None = None,
+    runtime_db: Session | None = None,
     agent_type: str = "companion",
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
@@ -268,7 +278,7 @@ def build_goals_memory_block(
     )
     if not items:
         return None
-    touch_memory_items(db, items)
+    touch_memory_items(db, items, runtime_db=runtime_db)
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
@@ -339,6 +349,7 @@ def build_relationships_memory_block(
     *,
     user_id: int,
     query_embedding: list[float] | None = None,
+    runtime_db: Session | None = None,
     agent_type: str = "companion",
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
@@ -346,7 +357,7 @@ def build_relationships_memory_block(
     )
     if not items:
         return None
-    touch_memory_items(db, items)
+    touch_memory_items(db, items, runtime_db=runtime_db)
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )

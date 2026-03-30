@@ -588,6 +588,21 @@ async def _prepare_turn_context(
     )
     conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
+    # Pre-turn Soul Writer check: if eligible candidates are queued,
+    # promote them before building memory blocks so the current turn
+    # sees the freshest soul data.
+    try:
+        from anima_server.services.agent.candidate_ops import count_eligible_candidates
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        from anima_server.db.runtime import get_runtime_session_factory as _rt_factory
+        with _rt_factory()() as _rt_db:
+            eligible = count_eligible_candidates(_rt_db, user_id=user_id)
+        if eligible > 0:
+            await run_soul_writer(user_id)
+    except Exception:
+        logger.debug("Pre-turn Soul Writer check failed for user %s", user_id, exc_info=True)
+
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
     query_embedding: list[float] | None = None
@@ -651,7 +666,9 @@ async def _prepare_turn_context(
             runtime_db=runtime_db,
         )
         if signals:
-            record_feedback_signals(db, user_id=user_id, signals=signals)
+            record_feedback_signals(
+                db, user_id=user_id, signals=signals, runtime_db=runtime_db,
+            )
             # When a correction is detected, fix the underlying memory
             if any(s.signal_type == "correction" for s in signals):
                 apply_memory_correction(
@@ -659,6 +676,7 @@ async def _prepare_turn_context(
                     user_id=user_id,
                     user_message=user_message,
                     thread_id=thread.id,
+                    runtime_db=runtime_db,
                 )
     except Exception:
         pass
@@ -820,6 +838,15 @@ async def _invoke_turn_runtime(
             health_emit("llm", "compaction", "info", user_id=user_id, data={
                 "compacted_messages": compacted.compacted_message_count,
             })
+
+            # Post-compaction: promote pending candidates
+            try:
+                from anima_server.services.agent.soul_writer import run_soul_writer
+
+                await run_soul_writer(user_id)
+            except Exception:
+                logger.debug("Post-emergency-compaction Soul Writer failed", exc_info=True)
+
             turn_ctx = _rebuild_turn_context_after_compaction(
                 runtime_db,
                 user_id=user_id,
@@ -898,6 +925,15 @@ async def _proactive_compact_if_needed(
         result.estimated_tokens_before,
         result.estimated_tokens_after,
     )
+
+    # Post-compaction: promote pending candidates so the rebuilt context
+    # reflects the latest soul state.
+    try:
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        await run_soul_writer(user_id)
+    except Exception:
+        logger.debug("Post-compaction Soul Writer failed", exc_info=True)
 
     return _rebuild_turn_context_after_compaction(
         runtime_db,

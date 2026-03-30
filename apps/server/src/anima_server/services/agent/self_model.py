@@ -587,7 +587,7 @@ def set_self_model_block(
         raise ValueError(f"Invalid section: {section}")
 
     if section in SOUL_SECTIONS:
-        from anima_server.services.agent.soul_writer import set_soul_block
+        from anima_server.services.agent.soul_blocks import set_soul_block
 
         return set_soul_block(
             db,

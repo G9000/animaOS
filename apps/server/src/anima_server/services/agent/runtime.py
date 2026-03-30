@@ -342,6 +342,7 @@ class AgentRuntime:
                         )
                     )
             tool_results: list[ToolExecutionResult] = []
+            validated_calls: list[tuple[ToolCall, bool]] = []
             terminal_tool_hit = False
             awaiting_approval = False
             rule_violation_hit = False
@@ -484,6 +485,25 @@ class AgentRuntime:
                     break
 
                 if rules_solver.requires_approval(tool_call.name):
+                    # Execute any previously validated safe tools before
+                    # stopping for approval.
+                    if validated_calls:
+                        step_ctx.progression = StepProgression.TOOLS_STARTED
+                        pre_approval_results = await executor.execute_parallel(validated_calls)
+                        for (tc, _), tr in zip(validated_calls, pre_approval_results):
+                            tool_results.append(tr)
+                            messages.append(
+                                make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
+                            )
+                            if event_callback is not None:
+                                await event_callback(build_tool_return_event(step_index, tr))
+                            if tr.inner_thinking and event_callback is not None:
+                                await event_callback(build_thought_event(step_index, tr.inner_thinking))
+                            rules_solver.update_state(tc.name, tr.output)
+                            if tc.name not in tools_used:
+                                tools_used.append(tc.name)
+                        validated_calls.clear()
+
                     tool_result = ToolExecutionResult(
                         call_id=tool_call.id,
                         name=tool_call.name,
@@ -504,41 +524,62 @@ class AgentRuntime:
                     awaiting_approval = True
                     break
 
-                if tc_index == 0:
-                    step_ctx.progression = StepProgression.TOOLS_STARTED
-                tool_result = await executor.execute(
-                    tool_call,
-                    is_terminal=rules_solver.is_terminal(tool_call.name),
-                )
-                tool_results.append(tool_result)
-                messages.append(
-                    make_tool_message(
-                        tool_result.output,
-                        tool_call_id=tool_result.call_id,
-                        name=tool_result.name,
+                # Collect validated tool calls for execution.
+                is_terminal = rules_solver.is_terminal(tool_call.name)
+                validated_calls.append((tool_call, is_terminal))
+                # Register with the solver so subsequent tool calls in
+                # this batch see updated prerequisite/child state.
+                rules_solver.update_state(tool_call.name, None)
+
+            # --- Execute validated tool calls (parallel when possible) ---
+            if validated_calls and not rule_violation_hit and not awaiting_approval:
+                step_ctx.progression = StepProgression.TOOLS_STARTED
+
+                # Split terminal (send_message) from non-terminal calls.
+                non_terminal = [(tc, t) for tc, t in validated_calls if not t]
+                terminal = [(tc, t) for tc, t in validated_calls if t]
+
+                # Execute non-terminal tools in parallel.
+                parallel_results = await executor.execute_parallel(non_terminal) if non_terminal else []
+
+                # Process non-terminal results.
+                for (tc, _), tr in zip(non_terminal, parallel_results):
+                    tool_results.append(tr)
+                    messages.append(
+                        make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
                     )
-                )
-                if event_callback is not None:
-                    await event_callback(build_tool_return_event(step_index, tool_result))
-                if tool_result.inner_thinking and event_callback is not None:
-                    await event_callback(
-                        build_thought_event(step_index, tool_result.inner_thinking)
+                    if event_callback is not None:
+                        await event_callback(build_tool_return_event(step_index, tr))
+                    if tr.inner_thinking and event_callback is not None:
+                        await event_callback(build_thought_event(step_index, tr.inner_thinking))
+                    rules_solver.update_state(tc.name, tr.output)
+                    if tr.is_error:
+                        _prev_failed_tool = last_failed_tool
+                        last_failed_tool = tc.name
+                    else:
+                        _prev_failed_tool = None
+                        last_failed_tool = None
+                    if tc.name not in tools_used:
+                        tools_used.append(tc.name)
+
+                # Execute terminal tool last (sequentially).
+                for tc, _ in terminal:
+                    tr = await executor.execute(tc, is_terminal=True)
+                    tool_results.append(tr)
+                    messages.append(
+                        make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
                     )
-                rules_solver.update_state(tool_call.name, tool_result.output)
-                # Track consecutive failures for exclusion.
-                if tool_result.is_error:
-                    _prev_failed_tool = last_failed_tool
-                    last_failed_tool = tool_call.name
-                else:
-                    _prev_failed_tool = None
-                    last_failed_tool = None
-                if tool_call.name not in tools_used:
-                    tools_used.append(tool_call.name)
-                if tool_result.is_terminal:
-                    response = tool_result.output or response
-                    stop_reason = StopReason.TERMINAL_TOOL
-                    terminal_tool_hit = True
-                    break
+                    if event_callback is not None:
+                        await event_callback(build_tool_return_event(step_index, tr))
+                    if tr.inner_thinking and event_callback is not None:
+                        await event_callback(build_thought_event(step_index, tr.inner_thinking))
+                    rules_solver.update_state(tc.name, tr.output)
+                    if tc.name not in tools_used:
+                        tools_used.append(tc.name)
+                    if tr.is_terminal:
+                        response = tr.output or response
+                        stop_reason = StopReason.TERMINAL_TOOL
+                        terminal_tool_hit = True
 
             if tool_results:
                 step_ctx.progression = StepProgression.TOOLS_COMPLETED
@@ -592,36 +633,27 @@ class AgentRuntime:
             if terminal_tool_hit or awaiting_approval:
                 break
 
-            # Continue the loop only if a heartbeat was requested, a
-            # tool error occurred (give the model a chance to recover),
-            # or a rule violation was hit (already handled above).
-            any_heartbeat = any(tr.heartbeat_requested for tr in tool_results)
+            # V3-style: always continue after non-terminal tools.
             any_error = any(tr.is_error for tr in tool_results)
-            if any_heartbeat or any_error:
-                # Sandwich message: inject a system-as-user message
-                # explaining WHY the loop continues, so the model
-                # has context for the next step.
-                if any_error:
-                    failed_names = [tr.name for tr in tool_results if tr.is_error]
-                    sandwich = _sandwich_message(
-                        f"Tool call failed ({', '.join(failed_names)}). "
-                        "You may retry with corrected arguments or "
-                        "respond to the user."
-                    )
-                else:
-                    sandwich = _sandwich_message(
-                        "Heartbeat received. Continue with your next "
-                        "tool call or send_message when ready."
-                    )
-                messages.append(sandwich)
-                continue
-
-            # No heartbeat and no error — the model is done with
-            # non-terminal tools.  Fall through to end the turn.
-            # The response will be empty, triggering the default.
-            break
+            if any_error:
+                failed_names = [tr.name for tr in tool_results if tr.is_error]
+                sandwich = _sandwich_message(
+                    f"Tool call failed ({', '.join(failed_names)}). "
+                    "You may retry with corrected arguments or "
+                    "respond to the user."
+                )
+            else:
+                sandwich = _sandwich_message(
+                    "Continue with your next tool call or "
+                    "send_message when ready."
+                )
+            messages.append(sandwich)
+            continue
         else:
-            stop_reason = StopReason.MAX_STEPS
+            if "send_message" not in tools_used:
+                stop_reason = StopReason.NO_TERMINAL_TOOL
+            else:
+                stop_reason = StopReason.MAX_STEPS
 
         # --- Execute deferred tool calls ---
         # Tool calls that were blocked by rule violations (e.g. InitToolRule)
@@ -1374,7 +1406,7 @@ def _sandwich_message(reason: str) -> object:
     agent loop is continuing.
 
     These "sandwich" messages give the model context between steps
-    (e.g. "function failed", "heartbeat received") so it can adjust
+    (e.g. "function failed", "continue") so it can adjust
     its next action.  Formatted as user-role messages with a prefix
     that tells the model they are hidden from the user.
     """
@@ -1392,6 +1424,11 @@ def _default_response(stop_reason: StopReason) -> str:
         return (
             "I'm sorry, I wasn't able to generate a response. "
             "Could you try rephrasing or sending your message again?"
+        )
+    if stop_reason == StopReason.NO_TERMINAL_TOOL:
+        return (
+            "I got caught up thinking and forgot to respond — "
+            "what were you saying?"
         )
     if stop_reason == StopReason.CANCELLED:
         return ""
@@ -1537,7 +1574,7 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
     return schema
 
 
-_INJECTED_SCHEMA_KEYS = {"thinking", "request_heartbeat"}
+_INJECTED_SCHEMA_KEYS = {"thinking"}
 
 
 def _strip_thinking_from_schema(schema: dict[str, Any]) -> dict[str, Any]:

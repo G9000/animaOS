@@ -22,27 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────
 
-SLEEPTIME_FREQUENCY: int = 3  # Run every N turns
 HEAT_THRESHOLD_CONSOLIDATION: float = 5.0  # Min heat for expensive ops
-
-# ── In-memory state (no persistence needed) ──────────────────────────
-
-_turn_counters: dict[int, int] = {}  # user_id -> turn_count
-
-
-# ── Turn counting ────────────────────────────────────────────────────
-
-
-def bump_turn_counter(user_id: int) -> int:
-    """Increment and return the turn counter for a user."""
-    _turn_counters[user_id] = _turn_counters.get(user_id, 0) + 1
-    return _turn_counters[user_id]
-
-
-def should_run_sleeptime(user_id: int) -> bool:
-    """True if turn_count % SLEEPTIME_FREQUENCY == 0."""
-    count = _turn_counters.get(user_id, 0)
-    return count > 0 and count % SLEEPTIME_FREQUENCY == 0
 
 
 # ── Heat gating ──────────────────────────────────────────────────────
@@ -66,44 +46,6 @@ def _should_run_expensive(
 
 
 # ── Task tracking ────────────────────────────────────────────────────
-
-_DB_LOCKED_RETRY_DELAYS = (1.0, 2.0, 4.0)
-
-
-async def _commit_with_retry(
-    db_session: Any,
-    *,
-    label: str = "commit",
-) -> bool:
-    """Try to commit, retrying on ``database is locked`` errors.
-
-    Returns True on success, False if all retries exhausted.
-    """
-    for attempt, delay in enumerate(_DB_LOCKED_RETRY_DELAYS, 1):
-        try:
-            db_session.commit()
-            return True
-        except Exception as exc:
-            if "database is locked" not in str(exc):
-                raise
-            logger.debug(
-                "%s failed (attempt %d/%d, database locked), retrying in %.1fs",
-                label,
-                attempt,
-                len(_DB_LOCKED_RETRY_DELAYS),
-                delay,
-            )
-            db_session.rollback()
-            await asyncio.sleep(delay)
-    # Final attempt without catching
-    try:
-        db_session.commit()
-        return True
-    except Exception:
-        logger.warning("%s failed after all retries", label)
-        db_session.rollback()
-        return False
-
 
 async def _issue_background_task(
     *,
@@ -386,53 +328,22 @@ async def _task_consolidation(
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> dict:
-    """Run memory consolidation and return restart cursor payload."""
-    from anima_server.services.agent.consolidation import (
-        consolidate_pending_ops,
-        consolidate_turn_memory,
-        consolidate_turn_memory_with_llm,
-    )
+    """Promote pending memory ops to soul store.
 
-    # Always promote pending memory ops to soul, even on force/inactivity paths
-    if runtime_db_factory is not None:
-        from anima_server.db.session import SessionLocal
+    Per-turn memory extraction is now handled by ``run_background_extraction``
+    which writes to PG-only ``MemoryCandidate`` rows; the Soul Writer
+    orchestrator batches those into the soul store.  This task only needs
+    to flush any remaining ``PendingMemoryOp`` rows (core-memory tool
+    writes) into the soul blocks.
+    """
+    from anima_server.services.agent.soul_writer import run_soul_writer
 
-        soul_factory = db_factory or SessionLocal
-        await consolidate_pending_ops(
-            user_id=user_id,
-            soul_db_factory=soul_factory,
-            runtime_db_factory=runtime_db_factory,
-        )
+    await run_soul_writer(user_id)
 
-    # Skip LLM consolidation when there is no actual message to process
-    # (e.g., the force=True path from the inactivity timer).
-    if not user_message and not assistant_response:
-        return {
-            "thread_id": thread_id,
-            "last_processed_message_id": None,
-            "messages_processed": 0,
-        }
-
-    if settings.agent_provider != "scaffold":
-        await consolidate_turn_memory_with_llm(
-            user_id=user_id,
-            user_message=user_message,
-            assistant_response=assistant_response,
-            db_factory=db_factory,
-        )
-    else:
-        consolidate_turn_memory(
-            user_id=user_id,
-            user_message=user_message,
-            assistant_response=assistant_response,
-            db_factory=db_factory,
-        )
-
-    # Return restart cursor payload (F5.23)
     return {
         "thread_id": thread_id,
-        "last_processed_message_id": None,  # TODO: wire actual message ID
-        "messages_processed": 1,
+        "last_processed_message_id": None,
+        "messages_processed": 1 if (user_message or assistant_response) else 0,
     }
 
 

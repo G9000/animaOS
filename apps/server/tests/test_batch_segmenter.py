@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryDailyLog, MemoryEpisode, User
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models import MemoryEpisode, User
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.batch_segmenter import (
     BATCH_THRESHOLD,
     indices_to_0based,
@@ -210,6 +212,97 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
+@contextmanager
+def _dual_db_sessions() -> Generator[
+    tuple[Session, sessionmaker[Session], Session, sessionmaker[Session]],
+    None,
+    None,
+]:
+    """Create two in-memory SQLite engines: soul (Base) + runtime (RuntimeBase)."""
+    soul_engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    soul_factory = sessionmaker(
+        bind=soul_engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    Base.metadata.create_all(bind=soul_engine)
+
+    runtime_engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    runtime_factory = sessionmaker(
+        bind=runtime_engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    RuntimeBase.metadata.create_all(bind=runtime_engine)
+
+    soul_session = soul_factory()
+    runtime_session = runtime_factory()
+    try:
+        yield soul_session, soul_factory, runtime_session, runtime_factory
+    finally:
+        soul_session.close()
+        runtime_session.close()
+        Base.metadata.drop_all(bind=soul_engine)
+        RuntimeBase.metadata.drop_all(bind=runtime_engine)
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def _create_runtime_messages(
+    rt_session: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+    count: int,
+    msg_prefix: str = "Message",
+    resp_prefix: str = "Response",
+) -> None:
+    """Insert paired user/assistant RuntimeMessages for a thread."""
+    seq = 1
+    for i in range(1, count + 1):
+        rt_session.add(
+            RuntimeMessage(
+                thread_id=thread_id,
+                user_id=user_id,
+                run_id=None,
+                step_id=None,
+                sequence_id=seq,
+                role="user",
+                content_text=f"{msg_prefix} {i}",
+                is_in_context=True,
+                created_at=datetime.now(UTC),
+            )
+        )
+        seq += 1
+        rt_session.add(
+            RuntimeMessage(
+                thread_id=thread_id,
+                user_id=user_id,
+                run_id=None,
+                step_id=None,
+                sequence_id=seq,
+                role="assistant",
+                content_text=f"{resp_prefix} {i}",
+                is_in_context=True,
+                created_at=datetime.now(UTC),
+            )
+        )
+        seq += 1
+    rt_session.commit()
+
+
 @pytest.mark.asyncio
 async def test_generate_episodes_from_segments() -> None:
     from anima_server.services.agent.batch_segmenter import (
@@ -226,17 +319,8 @@ async def test_generate_episodes_from_segments() -> None:
         db.commit()
 
         today = datetime.now(UTC).date().isoformat()
-        logs = []
-        for i in range(8):
-            log = MemoryDailyLog(
-                user_id=user.id,
-                date=today,
-                user_message=f"Message {i + 1}",
-                assistant_response=f"Response {i + 1}",
-            )
-            db.add(log)
-            logs.append(log)
-        db.commit()
+        # Build pairs as (user_msg, assistant_msg) tuples
+        pairs = [(f"Message {i + 1}", f"Response {i + 1}") for i in range(8)]
 
         # Two segments: [0,1,2,4,5] and [3,6,7] (0-based)
         segments_0based = [[0, 1, 2, 4, 5], [3, 6, 7]]
@@ -248,7 +332,7 @@ async def test_generate_episodes_from_segments() -> None:
                 db,
                 user_id=user.id,
                 thread_id=None,
-                logs=logs,
+                pairs=pairs,
                 segments=segments_0based,
                 today=today,
             )
@@ -273,38 +357,29 @@ async def test_generate_episodes_from_segments() -> None:
 
 @pytest.mark.asyncio
 async def test_maybe_generate_episode_batch_path() -> None:
-    """With >= 8 logs, batch segmentation is used."""
+    """With >= 8 pairs, batch segmentation is used."""
     from anima_server.services.agent.episodes import maybe_generate_episode
 
-    with _db_session() as session:
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
         user = User(
             username="batch-episode-test",
             password_hash="not-used",
             display_name="Batch Episode",
         )
-        session.add(user)
-        session.commit()
+        soul_session.add(user)
+        soul_session.commit()
 
-        eng = session.get_bind()
-        test_factory = sessionmaker(
-            bind=eng,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-            class_=Session,
-        )
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
 
         today = datetime.now(UTC).date().isoformat()
-        for i in range(10):
-            session.add(
-                MemoryDailyLog(
-                    user_id=user.id,
-                    date=today,
-                    user_message=f"Message {i + 1}",
-                    assistant_response=f"Response {i + 1}",
-                )
-            )
-        session.commit()
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            count=10,
+        )
 
         # Mock segment_messages_batch to return two groups
         # Mock settings to use scaffold provider (avoids LLM for episode summaries)
@@ -319,7 +394,8 @@ async def test_maybe_generate_episode_batch_path() -> None:
             mock_settings.agent_provider = "scaffold"
             result = await maybe_generate_episode(
                 user_id=user.id,
-                db_factory=test_factory,
+                db_factory=soul_factory,
+                runtime_db_factory=rt_factory,
             )
 
         assert result is not None
@@ -327,7 +403,7 @@ async def test_maybe_generate_episode_batch_path() -> None:
         assert result.message_indices_json is not None
 
         # Check that episodes were created in DB (may be merged if topics overlap)
-        with test_factory() as db2:
+        with soul_factory() as db2:
             episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) >= 1
             assert all(e.segmentation_method == "batch_llm" for e in episodes)
@@ -337,52 +413,43 @@ async def test_maybe_generate_episode_batch_path() -> None:
 
 @pytest.mark.asyncio
 async def test_maybe_generate_episode_sequential_under_threshold() -> None:
-    """With < 8 logs, sequential method is used (unchanged behavior)."""
+    """With < 8 pairs, sequential method is used (unchanged behavior)."""
     from anima_server.services.agent.episodes import maybe_generate_episode
 
-    with _db_session() as session:
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
         user = User(
             username="seq-episode-test",
             password_hash="not-used",
             display_name="Seq Episode",
         )
-        session.add(user)
-        session.commit()
+        soul_session.add(user)
+        soul_session.commit()
 
-        eng = session.get_bind()
-        test_factory = sessionmaker(
-            bind=eng,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-            class_=Session,
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            count=5,
         )
-
-        today = datetime.now(UTC).date().isoformat()
-        for i in range(5):
-            session.add(
-                MemoryDailyLog(
-                    user_id=user.id,
-                    date=today,
-                    user_message=f"Message {i + 1}",
-                    assistant_response=f"Response {i + 1}",
-                )
-            )
-        session.commit()
 
         # Use scaffold to avoid LLM call for sequential episode too
         with patch("anima_server.services.agent.episodes.settings") as mock_settings:
             mock_settings.agent_provider = "scaffold"
             result = await maybe_generate_episode(
                 user_id=user.id,
-                db_factory=test_factory,
+                db_factory=soul_factory,
+                runtime_db_factory=rt_factory,
             )
 
         assert result is not None
         assert result.segmentation_method == "sequential"
         assert result.message_indices_json is None
 
-        with test_factory() as db2:
+        with soul_factory() as db2:
             episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
 
@@ -392,35 +459,25 @@ async def test_maybe_generate_episode_batch_fallback_on_error() -> None:
     """Batch segmentation failure falls back to sequential method."""
     from anima_server.services.agent.episodes import maybe_generate_episode
 
-    with _db_session() as session:
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
         user = User(
             username="batch-fallback-test",
             password_hash="not-used",
             display_name="Fallback Test",
         )
-        session.add(user)
-        session.commit()
+        soul_session.add(user)
+        soul_session.commit()
 
-        eng = session.get_bind()
-        test_factory = sessionmaker(
-            bind=eng,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-            class_=Session,
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            count=10,
         )
-
-        today = datetime.now(UTC).date().isoformat()
-        for i in range(10):
-            session.add(
-                MemoryDailyLog(
-                    user_id=user.id,
-                    date=today,
-                    user_message=f"Message {i + 1}",
-                    assistant_response=f"Response {i + 1}",
-                )
-            )
-        session.commit()
 
         # Mock segment_messages_batch to raise an error, use scaffold for fallback
         with (
@@ -434,17 +491,18 @@ async def test_maybe_generate_episode_batch_fallback_on_error() -> None:
             mock_settings.agent_provider = "scaffold"
             result = await maybe_generate_episode(
                 user_id=user.id,
-                db_factory=test_factory,
+                db_factory=soul_factory,
+                runtime_db_factory=rt_factory,
             )
 
         assert result is not None
         # Falls back to sequential
         assert result.segmentation_method == "sequential"
 
-        with test_factory() as db2:
+        with soul_factory() as db2:
             episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
-            # Sequential takes up to 6 logs
+            # Sequential takes up to 6 pairs
             assert episodes[0].turn_count <= 6
 
 
@@ -454,35 +512,25 @@ async def test_log_pointer_advances_correctly_after_batch() -> None:
     should not re-process already-consumed messages."""
     from anima_server.services.agent.episodes import maybe_generate_episode
 
-    with _db_session() as session:
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
         user = User(
             username="pointer-test",
             password_hash="not-used",
             display_name="Pointer Test",
         )
-        session.add(user)
-        session.commit()
+        soul_session.add(user)
+        soul_session.commit()
 
-        eng = session.get_bind()
-        test_factory = sessionmaker(
-            bind=eng,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-            class_=Session,
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            count=10,
         )
-
-        today = datetime.now(UTC).date().isoformat()
-        for i in range(10):
-            session.add(
-                MemoryDailyLog(
-                    user_id=user.id,
-                    date=today,
-                    user_message=f"Message {i + 1}",
-                    assistant_response=f"Response {i + 1}",
-                )
-            )
-        session.commit()
 
         # First call: batch segmentation consumes all 10
         with (
@@ -496,19 +544,21 @@ async def test_log_pointer_advances_correctly_after_batch() -> None:
             mock_settings.agent_provider = "scaffold"
             first = await maybe_generate_episode(
                 user_id=user.id,
-                db_factory=test_factory,
+                db_factory=soul_factory,
+                runtime_db_factory=rt_factory,
             )
 
         assert first is not None
 
-        # Second call: no remaining logs
+        # Second call: no remaining pairs
         second = await maybe_generate_episode(
             user_id=user.id,
-            db_factory=test_factory,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
         )
         assert second is None
 
-        with test_factory() as db2:
+        with soul_factory() as db2:
             episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) >= 1  # may be merged if topics overlap
             total = sum(e.turn_count for e in episodes)

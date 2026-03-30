@@ -1,5 +1,6 @@
-"""Tests for runtime enhancements: tool timeout, memory refresh, continue_reasoning,
-streaming retry safety, and proactive context management."""
+"""Tests for runtime enhancements: V3 loop auto-continuation, parallel tool
+execution, tool timeout, memory refresh, streaming retry safety, and
+proactive context management."""
 
 from __future__ import annotations
 
@@ -253,7 +254,7 @@ async def test_memory_refresh_callback_updates_system_prompt() -> None:
         [
             StepExecutionResult(
                 tool_calls=(
-                    ToolCall(id="c1", name="modify_tool", arguments={"request_heartbeat": True}),
+                    ToolCall(id="c1", name="modify_tool", arguments={}),
                 )
             ),
             StepExecutionResult(
@@ -273,7 +274,6 @@ async def test_memory_refresh_callback_updates_system_prompt() -> None:
                     output=result.output,
                     is_terminal=result.is_terminal,
                     memory_modified=True,
-                    heartbeat_requested=result.heartbeat_requested,
                 )
             return result
 
@@ -317,9 +317,8 @@ async def test_memory_refresh_callback_updates_system_prompt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_allows_multi_step() -> None:
-    """Setting request_heartbeat=true on a non-terminal tool allows the
-    agent to chain steps before sending a final response."""
+async def test_v3_auto_continue_after_non_terminal_tool() -> None:
+    """Non-terminal tools auto-continue the loop (V3-style, no heartbeat needed)."""
 
     @tool
     def lookup(query: str) -> str:
@@ -328,17 +327,11 @@ async def test_heartbeat_allows_multi_step() -> None:
 
     adapter = QueueAdapter(
         [
-            # Step 1: agent calls lookup with heartbeat=true (wants another step)
             StepExecutionResult(
                 tool_calls=(
-                    ToolCall(
-                        id="c1",
-                        name="lookup",
-                        arguments={"query": "test", "request_heartbeat": True},
-                    ),
+                    ToolCall(id="c1", name="lookup", arguments={"query": "test"}),
                 )
             ),
-            # Step 2: agent sends final message
             StepExecutionResult(
                 tool_calls=(
                     ToolCall(
@@ -365,8 +358,8 @@ async def test_heartbeat_allows_multi_step() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_heartbeat_stops_after_tool() -> None:
-    """Without request_heartbeat, a non-terminal tool ends the turn."""
+async def test_v3_max_steps_without_terminal_tool() -> None:
+    """When max_steps is exhausted without send_message, stop reason is NO_TERMINAL_TOOL."""
 
     @tool
     def lookup(query: str) -> str:
@@ -375,14 +368,9 @@ async def test_no_heartbeat_stops_after_tool() -> None:
 
     adapter = QueueAdapter(
         [
-            # Step 1: agent calls lookup WITHOUT heartbeat (should stop)
             StepExecutionResult(
                 tool_calls=(
-                    ToolCall(
-                        id="c1",
-                        name="lookup",
-                        arguments={"query": "test"},
-                    ),
+                    ToolCall(id="c1", name="lookup", arguments={"query": "test"}),
                 )
             ),
         ]
@@ -392,13 +380,12 @@ async def test_no_heartbeat_stops_after_tool() -> None:
         adapter=adapter,
         tools=[lookup, send_message],
         tool_rules=[TerminalToolRule(tool_name="send_message")],
-        max_steps=3,
+        max_steps=1,
     )
 
     result = await runtime.invoke("search", user_id=1, history=[])
 
-    # Turn ended without send_message — no heartbeat requested
-    assert result.stop_reason != StopReason.TERMINAL_TOOL.value
+    assert result.stop_reason == StopReason.NO_TERMINAL_TOOL.value
     assert len(result.step_traces) == 1
 
 
@@ -462,8 +449,8 @@ def test_core_memory_tools_registered() -> None:
     assert set(core_names) <= set(tool_names)
 
 
-def test_heartbeat_not_on_terminal_tools() -> None:
-    """request_heartbeat should NOT be injected on send_message (terminal)."""
+def test_heartbeat_not_injected_on_any_tool() -> None:
+    """V3 loop: request_heartbeat should NOT be injected on any tool."""
     from anima_server.services.agent.tools import get_tools
 
     tools = get_tools()
@@ -471,12 +458,9 @@ def test_heartbeat_not_on_terminal_tools() -> None:
         name = getattr(t, "name", "")
         schema = t.args_schema.model_json_schema()
         props = schema.get("properties", {})
-        if name == "send_message":
-            assert "request_heartbeat" not in props, (
-                "send_message should not have request_heartbeat"
-            )
-        else:
-            assert "request_heartbeat" in props, f"{name} should have request_heartbeat"
+        assert "request_heartbeat" not in props, (
+            f"{name} should not have request_heartbeat (V3 loop)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -623,3 +607,148 @@ def test_parse_function_tag_plain_text_fallback_still_works() -> None:
     assert len(results) == 1
     assert results[0].name == "send_message"
     assert "Hello there!" in next(iter(results[0].arguments.values()))
+
+
+# ---------------------------------------------------------------------------
+# V3 Loop: Parallel Tool Call Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parallel_mixed_terminal_and_non_terminal() -> None:
+    """Non-terminal tools execute in parallel, send_message executes last."""
+
+    @tool
+    def recall_memory(query: str) -> str:
+        """Search memory."""
+        return "found: user likes cats"
+
+    @tool
+    def current_datetime() -> str:
+        """Get current time."""
+        return "2026-03-29T12:00:00Z"
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(id="c1", name="recall_memory", arguments={"query": "pets"}),
+                    ToolCall(id="c2", name="current_datetime", arguments={}),
+                    ToolCall(id="c3", name="send_message", arguments={"message": "You like cats!"}),
+                )
+            ),
+        ]
+    )
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[recall_memory, current_datetime, send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke("what do I like?", user_id=1, history=[])
+
+    assert result.response == "You like cats!"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert "recall_memory" in result.tools_used
+    assert "current_datetime" in result.tools_used
+    assert len(result.step_traces) == 1
+    assert len(result.step_traces[0].tool_results) == 3
+
+
+@pytest.mark.asyncio
+async def test_parallel_partial_failure_continues() -> None:
+    """When one tool fails in a parallel batch, the loop still continues."""
+
+    @tool
+    def good_tool(query: str) -> str:
+        """A tool that works."""
+        return "success"
+
+    @tool
+    def bad_tool(query: str) -> str:
+        """A tool that always fails."""
+        raise ValueError("something broke")
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(id="c1", name="good_tool", arguments={"query": "test"}),
+                    ToolCall(id="c2", name="bad_tool", arguments={"query": "test"}),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(id="c3", name="send_message", arguments={"message": "recovered"}),
+                )
+            ),
+        ]
+    )
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[good_tool, bad_tool, send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke("test both", user_id=1, history=[])
+
+    assert result.response == "recovered"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    step1_results = result.step_traces[0].tool_results
+    assert len(step1_results) == 2
+    assert any(tr.is_error for tr in step1_results)
+    assert any(not tr.is_error for tr in step1_results)
+
+
+@pytest.mark.asyncio
+async def test_v3_three_consecutive_non_terminal_steps() -> None:
+    """V3 loop auto-continues through 3+ consecutive non-terminal steps."""
+
+    @tool
+    def step_a() -> str:
+        """First step."""
+        return "a done"
+
+    @tool
+    def step_b() -> str:
+        """Second step."""
+        return "b done"
+
+    @tool
+    def step_c() -> str:
+        """Third step."""
+        return "c done"
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(tool_calls=(ToolCall(id="c1", name="step_a", arguments={}),)),
+            StepExecutionResult(tool_calls=(ToolCall(id="c2", name="step_b", arguments={}),)),
+            StepExecutionResult(tool_calls=(ToolCall(id="c3", name="step_c", arguments={}),)),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(id="c4", name="send_message", arguments={"message": "all steps done"}),
+                )
+            ),
+        ]
+    )
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[step_a, step_b, step_c, send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=5,
+    )
+
+    result = await runtime.invoke("do all steps", user_id=1, history=[])
+
+    assert result.response == "all steps done"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 4
+    assert "step_a" in result.tools_used
+    assert "step_b" in result.tools_used
+    assert "step_c" in result.tools_used

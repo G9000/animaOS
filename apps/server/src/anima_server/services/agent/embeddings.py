@@ -120,6 +120,9 @@ def clear_embedding_cache() -> None:
         _embedding_cache.clear()
         _cache_hits = 0
         _cache_misses = 0
+    from anima_server.config import clear_detected_embedding_dim
+
+    clear_detected_embedding_dim()
 
 
 def get_embedding_cache_stats() -> dict[str, int]:
@@ -175,6 +178,15 @@ async def generate_embedding(text: str) -> list[float] | None:
 
     if result is not None:
         _cache_put(key, result)
+        from anima_server.config import _detected_embedding_dim, set_detected_embedding_dim
+
+        if _detected_embedding_dim is None:
+            set_detected_embedding_dim(len(result))
+            logger.info(
+                "Auto-detected embedding dimension: %d (model=%s)",
+                len(result),
+                _resolve_embedding_model(),
+            )
     return result
 
 
