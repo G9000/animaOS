@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Per-user locks — prevents concurrent Soul Writer runs for the same user
 _user_locks: dict[int, asyncio.Lock] = {}
 MAX_RETRY_COUNT = 3
+MAX_ITEMS_PER_RUN = 50
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
@@ -62,7 +63,9 @@ async def run_soul_writer(
 
     async with lock:
         try:
-            await _run_soul_writer_inner(
+            # Run sync DB work in a thread to avoid blocking the event loop
+            await asyncio.to_thread(
+                _run_soul_writer_inner,
                 user_id,
                 result=result,
                 soul_db_factory=soul_db_factory,
@@ -72,17 +75,33 @@ async def run_soul_writer(
             logger.exception("Soul Writer failed for user %s", user_id)
             result.errors.append(str(e))
 
+    total_work = (
+        result.ops_processed + result.ops_skipped + result.ops_failed
+        + result.candidates_promoted + result.candidates_rejected
+        + result.candidates_superseded + result.candidates_failed
+    )
+    if total_work > 0 or result.errors:
+        logger.info(
+            "Soul Writer user=%s: ops=%d/%d/%d cands=%d/%d/%d/%d access=%s errors=%d",
+            user_id,
+            result.ops_processed, result.ops_skipped, result.ops_failed,
+            result.candidates_promoted, result.candidates_rejected,
+            result.candidates_superseded, result.candidates_failed,
+            result.access_sync.get("items_synced", 0),
+            len(result.errors),
+        )
+
     return result
 
 
-async def _run_soul_writer_inner(
+def _run_soul_writer_inner(
     user_id: int,
     *,
     result: SoulWriterResult,
     soul_db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
-    """Inner pipeline — called under lock."""
+    """Inner pipeline — called under lock via asyncio.to_thread."""
     from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.db.session import SessionLocal
 
@@ -94,6 +113,28 @@ async def _run_soul_writer_inner(
         from anima_server.services.agent.pending_ops import get_pending_ops
 
         pending_ops = get_pending_ops(runtime_db, user_id=user_id)
+
+        # Also retry previously-failed ops (transient errors like SQLCipher busy)
+        from anima_server.models.pending_memory_op import PendingMemoryOp as _PendingOp
+
+        failed_ops = list(
+            runtime_db.scalars(
+                select(_PendingOp)
+                .where(
+                    _PendingOp.user_id == user_id,
+                    _PendingOp.consolidated.is_(False),
+                    _PendingOp.failed.is_(True),
+                )
+                .order_by(_PendingOp.id.asc())
+                .limit(MAX_ITEMS_PER_RUN)
+            ).all()
+        )
+        for op in failed_ops:
+            op.failed = False
+            op.failure_reason = None
+        if failed_ops:
+            runtime_db.flush()
+            pending_ops.extend(failed_ops)
 
         for op in pending_ops:
             try:
@@ -125,22 +166,26 @@ async def _run_soul_writer_inner(
                     MemoryCandidate.status.in_(["extracted", "queued"]),
                 )
                 .order_by(MemoryCandidate.created_at)
+                .limit(MAX_ITEMS_PER_RUN)
             ).all()
         )
 
         # Also retry failed candidates below the max retry threshold
-        failed_retryable = list(
-            runtime_db.scalars(
-                select(MemoryCandidate)
-                .where(
-                    MemoryCandidate.user_id == user_id,
-                    MemoryCandidate.status == "failed",
-                    MemoryCandidate.retry_count < MAX_RETRY_COUNT,
-                )
-                .order_by(MemoryCandidate.created_at)
-            ).all()
-        )
-        candidates.extend(failed_retryable)
+        remaining = MAX_ITEMS_PER_RUN - len(candidates)
+        if remaining > 0:
+            failed_retryable = list(
+                runtime_db.scalars(
+                    select(MemoryCandidate)
+                    .where(
+                        MemoryCandidate.user_id == user_id,
+                        MemoryCandidate.status == "failed",
+                        MemoryCandidate.retry_count < MAX_RETRY_COUNT,
+                    )
+                    .order_by(MemoryCandidate.created_at)
+                    .limit(remaining)
+                ).all()
+            )
+            candidates.extend(failed_retryable)
 
         for candidate in candidates:
             candidate.status = "queued"

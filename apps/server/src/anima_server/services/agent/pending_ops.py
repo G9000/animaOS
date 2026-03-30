@@ -51,6 +51,7 @@ def get_pending_ops(
     *,
     user_id: int,
     target_block: str | None = None,
+    limit: int = 50,
 ) -> list[PendingMemoryOp]:
     """Return unconsolidated, unfailed pending ops in causal order."""
     query = (
@@ -61,6 +62,7 @@ def get_pending_ops(
             PendingMemoryOp.failed.is_(False),
         )
         .order_by(PendingMemoryOp.id.asc())
+        .limit(limit)
     )
     if target_block is not None:
         query = query.where(PendingMemoryOp.target_block == target_block)

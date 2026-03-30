@@ -578,16 +578,8 @@ def schedule_background_memory_consolidation(
         _background_tasks.add(task)
     task.add_done_callback(_on_background_task_done)
 
-    # Embedding backfill
-    try:
-        backfill_task = loop.create_task(
-            _backfill_user_embeddings(user_id, db_factory=db_factory)
-        )
-        with _background_tasks_lock:
-            _background_tasks.add(backfill_task)
-        backfill_task.add_done_callback(_on_background_task_done)
-    except Exception:
-        pass
+    # Embedding backfill moved to inactivity-only path (reflection.py)
+    # to avoid per-turn SQLCipher writes from the conversation hot path.
 
 
 async def drain_background_memory_tasks() -> None:

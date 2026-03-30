@@ -132,6 +132,15 @@ async def run_reflection(
     except Exception:
         logger.exception("Soul Writer failed during reflection for user %s", user_id)
 
+    # 1.6. Embedding backfill — runs during inactivity only (not per-turn)
+    #       to avoid SQLCipher writes from the conversation hot path.
+    try:
+        from anima_server.services.agent.consolidation import _backfill_user_embeddings
+
+        await _backfill_user_embeddings(user_id, db_factory=db_factory)
+    except Exception:
+        logger.debug("Embedding backfill failed for user %s", user_id, exc_info=True)
+
     # 2. Full sleep-time maintenance via the orchestrator (force=True
     #    bypasses frequency + heat gates since this is the inactivity timer).
     try:
