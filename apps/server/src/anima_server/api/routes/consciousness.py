@@ -304,7 +304,7 @@ async def update_self_model_section(
         set_self_model_block,
         set_working_context,
     )
-    from anima_server.services.agent.soul_writer import set_soul_block
+    from anima_server.services.agent.soul_blocks import set_soul_block
 
     if section not in ALL_SECTIONS:
         raise HTTPException(

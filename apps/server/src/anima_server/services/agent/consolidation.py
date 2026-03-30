@@ -197,7 +197,7 @@ async def consolidate_pending_ops(
     """Promote pending runtime memory ops into the soul store."""
     from anima_server.models import PendingMemoryOp
     from anima_server.services.agent.pending_ops import get_pending_ops
-    from anima_server.services.agent.soul_writer import (
+    from anima_server.services.agent.soul_blocks import (
         append_to_soul_block,
         full_replace_soul_block,
         replace_in_soul_block,

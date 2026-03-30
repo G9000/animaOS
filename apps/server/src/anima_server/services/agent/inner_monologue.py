@@ -442,7 +442,7 @@ async def _run_deep_monologue_legacy(
                 append_growth_log_entry,
                 set_self_model_block,
             )
-            from anima_server.services.agent.soul_writer import set_soul_block
+            from anima_server.services.agent.soul_blocks import set_soul_block
 
             if parsed.get("identity_update"):
                 set_self_model_block(
@@ -719,7 +719,7 @@ async def run_deep_monologue(
             return result
 
         with factory() as db:
-            from anima_server.services.agent.soul_writer import set_soul_block
+            from anima_server.services.agent.soul_blocks import set_soul_block
 
             if parsed.get("identity_update"):
                 set_self_model_block(
