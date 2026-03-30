@@ -39,6 +39,7 @@ def load_thread_history(
         .where(
             RuntimeMessage.thread_id == thread_id,
             RuntimeMessage.is_in_context.is_(True),
+            RuntimeMessage.is_archived_history.is_(False),
             RuntimeMessage.role.in_(("user", "assistant", "tool")),
         )
         .order_by(RuntimeMessage.sequence_id)
@@ -413,6 +414,7 @@ def append_message(
     tool_call_id: str | None = None,
     tool_args_json: dict[str, object] | None = None,
     source: str | None = None,
+    is_archived_history: bool = False,
 ) -> RuntimeMessage:
     timestamp = datetime.now(UTC)
     message = RuntimeMessage(
@@ -428,6 +430,7 @@ def append_message(
         tool_call_id=tool_call_id,
         tool_args_json=tool_args_json,
         is_in_context=True,
+        is_archived_history=is_archived_history,
         token_estimate=estimate_message_tokens(
             content_text=content_text,
             content_json=content_json,
@@ -510,6 +513,27 @@ def _serialize_usage(usage: UsageStats | None) -> dict[str, object] | None:
     if usage is None:
         return None
     return asdict(usage)
+
+
+def list_threads(db: Session, user_id: int) -> list[RuntimeThread]:
+    """Return all threads for a user sorted by last_message_at DESC."""
+    from sqlalchemy import nulls_last
+
+    return list(
+        db.scalars(
+            select(RuntimeThread)
+            .where(RuntimeThread.user_id == user_id)
+            .order_by(nulls_last(desc(RuntimeThread.last_message_at)))
+        ).all()
+    )
+
+
+def create_thread(db: Session, user_id: int) -> RuntimeThread:
+    """Create a new thread."""
+    thread = RuntimeThread(user_id=user_id, status="active")
+    db.add(thread)
+    db.flush()
+    return thread
 
 
 def _deserialize_tool_calls(
