@@ -175,3 +175,73 @@ def test_store_memory_item_dry_run_does_not_write() -> None:
         assert count == 0
 
     Base.metadata.drop_all(bind=engine)
+
+
+def test_create_memory_candidate_dedup(pg_session: Session) -> None:
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+    c1 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
+                                  category="preference", source="llm")
+    assert c1 is not None
+
+    # Duplicate — same user, category, importance_source, content
+    c2 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
+                                  category="preference", source="llm")
+    assert c2 is None  # rejected by dedup check
+
+
+def test_correction_and_extraction_not_deduped(pg_session: Session) -> None:
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+    c1 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
+                                  category="preference", source="llm")
+    c2 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
+                                  category="preference", importance_source="correction",
+                                  source="feedback")
+    assert c1 is not None
+    assert c2 is not None  # different importance_source → different hash
+
+
+def test_count_eligible_candidates(pg_session: Session) -> None:
+    from anima_server.services.agent.candidate_ops import (
+        count_eligible_candidates,
+        create_memory_candidate,
+    )
+
+    # Create a few candidates in different states
+    c1 = create_memory_candidate(pg_session, user_id=1, content="fact one",
+                                  category="fact", source="llm")
+    assert c1 is not None
+
+    c2 = create_memory_candidate(pg_session, user_id=1, content="fact two",
+                                  category="fact", source="regex")
+    assert c2 is not None
+
+    # Mark one as promoted (should not count)
+    c2.status = "promoted"
+    pg_session.flush()
+
+    assert count_eligible_candidates(pg_session, user_id=1) == 1
+
+
+def test_create_memory_candidate_invalid_category(pg_session: Session) -> None:
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+    c = create_memory_candidate(pg_session, user_id=1, content="test",
+                                 category="invalid_cat", source="llm")
+    assert c is not None
+    assert c.category == "fact"  # falls back to "fact"
+
+
+def test_create_memory_candidate_importance_clamped(pg_session: Session) -> None:
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+    c = create_memory_candidate(pg_session, user_id=1, content="important thing",
+                                 category="goal", source="llm", importance=10)
+    assert c is not None
+    assert c.importance == 5  # clamped to max
+
+    c2 = create_memory_candidate(pg_session, user_id=1, content="low thing",
+                                  category="goal", source="llm", importance=-1)
+    assert c2 is not None
+    assert c2.importance == 1  # clamped to min
