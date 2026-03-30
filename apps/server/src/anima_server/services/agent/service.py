@@ -587,6 +587,21 @@ async def _prepare_turn_context(
     )
     conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
+    # Pre-turn Soul Writer check: if eligible candidates are queued,
+    # promote them before building memory blocks so the current turn
+    # sees the freshest soul data.
+    try:
+        from anima_server.services.agent.candidate_ops import count_eligible_candidates
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        from anima_server.db.runtime import get_runtime_session_factory as _rt_factory
+        with _rt_factory()() as _rt_db:
+            eligible = count_eligible_candidates(_rt_db, user_id=user_id)
+        if eligible > 0:
+            await run_soul_writer(user_id)
+    except Exception:
+        logger.debug("Pre-turn Soul Writer check failed for user %s", user_id, exc_info=True)
+
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
     query_embedding: list[float] | None = None

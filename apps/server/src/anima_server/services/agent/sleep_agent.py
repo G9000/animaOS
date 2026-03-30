@@ -21,27 +21,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────
 
-SLEEPTIME_FREQUENCY: int = 3  # Run every N turns
 HEAT_THRESHOLD_CONSOLIDATION: float = 5.0  # Min heat for expensive ops
-
-# ── In-memory state (no persistence needed) ──────────────────────────
-
-_turn_counters: dict[int, int] = {}  # user_id -> turn_count
-
-
-# ── Turn counting ────────────────────────────────────────────────────
-
-
-def bump_turn_counter(user_id: int) -> int:
-    """Increment and return the turn counter for a user."""
-    _turn_counters[user_id] = _turn_counters.get(user_id, 0) + 1
-    return _turn_counters[user_id]
-
-
-def should_run_sleeptime(user_id: int) -> bool:
-    """True if turn_count % SLEEPTIME_FREQUENCY == 0."""
-    count = _turn_counters.get(user_id, 0)
-    return count > 0 and count % SLEEPTIME_FREQUENCY == 0
 
 
 # ── Heat gating ──────────────────────────────────────────────────────
@@ -65,44 +45,6 @@ def _should_run_expensive(
 
 
 # ── Task tracking ────────────────────────────────────────────────────
-
-_DB_LOCKED_RETRY_DELAYS = (1.0, 2.0, 4.0)
-
-
-async def _commit_with_retry(
-    db_session: Any,
-    *,
-    label: str = "commit",
-) -> bool:
-    """Try to commit, retrying on ``database is locked`` errors.
-
-    Returns True on success, False if all retries exhausted.
-    """
-    for attempt, delay in enumerate(_DB_LOCKED_RETRY_DELAYS, 1):
-        try:
-            db_session.commit()
-            return True
-        except Exception as exc:
-            if "database is locked" not in str(exc):
-                raise
-            logger.debug(
-                "%s failed (attempt %d/%d, database locked), retrying in %.1fs",
-                label,
-                attempt,
-                len(_DB_LOCKED_RETRY_DELAYS),
-                delay,
-            )
-            db_session.rollback()
-            await asyncio.sleep(delay)
-    # Final attempt without catching
-    try:
-        db_session.commit()
-        return True
-    except Exception:
-        logger.warning("%s failed after all retries", label)
-        db_session.rollback()
-        return False
-
 
 async def _issue_background_task(
     *,

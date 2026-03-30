@@ -124,6 +124,14 @@ async def run_reflection(
     except Exception:
         logger.exception("Quick reflection failed for user %s", user_id)
 
+    # 1.5. Soul Writer — promote pending candidates before orchestrator tasks
+    try:
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        await run_soul_writer(user_id)
+    except Exception:
+        logger.exception("Soul Writer failed during reflection for user %s", user_id)
+
     # 2. Full sleep-time maintenance via the orchestrator (force=True
     #    bypasses frequency + heat gates since this is the inactivity timer).
     try:

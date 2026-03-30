@@ -11,14 +11,10 @@ from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.services.agent.sleep_agent import (
-    SLEEPTIME_FREQUENCY,
     _issue_background_task,
     _should_run_expensive,
-    _turn_counters,
-    bump_turn_counter,
     get_last_processed_message_id,
     run_sleeptime_agents,
-    should_run_sleeptime,
     update_last_processed_message_id,
 )
 from sqlalchemy import create_engine, event, select
@@ -26,14 +22,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 # ── Fixtures ─────────────────────────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def _clear_turn_counters():
-    """Reset turn counters between tests."""
-    _turn_counters.clear()
-    yield
-    _turn_counters.clear()
 
 
 @pytest.fixture()
@@ -90,44 +78,6 @@ def rt_factory(runtime_db_engine):
         expire_on_commit=False,
     )
     return factory
-
-
-# ── Turn counting ────────────────────────────────────────────────────
-
-
-class TestBumpTurnCounter:
-    def test_increments_from_zero(self):
-        assert bump_turn_counter(1) == 1
-        assert bump_turn_counter(1) == 2
-        assert bump_turn_counter(1) == 3
-
-    def test_separate_users(self):
-        assert bump_turn_counter(1) == 1
-        assert bump_turn_counter(2) == 1
-        assert bump_turn_counter(1) == 2
-        assert bump_turn_counter(2) == 2
-
-
-class TestShouldRunSleeptime:
-    def test_false_at_zero(self):
-        assert should_run_sleeptime(1) is False
-
-    def test_true_at_frequency(self):
-        for _ in range(SLEEPTIME_FREQUENCY):
-            bump_turn_counter(1)
-        assert should_run_sleeptime(1) is True
-
-    def test_false_between_frequencies(self):
-        bump_turn_counter(1)  # 1
-        assert should_run_sleeptime(1) is False
-        bump_turn_counter(1)  # 2
-        assert should_run_sleeptime(1) is False
-
-    def test_true_at_multiples(self):
-        for i in range(1, 10):
-            bump_turn_counter(1)
-            expected = i % SLEEPTIME_FREQUENCY == 0
-            assert should_run_sleeptime(1) is expected, f"Failed at turn {i}"
 
 
 # ── _issue_background_task ───────────────────────────────────────────
