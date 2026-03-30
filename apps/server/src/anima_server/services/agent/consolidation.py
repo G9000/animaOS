@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.services.agent.claims import upsert_claim
 from anima_server.services.agent.memory_store import (
-    add_daily_log,
     set_current_focus,
     store_memory_item,
     supersede_memory_item,
@@ -46,7 +45,6 @@ class PatternExtractor:
 
 @dataclass(slots=True)
 class MemoryConsolidationResult:
-    daily_log_id: int | None = None
     facts_added: list[str] = field(default_factory=list)
     preferences_added: list[str] = field(default_factory=list)
     current_focus_updated: str | None = None
@@ -127,14 +125,6 @@ def consolidate_turn_memory(
     result = MemoryConsolidationResult()
 
     with factory() as db:
-        log = add_daily_log(
-            db,
-            user_id=user_id,
-            user_message=user_message,
-            assistant_response=assistant_response,
-        )
-        result.daily_log_id = log.id
-
         extracted = extract_turn_memory(user_message)
 
         for fact in extracted.facts:

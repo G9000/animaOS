@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from anima_server.config import settings
 from anima_server.db.base import Base
-from anima_server.models import MemoryDailyLog, User
+from anima_server.models import User
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
 from anima_server.services.agent.consolidation import (
     LLMExtractionResult,
@@ -47,7 +47,7 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def test_consolidate_turn_memory_writes_daily_log_and_user_memory() -> None:
+def test_consolidate_turn_memory_extracts_user_memory() -> None:
     with _db_session() as session:
         user = User(
             username="consolidation-test",
@@ -78,9 +78,6 @@ def test_consolidate_turn_memory_writes_daily_log_and_user_memory() -> None:
             now=datetime(2026, 3, 14, 10, 30, tzinfo=UTC),
             db_factory=test_factory,
         )
-
-        # Check daily log was written
-        assert result.daily_log_id is not None
 
         # Check facts extracted
         assert "Works as a product designer" in result.facts_added
@@ -333,7 +330,6 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
 
             prefs = get_memory_items(session, user_id=user.id, category="preference")
             focus = get_memory_items(session, user_id=user.id, category="focus")
-            daily_logs = session.query(MemoryDailyLog).filter_by(user_id=user.id).all()
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()
@@ -341,4 +337,3 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
     assert "turn 1" in result.response
     assert any("short walks" in item.content.lower() for item in prefs)
     assert any("memory pipeline" in item.content.lower() for item in focus)
-    assert daily_logs

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import MemoryDailyLog, MemoryItem, MemoryItemTag
+from anima_server.models import MemoryItem, MemoryItemTag
 from anima_server.services.data_crypto import df, ef
 
 # Decay half-life in days — after this many days, recency score halves
@@ -432,25 +432,6 @@ def supersede_memory_item(
 
     return new_item
 
-
-def add_daily_log(
-    db: Session,
-    *,
-    user_id: int,
-    user_message: str,
-    assistant_response: str,
-) -> MemoryDailyLog:
-    log = MemoryDailyLog(
-        user_id=user_id,
-        date=datetime.now(UTC).date().isoformat(),
-        user_message=ef(user_id, user_message, table="memory_daily_logs", field="user_message"),
-        assistant_response=ef(
-            user_id, assistant_response, table="memory_daily_logs", field="assistant_response"
-        ),
-    )
-    db.add(log)
-    db.flush()
-    return log
 
 
 def get_current_focus(db: Session, *, user_id: int) -> str | None:

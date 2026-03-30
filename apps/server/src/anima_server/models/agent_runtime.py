@@ -481,24 +481,6 @@ class MemoryClaimEvidence(Base):
     claim: Mapped[MemoryClaim] = relationship(back_populates="evidence")
 
 
-class MemoryDailyLog(Base):
-    __tablename__ = "memory_daily_logs"
-    __table_args__ = (Index("ix_memory_daily_logs_user_date", "user_id", "date"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
-    user_message: Mapped[str] = mapped_column(Text, nullable=False)
-    assistant_response: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
 
 class MemoryVector(Base):
     __tablename__ = "memory_vectors"

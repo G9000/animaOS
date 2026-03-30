@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 class ConversationHit:
     """A single search result from conversation history."""
 
-    source: str  # "message" or "daily_log"
-    role: str  # "user", "assistant", or "log"
+    source: str  # "message"
+    role: str  # "user" or "assistant"
     content: str
     date: str  # YYYY-MM-DD
     score: float
