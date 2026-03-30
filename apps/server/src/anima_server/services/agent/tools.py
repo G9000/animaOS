@@ -95,7 +95,7 @@ def note_to_self(key: str, value: str, note_type: str = "observation") -> str:
 
     ctx = get_tool_context()
     write_session_note(
-        ctx.db,
+        ctx.runtime_db,
         thread_id=ctx.thread_id,
         user_id=ctx.user_id,
         key=key,
@@ -119,7 +119,7 @@ def dismiss_note(key: str) -> str:
     from anima_server.services.agent.tool_context import get_tool_context
 
     ctx = get_tool_context()
-    removed = remove_session_note(ctx.db, thread_id=ctx.thread_id, key=key)
+    removed = remove_session_note(ctx.runtime_db, thread_id=ctx.thread_id, key=key)
     if removed:
         from anima_server.services.agent.companion import get_companion
 
@@ -159,14 +159,13 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
     parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
 
     promoted = promote_session_note(
-        ctx.db,
+        ctx.runtime_db,
         thread_id=ctx.thread_id,
         user_id=ctx.user_id,
         key=key,
         category=category,
         importance=imp,
         tags=parsed_tags,
-        runtime_db=ctx.runtime_db,
     )
     if promoted:
         from anima_server.services.agent.companion import get_companion

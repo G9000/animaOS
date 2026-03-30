@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 
-from anima_server.db.base import Base
-from anima_server.models import AgentThread, User
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models.runtime import RuntimeThread
+from anima_server.models.runtime_memory import MemoryCandidate, RuntimeSessionNote
 from anima_server.services.agent.session_memory import (
     clear_session_notes,
     get_session_notes,
@@ -20,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 
 
 @contextmanager
-def _db_session() -> Generator[Session, None, None]:
+def _runtime_db_session() -> Generator[Session, None, None]:
     engine: Engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -33,36 +34,33 @@ def _db_session() -> Generator[Session, None, None]:
         expire_on_commit=False,
         class_=Session,
     )
-    Base.metadata.create_all(bind=engine)
+    RuntimeBase.metadata.create_all(bind=engine)
     session = factory()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
+        RuntimeBase.metadata.drop_all(bind=engine)
         engine.dispose()
 
 
-def _setup(db: Session) -> tuple[User, AgentThread]:
-    user = User(username="session-test", display_name="Tester", password_hash="x")
-    db.add(user)
-    db.flush()
-
-    thread = AgentThread(user_id=user.id, status="active")
+def _setup(db: Session) -> tuple[int, RuntimeThread]:
+    """Create a RuntimeThread and return (user_id, thread)."""
+    user_id = 1
+    thread = RuntimeThread(user_id=user_id, status="active")
     db.add(thread)
     db.flush()
-
-    return user, thread
+    return user_id, thread
 
 
 def test_write_and_read_session_notes() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="user_mood",
             value="seems happy today",
             note_type="emotion",
@@ -70,7 +68,7 @@ def test_write_and_read_session_notes() -> None:
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="topic",
             value="discussing Python async",
             note_type="context",
@@ -83,20 +81,20 @@ def test_write_and_read_session_notes() -> None:
 
 
 def test_update_existing_note_by_key() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="mood",
             value="neutral",
         )
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="mood",
             value="excited about project",
         )
@@ -107,13 +105,13 @@ def test_update_existing_note_by_key() -> None:
 
 
 def test_remove_session_note() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="temp",
             value="temporary note",
         )
@@ -128,14 +126,14 @@ def test_remove_session_note() -> None:
 
 
 def test_clear_all_session_notes() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         for i in range(5):
             write_session_note(
                 db,
                 thread_id=thread.id,
-                user_id=user.id,
+                user_id=user_id,
                 key=f"note_{i}",
                 value=f"value {i}",
             )
@@ -146,22 +144,21 @@ def test_clear_all_session_notes() -> None:
 
 
 def test_promote_session_note_to_memory() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="job",
             value="Works as a data scientist",
         )
 
-        # Legacy path (no runtime_db) — still creates MemoryItem directly
         promoted = promote_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="job",
             category="fact",
             importance=5,
@@ -174,17 +171,25 @@ def test_promote_session_note_to_memory() -> None:
 
         all_notes = get_session_notes(db, thread_id=thread.id, active_only=False)
         assert len(all_notes) == 1
-        assert all_notes[0].promoted_to_item_id is not None
+        assert all_notes[0].is_active is False
+
+        # MemoryCandidate should have been created
+        from sqlalchemy import select
+
+        candidates = list(db.scalars(select(MemoryCandidate)).all())
+        assert len(candidates) == 1
+        assert candidates[0].content == "Works as a data scientist"
+        assert candidates[0].category == "fact"
 
 
 def test_render_session_memory_text() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="mood",
             value="calm",
             note_type="emotion",
@@ -192,7 +197,7 @@ def test_render_session_memory_text() -> None:
         write_session_note(
             db,
             thread_id=thread.id,
-            user_id=user.id,
+            user_id=user_id,
             key="goal",
             value="plan the weekend",
             note_type="plan",
@@ -205,15 +210,15 @@ def test_render_session_memory_text() -> None:
 
 
 def test_max_notes_enforced() -> None:
-    with _db_session() as db:
-        user, thread = _setup(db)
+    with _runtime_db_session() as db:
+        user_id, thread = _setup(db)
 
         # Write more than the max (default 20)
         for i in range(25):
             write_session_note(
                 db,
                 thread_id=thread.id,
-                user_id=user.id,
+                user_id=user_id,
                 key=f"note_{i:03d}",
                 value=f"value {i}",
             )

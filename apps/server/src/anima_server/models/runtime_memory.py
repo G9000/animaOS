@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,6 +70,31 @@ class PromotionJournal(RuntimeBase):
     journal_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="tentative"
     )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class RuntimeSessionNote(RuntimeBase):
+    """PG-side session notes — ephemeral per-conversation scratch state."""
+
+    __tablename__ = "runtime_session_notes"
+    __table_args__ = (
+        Index("ix_runtime_session_notes_thread_active", "thread_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    thread_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("runtime_threads.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    note_type: Mapped[str] = mapped_column(String(24), nullable=False, default="observation")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    promoted_to_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

@@ -174,7 +174,9 @@ def build_runtime_memory_blocks(
     if episodes_block is not None:
         blocks.append(episodes_block)
 
-    session_block = build_session_memory_block(db, thread_id=thread_id, user_id=user_id, agent_type=agent_type)
+    session_block = build_session_memory_block(
+        runtime_db or db, thread_id=thread_id, user_id=user_id, agent_type=agent_type,
+    )
     if session_block is not None:
         blocks.append(session_block)
 
