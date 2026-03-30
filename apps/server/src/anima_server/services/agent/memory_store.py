@@ -379,21 +379,35 @@ def touch_memory_items(
     items: list[MemoryItem],
     *,
     now: datetime | None = None,
+    runtime_db: Session | None = None,
 ) -> None:
-    """Update last_referenced_at and increment reference_count for loaded memories."""
+    """Log memory access to PG (if runtime_db available) for later sync to SQLCipher."""
     if not items:
         return
     ref_now = now or datetime.now(UTC)
-    for item in items:
-        item.reference_count = (item.reference_count or 0) + 1
-        item.last_referenced_at = ref_now
-    db.flush()
-    try:
-        from anima_server.services.agent.heat_scoring import update_heat_on_access
 
-        update_heat_on_access(db, items, now=ref_now)
-    except Exception:
-        pass
+    if runtime_db is not None:
+        from anima_server.models.runtime_memory import MemoryAccessLog
+
+        for item in items:
+            runtime_db.add(MemoryAccessLog(
+                user_id=item.user_id,
+                memory_item_id=item.id,
+                accessed_at=ref_now,
+            ))
+        runtime_db.flush()
+    else:
+        # Fallback: direct SQLCipher write (legacy path)
+        for item in items:
+            item.reference_count = (item.reference_count or 0) + 1
+            item.last_referenced_at = ref_now
+        db.flush()
+        try:
+            from anima_server.services.agent.heat_scoring import update_heat_on_access
+
+            update_heat_on_access(db, items, now=ref_now)
+        except Exception:
+            pass
 
 
 def supersede_memory_item(
