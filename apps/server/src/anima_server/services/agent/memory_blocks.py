@@ -174,9 +174,10 @@ def build_runtime_memory_blocks(
     if episodes_block is not None:
         blocks.append(episodes_block)
 
+    # Session notes live in PG (runtime_session_notes); skip when no runtime DB.
     session_block = build_session_memory_block(
-        runtime_db or db, thread_id=thread_id, user_id=user_id, agent_type=agent_type,
-    )
+        runtime_db, thread_id=thread_id, user_id=user_id, agent_type=agent_type,
+    ) if runtime_db is not None else None
     if session_block is not None:
         blocks.append(session_block)
 

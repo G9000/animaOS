@@ -16,7 +16,6 @@ from anima_server.models.agent_runtime import (
     MemoryItem,
     MemoryItemTag,
     MemoryVector,
-    SessionNote,
 )
 from anima_server.models.consciousness import (
     AgentProfile,
@@ -79,7 +78,6 @@ __all__ = [
     "RuntimeStep",
     "RuntimeThread",
     "SelfModelBlock",
-    "SessionNote",
     "Task",
     "TelegramLink",
     "User",

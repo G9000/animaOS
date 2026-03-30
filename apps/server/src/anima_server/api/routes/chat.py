@@ -336,10 +336,15 @@ async def consolidate(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    """Trigger memory consolidation for recent conversations."""
+    """Trigger memory extraction for recent conversations.
+
+    Creates MemoryCandidate rows via run_background_extraction. The Soul
+    Writer will batch-promote them into the soul store when enough
+    candidates accumulate.
+    """
     require_unlocked_user(request, payload.userId)
 
-    from anima_server.services.agent.consolidation import consolidate_turn_memory_with_llm
+    from anima_server.services.agent.consolidation import run_background_extraction
 
     messages = list(
         runtime_db.scalars(
@@ -353,7 +358,7 @@ async def consolidate(
         ).all()
     )
 
-    # Pair consecutive user/assistant messages for consolidation
+    # Pair consecutive user/assistant messages for extraction
     pairs: list[tuple[str, str]] = []
     msgs = list(reversed(messages))
     i = 0
@@ -364,21 +369,22 @@ async def consolidate(
         else:
             i += 1
 
-    items_added = 0
+    rt_factory = build_session_factory_for_db(runtime_db)
+    candidates_created = 0
     errors: list[str] = []
     for user_message, assistant_response in pairs:
         try:
-            result = await consolidate_turn_memory_with_llm(
+            await run_background_extraction(
                 user_id=payload.userId,
                 user_message=user_message,
                 assistant_response=assistant_response,
-                db_factory=build_session_factory_for_db(db),
+                runtime_db_factory=rt_factory,
             )
-            items_added += len(result.llm_items_added)
+            candidates_created += 1
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"filesProcessed": len(pairs), "filesChanged": items_added, "errors": errors}
+    return {"filesProcessed": len(pairs), "filesChanged": candidates_created, "errors": errors}
 
 
 @router.post("/sleep")
