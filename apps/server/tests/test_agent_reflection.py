@@ -7,9 +7,10 @@ from datetime import UTC, datetime
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryDailyLog, MemoryEpisode, User
+from anima_server.models import MemoryEpisode, User
 from anima_server.services.agent import reflection as reflection_service
 from anima_server.services.agent.reflection import run_reflection
+from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -42,7 +43,11 @@ def _db_session() -> Generator[Session, None, None]:
 
 @pytest.mark.asyncio
 async def test_run_reflection_generates_episode_when_turns_available() -> None:
-    with _db_session() as session:
+    """Episode generation reads from RuntimeMessage (not MemoryDailyLog)."""
+    from anima_server.db.runtime_base import RuntimeBase
+    from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+
+    with _db_session() as session, runtime_db_session() as runtime_session:
         user = User(
             username="reflection-test",
             password_hash="not-used",
@@ -51,35 +56,60 @@ async def test_run_reflection_generates_episode_when_turns_available() -> None:
         session.add(user)
         session.commit()
 
+        # Create a runtime thread and messages
+        thread = RuntimeThread(user_id=user.id)
+        runtime_session.add(thread)
+        runtime_session.flush()
+
+        now = datetime.now(UTC)
+        for i in range(3):
+            runtime_session.add(
+                RuntimeMessage(
+                    thread_id=thread.id,
+                    user_id=user.id,
+                    sequence_id=i * 2,
+                    role="user",
+                    content_text=f"Turn {i} message",
+                    created_at=now,
+                )
+            )
+            runtime_session.add(
+                RuntimeMessage(
+                    thread_id=thread.id,
+                    user_id=user.id,
+                    sequence_id=i * 2 + 1,
+                    role="assistant",
+                    content_text=f"Turn {i} response",
+                    created_at=now,
+                )
+            )
+        runtime_session.commit()
+
+        # Call maybe_generate_episode directly with dual factories
         eng = session.get_bind()
-        test_factory = sessionmaker(
+        soul_factory = sessionmaker(
             bind=eng,
             autoflush=False,
             autocommit=False,
             expire_on_commit=False,
             class_=Session,
         )
-
-        today = datetime.now(UTC).date().isoformat()
-        session.add_all(
-            [
-                MemoryDailyLog(
-                    user_id=user.id,
-                    date=today,
-                    user_message=f"Turn {i} message",
-                    assistant_response=f"Turn {i} response",
-                )
-                for i in range(3)
-            ]
+        rt_eng = runtime_session.get_bind()
+        rt_factory = sessionmaker(
+            bind=rt_eng,
+            autoflush=False,
+            expire_on_commit=False,
         )
-        session.commit()
 
-        await run_reflection(
+        from anima_server.services.agent.episodes import maybe_generate_episode
+
+        episode = await maybe_generate_episode(
             user_id=user.id,
-            db_factory=test_factory,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
         )
 
-        with test_factory() as db2:
+        with soul_factory() as db2:
             episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
             assert episodes[0].turn_count == 3

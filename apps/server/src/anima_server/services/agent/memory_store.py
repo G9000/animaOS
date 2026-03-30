@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import MemoryDailyLog, MemoryItem, MemoryItemTag
+from anima_server.models import MemoryItem, MemoryItemTag
 from anima_server.services.data_crypto import df, ef
 
 # Decay half-life in days — after this many days, recency score halves
@@ -186,6 +186,7 @@ def store_memory_item(
     allow_update: bool = False,
     defer_on_similar: bool = False,
     tags: list[str] | None = None,
+    dry_run: bool = False,
 ) -> MemoryWriteResult:
     cleaned_content = _clean_memory_text(content)
     analysis = analyze_memory_item(
@@ -206,6 +207,12 @@ def store_memory_item(
         if not allow_update or analysis.matched_item is None:
             return MemoryWriteResult(
                 action="conflict",
+                matched_item=analysis.matched_item,
+                reason=analysis.reason,
+            )
+        if dry_run:
+            return MemoryWriteResult(
+                action="superseded",
                 matched_item=analysis.matched_item,
                 reason=analysis.reason,
             )
@@ -233,6 +240,13 @@ def store_memory_item(
 
     if analysis.action == "rejected":
         return MemoryWriteResult(action="rejected", reason=analysis.reason)
+
+    if dry_run:
+        return MemoryWriteResult(
+            action="added",
+            similar_items=analysis.similar_items,
+            reason=analysis.reason,
+        )
 
     item = MemoryItem(
         user_id=user_id,
@@ -379,21 +393,35 @@ def touch_memory_items(
     items: list[MemoryItem],
     *,
     now: datetime | None = None,
+    runtime_db: Session | None = None,
 ) -> None:
-    """Update last_referenced_at and increment reference_count for loaded memories."""
+    """Log memory access to PG (if runtime_db available) for later sync to SQLCipher."""
     if not items:
         return
     ref_now = now or datetime.now(UTC)
-    for item in items:
-        item.reference_count = (item.reference_count or 0) + 1
-        item.last_referenced_at = ref_now
-    db.flush()
-    try:
-        from anima_server.services.agent.heat_scoring import update_heat_on_access
 
-        update_heat_on_access(db, items, now=ref_now)
-    except Exception:
-        pass
+    if runtime_db is not None:
+        from anima_server.models.runtime_memory import MemoryAccessLog
+
+        for item in items:
+            runtime_db.add(MemoryAccessLog(
+                user_id=item.user_id,
+                memory_item_id=item.id,
+                accessed_at=ref_now,
+            ))
+        runtime_db.flush()
+    else:
+        # Fallback: direct SQLCipher write (legacy path)
+        for item in items:
+            item.reference_count = (item.reference_count or 0) + 1
+            item.last_referenced_at = ref_now
+        db.flush()
+        try:
+            from anima_server.services.agent.heat_scoring import update_heat_on_access
+
+            update_heat_on_access(db, items, now=ref_now)
+        except Exception:
+            pass
 
 
 def supersede_memory_item(
@@ -432,25 +460,6 @@ def supersede_memory_item(
 
     return new_item
 
-
-def add_daily_log(
-    db: Session,
-    *,
-    user_id: int,
-    user_message: str,
-    assistant_response: str,
-) -> MemoryDailyLog:
-    log = MemoryDailyLog(
-        user_id=user_id,
-        date=datetime.now(UTC).date().isoformat(),
-        user_message=ef(user_id, user_message, table="memory_daily_logs", field="user_message"),
-        assistant_response=ef(
-            user_id, assistant_response, table="memory_daily_logs", field="assistant_response"
-        ),
-    )
-    db.add(log)
-    db.flush()
-    return log
 
 
 def get_current_focus(db: Session, *, user_id: int) -> str | None:

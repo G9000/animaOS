@@ -162,8 +162,15 @@ def record_feedback_signals(
     *,
     user_id: int,
     signals: list[FeedbackSignal],
+    runtime_db: Session | None = None,
 ) -> int:
-    """Record feedback signals into the growth log for procedural rule generation."""
+    """Record feedback signals into the growth log for procedural rule generation.
+
+    When *runtime_db* is provided, growth-log entries are written as
+    ``PendingMemoryOp`` rows in PG (Soul Writer consolidates them later).
+    Falls back to the legacy direct ``append_growth_log_entry`` path when
+    *runtime_db* is ``None``.
+    """
     if not signals:
         return 0
 
@@ -177,7 +184,21 @@ def record_feedback_signals(
 
     for signal in signals:
         entry = f"Feedback signal ({signal.signal_type}): {signal.evidence[:150]}"
-        append_growth_log_entry(db, user_id=user_id, entry=entry)
+        if runtime_db is not None:
+            from anima_server.services.agent.pending_ops import create_pending_op
+
+            create_pending_op(
+                runtime_db,
+                user_id=user_id,
+                op_type="append",
+                target_block="growth_log",
+                content=entry,
+                old_content=None,
+                source_run_id=None,
+                source_tool_call_id=None,
+            )
+        else:
+            append_growth_log_entry(db, user_id=user_id, entry=entry)
         recorded += 1
 
     return recorded
@@ -376,6 +397,7 @@ def apply_memory_correction(
     user_id: int,
     user_message: str,
     thread_id: int | None = None,
+    runtime_db: Session | None = None,
 ) -> list[dict[str, Any]]:
     """Search recent memories for content contradicted by the user's correction and fix them.
 
@@ -524,11 +546,25 @@ def apply_memory_correction(
             continue
 
         try:
-            supersede_memory_item(
-                db,
-                old_item_id=best_match.id,
-                new_content=new_content,
-            )
+            if runtime_db is not None:
+                from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+                create_memory_candidate(
+                    runtime_db,
+                    user_id=user_id,
+                    content=new_content,
+                    category=best_match.category,
+                    importance=best_match.importance or 3,
+                    importance_source="correction",
+                    source="feedback",
+                    supersedes_item_id=best_match.id,
+                )
+            else:
+                supersede_memory_item(
+                    db,
+                    old_item_id=best_match.id,
+                    new_content=new_content,
+                )
             applied.append(
                 {
                     "old_content": old_plaintext,

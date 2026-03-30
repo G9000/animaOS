@@ -12,12 +12,10 @@ from anima_server.models.agent_runtime import (
     KGRelation,
     MemoryClaim,
     MemoryClaimEvidence,
-    MemoryDailyLog,
     MemoryEpisode,
     MemoryItem,
     MemoryItemTag,
     MemoryVector,
-    SessionNote,
 )
 from anima_server.models.consciousness import (
     AgentProfile,
@@ -68,7 +66,6 @@ __all__ = [
     "KGRelation",
     "MemoryClaim",
     "MemoryClaimEvidence",
-    "MemoryDailyLog",
     "MemoryEpisode",
     "MemoryItem",
     "MemoryItemTag",
@@ -81,7 +78,6 @@ __all__ = [
     "RuntimeStep",
     "RuntimeThread",
     "SelfModelBlock",
-    "SessionNote",
     "Task",
     "TelegramLink",
     "User",
