@@ -12,7 +12,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.models import MemoryDailyLog, MemoryEpisode
+from anima_server.models import MemoryEpisode
 
 logger = logging.getLogger(__name__)
 
@@ -170,14 +170,14 @@ async def generate_episodes_from_segments(
     *,
     user_id: int,
     thread_id: int | None,
-    logs: list[MemoryDailyLog],
+    pairs: list[tuple[str, str]],
     segments: list[list[int]],
     today: str,
 ) -> list[MemoryEpisode]:
     """Generate one episode per segment group.
 
     Each episode:
-    - Contains only the logs at the specified 0-based indices
+    - Contains only the pairs at the specified 0-based indices
     - Records message_indices_json (1-based, as received from LLM)
     - Records segmentation_method='batch_llm'
     - Gets its own LLM-generated summary via _generate_episode_via_llm()
@@ -194,7 +194,7 @@ async def generate_episodes_from_segments(
     for segment_0based in segments:
         # Sort indices chronologically so the summarizer sees turns in order
         sorted_indices = sorted(segment_0based)
-        segment_logs = [logs[i] for i in sorted_indices]
+        segment_pairs = [pairs[i] for i in sorted_indices]
         # Store 1-based indices for the DB column
         indices_1based = [i + 1 for i in sorted_indices]
 
@@ -203,17 +203,17 @@ async def generate_episodes_from_segments(
                 db,
                 user_id=user_id,
                 thread_id=thread_id,
-                logs=segment_logs,
+                pairs=segment_pairs,
                 today=today,
             )
         else:
-            parsed = await _call_llm_for_episode_safe(segment_logs, user_id=user_id)
+            parsed = await _call_llm_for_episode_safe(segment_pairs, user_id=user_id)
             episode = _build_episode_from_parsed(
                 db,
                 parsed=parsed,
                 user_id=user_id,
                 thread_id=thread_id,
-                logs=segment_logs,
+                pairs=segment_pairs,
                 today=today,
             )
 

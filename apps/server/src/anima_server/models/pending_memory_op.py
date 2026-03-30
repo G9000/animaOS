@@ -46,3 +46,4 @@ class PendingMemoryOp(RuntimeBase):
         server_default=text("false"),
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

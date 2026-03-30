@@ -802,7 +802,7 @@ class TestEagerConsolidation:
 
         with (
             patch(
-                "anima_server.services.agent.eager_consolidation.consolidate_pending_ops",
+                "anima_server.services.agent.eager_consolidation.run_soul_writer",
                 new_callable=AsyncMock,
             ),
             patch(
@@ -856,7 +856,7 @@ class TestEagerConsolidation:
 
         with (
             patch(
-                "anima_server.services.agent.eager_consolidation.consolidate_pending_ops",
+                "anima_server.services.agent.eager_consolidation.run_soul_writer",
                 new_callable=AsyncMock,
             ),
             patch(
@@ -923,7 +923,7 @@ class TestEagerConsolidation:
 
         with (
             patch(
-                "anima_server.services.agent.eager_consolidation.consolidate_pending_ops",
+                "anima_server.services.agent.eager_consolidation.run_soul_writer",
                 new_callable=AsyncMock,
             ),
             patch(

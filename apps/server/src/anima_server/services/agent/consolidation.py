@@ -10,16 +10,8 @@ from threading import Lock
 from typing import Any
 
 from sqlalchemy import select, text
-from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.services.agent.claims import upsert_claim
-from anima_server.services.agent.memory_store import (
-    add_daily_log,
-    set_current_focus,
-    store_memory_item,
-    supersede_memory_item,
-)
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -42,16 +34,6 @@ class ExtractedTurnMemory:
 class PatternExtractor:
     pattern: re.Pattern[str]
     formatter: Callable[[str], str]
-
-
-@dataclass(slots=True)
-class MemoryConsolidationResult:
-    daily_log_id: int | None = None
-    facts_added: list[str] = field(default_factory=list)
-    preferences_added: list[str] = field(default_factory=list)
-    current_focus_updated: str | None = None
-    llm_items_added: list[str] = field(default_factory=list)
-    conflicts_resolved: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -112,102 +94,20 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-def consolidate_turn_memory(
-    *,
-    user_id: int,
-    user_message: str,
-    assistant_response: str,
-    now: datetime | None = None,
-    db_factory: Callable[..., object] | None = None,
-) -> MemoryConsolidationResult:
-    from anima_server.db.session import SessionLocal
-
-    factory = db_factory or SessionLocal
-    runtime_factory = _get_runtime_factory()
-    result = MemoryConsolidationResult()
-
-    with factory() as db:
-        log = add_daily_log(
-            db,
-            user_id=user_id,
-            user_message=user_message,
-            assistant_response=assistant_response,
-        )
-        result.daily_log_id = log.id
-
-        extracted = extract_turn_memory(user_message)
-
-        for fact in extracted.facts:
-            write_result = store_memory_item(
-                db,
-                user_id=user_id,
-                content=fact,
-                category="fact",
-                source="extraction",
-                allow_update=True,
-            )
-            if write_result.action == "added":
-                result.facts_added.append(fact)
-            elif write_result.action == "superseded":
-                result.conflicts_resolved.append(f"{write_result.matched_item.content} -> {fact}")
-                try:
-                    from anima_server.services.agent.forgetting import suppress_memory
-
-                    if write_result.matched_item and write_result.item:
-                        suppress_memory(
-                            db,
-                            memory_id=write_result.matched_item.id,
-                            superseded_by=write_result.item.id,
-                            user_id=user_id,
-                        )
-                except Exception:
-                    logger.debug("Suppression failed for regex-superseded fact")
-
-        for pref in extracted.preferences:
-            write_result = store_memory_item(
-                db,
-                user_id=user_id,
-                content=pref,
-                category="preference",
-                source="extraction",
-                allow_update=True,
-            )
-            if write_result.action == "added":
-                result.preferences_added.append(pref)
-            elif write_result.action == "superseded":
-                result.conflicts_resolved.append(f"{write_result.matched_item.content} -> {pref}")
-                try:
-                    from anima_server.services.agent.forgetting import suppress_memory
-
-                    if write_result.matched_item and write_result.item:
-                        suppress_memory(
-                            db,
-                            memory_id=write_result.matched_item.id,
-                            superseded_by=write_result.item.id,
-                            user_id=user_id,
-                        )
-                except Exception:
-                    logger.debug("Suppression failed for regex-superseded pref")
-
-        if extracted.current_focus:
-            set_current_focus(db, user_id=user_id, focus=extracted.current_focus)
-            result.current_focus_updated = extracted.current_focus
-
-        db.commit()
-
-    return result
-
-
+# DEPRECATED: Use run_soul_writer() instead. This function bypasses Soul Writer's
+# journal and idempotency checks. Kept only for direct testing.
 async def consolidate_pending_ops(
     *,
     user_id: int,
     soul_db_factory: Callable[..., object],
     runtime_db_factory: Callable[..., object],
 ) -> PendingOpsConsolidationResult:
+    # DEPRECATED: Use run_soul_writer() instead. This function bypasses Soul Writer's
+    # journal and idempotency checks. Kept only for direct testing.
     """Promote pending runtime memory ops into the soul store."""
     from anima_server.models import PendingMemoryOp
     from anima_server.services.agent.pending_ops import get_pending_ops
-    from anima_server.services.agent.soul_writer import (
+    from anima_server.services.agent.soul_blocks import (
         append_to_soul_block,
         full_replace_soul_block,
         replace_in_soul_block,
@@ -304,248 +204,6 @@ async def consolidate_pending_ops(
     finally:
         soul_db.close()
         runtime_db.close()
-
-
-async def consolidate_turn_memory_with_llm(
-    *,
-    user_id: int,
-    user_message: str,
-    assistant_response: str,
-    db_factory: Callable[..., object] | None = None,
-) -> MemoryConsolidationResult:
-    """Full consolidation: regex extraction + LLM extraction + conflict resolution."""
-    result = consolidate_turn_memory(
-        user_id=user_id,
-        user_message=user_message,
-        assistant_response=assistant_response,
-        db_factory=db_factory,
-    )
-
-    from anima_server.db.session import SessionLocal
-
-    factory = db_factory or SessionLocal
-    runtime_factory = _get_runtime_factory()
-
-    # --- Predict-Calibrate path (F3) ---
-    # Try predict-calibrate extraction when enough facts exist.
-    # On failure, fall back to direct extraction (F3.9).
-    pc_items: list[dict[str, Any]] | None = None
-    pc_emotion_data: dict[str, Any] | None = None
-    try:
-        from anima_server.services.agent.predict_calibrate import predict_calibrate_extraction
-
-        with factory() as _pcdb:
-            pc_items, pc_emotion_data = await predict_calibrate_extraction(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                db=_pcdb,
-            )
-    except Exception:
-        logger.debug("predict_calibrate_extraction failed, falling back to direct extraction")
-
-    if pc_items is not None:
-        llm_items = pc_items
-        emotion_data = pc_emotion_data
-    else:
-        # Fallback: direct extraction (original path)
-        extraction = await extract_memories_via_llm(
-            user_message=user_message,
-            assistant_response=assistant_response,
-        )
-        llm_items = extraction.memories
-        emotion_data = extraction.emotion
-
-    # Record any emotional signal extracted alongside memories
-    if emotion_data and emotion_data.get("emotion"):
-        try:
-            from anima_server.services.agent.emotional_intelligence import record_emotional_signal
-
-            emotion_session_factory = runtime_factory or factory
-            with emotion_session_factory() as _edb:
-                record_emotional_signal(
-                    _edb,
-                    user_id=user_id,
-                    emotion=str(emotion_data["emotion"]),
-                    confidence=float(emotion_data.get("confidence", 0.5)),
-                    evidence_type=str(emotion_data.get("evidence_type", "linguistic")),
-                    evidence=str(emotion_data.get("evidence", "")),
-                    trajectory=str(emotion_data.get("trajectory", "stable")),
-                )
-                _edb.commit()
-        except Exception:
-            logger.debug("Failed to record emotional signal from extraction")
-
-    if not llm_items:
-        _promote_runtime_emotional_patterns(user_id=user_id, db_factory=db_factory)
-        return result
-    regex_contents = {c.lower() for c in result.facts_added + result.preferences_added}
-
-    with factory() as db:
-        for llm_item in llm_items:
-            content = llm_item.get("content", "").strip()
-            category = llm_item.get("category", "fact")
-            importance = llm_item.get("importance", 3)
-
-            if not content or len(content) < 3:
-                continue
-            if content.lower() in regex_contents:
-                continue
-            if category not in ("fact", "preference", "goal", "relationship"):
-                category = "fact"
-            if not isinstance(importance, int) or not 1 <= importance <= 5:
-                importance = 3
-
-            write_result = store_memory_item(
-                db,
-                user_id=user_id,
-                content=content,
-                category=category,
-                importance=importance,
-                source="extraction",
-                allow_update=True,
-                defer_on_similar=True,
-            )
-
-            if write_result.action == "added":
-                result.llm_items_added.append(content)
-                # Dual-write: create structured claim for the new item
-                try:
-                    upsert_claim(
-                        db,
-                        user_id=user_id,
-                        content=content,
-                        category=category,
-                        importance=importance,
-                        source_kind="extraction",
-                        extractor="llm",
-                        memory_item_id=write_result.item.id if write_result.item else None,
-                        evidence_text=user_message,
-                    )
-                except Exception:
-                    logger.debug("Claim dual-write failed for: %s", content)
-                continue
-
-            if write_result.action == "superseded":
-                result.conflicts_resolved.append(
-                    f"{write_result.matched_item.content} -> {content}"
-                )
-                result.llm_items_added.append(content)
-                # F7: suppress the old memory (flag derived refs for regeneration)
-                try:
-                    from anima_server.services.agent.forgetting import suppress_memory
-
-                    if write_result.matched_item and write_result.item:
-                        suppress_memory(
-                            db,
-                            memory_id=write_result.matched_item.id,
-                            superseded_by=write_result.item.id,
-                            user_id=user_id,
-                        )
-                except Exception:
-                    logger.debug("Suppression failed for superseded item")
-                # Dual-write: supersede the structured claim too
-                try:
-                    upsert_claim(
-                        db,
-                        user_id=user_id,
-                        content=content,
-                        category=category,
-                        importance=importance,
-                        source_kind="extraction",
-                        extractor="llm",
-                        memory_item_id=write_result.item.id if write_result.item else None,
-                        evidence_text=user_message,
-                    )
-                except Exception:
-                    logger.debug("Claim dual-write (supersede) failed for: %s", content)
-                continue
-
-            if write_result.action == "duplicate":
-                continue
-
-            if write_result.action == "similar" and write_result.similar_items:
-                batch_result = await resolve_conflict_batch(
-                    similar_items=write_result.similar_items,
-                    new_content=content,
-                    user_id=user_id,
-                )
-                if batch_result.action == "UPDATE" and batch_result.matched_id is not None:
-                    old_similar_id = batch_result.matched_id
-                    # Find the matched item for logging
-                    matched_item = next(
-                        (it for it in write_result.similar_items if it.id == old_similar_id),
-                        write_result.similar_items[0],
-                    )
-                    updated_item = supersede_memory_item(
-                        db,
-                        old_item_id=old_similar_id,
-                        new_content=content,
-                        importance=importance,
-                    )
-                    if updated_item is not None:
-                        # F7: suppress the old memory
-                        try:
-                            from anima_server.services.agent.forgetting import suppress_memory
-
-                            suppress_memory(
-                                db,
-                                memory_id=old_similar_id,
-                                superseded_by=updated_item.id,
-                                user_id=user_id,
-                            )
-                        except Exception:
-                            logger.debug("Suppression failed for similar-update item")
-                        result.conflicts_resolved.append(
-                            f"{df(user_id, matched_item.content, table='memory_items', field='content')} -> {content}"
-                        )
-                        result.llm_items_added.append(content)
-                        try:
-                            upsert_claim(
-                                db,
-                                user_id=user_id,
-                                content=content,
-                                category=category,
-                                importance=importance,
-                                source_kind="extraction",
-                                extractor="llm",
-                                memory_item_id=updated_item.id,
-                                evidence_text=user_message,
-                            )
-                        except Exception:
-                            logger.debug("Claim dual-write (update) failed for: %s", content)
-                elif batch_result.action == "DIFFERENT":
-                    create_result = store_memory_item(
-                        db,
-                        user_id=user_id,
-                        content=content,
-                        category=category,
-                        importance=importance,
-                        source="extraction",
-                    )
-                    if create_result.action == "added":
-                        result.llm_items_added.append(content)
-                        try:
-                            upsert_claim(
-                                db,
-                                user_id=user_id,
-                                content=content,
-                                category=category,
-                                importance=importance,
-                                source_kind="extraction",
-                                extractor="llm",
-                                memory_item_id=create_result.item.id
-                                if create_result.item
-                                else None,
-                                evidence_text=user_message,
-                            )
-                        except Exception:
-                            logger.debug("Claim dual-write (different) failed for: %s", content)
-
-        db.commit()
-
-    _promote_runtime_emotional_patterns(user_id=user_id, db_factory=db_factory)
-    return result
 
 
 @dataclass(slots=True)
@@ -806,56 +464,69 @@ def is_viable_memory_fragment(value: str) -> bool:
     return 3 <= len(value) <= 160
 
 
-async def run_background_memory_consolidation(
+SOUL_WRITER_CANDIDATE_THRESHOLD = 15
+
+
+async def run_background_extraction(
     *,
     user_id: int,
     user_message: str,
     assistant_response: str,
-    db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
+    """Per-turn extraction. Writes ONLY to PG. Never touches SQLCipher."""
+    from anima_server.services.agent.candidate_ops import (
+        count_eligible_candidates,
+        create_memory_candidate,
+    )
+
     try:
-        from anima_server.db.session import SessionLocal
+        rt_factory = runtime_db_factory or _get_runtime_factory()
+        if rt_factory is None:
+            return
+    except RuntimeError:
+        return
 
-        soul_factory = db_factory or SessionLocal
-        runtime_factory = runtime_db_factory or _get_runtime_factory()
-        if runtime_factory is not None:
-            await consolidate_pending_ops(
-                user_id=user_id,
-                soul_db_factory=soul_factory,
-                runtime_db_factory=runtime_factory,
-            )
+    with rt_factory() as rt_db:
+        # 1. Regex extraction
+        extracted = extract_turn_memory(user_message)
+        for fact in extracted.facts:
+            create_memory_candidate(rt_db, user_id=user_id, content=fact,
+                                    category="fact", importance=3,
+                                    importance_source="regex", source="regex")
+        for pref in extracted.preferences:
+            create_memory_candidate(rt_db, user_id=user_id, content=pref,
+                                    category="preference", importance=3,
+                                    importance_source="regex", source="regex")
 
+        # 2. LLM extraction
         if settings.agent_provider != "scaffold":
-            await consolidate_turn_memory_with_llm(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                db_factory=db_factory,
-            )
-        else:
-            consolidate_turn_memory(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                db_factory=db_factory,
-            )
+            try:
+                llm_result = await extract_memories_via_llm(
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                )
+                for item in llm_result.memories:
+                    content = item.get("content", "")
+                    if not content or not isinstance(content, str):
+                        continue
+                    create_memory_candidate(
+                        rt_db, user_id=user_id,
+                        content=content,
+                        category=item.get("category", "fact"),
+                        importance=item.get("importance", 3),
+                        importance_source="llm", source="llm",
+                    )
+            except Exception:
+                logger.exception("LLM extraction failed for user %s", user_id)
 
-        # Invalidate companion memory cache so the next turn sees fresh data.
-        from anima_server.services.agent.companion import get_companion
+        rt_db.commit()
 
-        companion = get_companion(user_id)
-        if companion is not None:
-            companion.invalidate_memory()
-
-    except Exception:
-        logger.exception("Background memory consolidation failed for user %s", user_id)
-
-    # Opportunistic embedding backfill for items without embeddings
-    try:
-        await _backfill_user_embeddings(user_id, db_factory=db_factory)
-    except Exception:
-        logger.debug("Embedding backfill skipped for user %s", user_id)
+        # 3. Threshold check
+        count = count_eligible_candidates(rt_db, user_id=user_id)
+        if count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
+            from anima_server.services.agent.soul_writer import run_soul_writer
+            asyncio.create_task(run_soul_writer(user_id))
 
 
 async def _backfill_user_embeddings(
@@ -894,41 +565,21 @@ def schedule_background_memory_consolidation(
     except RuntimeError:
         return
 
-    from anima_server.services.agent.sleep_agent import (
-        bump_turn_counter,
-        run_sleeptime_agents,
-        should_run_sleeptime,
+    # Per-turn: PG-only extraction + embedding backfill
+    task = loop.create_task(
+        run_background_extraction(
+            user_id=user_id,
+            user_message=user_message,
+            assistant_response=assistant_response,
+            runtime_db_factory=runtime_db_factory,
+        )
     )
-
-    bump_turn_counter(user_id)
-    run_full_orchestrator = should_run_sleeptime(user_id)
-
-    if run_full_orchestrator:
-        # Every N turns: run the full orchestrator (consolidation + KG + heat decay + episodes + …)
-        task = loop.create_task(
-            run_sleeptime_agents(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                thread_id=thread_id,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-        )
-    else:
-        # Every turn: at minimum run consolidation + embedding backfill
-        task = loop.create_task(
-            run_background_memory_consolidation(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-        )
     with _background_tasks_lock:
         _background_tasks.add(task)
     task.add_done_callback(_on_background_task_done)
+
+    # Embedding backfill moved to inactivity-only path (reflection.py)
+    # to avoid per-turn SQLCipher writes from the conversation hot path.
 
 
 async def drain_background_memory_tasks() -> None:
@@ -946,38 +597,6 @@ def _on_background_task_done(task: asyncio.Task[None]) -> None:
         task.result()
     except asyncio.CancelledError:
         return
-
-
-def _promote_runtime_emotional_patterns(
-    *,
-    user_id: int,
-    db_factory: Callable[..., object] | None = None,
-) -> int:
-    runtime_factory = _get_runtime_factory()
-    if runtime_factory is None:
-        return 0
-
-    from anima_server.db.session import SessionLocal
-    from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
-
-    factory = db_factory or SessionLocal
-
-    try:
-        with factory() as soul_db, runtime_factory() as pg_db:
-            promoted = promote_emotional_patterns(
-                soul_db=soul_db,
-                pg_db=pg_db,
-                user_id=user_id,
-            )
-            if promoted > 0:
-                soul_db.commit()
-                pg_db.commit()
-            return promoted
-    except Exception:
-        logger.warning(
-            "Failed to promote emotional patterns for user %s", user_id, exc_info=True
-        )
-        return 0
 
 
 def _get_runtime_factory() -> Callable[..., object] | None:

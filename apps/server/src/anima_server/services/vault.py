@@ -22,11 +22,9 @@ from anima_server.models import (
     AgentStep,
     AgentThread,
     EmotionalSignal,
-    MemoryDailyLog,
     MemoryEpisode,
     MemoryItem,
     SelfModelBlock,
-    SessionNote,
     Task,
     User,
     UserKey,
@@ -93,10 +91,8 @@ _MEMORY_TABLES = frozenset(
     {
         "memoryItems",
         "memoryEpisodes",
-        "memoryDailyLogs",
         "selfModelBlocks",
         "emotionalSignals",
-        "sessionNotes",
     }
 )
 
@@ -421,10 +417,6 @@ def export_database_snapshot(
         serialize_memory_episode_record(ep, deks=deks)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
     ]
-    memory_daily_logs = [
-        serialize_memory_daily_log_record(log, deks=deks)
-        for log in db.scalars(_scoped(select(MemoryDailyLog), MemoryDailyLog)).all()
-    ]
     tasks = [serialize_task_record(task) for task in db.scalars(_scoped(select(Task), Task)).all()]
     agent_threads = [
         serialize_agent_thread_record(t)
@@ -465,10 +457,6 @@ def export_database_snapshot(
             serialize_agent_message_record(m, thread_user_map=_thread_user_map, deks=deks)
             for m in db.scalars(select(AgentMessage)).all()
         ]
-    session_notes = [
-        serialize_session_note_record(n, deks=deks)
-        for n in db.scalars(_scoped(select(SessionNote), SessionNote)).all()
-    ]
     self_model_blocks = [
         serialize_self_model_block_record(b, deks=deks)
         for b in db.scalars(_scoped(select(SelfModelBlock), SelfModelBlock)).all()
@@ -482,9 +470,7 @@ def export_database_snapshot(
         "userKeys": user_keys,
         "memoryItems": memory_items,
         "memoryEpisodes": memory_episodes,
-        "memoryDailyLogs": memory_daily_logs,
         "tasks": tasks,
-        "sessionNotes": session_notes,
         "selfModelBlocks": self_model_blocks,
         "emotionalSignals": emotional_signals,
         "agentThreads": agent_threads,
@@ -507,9 +493,7 @@ def restore_database_snapshot(
 
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_episodes_payload = snapshot.get("memoryEpisodes", [])
-    memory_daily_logs_payload = snapshot.get("memoryDailyLogs", [])
     tasks_payload = snapshot.get("tasks", [])
-    session_notes_payload = snapshot.get("sessionNotes", [])
     self_model_blocks_payload = snapshot.get("selfModelBlocks", [])
     emotional_signals_payload = snapshot.get("emotionalSignals", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
@@ -523,14 +507,12 @@ def restore_database_snapshot(
     try:
         db.query(EmotionalSignal).delete()
         db.query(SelfModelBlock).delete()
-        db.query(SessionNote).delete()
         if is_full:
             db.query(AgentStep).delete()
             db.query(AgentMessage).delete()
             db.query(AgentRun).delete()
             db.query(AgentThread).delete()
             db.query(Task).delete()
-        db.query(MemoryDailyLog).delete()
         db.query(MemoryEpisode).delete()
         db.query(MemoryItem).delete()
         db.query(UserKey).delete()
@@ -613,20 +595,6 @@ def restore_database_snapshot(
                 )
             )
 
-        for record in memory_daily_logs_payload:
-            if not isinstance(record, dict):
-                continue
-            db.add(
-                MemoryDailyLog(
-                    id=int(record["id"]),
-                    user_id=int(record["user_id"]),
-                    date=str(record["date"]),
-                    user_message=str(record["user_message"]),
-                    assistant_response=str(record["assistant_response"]),
-                    created_at=parse_optional_datetime(record.get("created_at")),
-                )
-            )
-
         for record in tasks_payload:
             if not isinstance(record, dict):
                 continue
@@ -661,24 +629,6 @@ def restore_database_snapshot(
             )
 
         db.flush()
-
-        for record in session_notes_payload:
-            if not isinstance(record, dict):
-                continue
-            db.add(
-                SessionNote(
-                    id=int(record["id"]),
-                    thread_id=int(record["thread_id"]),
-                    user_id=int(record["user_id"]),
-                    key=str(record["key"]),
-                    value=str(record["value"]),
-                    note_type=str(record.get("note_type", "observation")),
-                    is_active=bool(record.get("is_active", True)),
-                    promoted_to_item_id=coerce_optional_int(record.get("promoted_to_item_id")),
-                    created_at=parse_optional_datetime(record.get("created_at")),
-                    updated_at=parse_optional_datetime(record.get("updated_at")),
-                )
-            )
 
         for record in self_model_blocks_payload:
             if not isinstance(record, dict):
@@ -964,42 +914,6 @@ def serialize_memory_episode_record(
     }
 
 
-def serialize_memory_daily_log_record(
-    log: MemoryDailyLog,
-    *,
-    deks: dict[str, bytes] | None = None,
-) -> dict[str, Any]:
-    return {
-        "id": log.id,
-        "user_id": log.user_id,
-        "date": log.date,
-        "user_message": _decrypt_field_value(log.user_message, deks, table="memory_daily_logs"),
-        "assistant_response": _decrypt_field_value(
-            log.assistant_response, deks, table="memory_daily_logs"
-        ),
-        "created_at": serialize_optional_datetime(log.created_at),
-    }
-
-
-def serialize_session_note_record(
-    note: SessionNote,
-    *,
-    deks: dict[str, bytes] | None = None,
-) -> dict[str, Any]:
-    return {
-        "id": note.id,
-        "thread_id": note.thread_id,
-        "user_id": note.user_id,
-        "key": note.key,
-        "value": _decrypt_field_value(note.value, deks, table="session_notes"),
-        "note_type": note.note_type,
-        "is_active": note.is_active,
-        "promoted_to_item_id": note.promoted_to_item_id,
-        "created_at": serialize_optional_datetime(note.created_at),
-        "updated_at": serialize_optional_datetime(note.updated_at),
-    }
-
-
 def serialize_task_record(task: Task) -> dict[str, Any]:
     return {
         "id": task.id,
@@ -1161,9 +1075,7 @@ def reset_identity_sequences(db: Session) -> None:
         "user_keys",
         "memory_items",
         "memory_episodes",
-        "memory_daily_logs",
         "tasks",
-        "session_notes",
         "self_model_blocks",
         "emotional_signals",
         "agent_threads",
@@ -1273,26 +1185,6 @@ def _re_encrypt_snapshot_fields(
                 ep["emotional_arc"] = _re_encrypt_field_value(
                     ep["emotional_arc"], user_id, table="memory_episodes", field="emotional_arc"
                 )
-
-    for log in snapshot.get("memoryDailyLogs", []):
-        if isinstance(log, dict):
-            if log.get("user_message"):
-                log["user_message"] = _re_encrypt_field_value(
-                    log["user_message"], user_id, table="memory_daily_logs", field="user_message"
-                )
-            if log.get("assistant_response"):
-                log["assistant_response"] = _re_encrypt_field_value(
-                    log["assistant_response"],
-                    user_id,
-                    table="memory_daily_logs",
-                    field="assistant_response",
-                )
-
-    for note in snapshot.get("sessionNotes", []):
-        if isinstance(note, dict) and note.get("value"):
-            note["value"] = _re_encrypt_field_value(
-                note["value"], user_id, table="session_notes", field="value"
-            )
 
     for block in snapshot.get("selfModelBlocks", []):
         if isinstance(block, dict) and block.get("content"):

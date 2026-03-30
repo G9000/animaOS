@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
@@ -26,6 +27,10 @@ def create_pending_op(
     if normalized_type not in _VALID_OP_TYPES:
         raise ValueError(f"Invalid pending op type: {op_type}")
 
+    content_hash = hashlib.sha256(
+        f"{user_id}:{target_block.strip()}:{normalized_type}:{content.strip()}".encode()
+    ).hexdigest()
+
     op = PendingMemoryOp(
         user_id=user_id,
         op_type=normalized_type,
@@ -34,6 +39,7 @@ def create_pending_op(
         old_content=old_content,
         source_run_id=source_run_id,
         source_tool_call_id=source_tool_call_id,
+        content_hash=content_hash,
     )
     runtime_db.add(op)
     runtime_db.flush()
@@ -45,6 +51,7 @@ def get_pending_ops(
     *,
     user_id: int,
     target_block: str | None = None,
+    limit: int = 50,
 ) -> list[PendingMemoryOp]:
     """Return unconsolidated, unfailed pending ops in causal order."""
     query = (
@@ -55,6 +62,7 @@ def get_pending_ops(
             PendingMemoryOp.failed.is_(False),
         )
         .order_by(PendingMemoryOp.id.asc())
+        .limit(limit)
     )
     if target_block is not None:
         query = query.where(PendingMemoryOp.target_block == target_block)

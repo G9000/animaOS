@@ -167,7 +167,7 @@ def redact_derived_references(
         if strategy == "flag_for_regeneration":
             block.needs_regeneration = True
         elif strategy == "immediate_redact":
-            from anima_server.services.agent.soul_writer import full_replace_soul_block
+            from anima_server.services.agent.soul_blocks import full_replace_soul_block
 
             full_replace_soul_block(
                 db,

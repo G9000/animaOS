@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models.agent_runtime import MemoryEpisode
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
-from anima_server.services.agent.consolidation import consolidate_pending_ops
 from anima_server.services.agent.episodes import maybe_generate_episode
+from anima_server.services.agent.soul_writer import run_soul_writer
 from anima_server.services.agent.persistence import list_transcript_messages
 from anima_server.services.agent.transcript_archive import (
     export_transcript,
@@ -54,11 +54,7 @@ async def on_thread_close(
     resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory()
 
     try:
-        await consolidate_pending_ops(
-            user_id=user_id,
-            soul_db_factory=resolved_soul_db_factory,
-            runtime_db_factory=resolved_runtime_db_factory,
-        )
+        await run_soul_writer(user_id)
     except Exception:
         logger.warning(
             "Pending ops consolidation failed for thread %d",

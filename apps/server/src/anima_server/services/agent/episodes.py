@@ -9,7 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings  # noqa: F401 — tests patch this attribute
-from anima_server.models import MemoryDailyLog, MemoryEpisode
+from anima_server.models import MemoryEpisode
+from anima_server.models.runtime import RuntimeMessage
 from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef
 
@@ -24,15 +25,23 @@ async def maybe_generate_episode(
     user_id: int,
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> MemoryEpisode | None:
     """Check if there are enough un-episoded turns today and generate an episode if so."""
     from anima_server.db.session import SessionLocal
 
     factory = db_factory or SessionLocal
 
-    # ── Phase 1: Read — gather logs then release the session ──────
-    # Holding a session open during slow LLM calls causes SQLite
-    # "database is locked" errors when other writers need access.
+    # ── Resolve runtime session factory ──────────────────────
+    if runtime_db_factory is None:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        try:
+            runtime_db_factory = get_runtime_session_factory()
+        except RuntimeError:
+            return None
+
+    # ── Phase 1: Read — gather messages then release sessions ────
     today = datetime.now(UTC).date().isoformat()
 
     with factory() as db:
@@ -46,45 +55,43 @@ async def maybe_generate_episode(
             or 0
         )
 
-        # Fetch daily logs created today that haven't been consumed by episodes
-        logs = list(
-            db.scalars(
-                select(MemoryDailyLog)
+    # Fetch user/assistant messages from the last 24 hours via RuntimeMessage
+    with runtime_db_factory() as rt_db:
+        messages_raw = list(
+            rt_db.scalars(
+                select(RuntimeMessage)
                 .where(
-                    MemoryDailyLog.user_id == user_id,
-                    MemoryDailyLog.created_at >= datetime.now(UTC) - timedelta(hours=24),
+                    RuntimeMessage.user_id == user_id,
+                    RuntimeMessage.role.in_(("user", "assistant")),
+                    RuntimeMessage.created_at >= datetime.now(UTC) - timedelta(hours=24),
                 )
-                .order_by(MemoryDailyLog.created_at)
+                .order_by(RuntimeMessage.created_at)
             ).all()
         )
 
-    # Calculate how many new logs we have since last episode
-    available_logs = logs[consumed_turns:] if consumed_turns < len(logs) else []
+    # Pair consecutive user/assistant messages into tuples
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    while i < len(messages_raw) - 1:
+        if messages_raw[i].role == "user" and messages_raw[i + 1].role == "assistant":
+            pairs.append((messages_raw[i].content_text or "", messages_raw[i + 1].content_text or ""))
+            i += 2
+        else:
+            i += 1
 
-    if len(available_logs) < EPISODE_MIN_TURNS:
+    # Calculate how many new pairs we have since last episode
+    available_pairs = pairs[consumed_turns:] if consumed_turns < len(pairs) else []
+
+    if len(available_pairs) < EPISODE_MIN_TURNS:
         return None
 
     # ── Phase 2: LLM call — no session held open ────────────
     from anima_server.services.agent import batch_segmenter as _bs
 
-    if _bs.should_batch_segment(len(available_logs)):
+    if _bs.should_batch_segment(len(available_pairs)):
         # Batch path: LLM groups messages into topic-coherent segments.
-        messages = [
-            (
-                df(user_id, log.user_message, table="memory_daily_logs", field="user_message")
-                or "",
-                df(
-                    user_id,
-                    log.assistant_response,
-                    table="memory_daily_logs",
-                    field="assistant_response",
-                )
-                or "",
-            )
-            for log in available_logs
-        ]
         try:
-            groups_1based = await _bs.segment_messages_batch(messages, user_id=user_id)
+            groups_1based = await _bs.segment_messages_batch(available_pairs, user_id=user_id)
             segments_0based = _bs.indices_to_0based(groups_1based)
         except Exception:
             segments_0based = []
@@ -95,7 +102,7 @@ async def maybe_generate_episode(
                     db,
                     user_id=user_id,
                     thread_id=thread_id,
-                    logs=available_logs,
+                    pairs=available_pairs,
                     segments=segments_0based,
                     today=today,
                 )
@@ -103,8 +110,8 @@ async def maybe_generate_episode(
                 return episodes[-1] if episodes else None
 
     # Sequential path (below BATCH_THRESHOLD or batch segmentation failed).
-    sequential_logs = available_logs[:EPISODE_SEQUENTIAL_MAX_TURNS]
-    parsed = await _call_llm_for_episode_safe(sequential_logs, user_id=user_id)
+    sequential_pairs = available_pairs[:EPISODE_SEQUENTIAL_MAX_TURNS]
+    parsed = await _call_llm_for_episode_safe(sequential_pairs, user_id=user_id)
 
     # ── Phase 3: Write — short-lived session for DB updates ──
     with factory() as db:
@@ -113,7 +120,7 @@ async def maybe_generate_episode(
             parsed=parsed,
             user_id=user_id,
             thread_id=thread_id,
-            logs=sequential_logs,
+            pairs=sequential_pairs,
             today=today,
         )
         db.commit()
@@ -125,15 +132,11 @@ def _create_fallback_episode(
     *,
     user_id: int,
     thread_id: int | None,
-    logs: list[MemoryDailyLog],
+    pairs: list[tuple[str, str]],
     today: str,
 ) -> MemoryEpisode:
     """Create a basic episode without LLM when generation fails."""
-    user_msgs = [
-        df(user_id, log.user_message, table="memory_daily_logs", field="user_message")
-        for log in logs
-        if log.user_message
-    ]
+    user_msgs = [pair[0] for pair in pairs if pair[0]]
     preview = user_msgs[0][:80] if user_msgs else "Conversation"
 
     episode = MemoryEpisode(
@@ -144,7 +147,7 @@ def _create_fallback_episode(
         topics_json=None,
         emotional_arc=None,
         significance_score=2,
-        turn_count=len(logs),
+        turn_count=len(pairs),
     )
     db.add(episode)
     db.flush()
@@ -233,7 +236,7 @@ def _build_episode_from_parsed(
     parsed: dict[str, Any] | None,
     user_id: int,
     thread_id: int | None,
-    logs: list[MemoryDailyLog],
+    pairs: list[tuple[str, str]],
     today: str,
 ) -> MemoryEpisode:
     """Create a MemoryEpisode from pre-parsed LLM output (or fallback)."""
@@ -242,7 +245,7 @@ def _build_episode_from_parsed(
             db,
             user_id=user_id,
             thread_id=thread_id,
-            logs=logs,
+            pairs=pairs,
             today=today,
         )
 
@@ -272,7 +275,7 @@ def _build_episode_from_parsed(
         topics_json=topics if topics else None,
         emotional_arc=ef(user_id, emotional_arc, table="memory_episodes", field="emotional_arc"),
         significance_score=significance,
-        turn_count=len(logs),
+        turn_count=len(pairs),
     )
     db.add(episode)
     db.flush()
@@ -282,7 +285,7 @@ def _build_episode_from_parsed(
 
 
 async def _call_llm_for_episode(
-    logs: list[MemoryDailyLog], *, user_id: int = 0, agent_name: str = "Anima"
+    pairs: list[tuple[str, str]], *, user_id: int = 0, agent_name: str = "Anima"
 ) -> dict[str, Any]:
     from anima_server.services.agent.llm import create_llm
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
@@ -292,8 +295,8 @@ async def _call_llm_for_episode(
     prompt_loader = PromptLoader(agent_name=agent_name)
 
     turns_text = "\n".join(
-        f"User: {df(user_id, log.user_message, table='memory_daily_logs', field='user_message')}\nAssistant: {df(user_id, log.assistant_response, table='memory_daily_logs', field='assistant_response')}"
-        for log in logs
+        f"User: {user_msg}\nAssistant: {assistant_msg}"
+        for user_msg, assistant_msg in pairs
     )
 
     # Use templated prompt
@@ -317,13 +320,13 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 
 async def _call_llm_for_episode_safe(
-    logs: list[MemoryDailyLog], *, user_id: int = 0
+    pairs: list[tuple[str, str]], *, user_id: int = 0
 ) -> dict[str, Any] | None:
     """Call LLM for episode generation, returning None on failure."""
     try:
-        # Try to get agent name from first log's user, but fallback to default
+        # Try to get agent name from first pair's user, but fallback to default
         agent_name = "Anima"
-        return await _call_llm_for_episode(logs, user_id=user_id, agent_name=agent_name)
+        return await _call_llm_for_episode(pairs, user_id=user_id, agent_name=agent_name)
     except Exception:
         logger.exception("LLM episode generation failed, using fallback")
         return None

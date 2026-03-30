@@ -442,7 +442,7 @@ async def _run_deep_monologue_legacy(
                 append_growth_log_entry,
                 set_self_model_block,
             )
-            from anima_server.services.agent.soul_writer import set_soul_block
+            from anima_server.services.agent.soul_blocks import set_soul_block
 
             if parsed.get("identity_update"):
                 set_self_model_block(
@@ -719,7 +719,7 @@ async def run_deep_monologue(
             return result
 
         with factory() as db:
-            from anima_server.services.agent.soul_writer import set_soul_block
+            from anima_server.services.agent.soul_blocks import set_soul_block
 
             if parsed.get("identity_update"):
                 set_self_model_block(
@@ -880,32 +880,36 @@ async def run_deep_monologue(
 async def _get_recent_conversation(
     db: Session, user_id: int, thread_id: str | None, limit: int = 10
 ) -> str:
-    """Fetch recent conversation from daily logs as formatted text."""
+    """Fetch recent conversation from RuntimeMessage as formatted text."""
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    try:
+        rt_factory = get_runtime_session_factory()
+    except RuntimeError:
+        return ""
+
     from sqlalchemy import select
 
-    from anima_server.models import MemoryDailyLog
+    from anima_server.models.runtime import RuntimeMessage
 
-    stmt = (
-        select(MemoryDailyLog)
-        .where(MemoryDailyLog.user_id == user_id)
-        .order_by(MemoryDailyLog.created_at.desc())
-        .limit(limit)
-    )
+    with rt_factory() as rt_db:
+        messages = list(
+            rt_db.scalars(
+                select(RuntimeMessage)
+                .where(
+                    RuntimeMessage.user_id == user_id,
+                    RuntimeMessage.role.in_(("user", "assistant")),
+                )
+                .order_by(RuntimeMessage.created_at.desc())
+                .limit(limit * 2)  # each pair = 2 messages
+            ).all()
+        )
 
-    logs = db.scalars(stmt).all()
     lines = []
-    for log in reversed(logs):
-        user_text = df(
-            user_id, log.user_message or "", table="memory_daily_logs", field="user_message"
-        )
-        assistant_text = df(
-            user_id,
-            log.assistant_response or "",
-            table="memory_daily_logs",
-            field="assistant_response",
-        )
-        lines.append(f"User: {user_text[:500]}")
-        lines.append(f"Assistant: {assistant_text[:500]}")
+    for msg in reversed(messages):
+        content = (msg.content_text or "")[:500]
+        prefix = "User" if msg.role == "user" else "Assistant"
+        lines.append(f"{prefix}: {content}")
     return "\n\n".join(lines)
 
 
