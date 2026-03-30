@@ -321,17 +321,9 @@ async def _task_consolidation(
     to flush any remaining ``PendingMemoryOp`` rows (core-memory tool
     writes) into the soul blocks.
     """
-    from anima_server.services.agent.consolidation import consolidate_pending_ops
+    from anima_server.services.agent.soul_writer import run_soul_writer
 
-    if runtime_db_factory is not None:
-        from anima_server.db.session import SessionLocal
-
-        soul_factory = db_factory or SessionLocal
-        await consolidate_pending_ops(
-            user_id=user_id,
-            soul_db_factory=soul_factory,
-            runtime_db_factory=runtime_db_factory,
-        )
+    await run_soul_writer(user_id)
 
     return {
         "thread_id": thread_id,
