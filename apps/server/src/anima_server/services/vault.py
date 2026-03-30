@@ -22,7 +22,6 @@ from anima_server.models import (
     AgentStep,
     AgentThread,
     EmotionalSignal,
-    MemoryDailyLog,
     MemoryEpisode,
     MemoryItem,
     SelfModelBlock,
@@ -93,7 +92,6 @@ _MEMORY_TABLES = frozenset(
     {
         "memoryItems",
         "memoryEpisodes",
-        "memoryDailyLogs",
         "selfModelBlocks",
         "emotionalSignals",
         "sessionNotes",
@@ -421,10 +419,6 @@ def export_database_snapshot(
         serialize_memory_episode_record(ep, deks=deks)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
     ]
-    memory_daily_logs = [
-        serialize_memory_daily_log_record(log, deks=deks)
-        for log in db.scalars(_scoped(select(MemoryDailyLog), MemoryDailyLog)).all()
-    ]
     tasks = [serialize_task_record(task) for task in db.scalars(_scoped(select(Task), Task)).all()]
     agent_threads = [
         serialize_agent_thread_record(t)
@@ -482,7 +476,6 @@ def export_database_snapshot(
         "userKeys": user_keys,
         "memoryItems": memory_items,
         "memoryEpisodes": memory_episodes,
-        "memoryDailyLogs": memory_daily_logs,
         "tasks": tasks,
         "sessionNotes": session_notes,
         "selfModelBlocks": self_model_blocks,
@@ -507,7 +500,6 @@ def restore_database_snapshot(
 
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_episodes_payload = snapshot.get("memoryEpisodes", [])
-    memory_daily_logs_payload = snapshot.get("memoryDailyLogs", [])
     tasks_payload = snapshot.get("tasks", [])
     session_notes_payload = snapshot.get("sessionNotes", [])
     self_model_blocks_payload = snapshot.get("selfModelBlocks", [])
@@ -530,7 +522,6 @@ def restore_database_snapshot(
             db.query(AgentRun).delete()
             db.query(AgentThread).delete()
             db.query(Task).delete()
-        db.query(MemoryDailyLog).delete()
         db.query(MemoryEpisode).delete()
         db.query(MemoryItem).delete()
         db.query(UserKey).delete()
@@ -609,20 +600,6 @@ def restore_database_snapshot(
                     emotional_arc=coerce_optional_str(record.get("emotional_arc")),
                     significance_score=int(record.get("significance_score", 3)),
                     turn_count=coerce_optional_int(record.get("turn_count")),
-                    created_at=parse_optional_datetime(record.get("created_at")),
-                )
-            )
-
-        for record in memory_daily_logs_payload:
-            if not isinstance(record, dict):
-                continue
-            db.add(
-                MemoryDailyLog(
-                    id=int(record["id"]),
-                    user_id=int(record["user_id"]),
-                    date=str(record["date"]),
-                    user_message=str(record["user_message"]),
-                    assistant_response=str(record["assistant_response"]),
                     created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
@@ -964,23 +941,6 @@ def serialize_memory_episode_record(
     }
 
 
-def serialize_memory_daily_log_record(
-    log: MemoryDailyLog,
-    *,
-    deks: dict[str, bytes] | None = None,
-) -> dict[str, Any]:
-    return {
-        "id": log.id,
-        "user_id": log.user_id,
-        "date": log.date,
-        "user_message": _decrypt_field_value(log.user_message, deks, table="memory_daily_logs"),
-        "assistant_response": _decrypt_field_value(
-            log.assistant_response, deks, table="memory_daily_logs"
-        ),
-        "created_at": serialize_optional_datetime(log.created_at),
-    }
-
-
 def serialize_session_note_record(
     note: SessionNote,
     *,
@@ -1161,7 +1121,6 @@ def reset_identity_sequences(db: Session) -> None:
         "user_keys",
         "memory_items",
         "memory_episodes",
-        "memory_daily_logs",
         "tasks",
         "session_notes",
         "self_model_blocks",
@@ -1272,20 +1231,6 @@ def _re_encrypt_snapshot_fields(
             if ep.get("emotional_arc"):
                 ep["emotional_arc"] = _re_encrypt_field_value(
                     ep["emotional_arc"], user_id, table="memory_episodes", field="emotional_arc"
-                )
-
-    for log in snapshot.get("memoryDailyLogs", []):
-        if isinstance(log, dict):
-            if log.get("user_message"):
-                log["user_message"] = _re_encrypt_field_value(
-                    log["user_message"], user_id, table="memory_daily_logs", field="user_message"
-                )
-            if log.get("assistant_response"):
-                log["assistant_response"] = _re_encrypt_field_value(
-                    log["assistant_response"],
-                    user_id,
-                    table="memory_daily_logs",
-                    field="assistant_response",
                 )
 
     for note in snapshot.get("sessionNotes", []):

@@ -1,8 +1,8 @@
 """Conversation history search for the recall_conversation tool.
 
-Searches RuntimeMessage rows and MemoryDailyLog entries by text match +
-optional semantic similarity.  Messages with role "tool" or "summary"
-are excluded to prevent the agent from retrieving its own tool calls.
+Searches RuntimeMessage rows by text match + optional semantic similarity.
+Messages with role "tool" or "summary" are excluded to prevent the agent
+from retrieving its own tool calls.
 """
 
 from __future__ import annotations
@@ -14,9 +14,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import MemoryDailyLog
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
-from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +71,8 @@ async def search_conversation_history(
 ) -> list[ConversationHit]:
     """Search past conversations for the given query.
 
-    Combines text-match scoring on RuntimeMessage rows and MemoryDailyLog
-    entries.  Optionally filters by role and date range.
+    Searches RuntimeMessage rows with text-match scoring.  Optionally
+    filters by role and date range.
 
     Semantic similarity (embedding-based) is attempted when available but
     the function degrades gracefully to text-only search.
@@ -83,7 +81,6 @@ async def search_conversation_history(
     parsed_start = _parse_date(start_date)
     parsed_end = _parse_date(end_date)
 
-    # ── Search runtime_messages ──
     message_hits = _search_messages(
         runtime_db,
         user_id=user_id,
@@ -93,20 +90,8 @@ async def search_conversation_history(
         parsed_end=parsed_end,
     )
 
-    # ── Search memory_daily_logs (soul DB) ──
-    log_hits = _search_daily_logs(
-        soul_db,
-        user_id=user_id,
-        query_lower=query_lower,
-        role_filter=role_filter.strip().lower(),
-        parsed_start=parsed_start,
-        parsed_end=parsed_end,
-    )
-
-    # ── Merge and rank ──
-    all_hits = message_hits + log_hits
-    all_hits.sort(key=lambda h: h.score, reverse=True)
-    return all_hits[:limit]
+    message_hits.sort(key=lambda h: h.score, reverse=True)
+    return message_hits[:limit]
 
 
 def _search_messages(
@@ -195,75 +180,3 @@ def _search_messages(
     return hits
 
 
-def _search_daily_logs(
-    db: Session,
-    *,
-    user_id: int,
-    query_lower: str,
-    role_filter: str,
-    parsed_start: date | None,
-    parsed_end: date | None,
-) -> list[ConversationHit]:
-    """Search MemoryDailyLog entries."""
-    stmt = (
-        select(MemoryDailyLog)
-        .where(MemoryDailyLog.user_id == user_id)
-        .order_by(MemoryDailyLog.created_at.desc())
-        .limit(200)
-    )
-    rows = db.scalars(stmt).all()
-
-    hits: list[ConversationHit] = []
-    for row in rows:
-        log_date = _parse_date(row.date)
-        if log_date is not None:
-            if parsed_start and log_date < parsed_start:
-                continue
-            if parsed_end and log_date > parsed_end:
-                continue
-
-        # Score user_message and assistant_response separately
-        entries = []
-        if role_filter != "assistant":
-            entries.append(
-                (
-                    "user",
-                    df(user_id, row.user_message, table="memory_daily_logs", field="user_message"),
-                )
-            )
-        if role_filter != "user":
-            entries.append(
-                (
-                    "assistant",
-                    df(
-                        user_id,
-                        row.assistant_response,
-                        table="memory_daily_logs",
-                        field="assistant_response",
-                    ),
-                )
-            )
-
-        for role, text in entries:
-            text_stripped = (text or "").strip()
-            if not text_stripped:
-                continue
-            text_lower = text_stripped.lower()
-            score = _text_overlap_score(query_lower, text_lower)
-            if score < 0.3 and query_lower:
-                continue
-            if not query_lower:
-                score = 0.5
-
-            date_str = row.date if row.date else "unknown"
-            hits.append(
-                ConversationHit(
-                    source="daily_log",
-                    role=role,
-                    content=text_stripped[:500],
-                    date=date_str,
-                    score=score,
-                )
-            )
-
-    return hits

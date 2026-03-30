@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
-from anima_server.models import MemoryDailyLog, MemoryItem, Task
+from anima_server.models import MemoryItem, Task
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.schemas.chat import (
     ApprovalRequest,
@@ -278,9 +278,10 @@ async def get_home(
     )
 
     journal_total = (
-        db.scalar(
-            select(func.count(func.distinct(MemoryDailyLog.date))).where(
-                MemoryDailyLog.user_id == userId,
+        runtime_db.scalar(
+            select(func.count(func.distinct(func.date(RuntimeMessage.created_at)))).where(
+                RuntimeMessage.user_id == userId,
+                RuntimeMessage.role == "user",
             )
         )
         or 0
@@ -294,10 +295,11 @@ async def get_home(
         day = today
         while True:
             has_log = (
-                db.scalar(
-                    select(func.count(MemoryDailyLog.id)).where(
-                        MemoryDailyLog.user_id == userId,
-                        MemoryDailyLog.date == day.isoformat(),
+                runtime_db.scalar(
+                    select(func.count(RuntimeMessage.id)).where(
+                        RuntimeMessage.user_id == userId,
+                        RuntimeMessage.role == "user",
+                        func.date(RuntimeMessage.created_at) == day.isoformat(),
                     )
                 )
                 or 0
@@ -332,36 +334,51 @@ async def consolidate(
     payload: ChatResetRequest,
     request: Request,
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Trigger memory consolidation for recent conversations."""
     require_unlocked_user(request, payload.userId)
 
     from anima_server.services.agent.consolidation import consolidate_turn_memory_with_llm
 
-    logs = list(
-        db.scalars(
-            select(MemoryDailyLog)
-            .where(MemoryDailyLog.user_id == payload.userId)
-            .order_by(MemoryDailyLog.created_at.desc())
-            .limit(10)
+    messages = list(
+        runtime_db.scalars(
+            select(RuntimeMessage)
+            .where(
+                RuntimeMessage.user_id == payload.userId,
+                RuntimeMessage.role.in_(("user", "assistant")),
+            )
+            .order_by(RuntimeMessage.created_at.desc())
+            .limit(20)
         ).all()
     )
 
+    # Pair consecutive user/assistant messages for consolidation
+    pairs: list[tuple[str, str]] = []
+    msgs = list(reversed(messages))
+    i = 0
+    while i < len(msgs) - 1:
+        if msgs[i].role == "user" and msgs[i + 1].role == "assistant":
+            pairs.append((msgs[i].content_text or "", msgs[i + 1].content_text or ""))
+            i += 2
+        else:
+            i += 1
+
     items_added = 0
     errors: list[str] = []
-    for log in logs:
+    for user_message, assistant_response in pairs:
         try:
             result = await consolidate_turn_memory_with_llm(
                 user_id=payload.userId,
-                user_message=log.user_message,
-                assistant_response=log.assistant_response,
+                user_message=user_message,
+                assistant_response=assistant_response,
                 db_factory=build_session_factory_for_db(db),
             )
             items_added += len(result.llm_items_added)
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"filesProcessed": len(logs), "filesChanged": items_added, "errors": errors}
+    return {"filesProcessed": len(pairs), "filesChanged": items_added, "errors": errors}
 
 
 @router.post("/sleep")
