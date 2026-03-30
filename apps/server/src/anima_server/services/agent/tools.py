@@ -158,7 +158,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
 
     parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
 
-    item = promote_session_note(
+    promoted = promote_session_note(
         ctx.db,
         thread_id=ctx.thread_id,
         user_id=ctx.user_id,
@@ -166,14 +166,15 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         category=category,
         importance=imp,
         tags=parsed_tags,
+        runtime_db=ctx.runtime_db,
     )
-    if item is not None:
+    if promoted:
         from anima_server.services.agent.companion import get_companion
 
         companion = get_companion(ctx.user_id)
         if companion is not None:
             companion.invalidate_memory()
-        return f"Saved to long-term memory: {df(ctx.user_id, item.content, table='memory_items', field='content')}"
+        return f"Saved '{key}' to permanent memory (category: {category})"
     return f"Could not promote note '{key}' — not found or duplicate"
 
 

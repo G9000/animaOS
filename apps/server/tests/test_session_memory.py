@@ -157,7 +157,8 @@ def test_promote_session_note_to_memory() -> None:
             value="Works as a data scientist",
         )
 
-        item = promote_session_note(
+        # Legacy path (no runtime_db) — still creates MemoryItem directly
+        promoted = promote_session_note(
             db,
             thread_id=thread.id,
             user_id=user.id,
@@ -165,19 +166,15 @@ def test_promote_session_note_to_memory() -> None:
             category="fact",
             importance=5,
         )
-        assert item is not None
-        assert item.content == "Works as a data scientist"
-        assert item.category == "fact"
-        assert item.importance == 5
-        assert item.source == "session"
+        assert promoted is True
 
-        # Note should now be inactive and linked
+        # Note should now be inactive
         notes = get_session_notes(db, thread_id=thread.id)
         assert len(notes) == 0
 
         all_notes = get_session_notes(db, thread_id=thread.id, active_only=False)
         assert len(all_notes) == 1
-        assert all_notes[0].promoted_to_item_id == item.id
+        assert all_notes[0].promoted_to_item_id is not None
 
 
 def test_render_session_memory_text() -> None:

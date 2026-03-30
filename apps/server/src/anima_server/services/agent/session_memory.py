@@ -117,10 +117,17 @@ def promote_session_note(
     category: str = "fact",
     importance: int = 3,
     tags: list[str] | None = None,
-) -> MemoryItem | None:
-    """Promote a session note to a long-term memory item."""
-    from anima_server.services.agent.memory_store import add_memory_item
+    runtime_db: Session | None = None,
+) -> bool:
+    """Promote a session note to a memory candidate for Soul Writer promotion.
 
+    When *runtime_db* is provided the note content is written to
+    ``MemoryCandidate`` in PG (Soul Writer promotes it later).
+    Falls back to the legacy ``add_memory_item`` path when *runtime_db*
+    is ``None``.
+
+    Returns ``True`` if the note was found and promoted, ``False`` otherwise.
+    """
     note = db.scalar(
         select(SessionNote).where(
             SessionNote.thread_id == thread_id,
@@ -129,24 +136,41 @@ def promote_session_note(
         )
     )
     if note is None:
-        return None
+        return False
 
-    item = add_memory_item(
-        db,
-        user_id=user_id,
-        content=df(user_id, note.value, table="session_notes", field="value"),
-        category=category,
-        importance=importance,
-        source="session",
-        tags=tags,
-    )
-    if item is not None:
-        note.promoted_to_item_id = item.id
-        note.is_active = False
-        note.updated_at = datetime.now(UTC)
-        db.flush()
+    content = df(user_id, note.value, table="session_notes", field="value")
 
-    return item
+    if runtime_db is not None:
+        from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+        create_memory_candidate(
+            runtime_db,
+            user_id=user_id,
+            content=content,
+            category=category,
+            importance=importance,
+            importance_source="user_explicit",
+            source="tool",
+        )
+    else:
+        from anima_server.services.agent.memory_store import add_memory_item
+
+        item = add_memory_item(
+            db,
+            user_id=user_id,
+            content=content,
+            category=category,
+            importance=importance,
+            source="session",
+            tags=tags,
+        )
+        if item is not None:
+            note.promoted_to_item_id = item.id
+
+    note.is_active = False
+    note.updated_at = datetime.now(UTC)
+    db.flush()
+    return True
 
 
 def clear_session_notes(

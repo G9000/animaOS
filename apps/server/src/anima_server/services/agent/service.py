@@ -665,7 +665,9 @@ async def _prepare_turn_context(
             runtime_db=runtime_db,
         )
         if signals:
-            record_feedback_signals(db, user_id=user_id, signals=signals)
+            record_feedback_signals(
+                db, user_id=user_id, signals=signals, runtime_db=runtime_db,
+            )
             # When a correction is detected, fix the underlying memory
             if any(s.signal_type == "correction" for s in signals):
                 apply_memory_correction(
@@ -673,6 +675,7 @@ async def _prepare_turn_context(
                     user_id=user_id,
                     user_message=user_message,
                     thread_id=thread.id,
+                    runtime_db=runtime_db,
                 )
     except Exception:
         pass
