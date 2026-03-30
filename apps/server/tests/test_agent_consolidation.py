@@ -14,6 +14,7 @@ from anima_server.services.agent.consolidation import (
     consolidate_turn_memory,
     consolidate_turn_memory_with_llm,
     drain_background_memory_tasks,
+    run_background_extraction,
 )
 from anima_server.services.agent.memory_store import get_memory_items
 from conftest_runtime import runtime_db_session
@@ -295,11 +296,51 @@ async def test_consolidate_turn_memory_with_llm_deduplicates_slot_paraphrase(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_schedules_background_memory_consolidation() -> None:
-    # Pre-set turn counter so that the next bump lands on a frequency multiple
-    # (F5 frequency gating runs every SLEEPTIME_FREQUENCY turns).
-    from anima_server.services.agent.sleep_agent import SLEEPTIME_FREQUENCY, _turn_counters
+async def test_run_background_extraction_creates_candidates() -> None:
+    """run_background_extraction writes MemoryCandidates to the runtime DB (PG),
+    not MemoryItems to the soul DB (SQLCipher)."""
+    from anima_server.models.runtime_memory import MemoryCandidate
 
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "scaffold"
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="I prefer short walks. I work as a product designer.",
+                assistant_response="That sounds nice!",
+                runtime_db_factory=rt_factory,
+            )
+
+            with rt_factory() as rt_db:
+                candidates = list(
+                    rt_db.query(MemoryCandidate)
+                    .filter(MemoryCandidate.user_id == 1)
+                    .all()
+                )
+
+        contents = [c.content.lower() for c in candidates]
+        assert any("short walks" in c for c in contents)
+        assert any("product designer" in c for c in contents)
+        # All should be regex-sourced in scaffold mode (no LLM)
+        assert all(c.source == "regex" for c in candidates)
+        assert all(c.importance_source == "regex" for c in candidates)
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_run_agent_schedules_background_memory_consolidation() -> None:
     original_provider = settings.agent_provider
     invalidate_agent_runtime_cache()
 
@@ -316,9 +357,6 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
             session.add(user)
             session.commit()
 
-            # Set turn counter so next bump triggers sleeptime (lands on frequency multiple)
-            _turn_counters[user.id] = SLEEPTIME_FREQUENCY - 1
-
             result = await run_agent(
                 "I prefer short walks. My current focus is finishing the memory pipeline.",
                 user.id,
@@ -326,14 +364,8 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
                 runtime_session,
             )
             await drain_background_memory_tasks()
-            session.expire_all()
-
-            prefs = get_memory_items(session, user_id=user.id, category="preference")
-            focus = get_memory_items(session, user_id=user.id, category="focus")
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()
 
     assert "turn 1" in result.response
-    assert any("short walks" in item.content.lower() for item in prefs)
-    assert any("memory pipeline" in item.content.lower() for item in focus)

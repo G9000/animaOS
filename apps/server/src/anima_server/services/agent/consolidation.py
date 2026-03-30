@@ -796,6 +796,71 @@ def is_viable_memory_fragment(value: str) -> bool:
     return 3 <= len(value) <= 160
 
 
+SOUL_WRITER_CANDIDATE_THRESHOLD = 15
+
+
+async def run_background_extraction(
+    *,
+    user_id: int,
+    user_message: str,
+    assistant_response: str,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Per-turn extraction. Writes ONLY to PG. Never touches SQLCipher."""
+    from anima_server.services.agent.candidate_ops import (
+        count_eligible_candidates,
+        create_memory_candidate,
+    )
+
+    try:
+        rt_factory = runtime_db_factory or _get_runtime_factory()
+        if rt_factory is None:
+            return
+    except RuntimeError:
+        return
+
+    with rt_factory() as rt_db:
+        # 1. Regex extraction
+        extracted = extract_turn_memory(user_message)
+        for fact in extracted.facts:
+            create_memory_candidate(rt_db, user_id=user_id, content=fact,
+                                    category="fact", importance=3,
+                                    importance_source="regex", source="regex")
+        for pref in extracted.preferences:
+            create_memory_candidate(rt_db, user_id=user_id, content=pref,
+                                    category="preference", importance=3,
+                                    importance_source="regex", source="regex")
+
+        # 2. LLM extraction
+        if settings.agent_provider != "scaffold":
+            try:
+                llm_result = await extract_memories_via_llm(
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                )
+                for item in llm_result.memories:
+                    content = item.get("content", "")
+                    if not content or not isinstance(content, str):
+                        continue
+                    create_memory_candidate(
+                        rt_db, user_id=user_id,
+                        content=content,
+                        category=item.get("category", "fact"),
+                        importance=item.get("importance", 3),
+                        importance_source="llm", source="llm",
+                    )
+            except Exception:
+                logger.exception("LLM extraction failed for user %s", user_id)
+
+        rt_db.commit()
+
+        # 3. Threshold check
+        count = count_eligible_candidates(rt_db, user_id=user_id)
+        if count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
+            from anima_server.services.agent.soul_writer import run_soul_writer
+            asyncio.create_task(run_soul_writer(user_id))
+
+
 async def run_background_memory_consolidation(
     *,
     user_id: int,
@@ -884,41 +949,29 @@ def schedule_background_memory_consolidation(
     except RuntimeError:
         return
 
-    from anima_server.services.agent.sleep_agent import (
-        bump_turn_counter,
-        run_sleeptime_agents,
-        should_run_sleeptime,
+    # Per-turn: PG-only extraction + embedding backfill
+    task = loop.create_task(
+        run_background_extraction(
+            user_id=user_id,
+            user_message=user_message,
+            assistant_response=assistant_response,
+            runtime_db_factory=runtime_db_factory,
+        )
     )
-
-    bump_turn_counter(user_id)
-    run_full_orchestrator = should_run_sleeptime(user_id)
-
-    if run_full_orchestrator:
-        # Every N turns: run the full orchestrator (consolidation + KG + heat decay + episodes + …)
-        task = loop.create_task(
-            run_sleeptime_agents(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                thread_id=thread_id,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-        )
-    else:
-        # Every turn: at minimum run consolidation + embedding backfill
-        task = loop.create_task(
-            run_background_memory_consolidation(
-                user_id=user_id,
-                user_message=user_message,
-                assistant_response=assistant_response,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-        )
     with _background_tasks_lock:
         _background_tasks.add(task)
     task.add_done_callback(_on_background_task_done)
+
+    # Embedding backfill
+    try:
+        backfill_task = loop.create_task(
+            _backfill_user_embeddings(user_id, db_factory=db_factory)
+        )
+        with _background_tasks_lock:
+            _background_tasks.add(backfill_task)
+        backfill_task.add_done_callback(_on_background_task_done)
+    except Exception:
+        pass
 
 
 async def drain_background_memory_tasks() -> None:
