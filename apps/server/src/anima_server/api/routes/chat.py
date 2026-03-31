@@ -69,6 +69,8 @@ async def send_message(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
             ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return ChatResponse(
             response=result.response,
             model=result.model,
@@ -96,6 +98,8 @@ async def send_message(
                 yield _format_sse_event(event.event, event.data)
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             yield _format_sse_event("error", {"error": str(exc)})
+        except ValueError as exc:
+            yield _format_sse_event("error", {"error": str(exc), "status": 404})
         except Exception:
             logger.exception("Unexpected error during SSE streaming")
             yield _format_sse_event(
