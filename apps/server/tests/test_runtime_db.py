@@ -281,10 +281,10 @@ def test_ensure_pgvector_logs_warning_when_extension_is_unavailable(
 
     monkeypatch.setattr(runtime_module, "get_runtime_engine", lambda: engine)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="anima_server.db.runtime"):
         runtime_module.ensure_pgvector()
 
-    assert "Vector search will fall back to brute-force." in caplog.text
+    assert "pgvector extension not available" in caplog.text
 
 
 @requires_runtime_backend

@@ -632,9 +632,7 @@ async def _prepare_turn_context(
         from anima_server.services.agent.candidate_ops import count_eligible_candidates
         from anima_server.services.agent.soul_writer import run_soul_writer
 
-        from anima_server.db.runtime import get_runtime_session_factory as _rt_factory
-        with _rt_factory()() as _rt_db:
-            eligible = count_eligible_candidates(_rt_db, user_id=user_id)
+        eligible = count_eligible_candidates(runtime_db, user_id=user_id)
         if eligible > 0:
             await run_soul_writer(user_id)
     except Exception:
