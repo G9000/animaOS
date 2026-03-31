@@ -81,6 +81,7 @@ export default function Chat() {
     if (user?.id == null) return;
     const interval = setInterval(async () => {
       if (streaming) return;
+      if (currentThreadIdRef.current != null) return;
       try {
         const hist = await api.chat.history(user.id);
         setMessages((prev) => {
@@ -93,12 +94,16 @@ export default function Chat() {
   }, [user?.id, streaming]);
 
   useEffect(() => {
+    if (user?.id == null) return;
     api.threads.list().then((res) => {
       setThreads(res.threads);
       const active = res.threads.find((t) => t.status === "active");
-      if (active) setCurrentThreadId(active.id);
+      if (active) {
+        setCurrentThreadId(active.id);
+        currentThreadIdRef.current = active.id;
+      }
     }).catch(() => {});
-  }, []);
+  }, [user?.id]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     bottomRef.current?.scrollIntoView({ behavior, block: "end" });
@@ -168,6 +173,7 @@ export default function Chat() {
   }, []);
 
   const handleSelectThread = async (threadId: number) => {
+    currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
     try {
@@ -184,22 +190,29 @@ export default function Chat() {
       setMessages(mapped);
     } catch {
       setCurrentThreadId(null);
+      currentThreadIdRef.current = null;
+      setError("Failed to load thread messages.");
     }
   };
 
   const handleNewThread = async () => {
-    const res = await api.threads.create();
-    const newThread: Thread = {
-      id: res.threadId,
-      title: null,
-      status: "active",
-      isArchived: false,
-      lastMessageAt: null,
-      createdAt: new Date().toISOString(),
-    };
-    setThreads((prev) => [newThread, ...prev]);
-    setCurrentThreadId(res.threadId);
-    setMessages([]);
+    try {
+      const res = await api.threads.create();
+      const newThread: Thread = {
+        id: res.threadId,
+        title: null,
+        status: "active",
+        isArchived: false,
+        lastMessageAt: null,
+        createdAt: new Date().toISOString(),
+      };
+      setThreads((prev) => [newThread, ...prev]);
+      currentThreadIdRef.current = res.threadId;
+      setCurrentThreadId(res.threadId);
+      setMessages([]);
+    } catch {
+      setError("Failed to create new thread.");
+    }
   };
 
   const sendMessage = async (text: string) => {
