@@ -31,6 +31,15 @@ def build_chunk_event(content: str) -> AgentStreamEvent:
     )
 
 
+def build_memory_state_event(
+    blocks: dict[str, str],
+) -> AgentStreamEvent:
+    return AgentStreamEvent(
+        event="memory_state",
+        data={"blocks": blocks},
+    )
+
+
 def build_reasoning_event(
     step_index: int,
     reasoning_content: str,
@@ -63,18 +72,19 @@ def build_step_request_event(
     request_messages: tuple[MessageSnapshot, ...],
     allowed_tools: tuple[str, ...],
     force_tool_call: bool,
+    tool_schemas: dict[str, object] | None = None,
 ) -> AgentStreamEvent:
-    return AgentStreamEvent(
-        event="step_state",
-        data={
-            "stepIndex": step_index,
-            "phase": "request",
-            "messageCount": len(request_messages),
-            "allowedTools": list(allowed_tools),
-            "forceToolCall": force_tool_call,
-            "messages": [_serialize_message_preview(message) for message in request_messages],
-        },
-    )
+    data: dict[str, object] = {
+        "stepIndex": step_index,
+        "phase": "request",
+        "messageCount": len(request_messages),
+        "allowedTools": list(allowed_tools),
+        "forceToolCall": force_tool_call,
+        "messages": [_serialize_message_preview(message) for message in request_messages],
+    }
+    if tool_schemas is not None and step_index == 0:
+        data["toolSchemas"] = tool_schemas
+    return AgentStreamEvent(event="step_state", data=data)
 
 
 def build_step_result_event(
@@ -158,6 +168,7 @@ def build_tool_return_event(
             "name": tool_result.name,
             "output": tool_result.output,
             "isError": tool_result.is_error,
+            "toolSucceeded": not tool_result.is_error,
             "isTerminal": tool_result.is_terminal,
         },
     )

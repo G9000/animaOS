@@ -50,6 +50,8 @@ function formatTraceEvent(event: TraceEvent): string[] {
       ];
     case "cancelled":
       return [`[CANCEL] run=${event.runId ?? 0}`];
+    case "memory_state":
+      return formatMemoryState(event);
     default:
       return [compactJson(event)];
   }
@@ -79,6 +81,16 @@ function formatStepResult(event: TraceEvent): string[] {
 
 function formatTraceMessage(message: TraceMessagePreview): string {
   return `${message.role} (${message.chars} chars): ${normalizePreview(message.preview)}`;
+}
+
+function formatMemoryState(event: TraceEvent): string[] {
+  const blocks = (event.blocks ?? {}) as Record<string, string>;
+  const lines = ["[MEMORY_STATE]"];
+  for (const [label, content] of Object.entries(blocks)) {
+    const text = typeof content === "string" ? content : String(content ?? "");
+    lines.push(`  ${label} (${text.length} chars): ${normalizePreview(text.slice(0, 160))}`);
+  }
+  return lines;
 }
 
 function compactJson(value: unknown): string {

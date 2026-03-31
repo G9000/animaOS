@@ -148,6 +148,8 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                         yield StepStreamEvent(content_delta=visible_delta)
 
                 for delta in _stream_tool_call_deltas(chunk):
+                    if first_content_time is None:
+                        first_content_time = time.monotonic()
                     index = delta.get("index", 0)
                     if not isinstance(index, int):
                         continue
@@ -252,6 +254,8 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                         content_parts.append(visible_delta)
 
                 for delta in _stream_tool_call_deltas(chunk):
+                    if first_content_time is None:
+                        first_content_time = time.monotonic()
                     index = delta.get("index", 0)
                     if not isinstance(index, int):
                         continue

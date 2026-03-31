@@ -73,13 +73,15 @@ export interface TraceEvent {
     | "timing"
     | "done"
     | "approval_pending"
-    | "cancelled";
+    | "cancelled"
+    | "memory_state";
   stepIndex?: number;
   phase?: "request" | "result";
   messageCount?: number;
   allowedTools?: string[];
   forceToolCall?: boolean;
   messages?: TraceMessagePreview[];
+  toolSchemas?: Record<string, unknown>;
   assistantTextChars?: number;
   assistantTextPreview?: string;
   toolCallCount?: number;
@@ -92,6 +94,7 @@ export interface TraceEvent {
   callId?: string;
   output?: string;
   isError?: boolean;
+  toolSucceeded?: boolean;
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
@@ -107,6 +110,7 @@ export interface TraceEvent {
   toolsUsed?: string[];
   runId?: number;
   threadId?: number;
+  blocks?: Record<string, string>;
 }
 
 export interface ChatMessage {
