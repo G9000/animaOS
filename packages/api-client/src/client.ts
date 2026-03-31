@@ -6,6 +6,7 @@ import type {
   AuthResponse,
   ChangePasswordResponse,
   ChatMessage,
+  CreateThreadResponse,
   DailyBrief,
   DbQueryResult,
   DbTableData,
@@ -30,6 +31,8 @@ import type {
   SelfModelData,
   SelfModelSection,
   TaskItem,
+  ThreadListResponse,
+  ThreadMessagesResponse,
   TraceEvent,
   TraceMessagePreview,
   User,
@@ -80,6 +83,7 @@ type StreamEventPayload = {
   runId?: number;
   toolName?: string;
   toolCallId?: string;
+  threadId?: number;
 };
 
 function trimBaseUrl(baseUrl: string): string {
@@ -168,6 +172,7 @@ export function createApiClient(options: ApiClientOptions) {
   async function* streamChat(
     message: string,
     userId: number,
+    threadId?: number,
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
     const streamNonce = getNonce?.() || null;
@@ -179,7 +184,7 @@ export function createApiClient(options: ApiClientOptions) {
         ...(token ? { "x-anima-unlock": token } : {}),
         ...(streamNonce ? { "x-anima-nonce": streamNonce } : {}),
       },
-      body: JSON.stringify({ message, userId, stream: true }),
+      body: JSON.stringify({ message, userId, stream: true, ...(threadId !== undefined ? { threadId } : {}) }),
     });
 
     if (!response.ok) {
@@ -330,6 +335,7 @@ export function createApiClient(options: ApiClientOptions) {
             provider: payload.provider,
             model: payload.model,
             toolsUsed: payload.toolsUsed,
+            threadId: payload.threadId,
           };
           yield `\x00TRACE\x00${JSON.stringify(traceEvent)}`;
 
@@ -436,12 +442,12 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
     },
     chat: {
-      send: (message: string, userId: number) =>
+      send: (message: string, userId: number, threadId?: number) =>
         request<AgentResponse>("/chat", {
           method: "POST",
-          body: { message, userId, stream: false },
+          body: { message, userId, stream: false, ...(threadId !== undefined ? { threadId } : {}) },
         }),
-      stream: streamChat,
+      stream: (message: string, userId: number, threadId?: number) => streamChat(message, userId, threadId),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
       clearHistory: (userId: number) =>
@@ -660,6 +666,18 @@ export function createApiClient(options: ApiClientOptions) {
         request<VaultImportResponse>("/vault/import", {
           method: "POST",
           body: { passphrase, vault },
+        }),
+    },
+    threads: {
+      list: () =>
+        request<ThreadListResponse>("/threads"),
+      create: () =>
+        request<CreateThreadResponse>("/threads", { method: "POST" }),
+      messages: (threadId: number) =>
+        request<ThreadMessagesResponse>(`/threads/${threadId}/messages`),
+      close: (threadId: number) =>
+        request<{ status: string; thread_id: number }>(`/threads/${threadId}/close`, {
+          method: "POST",
         }),
     },
     system: {

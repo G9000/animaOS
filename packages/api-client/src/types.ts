@@ -106,6 +106,7 @@ export interface TraceEvent {
   model?: string;
   toolsUsed?: string[];
   runId?: number;
+  threadId?: number;
 }
 
 export interface ChatMessage {
@@ -343,4 +344,34 @@ export interface GraphSearchResult {
     mentions: number;
   }>;
   paths: GraphPath[];
+}
+
+export interface Thread {
+  id: number;
+  title: string | null;
+  status: string;
+  isArchived: boolean;
+  lastMessageAt: string | null;
+  createdAt: string | null;
+}
+
+export interface ThreadListResponse {
+  threads: Thread[];
+}
+
+export interface ThreadMessage {
+  role: string;
+  content: string;
+  ts: string | null;
+  isArchivedHistory: boolean;
+}
+
+export interface ThreadMessagesResponse {
+  threadId: number;
+  messages: ThreadMessage[];
+}
+
+export interface CreateThreadResponse {
+  threadId: number;
+  status: string;
 }
