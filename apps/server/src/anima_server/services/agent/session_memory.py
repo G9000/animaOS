@@ -148,6 +148,7 @@ def promote_session_note(
         importance=importance,
         importance_source="user_explicit",
         source="tool",
+        tags=tags,
     )
 
     note.is_active = False

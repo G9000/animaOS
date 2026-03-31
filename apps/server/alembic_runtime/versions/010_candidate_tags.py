@@ -6,6 +6,7 @@ Create Date: 2026-04-01
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import ARRAY
 
 revision = "010_candidate_tags"
 down_revision = "009_multi_thread"
@@ -16,7 +17,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "memory_candidates",
-        sa.Column("tags_json", sa.Text(), nullable=True),
+        sa.Column("tags_json", ARRAY(sa.String(100)), nullable=True),
     )
 
 
