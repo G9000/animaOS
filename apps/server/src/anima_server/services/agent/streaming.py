@@ -176,17 +176,17 @@ def build_usage_event(usage: UsageStats) -> AgentStreamEvent:
     return AgentStreamEvent(event="usage", data=data)
 
 
-def build_done_event(result: AgentResult) -> AgentStreamEvent:
-    return AgentStreamEvent(
-        event="done",
-        data={
-            "status": "complete",
-            "stopReason": result.stop_reason,
-            "provider": result.provider,
-            "model": result.model,
-            "toolsUsed": list(result.tools_used),
-        },
-    )
+def build_done_event(result: AgentResult, *, thread_id: int | None = None) -> AgentStreamEvent:
+    data = {
+        "status": "complete",
+        "stopReason": result.stop_reason,
+        "provider": result.provider,
+        "model": result.model,
+        "toolsUsed": list(result.tools_used),
+    }
+    if thread_id is not None:
+        data["threadId"] = thread_id
+    return AgentStreamEvent(event="done", data=data)
 
 
 def build_error_event(error_text: str) -> AgentStreamEvent:

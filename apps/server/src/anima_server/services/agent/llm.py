@@ -11,12 +11,15 @@ from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleChatClient,
 )
 
-SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = ("ollama", "openrouter", "moonshot", "vllm")
+SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = (
+    "ollama", "openrouter", "moonshot", "vllm", "openai",
+)
 DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "ollama": "http://127.0.0.1:11434/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "moonshot": "https://api.moonshot.cn/v1",
     "vllm": "http://127.0.0.1:8000/v1",
+    "openai": "https://api.openai.com/v1",
 }
 
 
@@ -105,6 +108,11 @@ def build_provider_headers(provider: str) -> dict[str, str]:
         headers["Content-Type"] = "application/json"
         return headers
 
+    if provider == "openai":
+        api_key = require_provider_api_key(provider)
+        headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
     if provider == "vllm" and api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -126,7 +134,7 @@ def validate_provider_configuration(provider: str) -> None:
 
 def require_provider_api_key(provider: str) -> str:
     api_key = settings.agent_api_key.strip()
-    if provider in ("openrouter", "moonshot") and not api_key:
+    if provider in ("openrouter", "moonshot", "openai") and not api_key:
         raise LLMConfigError(f"ANIMA_AGENT_API_KEY is required when agent_provider='{provider}'")
     return api_key
 

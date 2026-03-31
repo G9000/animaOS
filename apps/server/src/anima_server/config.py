@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     core_require_encryption: bool = True
     agent_extraction_model: str = ""
     agent_extraction_provider: str = ""
+    agent_embedding_provider: str = ""
+    agent_embedding_model: str = ""
+    agent_embedding_api_key: str = ""
+    agent_embedding_base_url: str = ""
     agent_embedding_dim: int = 768
     agent_session_memory_max_notes: int = 20
     agent_session_memory_budget_chars: int = 1500
@@ -118,9 +122,10 @@ def resolve_embedding_dim() -> int:
     """
     if _detected_embedding_dim is not None:
         return _detected_embedding_dim
-    model = settings.agent_extraction_model.strip()
+    model = settings.agent_embedding_model.strip() or settings.agent_extraction_model.strip()
     if not model:
-        model = _DEFAULT_EMBEDDING_MODELS.get(settings.agent_provider, "nomic-embed-text")
+        embed_provider = settings.agent_embedding_provider.strip() or settings.agent_provider
+        model = _DEFAULT_EMBEDDING_MODELS.get(embed_provider, "nomic-embed-text")
     if model in KNOWN_EMBEDDING_DIMS:
         return KNOWN_EMBEDDING_DIMS[model]
     return settings.agent_embedding_dim

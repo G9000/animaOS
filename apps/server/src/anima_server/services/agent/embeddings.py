@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "ollama": "nomic-embed-text",
     "openrouter": "openai/text-embedding-3-small",
+    "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
 }
 

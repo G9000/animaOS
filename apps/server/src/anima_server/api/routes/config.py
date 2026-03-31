@@ -49,6 +49,7 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
     ProviderInfo(name="openrouter", defaultModel="google/gemma-3-27b-it", requiresApiKey=True),
     ProviderInfo(name="moonshot", defaultModel="kimi-k2-5", requiresApiKey=True),
     ProviderInfo(name="vllm", defaultModel="default", requiresApiKey=False),
+    ProviderInfo(name="openai", defaultModel="gpt-4o", requiresApiKey=True),
 ]
 
 VALID_PROVIDERS = {"scaffold"} | set(SUPPORTED_PROVIDERS)

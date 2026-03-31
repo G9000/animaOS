@@ -30,10 +30,13 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
 
 const FALLBACK_PROVIDERS: ProviderInfo[] = [
   { name: "ollama", defaultModel: "vaultbox/qwen3.5-uncensored:35b", requiresApiKey: false },
+  { name: "vllm", defaultModel: "default", requiresApiKey: false },
   { name: "openrouter", defaultModel: "openrouter/free", requiresApiKey: true },
   { name: "openai", defaultModel: "gpt-4o", requiresApiKey: true },
-  { name: "anthropic", defaultModel: "claude-sonnet-4-20250514", requiresApiKey: true },
 ];
+
+const LOCAL_PROVIDERS = new Set(["ollama", "vllm", "scaffold"]);
+const CLOUD_STORAGE_KEY = "anima:cloud-providers-enabled";
 
 const INPUT_CLASS =
   "w-full bg-input border border-border rounded-sm px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors";
@@ -50,6 +53,9 @@ export default function AiSettings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [cloudEnabled, setCloudEnabled] = useState(
+    () => localStorage.getItem(CLOUD_STORAGE_KEY) === "true",
+  );
 
   useEffect(() => {
     if (user?.id == null) return;
@@ -63,6 +69,10 @@ export default function AiSettings() {
         setProviders(providerList);
         setConfig(loadedConfig);
         setProvider(loadedConfig.provider);
+        if (!LOCAL_PROVIDERS.has(loadedConfig.provider)) {
+          setCloudEnabled(true);
+          localStorage.setItem(CLOUD_STORAGE_KEY, "true");
+        }
         setModel(loadedConfig.model);
         setOllamaUrl(loadedConfig.ollamaUrl || "http://localhost:11434");
         setSystemPrompt(loadedConfig.systemPrompt || "");
@@ -82,9 +92,25 @@ export default function AiSettings() {
   }
 
   const providerOptions = providers.length > 0 ? providers : FALLBACK_PROVIDERS;
+  const localProviders = providerOptions.filter((p) => LOCAL_PROVIDERS.has(p.name));
+  const cloudProviders = providerOptions.filter((p) => !LOCAL_PROVIDERS.has(p.name));
   const selectedProvider = providerOptions.find((item) => item.name === provider);
   const suggestions = SUGGESTED_MODELS[provider] || [];
   const requiresKey = selectedProvider?.requiresApiKey ?? provider !== "ollama";
+  const isCloudProvider = !LOCAL_PROVIDERS.has(provider);
+
+  const handleEnableCloud = () => {
+    setCloudEnabled(true);
+    localStorage.setItem(CLOUD_STORAGE_KEY, "true");
+  };
+
+  const handleDisableCloud = () => {
+    setCloudEnabled(false);
+    localStorage.removeItem(CLOUD_STORAGE_KEY);
+    if (isCloudProvider) {
+      handleProviderChange(localProviders[0]?.name || "ollama");
+    }
+  };
 
   const handleProviderChange = (nextProvider: string) => {
     setProvider(nextProvider);
@@ -144,21 +170,63 @@ export default function AiSettings() {
           </p>
         </header>
 
-        <div className="grid grid-cols-2 gap-2">
-          {providerOptions.map((item) => (
-            <button
-              key={item.name}
-              onClick={() => handleProviderChange(item.name)}
-              className={`px-3 py-2 text-xs uppercase tracking-wider rounded-sm border transition-colors ${
-                provider === item.name
-                  ? "border-primary text-foreground bg-input"
-                  : "border-border text-muted-foreground hover:border-text-muted"
-              }`}
-            >
-              {item.name}
-            </button>
-          ))}
+        <div className="space-y-1">
+          <h3 className="text-[10px] text-muted-foreground uppercase tracking-wider">Local</h3>
+          <div className="grid grid-cols-2 gap-2">
+            {localProviders.map((item) => (
+              <ProviderButton
+                key={item.name}
+                name={item.name}
+                active={provider === item.name}
+                onClick={() => handleProviderChange(item.name)}
+              />
+            ))}
+          </div>
         </div>
+
+        {!cloudEnabled ? (
+          <div className="rounded-sm border border-border bg-input/30 p-4 space-y-3">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Running large models locally requires significant hardware.
+              Cloud providers offer access to powerful models without local resource constraints.
+            </p>
+            <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
+              Your memories, identity, and all stored data stay encrypted on this machine.
+              Only conversation messages are sent to the provider for inference.
+            </p>
+            <button
+              onClick={handleEnableCloud}
+              className="px-4 py-1.5 text-[10px] uppercase tracking-wider rounded-sm border border-border text-muted-foreground hover:border-primary hover:text-foreground transition-colors"
+            >
+              Enable Cloud Providers
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[10px] text-muted-foreground uppercase tracking-wider">Cloud</h3>
+              <button
+                onClick={handleDisableCloud}
+                className="text-[9px] text-muted-foreground/50 uppercase tracking-wider hover:text-muted-foreground transition-colors"
+              >
+                Disable
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground/60 mb-2">
+              Messages are sent externally for inference. All memory and data remain local.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {cloudProviders.map((item) => (
+                <ProviderButton
+                  key={item.name}
+                  name={item.name}
+                  active={provider === item.name}
+                  onClick={() => handleProviderChange(item.name)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
         <Field label="Model">
           <input
@@ -238,6 +306,29 @@ export default function AiSettings() {
         </div>
       </section>
     </div>
+  );
+}
+
+function ProviderButton({
+  name,
+  active,
+  onClick,
+}: {
+  name: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-2 text-xs uppercase tracking-wider rounded-sm border transition-colors ${
+        active
+          ? "border-primary text-foreground bg-input"
+          : "border-border text-muted-foreground hover:border-text-muted"
+      }`}
+    >
+      {name}
+    </button>
   );
 }
 
