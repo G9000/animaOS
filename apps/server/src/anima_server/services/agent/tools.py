@@ -132,8 +132,10 @@ def dismiss_note(key: str) -> str:
 
 @tool
 def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags: str = "") -> str:
-    """Promote a session note to permanent long-term memory (discrete items, searchable).
+    """Save a fact to permanent long-term memory (discrete items, searchable).
     Use this for specific, categorical user facts that benefit from structured recall.
+    If a matching session note exists it will be promoted; otherwise the key text
+    is stored directly — no prior note_to_self is required.
     Categories and when to use each:
     - fact: concrete details ("works at Google", "has two cats", "lactose intolerant")
     - preference: stated likes/dislikes ("prefers dark mode", "hates small talk")
@@ -145,6 +147,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
     save the same information here. The human block is for your holistic understanding;
     save_to_memory is for discrete searchable facts.
     """
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
     from anima_server.services.agent.session_memory import promote_session_note
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -158,6 +161,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
 
     parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
 
+    # Try session-note promotion first (the original two-step flow).
     promoted = promote_session_note(
         ctx.runtime_db,
         thread_id=ctx.thread_id,
@@ -174,7 +178,26 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         if companion is not None:
             companion.invalidate_memory()
         return f"Saved '{key}' to permanent memory (category: {category})"
-    return f"Could not promote note '{key}' — not found or duplicate"
+
+    # No session note found — create a memory candidate directly from the key text.
+    candidate = create_memory_candidate(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        content=key,
+        category=category,
+        importance=imp,
+        importance_source="user_explicit",
+        source="tool",
+    )
+    if candidate is None:
+        return f"Already saved: '{key}' is a duplicate"
+
+    from anima_server.services.agent.companion import get_companion
+
+    companion = get_companion(ctx.user_id)
+    if companion is not None:
+        companion.invalidate_memory()
+    return f"Saved '{key}' to permanent memory (category: {category})"
 
 
 @tool
