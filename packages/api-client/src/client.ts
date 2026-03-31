@@ -676,7 +676,7 @@ export function createApiClient(options: ApiClientOptions) {
       messages: (threadId: number) =>
         request<ThreadMessagesResponse>(`/threads/${threadId}/messages`),
       close: (threadId: number) =>
-        request<{ status: string; thread_id: number }>(`/threads/${threadId}/close`, {
+        request<{ status: string; threadId: number }>(`/threads/${threadId}/close`, {
           method: "POST",
         }),
     },
