@@ -191,6 +191,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         importance=imp,
         importance_source="user_explicit",
         source="tool",
+        tags=parsed_tags,
     )
     if candidate is None:
         return f"Already saved: '{key}' is a duplicate"

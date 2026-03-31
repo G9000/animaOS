@@ -41,6 +41,7 @@ def create_memory_candidate(
     supersedes_item_id: int | None = None,
     source_message_ids: list[int] | None = None,
     extraction_model: str | None = None,
+    tags: list[str] | None = None,
 ) -> MemoryCandidate | None:
     """Create a candidate with hash-based dedup. Returns None on duplicate."""
     if category not in _VALID_CATEGORIES:
@@ -75,6 +76,7 @@ def create_memory_candidate(
         supersedes_item_id=supersedes_item_id,
         source_message_ids=source_message_ids,
         extraction_model=extraction_model,
+        tags_json=tags,
     )
     try:
         with runtime_db.begin_nested():

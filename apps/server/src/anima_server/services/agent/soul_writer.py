@@ -455,6 +455,7 @@ def _process_candidate(
             source="extraction",
             allow_update=True,
             defer_on_similar=False,
+            tags=candidate.tags_json,
         )
 
         if write_result.action in ("duplicate", "conflict", "rejected"):
