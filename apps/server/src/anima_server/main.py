@@ -22,6 +22,7 @@ from .api.routes.core import router as core_router
 from .api.routes.db import router as db_router
 from .api.routes.forgetting import router as forgetting_router
 from .api.routes.graph import router as graph_router
+from .api.routes.health import router as health_router
 from .api.routes.memory import router as memory_router
 from .api.routes.soul import router as soul_router
 from .api.routes.tasks import router as tasks_router
@@ -31,6 +32,7 @@ from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import settings
+from .services.health.event_logger import emit as health_emit
 from .db.pg_lifecycle import EmbeddedPG
 from .db.runtime import (
     dispose_runtime_engine,
@@ -59,7 +61,8 @@ def get_cors_origins() -> list[str]:
 
 
 # Paths exempt from sidecar-nonce validation.
-_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health"})
+_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed", "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
+_NONCE_EXEMPT_PREFIXES = ("/api/health/",)
 logger = logging.getLogger(__name__)
 
 
@@ -106,6 +109,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             embedded_pg.stop()
         raise
 
+    from .services.health.event_logger import (
+        EventLogger,
+        StructuredLogHandler,
+        get_event_logger,
+    )
+
+    health_handler: StructuredLogHandler | None = None
+    health_logger: EventLogger | None = None
+
     try:
         async def _periodic_inactivity_sweep() -> None:
             while True:
@@ -133,6 +145,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
         sweep_tasks.append(asyncio.create_task(_periodic_inactivity_sweep()))
         sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
+
+        # Install structured health event logger
+        health_logger = get_event_logger()
+        health_logger.cleanup_old_logs()
+        health_handler = StructuredLogHandler(health_logger)
+        health_handler.setLevel(logging.WARNING)
+        logging.getLogger("anima_server").addHandler(health_handler)
+
         yield
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
@@ -164,6 +184,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
         finally:
+            if health_handler is not None:
+                logging.getLogger("anima_server").removeHandler(health_handler)
+            if health_logger is not None:
+                health_logger.flush()
             dispose_runtime_engine()
             if embedded_pg is not None:
                 embedded_pg.stop()
@@ -190,7 +214,8 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     # type: ignore[override]
     async def dispatch(self, request: Request, call_next):
         nonce = settings.sidecar_nonce
-        if nonce and request.url.path not in _NONCE_EXEMPT_PATHS:
+        path = request.url.path
+        if nonce and path not in _NONCE_EXEMPT_PATHS and not path.startswith(_NONCE_EXEMPT_PREFIXES):
             header_value = (request.headers.get("x-anima-nonce") or "").strip()
             if not hmac.compare_digest(header_value, nonce):
                 return JSONResponse(
@@ -237,6 +262,10 @@ def create_app() -> FastAPI:
             content: dict[str, object] = {"error": exc.detail}
         else:
             content = {"error": "Request failed", "details": exc.detail}
+        health_emit("http", "error_response", "warn", data={
+            "status_code": exc.status_code,
+            "detail": str(exc.detail)[:200],
+        })
         return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RequestValidationError)
@@ -280,6 +309,7 @@ def create_app() -> FastAPI:
     app.include_router(db_router)
     app.include_router(forgetting_router)
     app.include_router(graph_router)
+    app.include_router(health_router)
     app.include_router(memory_router)
     app.include_router(soul_router)
     app.include_router(tasks_router)

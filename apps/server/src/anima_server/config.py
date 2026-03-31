@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -59,6 +60,9 @@ class Settings(BaseSettings):
     transcript_retention_days: int = -1
     consolidation_health_threshold_minutes: int = 30
     sidecar_nonce: str = ""
+    health_log_dir: str = ""
+    health_log_retention_days: int = 7
+    health_log_level: Literal["trace", "info", "warn", "error"] = "info"
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",
