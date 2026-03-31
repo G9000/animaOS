@@ -107,6 +107,11 @@ def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
             ).all()
             docs = [(row[0], row[1]) for row in rows]
         finally:
+            # Commit before close so that closing a read-only session on a
+            # shared StaticPool connection (tests) does not issue ROLLBACK and
+            # undo pending writes from an outer session.  In production each
+            # session has its own PG connection so commit() is a harmless no-op.
+            runtime_db.commit()
             runtime_db.close()
     except Exception:
         pass
