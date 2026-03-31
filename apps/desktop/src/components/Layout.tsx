@@ -93,7 +93,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative h-screen bg-background text-foreground overflow-hidden">
-      <main className="h-full overflow-hidden">{children}</main>
+      <main className="h-full overflow-hidden pb-14">{children}</main>
 
       {/* Bottom trigger zone — invisible, activates dock on hover */}
       <div

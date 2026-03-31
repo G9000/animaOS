@@ -3,9 +3,11 @@ import { useAuth } from "../context/AuthContext";
 import type { SelfModelData, SelfModelSection, EmotionalContextData } from "@anima/api-client";
 import { api } from "../lib/api";
 
-type Tab = "identity" | "inner_state" | "working_memory" | "growth_log" | "intentions" | "emotions";
+type Tab = "persona" | "human" | "identity" | "inner_state" | "working_memory" | "growth_log" | "intentions" | "emotions";
 
 const TABS: { key: Tab; label: string }[] = [
+  { key: "persona", label: "PERSONA" },
+  { key: "human", label: "HUMAN" },
   { key: "identity", label: "IDENTITY" },
   { key: "inner_state", label: "STATE" },
   { key: "working_memory", label: "W.MEM" },
@@ -15,6 +17,8 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
+  persona: "ANIMA's personality — how it thinks and expresses itself. Evolves through conversations.",
+  human: "What ANIMA knows about you — your identity, preferences, and relationship.",
   identity: "How ANIMA understands itself and its relationship with you.",
   inner_state: "Current internal emotional and cognitive state.",
   working_memory: "Short-term context. Items with [expires: date] are auto-cleaned.",
@@ -25,7 +29,7 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
 
 export default function Consciousness() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<Tab>("identity");
+  const [tab, setTab] = useState<Tab>("persona");
   const [selfModel, setSelfModel] = useState<SelfModelData | null>(null);
   const [emotions, setEmotions] = useState<EmotionalContextData | null>(null);
   const [loading, setLoading] = useState(true);

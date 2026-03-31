@@ -226,7 +226,19 @@ async def _invoke_tool(
 
     def _run() -> Any:
         if arguments:
-            return tool(**arguments)
+            # Guard against LLM hallucinating extra kwargs (e.g. GPT-4o
+            # sending "recipient_name" / nested "parameters" format).
+            sig = inspect.signature(tool)
+            valid_keys = set(sig.parameters.keys())
+            filtered = {k: v for k, v in arguments.items() if k in valid_keys}
+            if filtered != arguments:
+                dropped = set(arguments) - valid_keys
+                logger.warning(
+                    "Stripped unexpected kwargs %s from %s call",
+                    dropped,
+                    getattr(tool, "__name__", tool),
+                )
+            return tool(**filtered)
         return tool()
 
     loop = asyncio.get_running_loop()

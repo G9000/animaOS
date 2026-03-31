@@ -223,6 +223,7 @@ async def check_background_tasks(
         status = "healthy"
 
     if last_completed is None and status == "healthy":
+        status = "degraded"
         issues.append("No consolidation history")
     elif last_completed is not None:
         age_min = details.get("consolidation_age_minutes", 0)
