@@ -53,6 +53,13 @@ export const TEMPLATES: PersonaCardData[] = [
     persona: "companion",
   },
   {
+    id: "mirror",
+    label: "Mirror",
+    desc: "A cognitive mirror. Reflects your voice and thinking back at you.",
+    relationship: "companion",
+    persona: "mirror",
+  },
+  {
     id: "anima",
     label: "Anima",
     desc: "Quiet and reflective. Understands deeply, challenges gently.",

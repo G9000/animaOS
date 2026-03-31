@@ -89,6 +89,7 @@ export function useSetupMachine({
       if (e.key === "1") handleModeSelect(TEMPLATES[0]);
       if (e.key === "2") handleModeSelect(TEMPLATES[1]);
       if (e.key === "3") handleModeSelect(TEMPLATES[2]);
+      if (e.key === "4") handleModeSelect(TEMPLATES[3]);
       if (e.key === "Escape") {
         setStep(S.AGENT_NAME);
         setInput(agentName);

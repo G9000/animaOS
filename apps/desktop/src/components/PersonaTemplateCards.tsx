@@ -61,8 +61,8 @@ export function PersonaTemplateCards({
         ))}
       </div>
 
-      {/* Desktop: 3-column cards with fill animation */}
-      <div className="hidden sm:grid grid-cols-3 gap-px bg-border">
+      {/* Desktop: 2-column cards with fill animation */}
+      <div className="hidden sm:grid grid-cols-2 gap-px bg-border">
         {templates.map((t, i) => (
           <button
             key={t.id}

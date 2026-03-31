@@ -45,7 +45,7 @@ export interface PersonaTemplateInfo {
   description: string;
 }
 
-export type PersonaTemplate = "default" | "companion" | "anima";
+export type PersonaTemplate = "default" | "companion" | "mirror" | "anima";
 
 export interface AgentProfileData {
   agentName: string;

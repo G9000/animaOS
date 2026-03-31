@@ -2,7 +2,7 @@
 title: Agent Persona System
 description: How the agent's personality is seeded from templates, stored in the database, injected into the system prompt, and evolved through reflection.
 category: architecture
-updated: 2026-03-24
+updated: 2026-03-31
 ---
 
 # Agent Persona System
@@ -22,6 +22,7 @@ Jinja2 templates in `services/agent/templates/persona/`. Each receives `{{ agent
 | `default` | `default.md.j2` | Blank slate. No preset personality — just a name. Discovers everything through conversation. |
 | `companion` | `companion.md.j2` | Warm, emotionally attuned companion. Knows it exists in relationship with the user. |
 | `anima` | `anima.md.j2` | The signature Anima personality — quiet, deliberate, reflective. |
+| `mirror` | `mirror.md.j2` | Mirror persona variant. |
 
 ---
 
@@ -87,9 +88,9 @@ The persona block is **mutable**. It can change through:
 - **Reflection/sleep tasks** — The agent can rewrite its persona through self-reflection (`updated_by: "sleep_time"`)
 - **Post-turn consolidation** — Subtle persona shifts after conversation turns (`updated_by: "post_turn"`)
 - **User manual edit** — Via `PUT /api/consciousness/{user_id}/self-model/persona` (`updated_by: "user_edit"`)
-- **Core memory tools** — The agent can use `core_memory_replace` on its persona block during conversation
+- **Core memory tools** — The agent can use `core_memory_replace` on its persona block during conversation. This creates a `PendingMemoryOp` in the runtime DB (PostgreSQL), which the Soul Writer promotes to SQLCipher asynchronously.
 
-Each update increments the `version` field on the `SelfModelBlock`.
+Each update increments the `version` field on the `SelfModelBlock`. In-flight turns see a merged view: the canonical soul block content plus any unprocessed pending ops (via `build_merged_block_content()`).
 
 ---
 
@@ -135,8 +136,11 @@ Template names are validated against `^[a-z0-9][a-z0-9_-]*$` to prevent path tra
 ```
 services/auth.py                          # create_user() — seeds soul, persona, human blocks
 services/agent/system_prompt.py           # build_system_prompt(), render_persona_seed(), render_origin_block()
-services/agent/memory_blocks.py           # build_persona_block() — loads persona from DB for runtime
+services/agent/memory_blocks.py           # build_persona_block(), build_merged_block_content()
 services/agent/self_model.py              # CRUD for self_model_blocks
+services/agent/soul_blocks.py             # Soul DB block helpers (append, replace, full_replace)
+services/agent/pending_ops.py             # PendingMemoryOp creation (write boundary)
+services/agent/soul_writer.py             # PG → SQLCipher promotion pipeline
 services/agent/templates/
   system_prompt.md.j2                     # Main system prompt — includes {{ persona }}
   origin.md.j2                            # Soul/origin block template
@@ -144,6 +148,7 @@ services/agent/templates/
     default.md.j2                         # Blank slate persona
     companion.md.j2                       # Companion persona
     anima.md.j2                           # Anima persona
+    mirror.md.j2                          # Mirror persona
 api/routes/consciousness.py               # REST API — agent-profile CRUD, self-model CRUD
 models/consciousness.py                   # AgentProfile, SelfModelBlock, EmotionalSignal
 ```

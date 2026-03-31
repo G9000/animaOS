@@ -74,6 +74,16 @@ async def get_persona_templates() -> list[PersonaTemplateInfo]:
             name="Companion",
             description="Warm, emotionally attuned, and deeply present — for meaningful connection.",
         ),
+        PersonaTemplateInfo(
+            id="mirror",
+            name="Mirror",
+            description="A cognitive mirror — reflects your voice, your thinking, your perspective back at you.",
+        ),
+        PersonaTemplateInfo(
+            id="anima",
+            name="Anima",
+            description="A quiet, deliberate presence — speaks with intention, stays grounded.",
+        ),
     ]
 
 

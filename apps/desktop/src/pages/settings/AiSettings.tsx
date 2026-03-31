@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import type { AgentConfig, ProviderInfo } from "@anima/api-client";
+import type { AgentConfig, PersonaTemplateInfo, ProviderInfo } from "@anima/api-client";
 import { api } from "../../lib/api";
 
 const SUGGESTED_MODELS: Record<string, string[]> = {
@@ -53,6 +53,11 @@ export default function AiSettings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [personaTemplates, setPersonaTemplates] = useState<PersonaTemplateInfo[]>([]);
+  const [persona, setPersona] = useState("default");
+  const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaSaved, setPersonaSaved] = useState(false);
+  const [personaError, setPersonaError] = useState("");
   const [cloudEnabled, setCloudEnabled] = useState(
     () => localStorage.getItem(CLOUD_STORAGE_KEY) === "true",
   );
@@ -63,8 +68,13 @@ export default function AiSettings() {
     let cancelled = false;
     setError("");
 
-    Promise.all([api.config.providers(), api.config.get(user.id)])
-      .then(([providerList, loadedConfig]) => {
+    Promise.all([
+      api.config.providers(),
+      api.config.get(user.id),
+      api.config.personaTemplates(),
+      api.consciousness.getAgentProfile(user.id),
+    ])
+      .then(([providerList, loadedConfig, templates, profile]) => {
         if (cancelled) return;
         setProviders(providerList);
         setConfig(loadedConfig);
@@ -76,6 +86,8 @@ export default function AiSettings() {
         setModel(loadedConfig.model);
         setOllamaUrl(loadedConfig.ollamaUrl || "http://localhost:11434");
         setSystemPrompt(loadedConfig.systemPrompt || "");
+        setPersonaTemplates(templates);
+        setPersona(profile.personaTemplate || "default");
       })
       .catch((err) => {
         if (cancelled) return;
@@ -126,6 +138,23 @@ export default function AiSettings() {
     setApiKey("");
   };
 
+  const handlePersonaSave = async (templateId: string) => {
+    if (user?.id == null || templateId === persona) return;
+    setPersonaSaving(true);
+    setPersonaSaved(false);
+    setPersonaError("");
+    try {
+      await api.consciousness.updateAgentProfile(user.id, { personaTemplate: templateId });
+      setPersona(templateId);
+      setPersonaSaved(true);
+      setTimeout(() => setPersonaSaved(false), 2000);
+    } catch (err) {
+      setPersonaError(err instanceof Error ? err.message : "Failed to update persona.");
+    } finally {
+      setPersonaSaving(false);
+    }
+  };
+
   const handleSave = async () => {
     if (user?.id == null) return;
 
@@ -160,6 +189,48 @@ export default function AiSettings() {
 
   return (
     <div className="space-y-6">
+      {personaTemplates.length > 0 && (
+        <section className="rounded-sm border border-border bg-card p-5 space-y-5">
+          <header className="space-y-1">
+            <h2 className="text-[11px] text-muted-foreground uppercase tracking-wider">
+              Persona
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              How your AI presents itself — its voice, tone, and way of being.
+            </p>
+          </header>
+
+          <div className="grid grid-cols-2 gap-3">
+            {personaTemplates.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => handlePersonaSave(t.id)}
+                disabled={personaSaving}
+                className={`text-left px-4 py-3 rounded-sm border transition-colors ${
+                  persona === t.id
+                    ? "border-primary bg-input"
+                    : "border-border hover:border-muted-foreground"
+                }`}
+              >
+                <div className="text-xs uppercase tracking-wider text-foreground">
+                  {t.name}
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground leading-relaxed">
+                  {t.description}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {personaSaved && (
+            <span className="text-xs text-primary tracking-wider">Persona updated</span>
+          )}
+          {personaError && (
+            <span className="text-xs text-destructive tracking-wider">{personaError}</span>
+          )}
+        </section>
+      )}
+
       <section className="rounded-sm border border-border bg-card p-5 space-y-5">
         <header className="space-y-1">
           <h2 className="text-[11px] text-muted-foreground uppercase tracking-wider">
