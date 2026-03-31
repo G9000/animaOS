@@ -529,7 +529,19 @@ def list_threads(db: Session, user_id: int) -> list[RuntimeThread]:
 
 
 def create_thread(db: Session, user_id: int) -> RuntimeThread:
-    """Create a new thread."""
+    """Create a new active thread, closing any existing active thread first."""
+    existing = db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
+    if existing is not None:
+        existing.status = "closed"
+        existing.closed_at = datetime.now(UTC)
+        db.add(existing)
+        db.flush()
+
     thread = RuntimeThread(user_id=user_id, status="active")
     db.add(thread)
     db.flush()

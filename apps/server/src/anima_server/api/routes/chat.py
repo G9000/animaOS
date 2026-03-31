@@ -70,7 +70,7 @@ async def send_message(
                 detail=str(exc),
             ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         return ChatResponse(
             response=result.response,
             model=result.model,

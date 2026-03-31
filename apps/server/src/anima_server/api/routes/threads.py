@@ -6,7 +6,8 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
@@ -24,6 +25,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["threads"])
 
 
+def _thread_to_dict(thread: RuntimeThread) -> dict[str, object]:
+    return {
+        "id": thread.id,
+        "userId": thread.user_id,
+        "status": thread.status,
+        "title": thread.title,
+        "createdAt": thread.created_at.isoformat() if thread.created_at else None,
+        "lastMessageAt": thread.last_message_at.isoformat() if thread.last_message_at else None,
+        "closedAt": thread.closed_at.isoformat() if thread.closed_at else None,
+        "isArchived": thread.is_archived,
+    }
+
+
 @router.get("")
 async def list_user_threads(
     request: Request,
@@ -33,17 +47,7 @@ async def list_user_threads(
     unlock_session = require_unlocked_session(request)
     threads = list_threads(runtime_db, user_id=unlock_session.user_id)
     return {
-        "threads": [
-            {
-                "id": t.id,
-                "title": t.title,
-                "status": t.status,
-                "isArchived": t.is_archived,
-                "lastMessageAt": t.last_message_at.isoformat() if t.last_message_at else None,
-                "createdAt": t.created_at.isoformat() if t.created_at else None,
-            }
-            for t in threads
-        ]
+        "threads": [_thread_to_dict(t) for t in threads]
     }
 
 
@@ -51,12 +55,35 @@ async def list_user_threads(
 async def create_new_thread(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
+    db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    """Create a new conversation thread."""
+    """Create a new conversation thread, closing the existing active one."""
     unlock_session = require_unlocked_session(request)
-    thread = create_thread(runtime_db, user_id=unlock_session.user_id)
+    user_id = unlock_session.user_id
+
+    # Identify the active thread (if any) so we can fire consolidation after closing it.
+    active_thread = runtime_db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
+    old_thread_id: int | None = active_thread.id if active_thread is not None else None
+
+    new_thread = create_thread(runtime_db, user_id)
     runtime_db.commit()
-    return {"threadId": thread.id, "status": thread.status}
+
+    if old_thread_id is not None:
+        soul_db_factory = build_session_factory_for_db(db)
+        asyncio.get_running_loop().create_task(
+            on_thread_close(
+                thread_id=old_thread_id,
+                user_id=user_id,
+                soul_db_factory=soul_db_factory,
+            )
+        )
+
+    return _thread_to_dict(new_thread)
 
 
 @router.get("/{thread_id}/messages")
@@ -69,16 +96,14 @@ async def get_thread_messages(
     unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
-        raise HTTPException(status_code=404, detail="Thread not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     dek = get_active_dek(unlock_session.user_id, "conversations")
-    transcripts_dir: Path = settings.data_dir / "transcripts"
-
     messages = get_thread_messages_for_display(
         runtime_db,
         thread=thread,
         user_id=unlock_session.user_id,
-        transcripts_dir=transcripts_dir,
+        transcripts_dir=settings.data_dir / "transcripts",
         dek=dek,
     )
     return {"threadId": thread_id, "messages": messages}
@@ -95,7 +120,7 @@ async def close_thread_endpoint(
     unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
-        raise HTTPException(status_code=404, detail="Thread not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     if thread.status == "closed":
         return {"status": "already_closed", "threadId": thread_id}

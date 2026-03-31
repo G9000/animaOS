@@ -74,7 +74,7 @@ from anima_server.services.agent.tool_context import (
 )
 from anima_server.services.agent.tools import get_tools
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
-from anima_server.services.data_crypto import df
+from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.health.event_logger import emit as health_emit
 
 _runner_lock = Lock()
@@ -121,7 +121,9 @@ async def run_agent(
     source: str | None = None,
     thread_id: int | None = None,
 ) -> AgentResult:
-    return await _execute_agent_turn(user_message, user_id, db, runtime_db, source=source, thread_id=thread_id)
+    return await _execute_agent_turn(
+        user_message, user_id, db, runtime_db, source=source, thread_id=thread_id
+    )
 
 
 async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> RuntimeRun | None:
@@ -442,9 +444,9 @@ async def _execute_agent_turn_locked(
         user_id,
         db,
         runtime_db,
+        thread_id=thread_id,
         event_callback=event_callback,
         source=source,
-        thread_id=thread_id,
     )
 
     # Stage 1b: Proactive context management — compact before the LLM call
@@ -558,9 +560,9 @@ async def _prepare_turn_context(
     db: Session,
     runtime_db: Session,
     *,
+    thread_id: int | None = None,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
-    thread_id: int | None = None,
 ) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
@@ -579,8 +581,6 @@ async def _prepare_turn_context(
         if thread is None or thread.user_id != user_id:
             raise ValueError(f"Thread {thread_id} not found for user {user_id}")
         if thread.status != "active":
-            from anima_server.services.data_crypto import get_active_dek
-
             dek = get_active_dek(user_id, "conversations")
             reactivate_thread_if_needed(
                 runtime_db,
@@ -1272,8 +1272,8 @@ async def stream_agent(
     db: Session,
     runtime_db: Session,
     *,
-    source: str | None = None,
     thread_id: int | None = None,
+    source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
@@ -1292,9 +1292,9 @@ async def stream_agent(
                 user_id,
                 db,
                 runtime_db,
+                thread_id=thread_id,
                 event_callback=emit,
                 source=source,
-                thread_id=thread_id,
                 tool_delegate=tool_delegate,
                 delegated_tool_names=delegated_tool_names,
                 extra_tool_schemas=extra_tool_schemas,
