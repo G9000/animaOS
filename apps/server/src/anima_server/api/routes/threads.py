@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.config import settings
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models.runtime import RuntimeThread
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
+from anima_server.services.data_crypto import get_active_dek
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ async def list_threads_endpoint(
     """List all threads for a user."""
     unlock_session = require_unlocked_session(request)
     if unlock_session.user_id != userId:
-        raise HTTPException(status_code=403, detail="Session user mismatch.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
     threads = list_threads(runtime_db, userId)
     return [_thread_to_dict(t) for t in threads]
 
@@ -59,8 +62,6 @@ async def create_thread_endpoint(
     user_id = unlock_session.user_id
 
     # Identify the active thread (if any) so we can fire consolidation after closing it.
-    from sqlalchemy import select
-
     active_thread = runtime_db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,
@@ -95,10 +96,7 @@ async def get_thread_messages(
     unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    from anima_server.config import settings
-    from anima_server.services.data_crypto import get_active_dek
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     dek = get_active_dek(unlock_session.user_id, "conversations")
     messages = get_thread_messages_for_display(
@@ -122,7 +120,7 @@ async def close_thread_endpoint(
     unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
-        raise HTTPException(status_code=404, detail="Thread not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     if thread.status == "closed":
         return {"status": "already_closed", "thread_id": thread_id}
