@@ -17,7 +17,7 @@ from anima_server.models.runtime import RuntimeThread
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
-from anima_server.services.data_crypto import get_active_dek
+from anima_server.services.sessions import get_active_dek
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ async def list_user_threads(
     }
 
 
-@router.post("")
+@router.post("", status_code=201)
 async def create_new_thread(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
