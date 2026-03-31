@@ -9,12 +9,15 @@ from __future__ import annotations
 import contextlib
 import copy
 import inspect
+import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any, get_type_hints
 
 from anima_server.services.agent.rules import ToolRule, build_default_tool_rules
 from anima_server.services.data_crypto import df
+
+logger = logging.getLogger(__name__)
 
 
 class _SimpleSchema:
@@ -416,6 +419,7 @@ def recall_memory(
 
     # Use hybrid search (semantic + keyword) via Phase 1 infrastructure
     scored: list[tuple[float, str, str]] = []
+    search_paths: dict[str, int | str] = {}
     try:
         from anima_server.services.agent.embeddings import hybrid_search
 
@@ -436,9 +440,11 @@ def recall_memory(
             result = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=30)
         else:
             result = asyncio.run(coro)
+        hybrid_count = 0
         for item, score in result.items:
             if cat and item.category != cat:
                 continue
+            hybrid_count += 1
             scored.append(
                 (
                     score,
@@ -446,10 +452,13 @@ def recall_memory(
                     item.category,
                 )
             )
-    except Exception:
-        pass
+        search_paths["hybrid"] = hybrid_count
+    except Exception as exc:
+        logger.warning("hybrid_search failed for query=%r: %s", query_stripped, exc)
+        search_paths["hybrid"] = f"error: {exc}"
 
     # Text-based fallback: used when hybrid fails OR returns no items
+    keyword_count = 0
     if not scored:
         from anima_server.services.agent.memory_store import get_memory_items
 
@@ -464,6 +473,7 @@ def recall_memory(
             plaintext = df(ctx.user_id, item.content, table="memory_items", field="content")
             content_lower = plaintext.lower()
             if query_lower in content_lower:
+                keyword_count += 1
                 scored.append((1.0, plaintext, item.category))
                 continue
             query_words = set(query_lower.split())
@@ -471,7 +481,9 @@ def recall_memory(
             if query_words and content_words:
                 overlap = len(query_words & content_words) / len(query_words)
                 if overlap >= 0.5:
+                    keyword_count += 1
                     scored.append((overlap, plaintext, item.category))
+        search_paths["keyword"] = keyword_count
 
     # Also search episodes
     episodes = list(
@@ -482,11 +494,13 @@ def recall_memory(
             .limit(50)
         ).all()
     )
+    episode_count = 0
     query_lower = query_stripped.lower()
     for ep in episodes:
         ep_plaintext = df(ctx.user_id, ep.summary, table="memory_episodes", field="summary")
         summary_lower = ep_plaintext.lower()
         if query_lower in summary_lower:
+            episode_count += 1
             scored.append((0.9, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
             continue
         query_words = set(query_lower.split())
@@ -494,10 +508,13 @@ def recall_memory(
         if query_words and summary_words:
             overlap = len(query_words & summary_words) / len(query_words)
             if overlap >= 0.5:
+                episode_count += 1
                 scored.append((overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
+    search_paths["episodes"] = episode_count
 
     if not scored:
-        return f"No memories found matching: {query}"
+        paths_summary = ", ".join(f"{k}={v}" for k, v in search_paths.items())
+        return f"No memories found matching: {query} [search: {paths_summary}]"
 
     # Parse pagination parameters
     try:

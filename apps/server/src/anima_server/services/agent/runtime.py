@@ -46,6 +46,7 @@ from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
     build_chunk_event,
+    build_memory_state_event,
     build_reasoning_event,
     build_step_request_event,
     build_step_result_event,
@@ -261,6 +262,14 @@ class AgentRuntime:
         for step_index in range(self._max_steps):
             if step_index == 0:
                 health_emit("agent", "turn_start", "trace", user_id=user_id)
+                # Emit memory state snapshot before the first step.
+                if event_callback is not None:
+                    mem_blocks = {
+                        blk.label: blk.value
+                        for blk in memory_blocks
+                        if blk.label in ("persona", "human")
+                    }
+                    await event_callback(build_memory_state_event(mem_blocks))
             # --- Cancellation check (step boundary) ---
             if cancel_event is not None and cancel_event.is_set():
                 stop_reason = StopReason.CANCELLED
@@ -294,12 +303,21 @@ class AgentRuntime:
                 rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
             )
             if event_callback is not None:
+                # Include tool schemas on the first step for trace debugging.
+                schemas: dict[str, object] | None = None
+                if step_index == 0:
+                    schemas = {
+                        name: _tool_schema(self._tool_registry[name])
+                        for name in allowed_tool_names
+                        if name in self._tool_registry
+                    }
                 await event_callback(
                     build_step_request_event(
                         step_index,
                         request_messages=request_messages,
                         allowed_tools=allowed_tool_names,
                         force_tool_call=force_tool_call,
+                        tool_schemas=schemas,
                     )
                 )
             try:
