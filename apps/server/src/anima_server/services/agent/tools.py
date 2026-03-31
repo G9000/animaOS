@@ -174,7 +174,11 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         if companion is not None:
             companion.invalidate_memory()
         return f"Saved '{key}' to permanent memory (category: {category})"
-    return f"Could not promote note '{key}' — not found or duplicate"
+    raise RuntimeError(
+        f"No session note found for '{key}'. "
+        "Use note_to_self first to create a note, then save_to_memory to promote it. "
+        "For direct user facts, use update_human_memory or core_memory_append instead."
+    )
 
 
 @tool
