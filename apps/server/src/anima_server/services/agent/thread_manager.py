@@ -49,9 +49,11 @@ def reactivate_thread_if_needed(
 
 
 def _set_active(thread: RuntimeThread) -> None:
+    from datetime import UTC, datetime
     thread.status = "active"
     thread.is_archived = False
     thread.closed_at = None
+    thread.updated_at = datetime.now(UTC)
 
 
 def _load_from_archive(
@@ -99,25 +101,25 @@ def _bulk_insert_archived_history(
 ) -> None:
     """Insert JSONL messages into runtime_messages with is_archived_history=True."""
     max_seq = thread.next_message_sequence
-    for i, msg in enumerate(messages):
+    inserted_count = 0
+    for msg in messages:
         role = str(msg.get("role", "user"))
         content = str(msg.get("content", ""))
         if not content and role in ("user", "assistant"):
             continue
-
         db.add(
             RuntimeMessage(
                 thread_id=thread.id,
                 user_id=user_id,
-                sequence_id=max_seq + i,
+                sequence_id=max_seq + inserted_count,
                 role=role,
                 content_text=content,
                 is_in_context=False,
                 is_archived_history=True,
             )
         )
-
-    thread.next_message_sequence = max_seq + len(messages)
+        inserted_count += 1
+    thread.next_message_sequence = max_seq + inserted_count
     db.flush()
 
 

@@ -30,7 +30,6 @@ def _uid() -> int:
 def db() -> Session:  # type: ignore[misc]
     """Provide a runtime session backed by in-memory SQLite for reactivation tests."""
     from anima_server.db.runtime_base import RuntimeBase
-    from collections.abc import Generator
     from sqlalchemy import create_engine, event
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
