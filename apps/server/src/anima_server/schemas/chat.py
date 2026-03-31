@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     userId: int = Field(ge=0)
+    threadId: int | None = None
     stream: bool = False
     source: str | None = None
 
