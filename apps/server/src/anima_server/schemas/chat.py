@@ -10,6 +10,7 @@ class ChatRequest(BaseModel):
     userId: int = Field(ge=0)
     stream: bool = False
     source: str | None = None
+    threadId: int | None = None
 
 
 class ChatResponse(BaseModel):

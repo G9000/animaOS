@@ -113,9 +113,15 @@ def invalidate_agent_runtime_cache() -> None:
 
 
 async def run_agent(
-    user_message: str, user_id: int, db: Session, runtime_db: Session, *, source: str | None = None
+    user_message: str,
+    user_id: int,
+    db: Session,
+    runtime_db: Session,
+    *,
+    source: str | None = None,
+    thread_id: int | None = None,
 ) -> AgentResult:
-    return await _execute_agent_turn(user_message, user_id, db, runtime_db, source=source)
+    return await _execute_agent_turn(user_message, user_id, db, runtime_db, source=source, thread_id=thread_id)
 
 
 async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> RuntimeRun | None:
@@ -305,7 +311,7 @@ async def approve_or_deny_turn(
         usage = summarize_usage(result)
         if usage is not None:
             await event_callback(build_usage_event(usage))
-        await event_callback(build_done_event(result))
+        await event_callback(build_done_event(result, thread_id=thread.id))
     return result
 
 
@@ -383,6 +389,7 @@ async def _execute_agent_turn(
                 user_id,
                 db,
                 runtime_db,
+                thread_id=thread_id,
                 event_callback=event_callback,
                 source=source,
                 tool_delegate=tool_delegate,
@@ -422,6 +429,7 @@ async def _execute_agent_turn_locked(
     db: Session,
     runtime_db: Session,
     *,
+    thread_id: int | None = None,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
@@ -436,6 +444,7 @@ async def _execute_agent_turn_locked(
         runtime_db,
         event_callback=event_callback,
         source=source,
+        thread_id=thread_id,
     )
 
     # Stage 1b: Proactive context management — compact before the LLM call
@@ -505,7 +514,7 @@ async def _execute_agent_turn_locked(
             usage = summarize_usage(result)
             if usage is not None:
                 await event_callback(build_usage_event(usage))
-            await event_callback(build_done_event(result))
+            await event_callback(build_done_event(result, thread_id=thread.id))
         return result
 
     # Stage 3: Persist result
@@ -532,7 +541,7 @@ async def _execute_agent_turn_locked(
         usage = summarize_usage(result)
         if usage is not None:
             await event_callback(build_usage_event(usage))
-        await event_callback(build_done_event(result))
+        await event_callback(build_done_event(result, thread_id=thread.id))
     return result
 
 
@@ -551,15 +560,40 @@ async def _prepare_turn_context(
     *,
     event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
+    thread_id: int | None = None,
 ) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
     Uses the AnimaCompanion cache for static memory blocks and conversation
     history.  Only semantic retrieval (query-dependent) is executed per-turn.
     """
+    from anima_server.services.agent.thread_manager import (
+        maybe_set_thread_title,
+        reactivate_thread_if_needed,
+    )
+
     companion = _get_companion(user_id)
 
-    thread = get_or_create_thread(runtime_db, user_id)
+    if thread_id is not None:
+        thread = runtime_db.get(RuntimeThread, thread_id)
+        if thread is None or thread.user_id != user_id:
+            raise ValueError(f"Thread {thread_id} not found for user {user_id}")
+        if thread.status != "active":
+            from anima_server.services.data_crypto import get_active_dek
+
+            dek = get_active_dek(user_id, "conversations")
+            reactivate_thread_if_needed(
+                runtime_db,
+                thread=thread,
+                user_id=user_id,
+                transcripts_dir=settings.data_dir / "transcripts",
+                dek=dek,
+            )
+            runtime_db.flush()
+    else:
+        thread = get_or_create_thread(runtime_db, user_id)
+
+    maybe_set_thread_title(thread, user_message)
     companion.thread_id = thread.id
 
     # Use cached conversation history when available, otherwise load from DB.
@@ -1238,6 +1272,7 @@ async def stream_agent(
     runtime_db: Session,
     *,
     source: str | None = None,
+    thread_id: int | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
@@ -1258,6 +1293,7 @@ async def stream_agent(
                 runtime_db,
                 event_callback=emit,
                 source=source,
+                thread_id=thread_id,
                 tool_delegate=tool_delegate,
                 delegated_tool_names=delegated_tool_names,
                 extra_tool_schemas=extra_tool_schemas,

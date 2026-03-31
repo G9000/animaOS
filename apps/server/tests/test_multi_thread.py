@@ -181,6 +181,24 @@ def test_reactivate_thread_with_pg_messages(db: Session) -> None:
     assert len(msgs) == 1
 
 
+def test_maybe_set_thread_title() -> None:
+    from anima_server.services.agent.thread_manager import maybe_set_thread_title
+
+    # Sets title from short message
+    thread = RuntimeThread(user_id=1, status="active", title=None)
+    maybe_set_thread_title(thread, "Hello world")
+    assert thread.title == "Hello world"
+
+    # Does not overwrite existing title
+    maybe_set_thread_title(thread, "New message")
+    assert thread.title == "Hello world"
+
+    # Truncates long message
+    thread2 = RuntimeThread(user_id=1, status="active", title=None)
+    maybe_set_thread_title(thread2, "A" * 100)
+    assert thread2.title == "A" * 60 + "..."
+
+
 def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
     """If PG messages are gone, rehydrate from JSONL and insert summary."""
     import json
