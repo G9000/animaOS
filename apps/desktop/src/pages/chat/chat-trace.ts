@@ -87,7 +87,8 @@ function formatMemoryState(event: TraceEvent): string[] {
   const blocks = (event.blocks ?? {}) as Record<string, string>;
   const lines = ["[MEMORY_STATE]"];
   for (const [label, content] of Object.entries(blocks)) {
-    lines.push(`  ${label} (${content.length} chars): ${normalizePreview(content.slice(0, 160))}`);
+    const text = typeof content === "string" ? content : String(content ?? "");
+    lines.push(`  ${label} (${text.length} chars): ${normalizePreview(text.slice(0, 160))}`);
   }
   return lines;
 }

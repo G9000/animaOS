@@ -9,6 +9,7 @@ Two modes:
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -755,8 +756,7 @@ async def run_deep_monologue(
                 if parsed.get("inner_state_update"):
                     _inner_val = parsed["inner_state_update"]
                     if not isinstance(_inner_val, str):
-                        import json as _json
-                        _inner_val = _json.dumps(_inner_val, indent=2)
+                        _inner_val = json.dumps(_inner_val, indent=2)
                     set_self_model_block(
                         db,
                         user_id=user_id,
@@ -769,8 +769,7 @@ async def run_deep_monologue(
                 if parsed.get("working_memory_update"):
                     _wm_val = parsed["working_memory_update"]
                     if not isinstance(_wm_val, str):
-                        import json as _json
-                        _wm_val = _json.dumps(_wm_val, indent=2)
+                        _wm_val = json.dumps(_wm_val, indent=2)
                     set_self_model_block(
                         db,
                         user_id=user_id,
@@ -811,8 +810,7 @@ async def run_deep_monologue(
                     if parsed.get("inner_state_update"):
                         _inner_val = parsed["inner_state_update"]
                         if not isinstance(_inner_val, str):
-                            import json as _json
-                            _inner_val = _json.dumps(_inner_val, indent=2)
+                            _inner_val = json.dumps(_inner_val, indent=2)
                         set_working_context(
                             pg_db,
                             user_id=user_id,
@@ -825,8 +823,7 @@ async def run_deep_monologue(
                     if parsed.get("working_memory_update"):
                         _wm_val = parsed["working_memory_update"]
                         if not isinstance(_wm_val, str):
-                            import json as _json
-                            _wm_val = _json.dumps(_wm_val, indent=2)
+                            _wm_val = json.dumps(_wm_val, indent=2)
                         set_working_context(
                             pg_db,
                             user_id=user_id,
