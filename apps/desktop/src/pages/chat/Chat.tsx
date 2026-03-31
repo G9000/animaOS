@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import type { ChatMessage, TraceEvent } from "@anima/api-client";
+import type { ChatMessage, Thread, TraceEvent } from "@anima/api-client";
 import { api } from "../../lib/api";
 import { serializeTraceAsJson, serializeTraceAsText } from "./chat-trace";
 import ReactMarkdown from "react-markdown";
@@ -51,11 +51,15 @@ export default function Chat() {
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [showTrace, setShowTrace] = useState(false);
+  const currentThreadIdRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const historyHydratedRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const langDropdownRef = useRef<HTMLDivElement>(null);
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [currentThreadId, setCurrentThreadId] = useState<number | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
     if (user?.id == null) return;
@@ -87,6 +91,14 @@ export default function Chat() {
     }, 10_000);
     return () => clearInterval(interval);
   }, [user?.id, streaming]);
+
+  useEffect(() => {
+    api.threads.list().then((res) => {
+      setThreads(res.threads);
+      const active = res.threads.find((t) => t.status === "active");
+      if (active) setCurrentThreadId(active.id);
+    }).catch(() => {});
+  }, []);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     bottomRef.current?.scrollIntoView({ behavior, block: "end" });
@@ -121,6 +133,19 @@ export default function Chat() {
   }, [input]);
 
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        const threadId = currentThreadIdRef.current;
+        if (threadId != null && user?.id != null) {
+          api.threads.close(threadId).catch(() => {});
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [user?.id]);
+
+  useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (
         langDropdownRef.current &&
@@ -141,6 +166,41 @@ export default function Chat() {
     setDefaultLang(code);
     setShowLangSettings(false);
   }, []);
+
+  const handleSelectThread = async (threadId: number) => {
+    setCurrentThreadId(threadId);
+    setMessages([]);
+    try {
+      const res = await api.threads.messages(threadId);
+      const mapped: ChatMessage[] = res.messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m, i) => ({
+          id: i,
+          userId: user?.id ?? 0,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          createdAt: m.ts ?? undefined,
+        }));
+      setMessages(mapped);
+    } catch {
+      setCurrentThreadId(null);
+    }
+  };
+
+  const handleNewThread = async () => {
+    const res = await api.threads.create();
+    const newThread: Thread = {
+      id: res.threadId,
+      title: null,
+      status: "active",
+      isArchived: false,
+      lastMessageAt: null,
+      createdAt: new Date().toISOString(),
+    };
+    setThreads((prev) => [newThread, ...prev]);
+    setCurrentThreadId(res.threadId);
+    setMessages([]);
+  };
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || user?.id == null || streaming) return;
@@ -170,7 +230,7 @@ export default function Chat() {
       let fullResponse = "";
       let fullReasoning = "";
       const collectedTraces: TraceEvent[] = [];
-      for await (const chunk of api.chat.stream(userMsg, user.id)) {
+      for await (const chunk of api.chat.stream(userMsg, user.id, currentThreadId ?? undefined)) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
           setReasoningBuffer(fullReasoning);
@@ -183,6 +243,11 @@ export default function Chat() {
             ) as TraceEvent;
             collectedTraces.push(evt);
             setTraceEvents([...collectedTraces]);
+            if (evt.type === "done" && evt.threadId != null) {
+              currentThreadIdRef.current = evt.threadId;
+              setCurrentThreadId(evt.threadId);
+              api.threads.list().then((res) => setThreads(res.threads)).catch(() => {});
+            }
           } catch {}
           continue;
         }
@@ -257,11 +322,55 @@ export default function Chat() {
     LANGUAGES.find((l) => l.code === translateLang)?.label || translateLang;
 
   return (
-    <div className="flex flex-col h-full relative bg-background">
+    <div className="flex h-full">
+      {/* Sidebar */}
+      {sidebarOpen && (
+        <div className="w-60 flex-shrink-0 border-r border-border flex flex-col bg-card/20">
+          <div className="p-2 border-b border-border">
+            <button
+              onClick={handleNewThread}
+              className="w-full text-left px-3 py-2 rounded hover:bg-accent font-mono text-[10px] tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+            >
+              + NEW CHAT
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {threads.map((thread) => (
+              <button
+                key={thread.id}
+                onClick={() => handleSelectThread(thread.id)}
+                className={`w-full text-left px-3 py-2 font-mono text-[10px] tracking-wider transition-colors hover:bg-accent ${
+                  thread.id === currentThreadId
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground"
+                }`}
+              >
+                <div className="truncate">{thread.title ?? "New conversation"}</div>
+                {thread.lastMessageAt && (
+                  <div className="text-[9px] text-muted-foreground/40 mt-0.5">
+                    {new Date(thread.lastMessageAt).toLocaleDateString()}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col min-w-0 relative bg-background">
       {/* Toolbar */}
       <div className="px-3 md:px-5 py-2 border-b border-border bg-card/40">
         <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarOpen((v) => !v)}
+              className="font-mono text-[10px] text-muted-foreground/40 hover:text-muted-foreground tracking-wider transition-colors"
+              aria-label="Toggle sidebar"
+            >
+              ☰
+            </button>
+            <div className="w-px h-3 bg-border" />
             <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
               CHAT
             </span>
@@ -456,6 +565,7 @@ export default function Chat() {
           </button>
         </div>
       </form>
+      </div>
     </div>
   );
 }
