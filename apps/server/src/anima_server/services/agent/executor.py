@@ -188,19 +188,19 @@ class ToolExecutor:
         self,
         tool_calls: list[tuple[ToolCall, bool]],
     ) -> list[ToolExecutionResult]:
-        """Execute multiple independent tool calls concurrently.
+        """Execute multiple tool calls sequentially.
+
+        Runs each call in order to avoid SQLAlchemy session concurrency
+        errors — tools share a single runtime_db session per step, which
+        is not safe for concurrent writes.
 
         Each entry is (tool_call, is_terminal).  Returns results in the
         same order as the input.
         """
-        if len(tool_calls) <= 1:
-            results = []
-            for tc, terminal in tool_calls:
-                results.append(await self.execute(tc, is_terminal=terminal))
-            return results
-
-        tasks = [self.execute(tc, is_terminal=terminal) for tc, terminal in tool_calls]
-        return list(await asyncio.gather(*tasks))
+        results: list[ToolExecutionResult] = []
+        for tc, terminal in tool_calls:
+            results.append(await self.execute(tc, is_terminal=terminal))
+        return results
 
 
 async def _invoke_tool(
