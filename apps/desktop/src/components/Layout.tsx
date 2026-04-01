@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { NavLink, useNavigate, useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback } from "react";
+import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { getDbViewerEnabled } from "../pages/settings/AdvancedSettings";
 import { getTheme, toggleTheme, type Theme } from "../lib/theme";
@@ -16,27 +16,21 @@ const STATIC_NAV_ITEMS = [
   { to: "/settings", label: "CFG", icon: "\u2699" },
 ];
 
-const DOCK_HIDE_DELAY = 1200;
-const DOCK_STORAGE_KEY = "anima-dock-pinned";
+const SIDEBAR_STORAGE_KEY = "anima-sidebar-collapsed";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
-  const [dockVisible, setDockVisible] = useState(true);
-  const [pinned, setPinned] = useState(() => {
+  const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem(DOCK_STORAGE_KEY) === "true";
+      return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true";
     } catch {
       return false;
     }
   });
   const [showUser, setShowUser] = useState(false);
   const [theme, setTheme] = useState<Theme>(getTheme);
-  const hideTimer = useRef<ReturnType<typeof setTimeout>>(null);
-  const dockRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLDivElement>(null);
 
   const syncSetting = useCallback(() => {
     setDbEnabled(getDbViewerEnabled());
@@ -44,8 +38,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     window.addEventListener("anima-settings-changed", syncSetting);
-    return () =>
-      window.removeEventListener("anima-settings-changed", syncSetting);
+    return () => window.removeEventListener("anima-settings-changed", syncSetting);
   }, [syncSetting]);
 
   // Keyboard toggle: Ctrl+/ or Cmd+/
@@ -53,10 +46,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "/") {
         e.preventDefault();
-        setPinned((p) => {
-          const next = !p;
-          localStorage.setItem(DOCK_STORAGE_KEY, String(next));
-          if (next) setDockVisible(true);
+        setCollapsed((c) => {
+          const next = !c;
+          localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
           return next;
         });
       }
@@ -65,125 +57,111 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const showDock = useCallback(() => {
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    setDockVisible(true);
-  }, []);
-
-  const scheduleDockHide = useCallback(() => {
-    if (pinned) return;
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(
-      () => setDockVisible(false),
-      DOCK_HIDE_DELAY,
-    );
-  }, [pinned]);
-
-  // Auto-hide on route change (unless pinned)
-  useEffect(() => {
-    if (!pinned) {
-      showDock();
-      scheduleDockHide();
-    }
-  }, [location.pathname]);
-
   const navItems = dbEnabled
     ? [...STATIC_NAV_ITEMS, { to: "/database", label: "DB", icon: "\u25A4" }]
     : STATIC_NAV_ITEMS;
 
   return (
-    <div className="relative h-screen bg-background text-foreground overflow-hidden">
-      <main className="h-full overflow-hidden pb-14">{children}</main>
-
-      {/* Bottom trigger zone — invisible, activates dock on hover */}
-      <div
-        ref={triggerRef}
-        onMouseEnter={showDock}
-        className="fixed bottom-0 left-0 right-0 h-4 z-40"
-      />
-
-      {/* Dock */}
-      <div
-        ref={dockRef}
-        onMouseEnter={showDock}
-        onMouseLeave={scheduleDockHide}
-        className={`fixed bottom-3 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-          dockVisible
-            ? "translate-y-0 opacity-100"
-            : "translate-y-[calc(100%+20px)] opacity-0 pointer-events-none"
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+      {/* Sidebar */}
+      <aside
+        className={`flex-shrink-0 flex flex-col border-r border-border bg-sidebar transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden ${
+          collapsed ? "w-12" : "w-36"
         }`}
       >
-        <div className="flex items-center gap-px bg-card/90 backdrop-blur-md border border-border p-1">
-          {/* Status dot */}
-          <div className="px-2 flex items-center">
-            <div className="w-1 h-1 bg-success" />
-          </div>
+        {/* Header: logo + toggle */}
+        <div className={`flex items-center border-b border-border h-10 flex-shrink-0 ${collapsed ? "justify-center" : "justify-between px-3"}`}>
+          {!collapsed && (
+            <span className="font-mono text-[9px] text-primary tracking-[0.35em]">ANIMA</span>
+          )}
+          <button
+            onClick={() => {
+              setCollapsed((c) => {
+                const next = !c;
+                localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
+                return next;
+              });
+            }}
+            title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
+            className="w-8 h-8 flex items-center justify-center text-muted-foreground/40 hover:text-foreground transition-colors"
+          >
+            <span className="font-mono text-[11px]">{collapsed ? "\u25B8" : "\u25C2"}</span>
+          </button>
+        </div>
 
-          <div className="w-px h-5 bg-border" />
+        {/* Online indicator */}
+        <div className={`flex items-center gap-2 px-3 py-2 flex-shrink-0 ${collapsed ? "justify-center px-0" : ""}`}>
+          <div className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0" />
+          {!collapsed && (
+            <span className="font-mono text-[8px] text-muted-foreground/50 tracking-wider">ONLINE</span>
+          )}
+        </div>
 
-          {/* Nav items */}
+        {/* Nav */}
+        <nav className="flex-1 flex flex-col gap-px py-1 overflow-y-auto overflow-x-hidden">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === "/"}
+              title={collapsed ? item.label : undefined}
               className={({ isActive }) =>
-                `group relative flex flex-col items-center justify-center w-10 h-9 font-mono transition-all duration-100 ${
+                `flex items-center gap-3 font-mono transition-all duration-100 border-l-2 mx-1 px-2 py-2 ${
+                  collapsed ? "justify-center mx-0 px-0" : ""
+                } ${
                   isActive
-                    ? "text-primary bg-primary/[0.08]"
-                    : "text-muted-foreground/50 hover:text-foreground hover:bg-input/50"
+                    ? "text-primary bg-primary/[0.08] border-primary"
+                    : "text-muted-foreground/60 hover:text-foreground hover:bg-input/40 border-transparent"
                 }`
               }
             >
-              {({ isActive }) => (
-                <>
-                  <span className="text-[13px] leading-none">{item.icon}</span>
-                  <span className="text-[7px] tracking-wider mt-0.5 leading-none">
-                    {item.label}
-                  </span>
-                  {/* Active indicator bar */}
-                  {isActive && (
-                    <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-px bg-primary" />
-                  )}
-                  {/* Tooltip on hover (for items with short labels) */}
-                </>
+              <span className="text-[14px] leading-none flex-shrink-0">{item.icon}</span>
+              {!collapsed && (
+                <span className="text-[9px] tracking-wider">{item.label}</span>
               )}
             </NavLink>
           ))}
+        </nav>
 
-          <div className="w-px h-5 bg-border" />
+        {/* Footer: theme + user */}
+        <div className="border-t border-border flex-shrink-0">
+          <button
+            onClick={() => setTheme(toggleTheme())}
+            title={theme === "dark" ? "Light mode" : "Dark mode"}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 font-mono text-muted-foreground/50 hover:text-foreground transition-colors ${collapsed ? "justify-center px-0" : ""}`}
+          >
+            <span className="text-[13px] flex-shrink-0">{theme === "dark" ? "\u2600" : "\u263E"}</span>
+            {!collapsed && (
+              <span className="text-[9px] tracking-wider">{theme === "dark" ? "LIGHT" : "DARK"}</span>
+            )}
+          </button>
 
-          {/* User section */}
           <div className="relative">
             <button
               onClick={() => setShowUser((v) => !v)}
-              className="flex items-center justify-center w-9 h-9 font-mono text-[9px] text-muted-foreground/50 hover:text-foreground transition-colors"
+              className={`w-full flex items-center gap-3 px-3 py-2.5 font-mono text-muted-foreground/50 hover:text-foreground transition-colors ${collapsed ? "justify-center px-0" : ""}`}
             >
-              <span className="w-5 h-5 bg-input border border-border flex items-center justify-center text-[8px] uppercase">
+              <span className="w-5 h-5 bg-input border border-border flex items-center justify-center text-[8px] uppercase flex-shrink-0">
                 {user?.name?.charAt(0) || "?"}
               </span>
+              {!collapsed && (
+                <span className="text-[9px] tracking-wider truncate">{user?.name || "USER"}</span>
+              )}
             </button>
 
-            {/* User dropdown */}
             {showUser && (
               <div
-                className="absolute bottom-full right-0 mb-2 bg-card border border-border p-1 min-w-[120px]"
+                className="absolute bottom-full left-0 mb-1 bg-card border border-border p-1 min-w-[128px] z-50"
                 onMouseLeave={() => setShowUser(false)}
               >
                 <button
-                  onClick={() => {
-                    navigate("/profile");
-                    setShowUser(false);
-                  }}
+                  onClick={() => { navigate("/profile"); setShowUser(false); }}
                   className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-muted-foreground hover:text-foreground hover:bg-input/50 tracking-wider transition-colors"
                 >
                   PROFILE
                 </button>
                 <button
-                  onClick={() => {
-                    setShowUser(false);
-                    void logout().then(() => navigate("/login"));
-                  }}
+                  onClick={() => { setShowUser(false); void logout().then(() => navigate("/login")); }}
                   className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
                 >
                   LOGOUT
@@ -191,41 +169,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             )}
           </div>
-
-          <div className="w-px h-5 bg-border" />
-
-          {/* Theme toggle */}
-          <button
-            onClick={() => setTheme(toggleTheme())}
-            title={
-              theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
-            }
-            className="flex items-center justify-center w-7 h-9 font-mono text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-          >
-            {theme === "dark" ? "\u2600" : "\u263E"}
-          </button>
-
-          {/* Pin toggle */}
-          <button
-            onClick={() => {
-              setPinned((p) => {
-                const next = !p;
-                localStorage.setItem(DOCK_STORAGE_KEY, String(next));
-                if (next) setDockVisible(true);
-                return next;
-              });
-            }}
-            title={pinned ? "Unpin dock (Ctrl+/)" : "Pin dock (Ctrl+/)"}
-            className={`flex items-center justify-center w-7 h-9 font-mono text-[10px] transition-colors ${
-              pinned
-                ? "text-primary/60 hover:text-primary"
-                : "text-muted-foreground/20 hover:text-muted-foreground/50"
-            }`}
-          >
-            {pinned ? "\u25A0" : "\u25A1"}
-          </button>
         </div>
-      </div>
+      </aside>
+
+      {/* Main content */}
+      <main className="flex-1 h-full overflow-hidden min-w-0">{children}</main>
     </div>
   );
 }

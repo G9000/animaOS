@@ -95,14 +95,17 @@ export default function Chat() {
 
   useEffect(() => {
     if (user?.id == null) return;
-    api.threads.list().then((res) => {
-      setThreads(res.threads);
-      const active = res.threads.find((t) => t.status === "active");
-      if (active) {
-        setCurrentThreadId(active.id);
-        currentThreadIdRef.current = active.id;
-      }
-    }).catch(() => {});
+    api.threads
+      .list()
+      .then((res) => {
+        setThreads(res.threads);
+        const active = res.threads.find((t) => t.status === "active");
+        if (active) {
+          setCurrentThreadId(active.id);
+          currentThreadIdRef.current = active.id;
+        }
+      })
+      .catch(() => {});
   }, [user?.id]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
@@ -147,7 +150,8 @@ export default function Chat() {
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [user?.id]);
 
   useEffect(() => {
@@ -243,7 +247,11 @@ export default function Chat() {
       let fullResponse = "";
       let fullReasoning = "";
       const collectedTraces: TraceEvent[] = [];
-      for await (const chunk of api.chat.stream(userMsg, user.id, currentThreadId ?? undefined)) {
+      for await (const chunk of api.chat.stream(
+        userMsg,
+        user.id,
+        currentThreadId ?? undefined,
+      )) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
           setReasoningBuffer(fullReasoning);
@@ -259,7 +267,10 @@ export default function Chat() {
             if (evt.type === "done" && evt.threadId != null) {
               currentThreadIdRef.current = evt.threadId;
               setCurrentThreadId(evt.threadId);
-              api.threads.list().then((res) => setThreads(res.threads)).catch(() => {});
+              api.threads
+                .list()
+                .then((res) => setThreads(res.threads))
+                .catch(() => {});
             }
           } catch {}
           continue;
@@ -358,7 +369,9 @@ export default function Chat() {
                     : "text-muted-foreground"
                 }`}
               >
-                <div className="truncate">{thread.title ?? "New conversation"}</div>
+                <div className="truncate">
+                  {thread.title ?? "New conversation"}
+                </div>
                 {thread.lastMessageAt && (
                   <div className="text-[9px] text-muted-foreground/40 mt-0.5">
                     {new Date(thread.lastMessageAt).toLocaleDateString()}
@@ -372,212 +385,212 @@ export default function Chat() {
 
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0 relative bg-background">
-      {/* Toolbar */}
-      <div className="px-3 md:px-5 py-2 border-b border-border bg-card/40">
-        <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setSidebarOpen((v) => !v)}
-              className="font-mono text-[10px] text-muted-foreground/40 hover:text-muted-foreground tracking-wider transition-colors"
-              aria-label="Toggle sidebar"
-            >
-              ☰
-            </button>
-            <div className="w-px h-3 bg-border" />
-            <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
-              CHAT
-            </span>
-            <div className="w-px h-3 bg-border" />
-            <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-              {messages.length} MSG
-            </span>
-          </div>
-          <div className="flex items-center gap-4">
-            {/* Language selector */}
-            <div className="relative" ref={langDropdownRef}>
+        {/* Toolbar */}
+        <div className="px-3 md:px-5 py-2 border-b border-border bg-card/40">
+          <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
+            <div className="flex items-center gap-3">
               <button
-                onClick={() => setShowLangSettings((v) => !v)}
-                className="flex items-center gap-1.5 font-mono text-[9px] text-muted-foreground/50 hover:text-muted-foreground tracking-wider transition-colors"
+                onClick={() => setSidebarOpen((v) => !v)}
+                className="font-mono text-[10px] text-muted-foreground/40 hover:text-muted-foreground tracking-wider transition-colors"
+                aria-label="Toggle sidebar"
               >
-                TL:{currentLangLabel.toUpperCase()}
+                ☰
               </button>
-              {showLangSettings && (
-                <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-border py-1 min-w-[140px] max-h-64 overflow-y-auto">
-                  <div className="px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 tracking-widest border-b border-border">
-                    TRANSLATE TO
+              <div className="w-px h-3 bg-border" />
+              <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
+                CHAT
+              </span>
+              <div className="w-px h-3 bg-border" />
+              <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                {messages.length} MSG
+              </span>
+            </div>
+            <div className="flex items-center gap-4">
+              {/* Language selector */}
+              <div className="relative" ref={langDropdownRef}>
+                <button
+                  onClick={() => setShowLangSettings((v) => !v)}
+                  className="flex items-center gap-1.5 font-mono text-[9px] text-muted-foreground/50 hover:text-muted-foreground tracking-wider transition-colors"
+                >
+                  TL:{currentLangLabel.toUpperCase()}
+                </button>
+                {showLangSettings && (
+                  <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-border py-1 min-w-[140px] max-h-64 overflow-y-auto">
+                    <div className="px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 tracking-widest border-b border-border">
+                      TRANSLATE TO
+                    </div>
+                    {LANGUAGES.map((lang) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => handleLangChange(lang.code)}
+                        className={`block w-full text-left px-3 py-1.5 font-mono text-[10px] transition-colors ${
+                          translateLang === lang.code
+                            ? "text-primary bg-primary/[0.06]"
+                            : "text-muted-foreground hover:text-foreground hover:bg-input"
+                        }`}
+                      >
+                        {lang.label}
+                      </button>
+                    ))}
                   </div>
-                  {LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.code}
-                      onClick={() => handleLangChange(lang.code)}
-                      className={`block w-full text-left px-3 py-1.5 font-mono text-[10px] transition-colors ${
-                        translateLang === lang.code
-                          ? "text-primary bg-primary/[0.06]"
-                          : "text-muted-foreground hover:text-foreground hover:bg-input"
-                      }`}
-                    >
-                      {lang.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button
-              onClick={() => setShowTrace((v) => !v)}
-              className={`font-mono text-[9px] tracking-wider transition-colors ${
-                showTrace
-                  ? "text-primary"
-                  : "text-muted-foreground/40 hover:text-muted-foreground"
-              }`}
-            >
-              TRACE
-            </button>
-            <button
-              onClick={clearHistory}
-              className="font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
-            >
-              CLEAR
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div
-        ref={scrollRef}
-        onScroll={updateScrollState}
-        className="flex-1 overflow-y-auto overscroll-contain px-2.5 md:px-4 lg:px-6 py-4 md:py-6 scroll-smooth"
-      >
-        <div className="max-w-5xl mx-auto w-full space-y-4 md:space-y-5">
-          {messages.length === 0 && !streaming && (
-            <div className="flex items-center justify-center h-full min-h-[40vh]">
-              <div className="text-center space-y-4">
-                <div className="font-mono text-[10px] text-muted-foreground/20 tracking-[0.5em]">
-                  //READY
-                </div>
-                <div className="w-8 h-px bg-border mx-auto" />
-                <p className="font-mono text-muted-foreground/30 text-[10px] tracking-wider">
-                  AWAITING INPUT
-                </p>
+                )}
               </div>
-            </div>
-          )}
-
-          {messages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              translateLang={translateLang}
-              showTrace={showTrace}
-            />
-          ))}
-
-          {/* Live trace panel during streaming */}
-          {streaming && showTrace && traceEvents.length > 0 && (
-            <div className="flex gap-3 animate-in fade-in duration-200">
-              <div className="font-mono text-[9px] text-yellow-500/50 pt-1.5 select-none shrink-0 w-10 text-right tracking-wider">
+              <button
+                onClick={() => setShowTrace((v) => !v)}
+                className={`font-mono text-[9px] tracking-wider transition-colors ${
+                  showTrace
+                    ? "text-primary"
+                    : "text-muted-foreground/40 hover:text-muted-foreground"
+                }`}
+              >
                 TRACE
-              </div>
-              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] w-full bg-card/60 border-l-2 border-yellow-500/30 px-3 py-2 md:px-4 md:py-2.5">
-                <TracePanel events={traceEvents} />
-              </div>
+              </button>
+              <button
+                onClick={clearHistory}
+                className="font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
+              >
+                CLEAR
+              </button>
             </div>
-          )}
-
-          {/* Reasoning indicator */}
-          {streaming && reasoningBuffer && (
-            <div className="flex gap-3 animate-in fade-in duration-200">
-              <div className="font-mono text-[9px] text-primary/40 pt-1.5 select-none shrink-0 w-10 text-right tracking-wider">
-                THINK
-              </div>
-              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-primary/[0.03] border-l-2 border-primary/20 px-3 py-2.5 md:px-4 md:py-3">
-                <div className="text-[12px] text-muted-foreground/60 whitespace-pre-wrap break-words leading-relaxed font-mono">
-                  {reasoningBuffer}
-                  <span className="inline-block w-1.5 h-3 bg-primary/30 ml-0.5 animate-cursor" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Streaming content */}
-          {streaming && streamBuffer && (
-            <div className="flex gap-3 animate-in fade-in duration-200">
-              <div className="font-mono text-[9px] text-muted-foreground/40 pt-1.5 select-none shrink-0 w-10 text-right tracking-wider">
-                ANIMA
-              </div>
-              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-card border-l-2 border-primary/30 px-3 py-2.5 md:px-4 md:py-3">
-                <div className="prose prose-invert prose-sm md:prose-base max-w-none">
-                  <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
-                    {streamBuffer}
-                  </ReactMarkdown>
-                  <span className="inline-block w-1.5 h-4 bg-primary/50 ml-0.5 animate-cursor" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Waiting indicator */}
-          {streaming && !streamBuffer && !reasoningBuffer && (
-            <div className="flex gap-3 animate-in fade-in duration-200">
-              <div className="font-mono text-[9px] text-muted-foreground/40 pt-1.5 select-none shrink-0 w-10 text-right tracking-wider">
-                ANIMA
-              </div>
-              <div className="max-w-[86%] md:max-w-[74%] xl:max-w-[64%] bg-card border-l-2 border-border px-3 py-2.5 md:px-4 md:py-3">
-                <div className="flex gap-1 items-center h-5 font-mono text-[10px] text-muted-foreground/40 tracking-wider">
-                  <span className="animate-pulse">PROCESSING</span>
-                  <span className="w-1.5 h-3 bg-text-muted/20 animate-cursor" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-[11px] tracking-wider">
-              ERR: {error}
-            </div>
-          )}
-
-          <div ref={bottomRef} />
-        </div>
-      </div>
-
-      {!isAtBottom && (
-        <button
-          onClick={() => scrollToBottom("smooth")}
-          className="absolute right-3 md:right-6 bottom-20 md:bottom-24 z-20 font-mono text-[9px] px-2.5 py-1 border border-border bg-card text-muted-foreground hover:text-foreground transition-colors tracking-wider"
-        >
-          LATEST
-        </button>
-      )}
-
-      {/* Input */}
-      <form
-        onSubmit={handleSubmit}
-        className="border-t border-border px-2.5 md:px-5 py-3 md:py-4 bg-card/40"
-      >
-        <div className="flex gap-2.5 md:gap-3 items-end max-w-5xl mx-auto border border-border px-2.5 md:px-3 py-2 bg-card">
-          <div className="font-mono text-[10px] text-primary/40 pt-1.5 md:pt-2 select-none shrink-0">
-            &gt;
           </div>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="..."
-            disabled={streaming}
-            rows={1}
-            className="flex-1 bg-transparent text-[14px] md:text-sm text-foreground placeholder:text-muted-foreground/20 outline-none resize-none max-h-40 md:max-h-32 py-1 leading-relaxed"
-          />
-          <button
-            type="submit"
-            disabled={!input.trim() || streaming}
-            className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary disabled:opacity-15 tracking-wider pb-1 transition-colors"
-          >
-            SEND
-          </button>
         </div>
-      </form>
+
+        {/* Messages */}
+        <div
+          ref={scrollRef}
+          onScroll={updateScrollState}
+          className="flex-1 overflow-y-auto overscroll-contain px-2.5 md:px-4 lg:px-6 py-4 md:py-6 scroll-smooth"
+        >
+          <div className="max-w-5xl mx-auto w-full space-y-4 md:space-y-5">
+            {messages.length === 0 && !streaming && (
+              <div className="flex items-center justify-center h-full min-h-[40vh]">
+                <div className="text-center space-y-4">
+                  <div className="font-mono text-[10px] text-primary/40 tracking-[0.5em]">
+                    //READY
+                  </div>
+                  <div className="w-8 h-px bg-primary/20 mx-auto" />
+                  <p className="font-mono text-muted-foreground/50 text-[10px] tracking-wider">
+                    AWAITING INPUT
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {messages.map((msg) => (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                translateLang={translateLang}
+                showTrace={showTrace}
+              />
+            ))}
+
+            {/* Live trace panel during streaming */}
+            {streaming && showTrace && traceEvents.length > 0 && (
+              <div className="flex gap-3 animate-in fade-in duration-200">
+                <div className="font-mono text-[9px] text-yellow-400/70 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
+                  TRACE
+                </div>
+                <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] w-full bg-card/50 border-l-2 border-yellow-400/40 px-4 py-2.5">
+                  <TracePanel events={traceEvents} />
+                </div>
+              </div>
+            )}
+
+            {/* Reasoning indicator */}
+            {streaming && reasoningBuffer && (
+              <div className="flex gap-3 animate-in fade-in duration-200">
+                <div className="font-mono text-[9px] text-primary/65 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
+                  THINK
+                </div>
+                <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-primary/[0.05] border-l-2 border-primary/35 px-4 py-3">
+                  <div className="text-[12px] text-muted-foreground/80 whitespace-pre-wrap break-words leading-relaxed font-mono">
+                    {reasoningBuffer}
+                    <span className="inline-block w-1.5 h-3 bg-primary/60 ml-0.5 animate-cursor" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Streaming content */}
+            {streaming && streamBuffer && (
+              <div className="flex gap-3 animate-in fade-in duration-200">
+                <div className="font-mono text-[9px] text-muted-foreground/65 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
+                  ANIMA
+                </div>
+                <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-card/80 border-l-2 border-primary/45 px-4 py-3">
+                  <div className="prose prose-invert prose-sm md:prose-base max-w-none">
+                    <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
+                      {streamBuffer}
+                    </ReactMarkdown>
+                    <span className="inline-block w-1.5 h-4 bg-primary/70 ml-0.5 animate-cursor" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Waiting indicator */}
+            {streaming && !streamBuffer && !reasoningBuffer && (
+              <div className="flex gap-3 animate-in fade-in duration-200">
+                <div className="font-mono text-[9px] text-muted-foreground/65 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
+                  ANIMA
+                </div>
+                <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-card/80 border-l-2 border-primary/20 px-4 py-3">
+                  <div className="flex gap-1.5 items-center h-5 font-mono text-[10px] text-muted-foreground/70 tracking-wider">
+                    <span className="animate-pulse">PROCESSING</span>
+                    <span className="w-1.5 h-3 bg-primary/40 animate-cursor" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-[11px] tracking-wider">
+                ERR: {error}
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+        </div>
+
+        {!isAtBottom && (
+          <button
+            onClick={() => scrollToBottom("smooth")}
+            className="absolute right-3 md:right-6 bottom-20 md:bottom-24 z-20 font-mono text-[9px] px-2.5 py-1 border border-border bg-card text-muted-foreground hover:text-foreground transition-colors tracking-wider"
+          >
+            LATEST
+          </button>
+        )}
+
+        {/* Input */}
+        <form
+          onSubmit={handleSubmit}
+          className="border-t border-border px-2.5 md:px-5 py-3 md:py-4 bg-card/40"
+        >
+          <div className="flex gap-2.5 md:gap-3 items-end max-w-5xl mx-auto border border-border px-2.5 md:px-3 py-2 bg-card">
+            <div className="font-mono text-[10px] text-primary/40 pt-1.5 md:pt-2 select-none shrink-0">
+              &gt;
+            </div>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="..."
+              disabled={streaming}
+              rows={1}
+              className="flex-1 bg-transparent text-[14px] md:text-sm text-foreground placeholder:text-muted-foreground/20 outline-none resize-none max-h-40 md:max-h-32 py-1 leading-relaxed"
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || streaming}
+              className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary disabled:opacity-15 tracking-wider pb-1 transition-colors"
+            >
+              SEND
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -629,26 +642,32 @@ function MessageBubble({
     : null;
 
   return (
-    <div className={`group flex gap-3 ${isUser ? "justify-end" : ""}`}>
-      {!isUser && (
-        <div className="font-mono text-[9px] text-muted-foreground/40 pt-1.5 select-none shrink-0 w-10 text-right tracking-wider">
-          {isSystem ? "SYS" : "ANIMA"}
-        </div>
-      )}
-      <div
-        className={`flex flex-col max-w-[86%] md:max-w-[74%] xl:max-w-[64%] ${isUser ? "items-end" : ""}`}
-      >
+    <div className={`group flex flex-col gap-1.5 w-full ${isUser ? "items-end" : "items-start"}`}>
+      {/* Label + timestamp */}
+      <div className="flex items-center gap-2 px-1 select-none">
+        <span className={`font-mono text-[9px] tracking-wider ${isUser ? "text-primary/70" : "text-muted-foreground/65"}`}>
+          {isUser ? "YOU" : isSystem ? "SYS" : "ANIMA"}
+        </span>
+        {timestamp && (
+          <span className="font-mono text-[8px] text-muted-foreground/35 leading-none">
+            {timestamp}
+          </span>
+        )}
+      </div>
+
+      {/* Bubble + extras */}
+      <div className="flex flex-col max-w-[84%] md:max-w-[72%] xl:max-w-[62%]">
         <div
-          className={`px-3 py-2.5 md:px-4 md:py-3 ${
+          className={`px-4 py-3 ${
             isUser
-              ? "bg-accent border border-border text-foreground"
+              ? "bg-primary/[0.12] border border-primary/30 text-foreground"
               : isSystem
-                ? "bg-primary/[0.04] border-l-2 border-primary/30"
-                : "bg-card border-l-2 border-border"
+                ? "bg-primary/[0.06] border-l-2 border-primary/50"
+                : "bg-card/80 border-l-2 border-primary/45"
           }`}
         >
           {isUser ? (
-            <p className="text-[13px] md:text-sm whitespace-pre-wrap break-words leading-relaxed">
+            <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
               {message.content}
             </p>
           ) : (
@@ -660,74 +679,61 @@ function MessageBubble({
           )}
         </div>
 
-        {/* Translation */}
         {translating && (
-          <div className="font-mono text-[10px] text-muted-foreground/40 mt-1.5 px-1 animate-pulse tracking-wider">
+          <div className="font-mono text-[10px] text-muted-foreground/50 mt-1.5 px-1 animate-pulse tracking-wider">
             TRANSLATING...
           </div>
         )}
         {translation && !translating && (
-          <div className="mt-1.5 w-full px-3 py-2 md:px-4 md:py-2.5 bg-card/60 border-l-2 border-border text-[13px] md:text-sm text-muted-foreground leading-relaxed">
+          <div className="mt-1 w-full px-4 py-2.5 bg-card/50 border-l-2 border-border/60 text-sm text-muted-foreground leading-relaxed">
             {translation}
           </div>
         )}
 
-        {/* Reasoning */}
         {showReasoning && message.reasoning && (
-          <div className="mt-1.5 w-full px-3 py-2 md:px-4 md:py-2.5 bg-primary/[0.03] border-l-2 border-primary/20 text-[12px] text-muted-foreground/60 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
+          <div className="mt-1 w-full px-4 py-3 bg-primary/[0.04] border-l-2 border-primary/25 text-[12px] text-muted-foreground/80 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
             {message.reasoning}
           </div>
         )}
 
-        {/* Trace events */}
         {(showTrace || showMsgTrace) && hasTrace && (
-          <div className="mt-1.5 w-full bg-card/60 border-l-2 border-yellow-500/30 px-3 py-2 md:px-4 md:py-2.5 max-h-80 overflow-y-auto">
+          <div className="mt-1 w-full bg-card/50 border-l-2 border-yellow-400/40 px-3 py-2.5 max-h-80 overflow-y-auto">
             <TracePanel events={message.traceEvents!} />
           </div>
         )}
-
-        {/* Actions — visible on hover */}
-        <div className="flex items-center gap-3 mt-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-          {!isUser && message.reasoning && (
-            <button
-              onClick={() => setShowReasoning((v) => !v)}
-              className="font-mono text-[9px] text-primary/40 hover:text-primary tracking-wider transition-colors"
-            >
-              {showReasoning ? "HIDE" : "THINK"}
-            </button>
-          )}
-          {!isUser && hasTrace && (
-            <button
-              onClick={() => setShowMsgTrace((v) => !v)}
-              className="font-mono text-[9px] text-yellow-500/40 hover:text-yellow-500 tracking-wider transition-colors"
-            >
-              {showMsgTrace ? "HIDE" : "TRACE"}
-            </button>
-          )}
-          <button
-            onClick={handleTranslate}
-            disabled={translating}
-            className="font-mono text-[9px] text-muted-foreground/30 hover:text-muted-foreground tracking-wider transition-colors disabled:opacity-30"
-          >
-            {translation ? "HIDE" : "TL"}
-          </button>
-          {timestamp && (
-            <span className="font-mono text-[9px] text-muted-foreground/20">
-              {timestamp}
-            </span>
-          )}
-          {message.source && (
-            <span className="font-mono text-[7px] text-muted-foreground/25 ml-1">
-              via {message.source}
-            </span>
-          )}
-        </div>
       </div>
-      {isUser && (
-        <div className="font-mono text-[9px] text-muted-foreground/40 pt-1.5 select-none shrink-0 w-10 tracking-wider">
-          YOU
-        </div>
-      )}
+
+      {/* Actions — fade in on hover */}
+      <div className="flex items-center gap-3 px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+        {!isUser && message.reasoning && (
+          <button
+            onClick={() => setShowReasoning((v) => !v)}
+            className="font-mono text-[9px] text-primary/60 hover:text-primary tracking-wider transition-colors"
+          >
+            {showReasoning ? "HIDE" : "THINK"}
+          </button>
+        )}
+        {!isUser && hasTrace && (
+          <button
+            onClick={() => setShowMsgTrace((v) => !v)}
+            className="font-mono text-[9px] text-yellow-400/60 hover:text-yellow-300 tracking-wider transition-colors"
+          >
+            {showMsgTrace ? "HIDE" : "TRACE"}
+          </button>
+        )}
+        <button
+          onClick={handleTranslate}
+          disabled={translating}
+          className="font-mono text-[9px] text-muted-foreground/50 hover:text-muted-foreground tracking-wider transition-colors disabled:opacity-30"
+        >
+          {translation ? "HIDE" : "TL"}
+        </button>
+        {message.source && (
+          <span className="font-mono text-[8px] text-muted-foreground/35">
+            via {message.source}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -742,7 +748,10 @@ function TracePanel({ events }: { events: TraceEvent[] }) {
         : serializeTraceAsText(events);
     await navigator.clipboard.writeText(payload);
     setCopyState(mode);
-    window.setTimeout(() => setCopyState((current) => (current === mode ? null : current)), 1200);
+    window.setTimeout(
+      () => setCopyState((current) => (current === mode ? null : current)),
+      1200,
+    );
   };
 
   return (
@@ -802,7 +811,9 @@ function TraceEntry({ event }: { event: TraceEvent }) {
           className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
         >
           <span className="text-cyan-400/70 text-[9px]">STEP</span>
-          <span className="text-muted-foreground/70">#{event.stepIndex ?? 0}</span>
+          <span className="text-muted-foreground/70">
+            #{event.stepIndex ?? 0}
+          </span>
           <span className="text-muted-foreground">
             {isRequest ? "request" : "result"}
           </span>
@@ -894,7 +905,9 @@ function TraceEntry({ event }: { event: TraceEvent }) {
         {event.cachedInputTokens ? (
           <span>{event.cachedInputTokens}cached</span>
         ) : null}
-        <span className="text-muted-foreground/25">= {event.totalTokens ?? 0}</span>
+        <span className="text-muted-foreground/25">
+          = {event.totalTokens ?? 0}
+        </span>
       </div>
     );
   }
@@ -929,7 +942,9 @@ function TraceEntry({ event }: { event: TraceEvent }) {
           </span>
         )}
         {event.stopReason && (
-          <span className="text-muted-foreground/25">stop:{event.stopReason}</span>
+          <span className="text-muted-foreground/25">
+            stop:{event.stopReason}
+          </span>
         )}
       </div>
     );
