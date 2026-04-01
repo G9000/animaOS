@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from anima_server.services.agent.openai_compatible_client import _serialize_tool
 from anima_server.services.agent.strict_mode import enable_strict_mode
+from anima_server.services.agent.tools import send_message
 
 
 def test_strict_mode_sets_flags() -> None:
@@ -87,3 +89,32 @@ def test_strict_mode_disabled() -> None:
     }
     result = enable_strict_mode(schema, strict=False)
     assert "strict" not in result
+
+
+def test_serialize_tool_applies_strict_mode() -> None:
+    """_serialize_tool should apply strict mode when enabled."""
+    from anima_server.config import settings
+
+    original = settings.agent_strict_tool_schemas
+    try:
+        settings.agent_strict_tool_schemas = True
+        result = _serialize_tool(send_message)
+        fn = result["function"]
+        assert fn["strict"] is True
+        assert fn["parameters"]["additionalProperties"] is False
+    finally:
+        settings.agent_strict_tool_schemas = original
+
+
+def test_serialize_tool_no_strict_when_disabled() -> None:
+    """When agent_strict_tool_schemas is False, strict mode is not applied."""
+    from anima_server.config import settings
+
+    original = settings.agent_strict_tool_schemas
+    try:
+        settings.agent_strict_tool_schemas = False
+        result = _serialize_tool(send_message)
+        fn = result["function"]
+        assert "strict" not in fn
+    finally:
+        settings.agent_strict_tool_schemas = original
