@@ -504,3 +504,82 @@ def test_extract_inner_thoughts_backward_compat_inner_thinking() -> None:
     )
     thoughts = _extract_inner_thoughts(result)
     assert "I want to say hello" in thoughts
+
+
+# ------------------------------------------------------------------
+# _decide_continuation tests
+# ------------------------------------------------------------------
+
+
+def test_decide_continuation_terminal_stops() -> None:
+    should_continue, _ = AgentRuntime._decide_continuation(
+        tool_results=[],
+        terminal_tool_hit=True,
+        rule_violation_hit=False,
+        awaiting_approval=False,
+        is_final_step=False,
+    )
+    assert should_continue is False
+
+
+def test_decide_continuation_tool_error_continues() -> None:
+    error_result = ToolExecutionResult(
+        call_id="tc-1",
+        name="recall_memory",
+        output="error",
+        is_error=True,
+    )
+    should_continue, reason = AgentRuntime._decide_continuation(
+        tool_results=[error_result],
+        terminal_tool_hit=False,
+        rule_violation_hit=False,
+        awaiting_approval=False,
+        is_final_step=False,
+    )
+    assert should_continue is True
+    assert "failed" in reason.lower()
+
+
+def test_decide_continuation_success_continues() -> None:
+    ok_result = ToolExecutionResult(
+        call_id="tc-1",
+        name="recall_memory",
+        output="found stuff",
+    )
+    should_continue, reason = AgentRuntime._decide_continuation(
+        tool_results=[ok_result],
+        terminal_tool_hit=False,
+        rule_violation_hit=False,
+        awaiting_approval=False,
+        is_final_step=False,
+    )
+    assert should_continue is True
+    assert reason is not None
+
+
+def test_decide_continuation_max_steps_stops() -> None:
+    ok_result = ToolExecutionResult(
+        call_id="tc-1",
+        name="recall_memory",
+        output="found stuff",
+    )
+    should_continue, _ = AgentRuntime._decide_continuation(
+        tool_results=[ok_result],
+        terminal_tool_hit=False,
+        rule_violation_hit=False,
+        awaiting_approval=False,
+        is_final_step=True,
+    )
+    assert should_continue is False
+
+
+def test_decide_continuation_rule_violation_continues() -> None:
+    should_continue, reason = AgentRuntime._decide_continuation(
+        tool_results=[],
+        terminal_tool_hit=False,
+        rule_violation_hit=True,
+        awaiting_approval=False,
+        is_final_step=False,
+    )
+    assert should_continue is True
+    assert "rule" in reason.lower()

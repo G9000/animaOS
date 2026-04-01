@@ -614,15 +614,6 @@ class AgentRuntime:
             if event_callback is not None:
                 await event_callback(build_timing_event(step_index, _compute_timing(step_ctx)))
 
-            if rule_violation_hit:
-                messages.append(
-                    _sandwich_message(
-                        "Tool rule violation — the tool was not allowed at "
-                        "this point. Check allowed tools and try again."
-                    )
-                )
-                continue
-
             # Refresh memory blocks between steps if a tool modified memory.
             if (
                 memory_refresher is not None
@@ -648,24 +639,18 @@ class AgentRuntime:
                 except Exception:
                     logger.debug("Memory refresh between steps failed", exc_info=True)
 
-            if terminal_tool_hit or awaiting_approval:
+            should_continue, continuation_reason = self._decide_continuation(
+                tool_results=tool_results,
+                terminal_tool_hit=terminal_tool_hit,
+                rule_violation_hit=rule_violation_hit,
+                awaiting_approval=awaiting_approval,
+                is_final_step=(step_index == self._max_steps - 1),
+            )
+
+            if not should_continue:
                 break
 
-            # V3-style: always continue after non-terminal tools.
-            any_error = any(tr.is_error for tr in tool_results)
-            if any_error:
-                failed_names = [tr.name for tr in tool_results if tr.is_error]
-                sandwich = _sandwich_message(
-                    f"Tool call failed ({', '.join(failed_names)}). "
-                    "You may retry with corrected arguments or "
-                    "respond to the user."
-                )
-            else:
-                sandwich = _sandwich_message(
-                    "Continue with your next tool call or "
-                    "send_message when ready."
-                )
-            messages.append(sandwich)
+            messages.append(_sandwich_message(continuation_reason))
             continue
         else:
             if "send_message" not in tools_used:
@@ -969,6 +954,37 @@ class AgentRuntime:
             tools_used=tools_used,
             step_traces=step_traces,
             prompt_budget=prompt_budget,
+        )
+
+    @staticmethod
+    def _decide_continuation(
+        *,
+        tool_results: list[ToolExecutionResult],
+        terminal_tool_hit: bool,
+        rule_violation_hit: bool,
+        awaiting_approval: bool,
+        is_final_step: bool,
+    ) -> tuple[bool, str | None]:
+        """V3-style continuation: tool called -> continue, terminal -> stop."""
+        if terminal_tool_hit or awaiting_approval:
+            return False, None
+        if is_final_step:
+            return False, None
+        if rule_violation_hit:
+            return True, (
+                "Tool rule violation \u2014 the tool was not allowed at "
+                "this point. Check allowed tools and try again."
+            )
+        if any(tr.is_error for tr in tool_results):
+            failed_names = [tr.name for tr in tool_results if tr.is_error]
+            return True, (
+                f"Tool call failed ({', '.join(failed_names)}). "
+                "You may retry with corrected arguments or "
+                "respond to the user."
+            )
+        return True, (
+            "Continue with your next tool call or "
+            "send_message when ready."
         )
 
     async def _run_step(
