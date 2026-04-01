@@ -973,7 +973,7 @@ class AgentRuntime:
         awaiting_approval: bool,
         is_final_step: bool,
     ) -> tuple[bool, str | None]:
-        """V3-style continuation: tool called -> continue, terminal -> stop."""
+        """Decide whether to continue the agent loop after tool execution."""
         if terminal_tool_hit or awaiting_approval:
             return False, None
         if is_final_step:
