@@ -803,42 +803,6 @@ def check_system_health() -> str:
     return registry.format_report(report)
 
 
-def inject_inner_thoughts_into_tools(
-    tools: list[Any],
-    inner_thoughts_key: str = "thinking",
-) -> list[Any]:
-    """Inject a ``thinking`` required string parameter as the first argument
-    on every tool schema.  This forces the model to provide private reasoning
-    with every tool call — no separate ``inner_thought`` tool needed.
-
-    Deep-copies each schema before modification to avoid mutating the
-    original tool definitions.  Returns the same list with updated schemas.
-    """
-    description = (
-        "Deep inner monologue, private to you only. Use this to reason about the current situation."
-    )
-    for t in tools:
-        schema_obj = getattr(t, "args_schema", None)
-        if schema_obj is None or not hasattr(schema_obj, "model_json_schema"):
-            continue
-        schema = copy.deepcopy(schema_obj.model_json_schema())
-        props = schema.get("properties")
-        if not isinstance(props, dict):
-            continue
-        if inner_thoughts_key in props:
-            continue  # already injected
-        # Prepend thinking as first property
-        new_props = {inner_thoughts_key: {"type": "string", "description": description}}
-        new_props.update(props)
-        schema["properties"] = new_props
-        # Add to required list (first position)
-        required = schema.get("required", [])
-        if inner_thoughts_key not in required:
-            schema["required"] = [inner_thoughts_key, *list(required)]
-        # Replace the schema object
-        t.args_schema = _SimpleSchema(schema)
-    return tools
-
 
 
 def get_core_tools() -> list[Any]:

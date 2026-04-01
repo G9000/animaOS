@@ -1,4 +1,5 @@
-"""Tests for injected thinking kwarg: every tool call includes a `thinking` argument."""
+"""Tests for thinking kwarg handling: executor strips thinking from args,
+runtime carries inner thoughts through step traces for consolidation."""
 
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from anima_server.services.agent.runtime_types import (
 from anima_server.services.agent.tools import (
     get_tool_rules,
     get_tools,
-    inject_inner_thoughts_into_tools,
     send_message,
     tool,
 )
@@ -39,45 +39,6 @@ class QueueAdapter(BaseLLMAdapter):
         if not self._responses:
             raise AssertionError("No queued responses.")
         return self._responses.popleft()
-
-
-# ---------------------------------------------------------------------------
-# Schema injection
-# ---------------------------------------------------------------------------
-
-
-def test_thinking_injected_into_all_tool_schemas() -> None:
-    """Every tool from get_tools() has `thinking` as a required first param."""
-    tools = get_tools()
-    for t in tools:
-        schema = t.args_schema.model_json_schema()
-        assert "thinking" in schema.get("properties", {}), (
-            f"Tool {t.name} missing thinking property"
-        )
-        assert "thinking" in schema.get("required", []), (
-            f"Tool {t.name} missing thinking in required"
-        )
-        # Should be the first required param
-        assert schema["required"][0] == "thinking", (
-            f"Tool {t.name}: thinking should be first required param"
-        )
-
-
-def test_inject_inner_thoughts_idempotent() -> None:
-    """Calling inject_inner_thoughts_into_tools twice doesn't double-inject."""
-
-    @tool
-    def my_tool(msg: str) -> str:
-        """Test tool."""
-        return msg
-
-    inject_inner_thoughts_into_tools([my_tool])
-    schema1 = my_tool.args_schema.model_json_schema()
-    inject_inner_thoughts_into_tools([my_tool])
-    schema2 = my_tool.args_schema.model_json_schema()
-
-    assert schema1 == schema2
-    assert schema2["required"].count("thinking") == 1
 
 
 def test_inner_thought_not_in_default_tools() -> None:
@@ -185,56 +146,6 @@ async def test_direct_send_message_without_init_tool() -> None:
     assert result.response == "Hey!"
     assert result.stop_reason == StopReason.TERMINAL_TOOL.value
     assert len(result.step_traces) == 1
-
-
-@pytest.mark.asyncio
-async def test_tool_then_respond_with_thinking() -> None:
-    """Multi-step flow: tool with thinking → send_message with thinking."""
-
-    @tool
-    def lookup() -> str:
-        """Look something up."""
-        return "found it"
-
-    inject_inner_thoughts_into_tools([lookup])
-
-    adapter = QueueAdapter(
-        [
-            StepExecutionResult(
-                tool_calls=(
-                    ToolCall(
-                        id="c1",
-                        name="lookup",
-                        arguments={
-                            "thinking": "Need to search for this.",
-                        },
-                    ),
-                )
-            ),
-            StepExecutionResult(
-                tool_calls=(
-                    ToolCall(
-                        id="c2",
-                        name="send_message",
-                        arguments={"thinking": "Got the answer.", "message": "Found it!"},
-                    ),
-                )
-            ),
-        ]
-    )
-
-    runtime = AgentRuntime(
-        adapter=adapter,
-        tools=[lookup, send_message],
-        tool_rules=[TerminalToolRule(tool_name="send_message")],
-        max_steps=4,
-    )
-
-    result = await runtime.invoke("search", user_id=1, history=[])
-
-    assert result.response == "Found it!"
-    assert "lookup" in result.tools_used
-    assert "send_message" in result.tools_used
 
 
 # ---------------------------------------------------------------------------
