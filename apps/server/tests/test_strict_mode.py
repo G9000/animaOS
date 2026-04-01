@@ -63,6 +63,32 @@ def test_strict_mode_processes_nested_objects() -> None:
     assert nested["required"] == ["key"]
 
 
+def test_strict_mode_nested_optional_fields_nullable() -> None:
+    """Optional fields inside nested objects should be made nullable."""
+    schema = {
+        "name": "my_tool",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string"},
+                        "optional_val": {"type": "integer"},
+                    },
+                    "required": ["key"],
+                },
+            },
+            "required": ["config"],
+        },
+    }
+    result = enable_strict_mode(schema)
+    nested = result["parameters"]["properties"]["config"]
+    assert set(nested["required"]) == {"key", "optional_val"}
+    assert nested["properties"]["key"]["type"] == "string"
+    assert nested["properties"]["optional_val"]["type"] == ["integer", "null"]
+
+
 def test_strict_mode_does_not_mutate_original() -> None:
     schema = {
         "name": "my_tool",

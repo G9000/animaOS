@@ -71,8 +71,11 @@ def _process_property(prop: dict[str, Any]) -> dict[str, Any]:
 
     if param_type == "object":
         if "properties" in prop:
+            original_required = set(prop.get("required", []))
             for key, value in prop["properties"].items():
                 prop["properties"][key] = _process_property(value)
+                if key not in original_required:
+                    _make_nullable(prop["properties"][key])
             prop["additionalProperties"] = False
             prop["required"] = list(prop["properties"].keys())
         return prop
