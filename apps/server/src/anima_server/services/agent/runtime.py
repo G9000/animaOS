@@ -299,9 +299,7 @@ class AgentRuntime:
                     "tool": last_failed_tool,
                 }, user_id=user_id)
             allowed_tool_names = tuple(sorted(allowed_set))
-            force_tool_call = bool(allowed_tool_names) and (
-                rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
-            )
+            force_tool_call = bool(allowed_tool_names) and rules_solver.should_force_tool_call()
             if event_callback is not None:
                 # Include tool schemas on the first step for trace debugging.
                 schemas: dict[str, object] | None = None

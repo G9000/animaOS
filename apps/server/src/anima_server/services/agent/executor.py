@@ -298,7 +298,7 @@ def _validate_tool_arguments(
     if not required_arguments:
         return None
 
-    # Skip injected keys (e.g. ``thinking``) that are stripped before dispatch.
+    # Skip specified keys that are stripped before dispatch.
     effective_required = tuple(name for name in required_arguments if name not in ignore_keys)
     if not effective_required:
         return None

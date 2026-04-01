@@ -1,14 +1,9 @@
 """Incremental extraction of ``thinking`` from streamed tool-call JSON.
 
 When the LLM streams a tool call whose arguments contain a ``thinking``
-key (injected by :func:`inject_inner_thoughts_into_tools`), this module
-lets the UI surface that reasoning in real-time rather than waiting for
-the full response.
-
-The design is intentionally simple: since ``thinking`` is always the
-**first** key in the JSON object (we inject it first into every tool
-schema), the extractor can rely on positional assumptions rather than
-building a full incremental JSON parser.
+key (some models may still produce it even though it is no longer
+injected into tool schemas), this module lets the UI surface that
+reasoning in real-time rather than waiting for the full response.
 
 The executor's :func:`unpack_inner_thoughts_from_kwargs` remains the
 safety net for anything the streaming parser misses.

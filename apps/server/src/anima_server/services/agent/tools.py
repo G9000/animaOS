@@ -804,7 +804,6 @@ def check_system_health() -> str:
 
 
 
-
 def get_core_tools() -> list[Any]:
     """Return the minimal cognitive tool set.
 

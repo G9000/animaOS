@@ -1209,9 +1209,9 @@ async def _persist_turn_result(
 def _extract_inner_thoughts(result: AgentResult) -> str:
     """Extract thinking content from step traces for consolidation.
 
-    Sources (in priority order):
+    Sources (with fallback):
     1. reasoning_content — native model reasoning (o1/o3, Claude thinking)
-    2. assistant_text — model's intermediate text on non-terminal steps
+    2. assistant_text — model's intermediate text on non-terminal steps (only if no reasoning_content)
     3. inner_thinking on tool results — backward compat (legacy thinking kwarg)
     """
     thoughts: list[str] = []
@@ -1219,10 +1219,8 @@ def _extract_inner_thoughts(result: AgentResult) -> str:
         # 1. Native model reasoning (highest quality signal)
         if trace.reasoning_content:
             thoughts.append(trace.reasoning_content.strip())
-
-        # 2. Assistant text from intermediate steps (not the final response)
-        if trace.assistant_text and trace.tool_calls:
-            # Has both text and tool calls — the text is intermediate reasoning
+        # 2. Fallback: assistant text from intermediate steps
+        elif trace.assistant_text and trace.tool_calls:
             thoughts.append(trace.assistant_text.strip())
 
         # 3. Backward compat: inner_thinking from tool results

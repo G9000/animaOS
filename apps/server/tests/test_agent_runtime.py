@@ -106,7 +106,7 @@ async def test_runtime_uses_terminal_send_message_tool_output() -> None:
     assert len(result.step_traces) == 1
     assert result.step_traces[0].tool_results[0].is_terminal is True
     assert [tool.name for tool in adapter.requests[0].available_tools] == ["send_message"]
-    assert adapter.requests[0].force_tool_call is True
+    assert adapter.requests[0].force_tool_call is False
 
 
 @pytest.mark.asyncio
@@ -138,7 +138,33 @@ async def test_runtime_coerces_plain_assistant_text_into_terminal_send_message()
     )
     assert result.step_traces[0].tool_results[0].output == "Hello from coerced terminal output."
     assert result.step_traces[0].tool_results[0].is_terminal is True
-    assert adapter.requests[0].force_tool_call is True
+    assert adapter.requests[0].force_tool_call is False
+
+
+@pytest.mark.asyncio
+async def test_text_response_coerced_to_send_message_when_not_forced() -> None:
+    """When force_tool_call is False (no init/child rules active),
+    a plain-text LLM response should be coerced to send_message
+    via _coerce_text_tool_calls and end the turn normally."""
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                assistant_text="Hello there!",
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        tool_summaries=["send_message: Send a message"],
+        max_steps=4,
+    )
+    result = await runtime.invoke("hi", user_id=1, history=[])
+    assert result.response == "Hello there!"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(adapter.requests) == 1
+    assert adapter.requests[0].force_tool_call is False
 
 
 @pytest.mark.asyncio
@@ -583,3 +609,14 @@ def test_decide_continuation_rule_violation_continues() -> None:
     )
     assert should_continue is True
     assert "rule" in reason.lower()
+
+
+def test_decide_continuation_awaiting_approval_stops() -> None:
+    should_continue, _ = AgentRuntime._decide_continuation(
+        tool_results=[],
+        terminal_tool_hit=False,
+        rule_violation_hit=False,
+        awaiting_approval=True,
+        is_final_step=False,
+    )
+    assert should_continue is False
