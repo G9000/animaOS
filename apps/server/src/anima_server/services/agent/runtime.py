@@ -639,15 +639,23 @@ class AgentRuntime:
                 except Exception:
                     logger.debug("Memory refresh between steps failed", exc_info=True)
 
+            is_final_step = step_index == self._max_steps - 1
             should_continue, continuation_reason = self._decide_continuation(
                 tool_results=tool_results,
                 terminal_tool_hit=terminal_tool_hit,
                 rule_violation_hit=rule_violation_hit,
                 awaiting_approval=awaiting_approval,
-                is_final_step=(step_index == self._max_steps - 1),
+                is_final_step=is_final_step,
             )
 
             if not should_continue:
+                # Set stop_reason for max-steps exhaustion (the for/else
+                # clause only fires when the loop completes naturally).
+                if is_final_step and not terminal_tool_hit and not awaiting_approval:
+                    if "send_message" not in tools_used:
+                        stop_reason = StopReason.NO_TERMINAL_TOOL
+                    else:
+                        stop_reason = StopReason.MAX_STEPS
                 break
 
             messages.append(_sandwich_message(continuation_reason))
