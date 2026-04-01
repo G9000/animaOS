@@ -1207,26 +1207,29 @@ async def _persist_turn_result(
 
 
 def _extract_inner_thoughts(result: AgentResult) -> str:
-    """Extract thinking content from tool call arguments for consolidation.
+    """Extract thinking content from step traces for consolidation.
 
-    With the injected ``thinking`` kwarg, every tool call may contain
-    private reasoning in its ``thinking`` argument.  We also check
-    ``inner_thinking`` on tool results (populated by the executor after
-    unpacking the kwarg).
+    Sources (in priority order):
+    1. reasoning_content — native model reasoning (o1/o3, Claude thinking)
+    2. assistant_text — model's intermediate text on non-terminal steps
+    3. inner_thinking on tool results — backward compat (legacy thinking kwarg)
     """
     thoughts: list[str] = []
     for trace in result.step_traces:
-        # Primary path: executor unpacks thinking and stores it on the result.
+        # 1. Native model reasoning (highest quality signal)
+        if trace.reasoning_content:
+            thoughts.append(trace.reasoning_content.strip())
+
+        # 2. Assistant text from intermediate steps (not the final response)
+        if trace.assistant_text and trace.tool_calls:
+            # Has both text and tool calls — the text is intermediate reasoning
+            thoughts.append(trace.assistant_text.strip())
+
+        # 3. Backward compat: inner_thinking from tool results
         for tr in trace.tool_results:
             if tr.inner_thinking:
                 thoughts.append(tr.inner_thinking.strip())
-        # Safety-net fallback: if thinking was not unpacked (e.g. synthetic
-        # tool calls from a future code path), check tool call args.
-        if not any(tr.inner_thinking for tr in trace.tool_results):
-            for tc in trace.tool_calls:
-                thought = tc.arguments.get("thinking", "")
-                if isinstance(thought, str) and thought.strip():
-                    thoughts.append(thought.strip())
+
     return "\n".join(thoughts)
 
 

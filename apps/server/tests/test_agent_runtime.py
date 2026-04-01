@@ -20,10 +20,14 @@ from anima_server.services.agent.runtime import AgentRuntime
 from anima_server.services.agent.runtime_types import (
     LLMRequest,
     StepExecutionResult,
+    StepTiming,
+    StepTrace,
     StopReason,
     ToolCall,
+    ToolExecutionResult,
 )
-from anima_server.services.agent.state import StoredMessage
+from anima_server.services.agent.service import _extract_inner_thoughts
+from anima_server.services.agent.state import AgentResult, StoredMessage
 from anima_server.services.agent.streaming import AgentStreamEvent
 from anima_server.services.agent.tools import current_datetime, send_message, tool
 from conftest_runtime import runtime_db_session
@@ -412,3 +416,91 @@ def test_assistant_tool_calls_round_trip_from_persistence() -> None:
             "type": "tool_call",
         }
     ]
+
+
+def test_extract_inner_thoughts_from_reasoning_content() -> None:
+    """_extract_inner_thoughts should pull from reasoning_content (native
+    model reasoning) when available."""
+    trace = StepTrace(
+        step_index=0,
+        llm_invoked=True,
+        request_messages=(),
+        allowed_tools=("send_message",),
+        force_tool_call=False,
+        assistant_text="Hello!",
+        tool_calls=(),
+        tool_results=(),
+        usage=None,
+        timing=StepTiming(),
+        reasoning_content="I should greet the user warmly.",
+    )
+    result = AgentResult(
+        response="Hello!",
+        model="test",
+        provider="test",
+        stop_reason="terminal_tool",
+        tools_used=["send_message"],
+        step_traces=[trace],
+    )
+    thoughts = _extract_inner_thoughts(result)
+    assert "greet the user warmly" in thoughts
+
+
+def test_extract_inner_thoughts_fallback_to_assistant_text() -> None:
+    """When no reasoning_content exists, fall back to assistant_text
+    from non-terminal steps (model's intermediate text)."""
+    trace = StepTrace(
+        step_index=0,
+        llm_invoked=True,
+        request_messages=(),
+        allowed_tools=("recall_memory", "send_message"),
+        force_tool_call=False,
+        assistant_text="Let me think about what I know...",
+        tool_calls=(ToolCall(id="tc-1", name="recall_memory", arguments={"query": "user"}),),
+        tool_results=(ToolExecutionResult(call_id="tc-1", name="recall_memory", output="found: likes cats"),),
+        usage=None,
+        timing=StepTiming(),
+        reasoning_content=None,
+    )
+    result = AgentResult(
+        response="You like cats!",
+        model="test",
+        provider="test",
+        stop_reason="terminal_tool",
+        tools_used=["recall_memory", "send_message"],
+        step_traces=[trace],
+    )
+    thoughts = _extract_inner_thoughts(result)
+    assert "Let me think about what I know" in thoughts
+
+
+def test_extract_inner_thoughts_backward_compat_inner_thinking() -> None:
+    """Backward compat: inner_thinking on tool results still works."""
+    trace = StepTrace(
+        step_index=0,
+        llm_invoked=True,
+        request_messages=(),
+        allowed_tools=("send_message",),
+        force_tool_call=False,
+        assistant_text="",
+        tool_calls=(ToolCall(id="tc-1", name="send_message", arguments={"message": "hi"}),),
+        tool_results=(ToolExecutionResult(
+            call_id="tc-1",
+            name="send_message",
+            output="hi",
+            inner_thinking="I want to say hello",
+        ),),
+        usage=None,
+        timing=StepTiming(),
+        reasoning_content=None,
+    )
+    result = AgentResult(
+        response="hi",
+        model="test",
+        provider="test",
+        stop_reason="terminal_tool",
+        tools_used=["send_message"],
+        step_traces=[trace],
+    )
+    thoughts = _extract_inner_thoughts(result)
+    assert "I want to say hello" in thoughts
