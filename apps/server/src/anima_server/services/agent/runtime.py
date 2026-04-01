@@ -42,7 +42,6 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
 )
 from anima_server.services.agent.state import AgentResult, StoredMessage
-from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
     build_chunk_event,
@@ -62,6 +61,7 @@ from anima_server.services.agent.system_prompt import (
     split_prompt_memory_blocks,
 )
 from anima_server.services.agent.tools import get_tool_rules, get_tool_summaries, get_tools
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
