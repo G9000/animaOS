@@ -28,8 +28,8 @@ def get_default_registry() -> HealthCheckRegistry:
 
     registry = HealthCheckRegistry()
     registry.register("db_integrity", check_db_integrity)
-    registry.register("llm_connectivity", lambda uid: check_llm_connectivity(uid))
-    registry.register("background_tasks", lambda uid: check_background_tasks(uid))
+    registry.register("llm_connectivity", check_llm_connectivity)
+    registry.register("background_tasks", check_background_tasks)
     return registry
 
 

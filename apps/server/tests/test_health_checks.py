@@ -164,6 +164,8 @@ async def test_background_tasks_healthy_multiple_consolidations():
     result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
     assert result.status == "healthy"
     assert result.details["last_consolidation"] is not None
+    # Most recent completed_at is now - 15 minutes; verify ORDER BY DESC works.
+    assert 14 < result.details["consolidation_age_minutes"] < 16
 
 
 @pytest.mark.asyncio

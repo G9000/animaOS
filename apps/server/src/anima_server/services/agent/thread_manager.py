@@ -178,7 +178,7 @@ def get_thread_messages_for_display(
                 "isArchivedHistory": m.is_archived_history,
             }
             for m in pg_messages
-            if m.role != "tool" or m.tool_name == "send_message"  # skip internal tool rows
+            if not m.is_internal
         ]
 
     if transcripts_dir is None:

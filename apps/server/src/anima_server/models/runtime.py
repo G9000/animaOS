@@ -233,6 +233,26 @@ class RuntimeMessage(RuntimeBase):
 
     thread: Mapped[RuntimeThread] = relationship(back_populates="messages")
 
+    @property
+    def is_internal(self) -> bool:
+        """True if this message is agent-loop machinery, not user-visible content.
+
+        The agent loop produces an assistant row (tool-call wrapper) paired with
+        a tool-result row for every tool call.  Only `send_message` tool results
+        carry user-facing text; everything else is internal plumbing.
+        """
+        if (
+            self.role == "assistant"
+            and isinstance(self.content_json, dict)
+            and "tool_calls" in self.content_json
+        ):
+            return True
+        return (
+            self.role == "tool"
+            and self.tool_name is not None
+            and self.tool_name != "send_message"
+        )
+
 
 class RuntimeBackgroundTaskRun(RuntimeBase):
     """Tracked background task execution for debugging and monitoring."""
