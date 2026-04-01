@@ -429,6 +429,14 @@ def _serialize_tool(tool: Any) -> dict[str, object]:
     }
     if description:
         function_payload["description"] = description
+
+    from anima_server.config import settings
+
+    if settings.agent_strict_tool_schemas:
+        from anima_server.services.agent.strict_mode import enable_strict_mode
+
+        function_payload = enable_strict_mode(function_payload)
+
     return {
         "type": "function",
         "function": function_payload,

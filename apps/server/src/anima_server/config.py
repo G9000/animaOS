@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     agent_base_url: str = ""
     agent_api_key: str = ""
     agent_max_steps: int = 6
+    agent_strict_tool_schemas: bool = True
     agent_max_concurrent_spawns: int = 10
     agent_spawn_timeout: float = 300.0
     agent_spawn_max_steps: int = 4

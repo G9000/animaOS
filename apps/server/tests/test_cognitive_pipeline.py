@@ -32,7 +32,6 @@ from anima_server.services.agent.tool_context import (
 from anima_server.services.agent.tools import (
     core_memory_append,
     core_memory_replace,
-    inject_inner_thoughts_into_tools,
     send_message,
 )
 from sqlalchemy import create_engine, select
@@ -124,7 +123,6 @@ async def test_append_memory_respond_pipeline() -> None:
                                 id="c1",
                                 name="core_memory_append",
                                 arguments={
-                                    "thinking": "User mentioned they have a dog named Biscuit.",
                                     "label": "human",
                                     "content": "Has a dog named Biscuit.",
                                 },
@@ -137,7 +135,6 @@ async def test_append_memory_respond_pipeline() -> None:
                                 id="c2",
                                 name="send_message",
                                 arguments={
-                                    "thinking": "Should acknowledge the dog warmly.",
                                     "message": "Biscuit sounds adorable!",
                                 },
                             ),
@@ -153,7 +150,6 @@ async def test_append_memory_respond_pipeline() -> None:
                     return result
 
             tools = [core_memory_append, send_message]
-            inject_inner_thoughts_into_tools(tools)
 
             runtime = AgentRuntime(
                 adapter=adapter,
@@ -252,7 +248,6 @@ async def test_core_memory_replace_pipeline() -> None:
                                 id="c1",
                                 name="core_memory_replace",
                                 arguments={
-                                    "thinking": "User switched jobs to Apple.",
                                     "label": "human",
                                     "old_text": "Works at Google",
                                     "new_text": "Works at Apple (switched March 2026)",
@@ -266,7 +261,6 @@ async def test_core_memory_replace_pipeline() -> None:
                                 id="c2",
                                 name="send_message",
                                 arguments={
-                                    "thinking": "Congratulate on the new role.",
                                     "message": "Congrats on the new role at Apple!",
                                 },
                             ),
@@ -276,7 +270,6 @@ async def test_core_memory_replace_pipeline() -> None:
             )
 
             tools = [core_memory_replace, send_message]
-            inject_inner_thoughts_into_tools(tools)
 
             runtime = AgentRuntime(
                 adapter=adapter,

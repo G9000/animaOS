@@ -42,7 +42,6 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
 )
 from anima_server.services.agent.state import AgentResult, StoredMessage
-from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
     build_chunk_event,
@@ -62,6 +61,7 @@ from anima_server.services.agent.system_prompt import (
     split_prompt_memory_blocks,
 )
 from anima_server.services.agent.tools import get_tool_rules, get_tool_summaries, get_tools
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ class AgentRuntime:
         if dry_run:
             request_messages = _snapshot_messages(messages)
             tool_schemas = tuple(
-                _strip_thinking_from_schema(_tool_schema(self._tool_registry[name]))
+                _tool_schema(self._tool_registry[name])
                 for name in allowed_tool_names
                 if name in self._tool_registry
             )
@@ -299,9 +299,7 @@ class AgentRuntime:
                     "tool": last_failed_tool,
                 }, user_id=user_id)
             allowed_tool_names = tuple(sorted(allowed_set))
-            force_tool_call = bool(allowed_tool_names) and (
-                rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
-            )
+            force_tool_call = bool(allowed_tool_names) and rules_solver.should_force_tool_call()
             if event_callback is not None:
                 # Include tool schemas on the first step for trace debugging.
                 schemas: dict[str, object] | None = None
@@ -614,15 +612,6 @@ class AgentRuntime:
             if event_callback is not None:
                 await event_callback(build_timing_event(step_index, _compute_timing(step_ctx)))
 
-            if rule_violation_hit:
-                messages.append(
-                    _sandwich_message(
-                        "Tool rule violation — the tool was not allowed at "
-                        "this point. Check allowed tools and try again."
-                    )
-                )
-                continue
-
             # Refresh memory blocks between steps if a tool modified memory.
             if (
                 memory_refresher is not None
@@ -648,24 +637,26 @@ class AgentRuntime:
                 except Exception:
                     logger.debug("Memory refresh between steps failed", exc_info=True)
 
-            if terminal_tool_hit or awaiting_approval:
+            is_final_step = step_index == self._max_steps - 1
+            should_continue, continuation_reason = self._decide_continuation(
+                tool_results=tool_results,
+                terminal_tool_hit=terminal_tool_hit,
+                rule_violation_hit=rule_violation_hit,
+                awaiting_approval=awaiting_approval,
+                is_final_step=is_final_step,
+            )
+
+            if not should_continue:
+                # Set stop_reason for max-steps exhaustion (the for/else
+                # clause only fires when the loop completes naturally).
+                if is_final_step and not terminal_tool_hit and not awaiting_approval:
+                    if "send_message" not in tools_used:
+                        stop_reason = StopReason.NO_TERMINAL_TOOL
+                    else:
+                        stop_reason = StopReason.MAX_STEPS
                 break
 
-            # V3-style: always continue after non-terminal tools.
-            any_error = any(tr.is_error for tr in tool_results)
-            if any_error:
-                failed_names = [tr.name for tr in tool_results if tr.is_error]
-                sandwich = _sandwich_message(
-                    f"Tool call failed ({', '.join(failed_names)}). "
-                    "You may retry with corrected arguments or "
-                    "respond to the user."
-                )
-            else:
-                sandwich = _sandwich_message(
-                    "Continue with your next tool call or "
-                    "send_message when ready."
-                )
-            messages.append(sandwich)
+            messages.append(_sandwich_message(continuation_reason))
             continue
         else:
             if "send_message" not in tools_used:
@@ -969,6 +960,37 @@ class AgentRuntime:
             tools_used=tools_used,
             step_traces=step_traces,
             prompt_budget=prompt_budget,
+        )
+
+    @staticmethod
+    def _decide_continuation(
+        *,
+        tool_results: list[ToolExecutionResult],
+        terminal_tool_hit: bool,
+        rule_violation_hit: bool,
+        awaiting_approval: bool,
+        is_final_step: bool,
+    ) -> tuple[bool, str | None]:
+        """Decide whether to continue the agent loop after tool execution."""
+        if terminal_tool_hit or awaiting_approval:
+            return False, None
+        if is_final_step:
+            return False, None
+        if rule_violation_hit:
+            return True, (
+                "Tool rule violation \u2014 the tool was not allowed at "
+                "this point. Check allowed tools and try again."
+            )
+        if any(tr.is_error for tr in tool_results):
+            failed_names = [tr.name for tr in tool_results if tr.is_error]
+            return True, (
+                f"Tool call failed ({', '.join(failed_names)}). "
+                "You may retry with corrected arguments or "
+                "respond to the user."
+            )
+        return True, (
+            "Continue with your next tool call or "
+            "send_message when ready."
         )
 
     async def _run_step(
@@ -1589,30 +1611,6 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
             schema["parameters"] = tool.args_schema.model_json_schema()
         except Exception:
             logger.warning("Failed to extract schema for tool %s", _tool_name(tool))
-    return schema
-
-
-_INJECTED_SCHEMA_KEYS = {"thinking"}
-
-
-def _strip_thinking_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove injected parameters (``thinking``, ``request_heartbeat``)
-    from a tool schema so they don't leak in client-facing dry-run output."""
-    params = schema.get("parameters")
-    if not isinstance(params, dict):
-        return schema
-    props = params.get("properties")
-    if isinstance(props, dict) and _INJECTED_SCHEMA_KEYS & set(props):
-        schema = dict(schema)
-        schema["parameters"] = dict(params)
-        schema["parameters"]["properties"] = {
-            k: v for k, v in props.items() if k not in _INJECTED_SCHEMA_KEYS
-        }
-        required = params.get("required", [])
-        if isinstance(required, list):
-            filtered = [r for r in required if r not in _INJECTED_SCHEMA_KEYS]
-            if len(filtered) != len(required):
-                schema["parameters"]["required"] = filtered
     return schema
 
 

@@ -292,13 +292,13 @@ def _validate_tool_arguments(
     tool: Any,
     arguments: dict[str, Any],
     *,
-    ignore_keys: tuple[str, ...] = ("thinking",),
+    ignore_keys: tuple[str, ...] = (),
 ) -> str | None:
     required_arguments = _get_required_tool_arguments(tool)
     if not required_arguments:
         return None
 
-    # Skip injected keys (e.g. ``thinking``) that are stripped before dispatch.
+    # Skip specified keys that are stripped before dispatch.
     effective_required = tuple(name for name in required_arguments if name not in ignore_keys)
     if not effective_required:
         return None
