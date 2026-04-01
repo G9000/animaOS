@@ -12,10 +12,18 @@ from typing import Any
 from sqlalchemy import select, text
 
 from anima_server.config import settings
+from anima_server.services.agent.json_utils import (
+    parse_json_array as _parse_json_array,
+)
+from anima_server.services.agent.json_utils import (
+    parse_json_object as _parse_json_object,
+)
 from anima_server.services.data_crypto import df
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
+
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 _background_tasks_lock = Lock()
 _background_tasks: set[asyncio.Task[None]] = set()
@@ -143,9 +151,7 @@ async def consolidate_pending_ops(
                 # (e.g. fallback IDs like "tool-call-0" can repeat across runs)
                 if op.source_run_id is not None:
                     dedup_filters.append(PendingMemoryOp.source_run_id == op.source_run_id)
-                duplicate = runtime_db.scalar(
-                    select(PendingMemoryOp.id).where(*dedup_filters)
-                )
+                duplicate = runtime_db.scalar(select(PendingMemoryOp.id).where(*dedup_filters))
                 if duplicate is not None:
                     op.consolidated = True
                     op.consolidated_at = now
@@ -398,14 +404,6 @@ async def resolve_conflict_batch(
         return BatchConflictResult(action="DIFFERENT")
 
 
-from anima_server.services.agent.json_utils import (
-    parse_json_array as _parse_json_array,
-)
-from anima_server.services.agent.json_utils import (
-    parse_json_object as _parse_json_object,
-)
-
-
 def extract_turn_memory(user_message: str) -> ExtractedTurnMemory:
     facts = tuple(extract_pattern_items(user_message, _FACT_EXTRACTORS))
     preferences = tuple(extract_pattern_items(user_message, _PREFERENCE_EXTRACTORS))
@@ -465,9 +463,6 @@ def is_viable_memory_fragment(value: str) -> bool:
     return 3 <= len(value) <= 160
 
 
-SOUL_WRITER_CANDIDATE_THRESHOLD = 15
-
-
 async def run_background_extraction(
     *,
     user_id: int,
@@ -493,13 +488,34 @@ async def run_background_extraction(
             # 1. Regex extraction
             extracted = extract_turn_memory(user_message)
             for fact in extracted.facts:
-                create_memory_candidate(rt_db, user_id=user_id, content=fact,
-                                        category="fact", importance=3,
-                                        importance_source="regex", source="regex")
+                create_memory_candidate(
+                    rt_db,
+                    user_id=user_id,
+                    content=fact,
+                    category="fact",
+                    importance=3,
+                    importance_source="regex",
+                    source="regex",
+                )
             for pref in extracted.preferences:
-                create_memory_candidate(rt_db, user_id=user_id, content=pref,
-                                        category="preference", importance=3,
-                                        importance_source="regex", source="regex")
+                create_memory_candidate(
+                    rt_db,
+                    user_id=user_id,
+                    content=pref,
+                    category="preference",
+                    importance=3,
+                    importance_source="regex",
+                    source="regex",
+                )
+
+            regex_count = len(extracted.facts) + len(extracted.preferences)
+            if regex_count > 0:
+                logger.info(
+                    "Regex extraction for user %s: %d facts, %d preferences",
+                    user_id,
+                    len(extracted.facts),
+                    len(extracted.preferences),
+                )
 
             # 2. LLM extraction
             if settings.agent_provider != "scaffold":
@@ -513,28 +529,62 @@ async def run_background_extraction(
                         if not content or not isinstance(content, str):
                             continue
                         create_memory_candidate(
-                            rt_db, user_id=user_id,
+                            rt_db,
+                            user_id=user_id,
                             content=content,
                             category=item.get("category", "fact"),
                             importance=item.get("importance", 3),
-                            importance_source="llm", source="llm",
+                            importance_source="llm",
+                            source="llm",
                         )
+                    llm_count = len(llm_result.memories)
+                    logger.info(
+                        "LLM extraction for user %s: %d memories extracted%s",
+                        user_id,
+                        llm_count,
+                        f" (emotion: {llm_result.emotion['emotion']})"
+                        if llm_result.emotion
+                        else "",
+                    )
                 except Exception:
-                    logger.exception("LLM extraction failed for user %s", user_id)
+                    logger.exception(
+                        "LLM extraction FAILED for user %s — facts from this turn are LOST. "
+                        "User message preview: %.100s",
+                        user_id,
+                        user_message[:100],
+                    )
 
             rt_db.commit()
 
-            # 3. Threshold check
+            # 3. Eager promotion — run soul writer whenever there are pending candidates
             count = count_eligible_candidates(rt_db, user_id=user_id)
-            if count >= SOUL_WRITER_CANDIDATE_THRESHOLD:
+            if count > 0:
                 from anima_server.services.agent.soul_writer import run_soul_writer
-                asyncio.create_task(run_soul_writer(user_id))
+
+                task = asyncio.create_task(run_soul_writer(user_id))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
+                logger.info(
+                    "Triggered eager Soul Writer for user %s (%d candidates)",
+                    user_id,
+                    count,
+                )
 
     except Exception as exc:
-        logger.exception("Background memory consolidation failed for user %s", user_id)
-        health_emit("memory", "consolidation", "error", user_id=user_id, data={
-            "error": str(exc),
-        })
+        logger.exception(
+            "Background memory consolidation FAILED for user %s — all extraction for this turn lost",
+            user_id,
+        )
+        health_emit(
+            "memory",
+            "consolidation",
+            "error",
+            user_id=user_id,
+            data={
+                "error": str(exc),
+                "user_message_preview": user_message[:100],
+            },
+        )
 
     # Embedding backfill moved to inactivity-only path (reflection.py)
     # to avoid per-turn SQLCipher writes from the conversation hot path.

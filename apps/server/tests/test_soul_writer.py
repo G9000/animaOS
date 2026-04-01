@@ -1,7 +1,7 @@
 """Tests for Soul Writer orchestrator — single serialized promoter pipeline."""
+
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -20,18 +20,13 @@ from anima_server.models.runtime_memory import (
 )
 from anima_server.services.agent.soul_writer import (
     SoulWriterResult,
-    _process_candidate,
-    _process_pending_op,
     plan_candidate_promotion,
     run_soul_writer,
 )
-from conftest_runtime import runtime_db_session
-from sqlalchemy import BigInteger, create_engine, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,9 +208,7 @@ async def test_process_candidate_promote() -> None:
 
     # Verify MemoryItem was created in soul DB
     with soul_factory() as soul_db:
-        items = soul_db.scalars(
-            select(MemoryItem).where(MemoryItem.user_id == user_id)
-        ).all()
+        items = soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all()
         assert len(items) >= 1
 
     soul_engine.dispose()
@@ -329,7 +322,7 @@ async def test_process_candidate_user_explicit_always_promotes() -> None:
         runtime_db.add(candidate)
         runtime_db.commit()
 
-    result = await run_soul_writer(
+    await run_soul_writer(
         user_id,
         soul_db_factory=soul_factory,
         runtime_db_factory=runtime_factory,
@@ -623,14 +616,20 @@ async def test_per_item_error_isolation() -> None:
     original_process = sw_module._process_candidate
     call_count = 0
 
-    def _patched_process(candidate, *, user_id, runtime_db, soul_db_factory, result):
+    def _patched_process(
+        candidate, *, user_id, runtime_db, soul_db_factory, result, event_loop=None
+    ):
         nonlocal call_count
         call_count += 1
         if candidate.content == "Another valid fact":
             raise RuntimeError("Simulated processing failure")
         return original_process(
-            candidate, user_id=user_id, runtime_db=runtime_db,
-            soul_db_factory=soul_db_factory, result=result,
+            candidate,
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db_factory=soul_db_factory,
+            result=result,
+            event_loop=event_loop,
         )
 
     sw_module._process_candidate = _patched_process
@@ -811,9 +810,7 @@ async def test_ops_processed_before_candidates() -> None:
         assert block is not None
         assert "Age: 30" in block.content
 
-        items = soul_db.scalars(
-            select(MemoryItem).where(MemoryItem.user_id == user_id)
-        ).all()
+        items = soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all()
         assert len(items) >= 1
 
     soul_engine.dispose()

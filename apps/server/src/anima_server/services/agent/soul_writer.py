@@ -3,6 +3,7 @@
 Triggered by: pre-turn check, inactivity, compaction, shutdown, threshold.
 Guarantees: per-user asyncio lock, per-item transactions, idempotent via content hash.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,6 +47,46 @@ class SoulWriterResult:
     errors: list[str] = field(default_factory=list)
 
 
+async def _embed_and_index_item(
+    user_id: int,
+    item_id: int,
+    content: str,
+    category: str,
+    importance: int,
+    soul_db: Session,
+) -> None:
+    """Generate embedding for a newly promoted item and upsert into indexes."""
+    try:
+        from anima_server.models import MemoryItem
+        from anima_server.services.agent.bm25_index import invalidate_index
+        from anima_server.services.agent.embeddings import generate_embedding
+        from anima_server.services.agent.vector_store import upsert_memory
+
+        embedding = await generate_embedding(content)
+        if embedding is None:
+            return
+
+        item = soul_db.get(MemoryItem, item_id)
+        if item is not None:
+            item.embedding_json = embedding
+            soul_db.flush()
+
+            upsert_memory(
+                user_id,
+                item_id=item_id,
+                content=content,
+                embedding=embedding,
+                category=category,
+                importance=importance,
+                db=soul_db,
+            )
+
+        invalidate_index(user_id)
+        logger.debug("Embedded and indexed promoted item %d for user %s", item_id, user_id)
+    except Exception:
+        logger.debug("Failed to embed promoted item %d", item_id, exc_info=True)
+
+
 async def run_soul_writer(
     user_id: int,
     *,
@@ -63,6 +104,8 @@ async def run_soul_writer(
 
     async with lock:
         try:
+            # Capture the event loop so worker threads can schedule coroutines back
+            loop = asyncio.get_running_loop()
             # Run sync DB work in a thread to avoid blocking the event loop
             await asyncio.to_thread(
                 _run_soul_writer_inner,
@@ -70,23 +113,32 @@ async def run_soul_writer(
                 result=result,
                 soul_db_factory=soul_db_factory,
                 runtime_db_factory=runtime_db_factory,
+                event_loop=loop,
             )
         except Exception as e:
             logger.exception("Soul Writer failed for user %s", user_id)
             result.errors.append(str(e))
 
     total_work = (
-        result.ops_processed + result.ops_skipped + result.ops_failed
-        + result.candidates_promoted + result.candidates_rejected
-        + result.candidates_superseded + result.candidates_failed
+        result.ops_processed
+        + result.ops_skipped
+        + result.ops_failed
+        + result.candidates_promoted
+        + result.candidates_rejected
+        + result.candidates_superseded
+        + result.candidates_failed
     )
     if total_work > 0 or result.errors:
         logger.info(
             "Soul Writer user=%s: ops=%d/%d/%d cands=%d/%d/%d/%d access=%s errors=%d",
             user_id,
-            result.ops_processed, result.ops_skipped, result.ops_failed,
-            result.candidates_promoted, result.candidates_rejected,
-            result.candidates_superseded, result.candidates_failed,
+            result.ops_processed,
+            result.ops_skipped,
+            result.ops_failed,
+            result.candidates_promoted,
+            result.candidates_rejected,
+            result.candidates_superseded,
+            result.candidates_failed,
             result.access_sync.get("items_synced", 0),
             len(result.errors),
         )
@@ -100,6 +152,7 @@ def _run_soul_writer_inner(
     result: SoulWriterResult,
     soul_db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
     """Inner pipeline — called under lock via asyncio.to_thread."""
     from anima_server.db.runtime import get_runtime_session_factory
@@ -200,6 +253,7 @@ def _run_soul_writer_inner(
                     runtime_db=runtime_db,
                     soul_db_factory=soul_factory,
                     result=result,
+                    event_loop=event_loop,
                 )
             except Exception as e:
                 logger.exception("Soul Writer candidate %s failed", candidate.id)
@@ -212,34 +266,33 @@ def _run_soul_writer_inner(
         runtime_db.commit()
 
     # Phase 3: Access sync (always runs)
-    with rt_factory() as runtime_db:
-        with soul_factory() as soul_db:
-            from anima_server.services.agent.access_sync import sync_access_metadata
+    with rt_factory() as runtime_db, soul_factory() as soul_db:
+        from anima_server.services.agent.access_sync import sync_access_metadata
 
-            result.access_sync = sync_access_metadata(
-                user_id=user_id,
-                runtime_db=runtime_db,
-                soul_db=soul_db,
-            )
+        result.access_sync = sync_access_metadata(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+        )
 
     # Phase 4: Promote emotional patterns (if due)
     try:
         from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
 
-        with rt_factory() as runtime_db:
-            with soul_factory() as soul_db:
-                promoted = promote_emotional_patterns(
-                    soul_db=soul_db,
-                    pg_db=runtime_db,
-                    user_id=user_id,
+        with rt_factory() as runtime_db, soul_factory() as soul_db:
+            promoted = promote_emotional_patterns(
+                soul_db=soul_db,
+                pg_db=runtime_db,
+                user_id=user_id,
+            )
+            if promoted > 0:
+                soul_db.commit()
+                runtime_db.commit()
+                logger.info(
+                    "Soul Writer promoted %d emotional patterns for user %s",
+                    promoted,
+                    user_id,
                 )
-                if promoted > 0:
-                    soul_db.commit()
-                    runtime_db.commit()
-                    logger.info(
-                        "Soul Writer promoted %d emotional patterns for user %s",
-                        promoted, user_id,
-                    )
     except Exception:
         logger.debug("Emotional pattern promotion failed for user %s", user_id, exc_info=True)
 
@@ -300,8 +353,10 @@ def _process_pending_op(
         block = _get_soul_block(soul_db, user_id=user_id, section=op.target_block)
         if block is not None:
             current_content = df(
-                user_id, block.content,
-                table="self_model_blocks", field="content",
+                user_id,
+                block.content,
+                table="self_model_blocks",
+                field="content",
             )
             if op.op_type == "append" and op.content.strip() in current_content:
                 op.consolidated = True
@@ -317,7 +372,11 @@ def _process_pending_op(
                 journal.reason = "idempotent skip — block already has target content"
                 result.ops_skipped += 1
                 return
-            if op.op_type == "replace" and op.old_content and op.old_content.strip() not in current_content:
+            if (
+                op.op_type == "replace"
+                and op.old_content
+                and op.old_content.strip() not in current_content
+            ):
                 # Old content no longer present — replace already applied or block changed
                 op.consolidated = True
                 op.consolidated_at = now
@@ -329,7 +388,10 @@ def _process_pending_op(
         # Apply the op
         if op.op_type == "append":
             append_to_soul_block(
-                soul_db, user_id=user_id, section=op.target_block, content=op.content,
+                soul_db,
+                user_id=user_id,
+                section=op.target_block,
+                content=op.content,
             )
         elif op.op_type == "replace":
             replace_in_soul_block(
@@ -341,7 +403,10 @@ def _process_pending_op(
             )
         elif op.op_type == "full_replace":
             full_replace_soul_block(
-                soul_db, user_id=user_id, section=op.target_block, content=op.content,
+                soul_db,
+                user_id=user_id,
+                section=op.target_block,
+                content=op.content,
             )
         else:
             raise ValueError(f"Unknown op_type: {op.op_type}")
@@ -362,6 +427,7 @@ def _process_candidate(
     runtime_db: Session,
     soul_db_factory: Callable,
     result: SoulWriterResult,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
     """Process a single MemoryCandidate."""
     from anima_server.models.runtime_memory import PromotionJournal
@@ -435,6 +501,28 @@ def _process_candidate(
 
             soul_db.commit()
 
+            # Embed immediately so the item is searchable right away
+            if event_loop is not None:
+                try:
+                    import asyncio as _aio
+
+                    _aio.run_coroutine_threadsafe(
+                        _embed_and_index_item(
+                            user_id,
+                            new_item.id,
+                            candidate.content,
+                            candidate.category,
+                            candidate.importance,
+                            soul_db,
+                        ),
+                        event_loop,
+                    ).result(timeout=15)
+                except Exception:
+                    logger.debug(
+                        "Inline embedding failed for superseded item %d, will backfill later",
+                        new_item.id,
+                    )
+
             candidate.status = "promoted"
             candidate.processed_at = now
             journal.target_table = "memory_items"
@@ -501,10 +589,33 @@ def _process_candidate(
                 except Exception:
                     logger.warning(
                         "suppress_memory failed for item %s (superseded by %s)",
-                        write_result.matched_item.id, new_item.id, exc_info=True,
+                        write_result.matched_item.id,
+                        new_item.id,
+                        exc_info=True,
                     )
 
         soul_db.commit()
+
+        # Embed immediately so the item is searchable right away
+        if new_item is not None and event_loop is not None:
+            try:
+                import asyncio as _aio
+
+                _aio.run_coroutine_threadsafe(
+                    _embed_and_index_item(
+                        user_id,
+                        new_item.id,
+                        candidate.content,
+                        candidate.category,
+                        candidate.importance,
+                        soul_db,
+                    ),
+                    event_loop,
+                ).result(timeout=15)
+            except Exception:
+                logger.debug(
+                    "Inline embedding failed for promoted item %d, will backfill later", new_item.id
+                )
 
         candidate.status = "promoted"
         candidate.processed_at = now
@@ -587,11 +698,7 @@ def plan_candidate_promotion(
                     old_item=old,
                     reason=f"slot match supersedes item {old.id}",
                 )
-            return PromotionDecision(
-                action="promote", reason="slot match but no target item found"
-            )
-        return PromotionDecision(
-            action="promote", reason="similar but no structured slot — append"
-        )
+            return PromotionDecision(action="promote", reason="slot match but no target item found")
+        return PromotionDecision(action="promote", reason="similar but no structured slot — append")
 
     return PromotionDecision(action="promote", reason="new memory")

@@ -383,6 +383,51 @@ def complete_task(text: str) -> str:
     return f"Completed: {best_task.text}"
 
 
+def _search_candidates(
+    runtime_db,
+    *,
+    user_id: int,
+    query: str,
+    category: str | None = None,
+    limit: int = 10,
+) -> list[tuple[float, str, str]]:
+    """Search MemoryCandidate rows in PG by keyword. Used as fallback when
+    no MemoryItem results are found.  Only searches non-promoted candidates."""
+    from sqlalchemy import select
+
+    from anima_server.models.runtime_memory import MemoryCandidate
+
+    stmt = (
+        select(MemoryCandidate)
+        .where(
+            MemoryCandidate.user_id == user_id,
+            MemoryCandidate.status.in_(["extracted", "queued"]),
+        )
+        .order_by(MemoryCandidate.created_at.desc())
+        .limit(100)
+    )
+    candidates = list(runtime_db.scalars(stmt).all())
+
+    query_lower = query.lower()
+    scored: list[tuple[float, str, str]] = []
+    for c in candidates:
+        content_lower = c.content.lower()
+        if category and c.category != category:
+            continue
+        if query_lower in content_lower:
+            scored.append((0.8, f"[pending] {c.content}", c.category))
+            continue
+        query_words = set(query_lower.split())
+        content_words = set(content_lower.split())
+        if query_words and content_words:
+            overlap = len(query_words & content_words) / len(query_words)
+            if overlap >= 0.4:
+                scored.append((overlap * 0.8, f"[pending] {c.content}", c.category))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:limit]
+
+
 @tool
 def recall_memory(
     query: str, category: str = "", tags: str = "", page: str = "0", count: str = "5"
@@ -512,6 +557,24 @@ def recall_memory(
                 episode_count += 1
                 scored.append((overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
     search_paths["episodes"] = episode_count
+
+    # Candidate fallback: search PG for extracted-but-not-yet-promoted candidates
+    candidate_count = 0
+    if not scored:
+        try:
+            candidate_results = _search_candidates(
+                ctx.runtime_db,
+                user_id=ctx.user_id,
+                query=query_stripped,
+                category=cat,
+            )
+            for score, content, cat_label in candidate_results:
+                candidate_count += 1
+                scored.append((score, content, cat_label))
+            search_paths["candidates"] = candidate_count
+        except Exception:
+            logger.debug("Candidate fallback search failed")
+            search_paths["candidates"] = 0
 
     if not scored:
         paths_summary = ", ".join(f"{k}={v}" for k, v in search_paths.items())
@@ -784,7 +847,6 @@ def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
     return f"Replaced text in {label} memory. It will be visible in your next step."
 
 
-
 @tool
 def check_system_health() -> str:
     """Run system health checks and return a formatted report.
@@ -801,7 +863,6 @@ def check_system_health() -> str:
 
     report = asyncio.run(registry.run_all(user_id=ctx.user_id))
     return registry.format_report(report)
-
 
 
 def get_core_tools() -> list[Any]:
