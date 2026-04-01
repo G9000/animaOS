@@ -143,6 +143,30 @@ async def test_background_tasks_healthy():
 
 
 @pytest.mark.asyncio
+async def test_background_tasks_healthy_multiple_consolidations():
+    """Multiple completed consolidation tasks should not crash .scalar()."""
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.services.health.checks import check_background_tasks
+
+    factory = get_runtime_session_factory()
+    with factory() as db:
+        for i in range(5):
+            db.add(RuntimeBackgroundTaskRun(
+                user_id=1,
+                task_type="consolidation",
+                status="completed",
+                started_at=datetime.now(UTC) - timedelta(minutes=60 - i * 10),
+                completed_at=datetime.now(UTC) - timedelta(minutes=55 - i * 10),
+            ))
+        db.commit()
+
+    result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
+    assert result.status == "healthy"
+    assert result.details["last_consolidation"] is not None
+
+
+@pytest.mark.asyncio
 async def test_background_tasks_degraded_failures():
     """Failed tasks in the last hour -> degraded."""
     from anima_server.db.runtime import get_runtime_session_factory

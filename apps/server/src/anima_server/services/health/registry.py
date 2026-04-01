@@ -76,5 +76,12 @@ class HealthCheckRegistry:
         lines: list[str] = [header]
         for check in report.checks.values():
             label = _STATUS_LABELS.get(check.status, "[??]")
-            lines.append(f"{label} {check.name} — {check.message}")
+            line = f"{label} {check.name} — {check.message}"
+            if check.status != "healthy" and check.details:
+                detail_parts = [
+                    f"{k}={v}" for k, v in check.details.items() if v is not None
+                ]
+                if detail_parts:
+                    line += f" ({', '.join(detail_parts)})"
+            lines.append(line)
         return "\n".join(lines)

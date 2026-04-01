@@ -153,44 +153,46 @@ async def check_background_tasks(
 
             runtime_db_factory = get_runtime_session_factory()
 
+        from sqlalchemy import func, select
+
         from anima_server.models.runtime import RuntimeBackgroundTaskRun
 
         one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
         stuck_cutoff = datetime.now(UTC) - timedelta(minutes=stuck_threshold_minutes)
 
         with runtime_db_factory() as db:
-            failed_count = (
-                db.query(RuntimeBackgroundTaskRun)
-                .filter(
+            failed_count = db.execute(
+                select(func.count())
+                .select_from(RuntimeBackgroundTaskRun)
+                .where(
                     RuntimeBackgroundTaskRun.user_id == user_id,
                     RuntimeBackgroundTaskRun.status == "failed",
                     RuntimeBackgroundTaskRun.completed_at >= one_hour_ago,
                 )
-                .count()
-            )
+            ).scalar_one()
             details["failed_last_hour"] = failed_count
 
-            stuck_count = (
-                db.query(RuntimeBackgroundTaskRun)
-                .filter(
+            stuck_count = db.execute(
+                select(func.count())
+                .select_from(RuntimeBackgroundTaskRun)
+                .where(
                     RuntimeBackgroundTaskRun.user_id == user_id,
                     RuntimeBackgroundTaskRun.status == "running",
                     RuntimeBackgroundTaskRun.started_at < stuck_cutoff,
                 )
-                .count()
-            )
+            ).scalar_one()
             details["stuck_tasks"] = stuck_count
 
-            last_completed = (
-                db.query(RuntimeBackgroundTaskRun.completed_at)
-                .filter(
+            last_completed = db.execute(
+                select(RuntimeBackgroundTaskRun.completed_at)
+                .where(
                     RuntimeBackgroundTaskRun.user_id == user_id,
                     RuntimeBackgroundTaskRun.status == "completed",
                     RuntimeBackgroundTaskRun.task_type == "consolidation",
                 )
                 .order_by(RuntimeBackgroundTaskRun.completed_at.desc())
-                .scalar()
-            )
+                .limit(1)
+            ).scalar()
             if last_completed is not None:
                 # SQLite returns tz-naive datetimes; ensure tz-aware for arithmetic
                 if last_completed.tzinfo is None:
