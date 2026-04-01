@@ -292,7 +292,7 @@ def _validate_tool_arguments(
     tool: Any,
     arguments: dict[str, Any],
     *,
-    ignore_keys: tuple[str, ...] = ("thinking",),
+    ignore_keys: tuple[str, ...] = (),
 ) -> str | None:
     required_arguments = _get_required_tool_arguments(tool)
     if not required_arguments:

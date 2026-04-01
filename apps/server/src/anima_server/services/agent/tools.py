@@ -876,42 +876,21 @@ def get_extension_tools() -> list[Any]:
 
 def get_tools() -> list[Any]:
     """Return all tools available to the agent (core + extensions)."""
-    tools = get_core_tools() + get_extension_tools()
-    inject_inner_thoughts_into_tools(tools)
-    return tools
+    return get_core_tools() + get_extension_tools()
 
 
 def prepare_action_tool_schemas(
     schemas: list[dict[str, Any]],
-    inner_thoughts_key: str = "thinking",
 ) -> list[dict[str, Any]]:
-    """Convert client-registered action tool schemas into OpenAI function
-    format with ``thinking`` param injected.
+    """Convert client-registered action tool schemas into OpenAI function format.
 
     Returns dicts that LangChain's ``bind_tools`` accepts directly alongside
     native tool objects.
     """
-    thinking_desc = (
-        "Deep inner monologue, private to you only. Use this to reason about the current situation."
-    )
     result: list[dict[str, Any]] = []
     for schema in schemas:
         s = copy.deepcopy(schema)
         params = s.get("parameters", {"type": "object", "properties": {}, "required": []})
-        props = params.get("properties", {})
-        required = list(params.get("required", []))
-
-        # Inject thinking as first required param
-        if inner_thoughts_key not in props:
-            new_props: dict[str, Any] = {
-                inner_thoughts_key: {"type": "string", "description": thinking_desc},
-            }
-            new_props.update(props)
-            params["properties"] = new_props
-            if inner_thoughts_key not in required:
-                required = [inner_thoughts_key, *required]
-            params["required"] = required
-
         result.append(
             {
                 "type": "function",

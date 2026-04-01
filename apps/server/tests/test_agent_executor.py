@@ -300,3 +300,47 @@ def test_stringify_output_list() -> None:
 
 def test_stringify_output_other() -> None:
     assert _stringify_output(42) == "42"
+
+
+# --------------------------------------------------------------------------- #
+# V3 alignment: thinking kwarg removal
+# --------------------------------------------------------------------------- #
+
+
+def test_tool_schemas_do_not_contain_thinking() -> None:
+    """After V3 alignment, tool schemas should not inject a 'thinking' param."""
+    from anima_server.services.agent.tools import get_tools
+
+    tools = get_tools()
+    for t in tools:
+        schema = t.args_schema.model_json_schema()
+        props = schema.get("properties", {})
+        assert "thinking" not in props, (
+            f"Tool {t.name} still has 'thinking' in its schema properties"
+        )
+        required = schema.get("required", [])
+        assert "thinking" not in required, (
+            f"Tool {t.name} still has 'thinking' in its required list"
+        )
+
+
+@pytest.mark.asyncio
+async def test_executor_strips_thinking_defensively() -> None:
+    """Even without schema injection, if a model sends 'thinking' in args,
+    the executor should strip it before calling the tool function."""
+
+    @tool
+    def greet(name: str) -> str:
+        """Say hello."""
+        return f"Hello {name}"
+
+    executor = ToolExecutor([greet])
+    tc = ToolCall(
+        id="call-1",
+        name="greet",
+        arguments={"thinking": "I should greet them", "name": "Alice"},
+    )
+    result = await executor.execute(tc)
+    assert not result.is_error
+    assert "Hello Alice" in result.output
+    assert result.inner_thinking == "I should greet them"

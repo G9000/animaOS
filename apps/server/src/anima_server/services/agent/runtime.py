@@ -225,7 +225,7 @@ class AgentRuntime:
         if dry_run:
             request_messages = _snapshot_messages(messages)
             tool_schemas = tuple(
-                _strip_thinking_from_schema(_tool_schema(self._tool_registry[name]))
+                _tool_schema(self._tool_registry[name])
                 for name in allowed_tool_names
                 if name in self._tool_registry
             )
@@ -299,7 +299,9 @@ class AgentRuntime:
                     "tool": last_failed_tool,
                 }, user_id=user_id)
             allowed_tool_names = tuple(sorted(allowed_set))
-            force_tool_call = bool(allowed_tool_names) and rules_solver.should_force_tool_call()
+            force_tool_call = bool(allowed_tool_names) and (
+                rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
+            )
             if event_callback is not None:
                 # Include tool schemas on the first step for trace debugging.
                 schemas: dict[str, object] | None = None
@@ -868,7 +870,9 @@ class AgentRuntime:
             )
 
         allowed_tool_names = tuple(sorted(rules_solver.get_allowed_tools(self._tool_names)))
-        force_tool_call = bool(allowed_tool_names) and rules_solver.should_force_tool_call()
+        force_tool_call = bool(allowed_tool_names) and (
+            rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
+        )
         if event_callback is not None:
             await event_callback(
                 build_step_request_event(
@@ -1585,30 +1589,6 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
             schema["parameters"] = tool.args_schema.model_json_schema()
         except Exception:
             logger.warning("Failed to extract schema for tool %s", _tool_name(tool))
-    return schema
-
-
-_INJECTED_SCHEMA_KEYS = {"thinking"}
-
-
-def _strip_thinking_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove injected parameters (``thinking``, ``request_heartbeat``)
-    from a tool schema so they don't leak in client-facing dry-run output."""
-    params = schema.get("parameters")
-    if not isinstance(params, dict):
-        return schema
-    props = params.get("properties")
-    if isinstance(props, dict) and _INJECTED_SCHEMA_KEYS & set(props):
-        schema = dict(schema)
-        schema["parameters"] = dict(params)
-        schema["parameters"]["properties"] = {
-            k: v for k, v in props.items() if k not in _INJECTED_SCHEMA_KEYS
-        }
-        required = params.get("required", [])
-        if isinstance(required, list):
-            filtered = [r for r in required if r not in _INJECTED_SCHEMA_KEYS]
-            if len(filtered) != len(required):
-                schema["parameters"]["required"] = filtered
     return schema
 
 
