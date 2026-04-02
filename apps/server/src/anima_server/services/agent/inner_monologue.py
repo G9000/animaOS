@@ -103,21 +103,26 @@ async def run_quick_reflection(
             prompt_loader = get_prompt_loader(db, user_id)
 
             if runtime_factory is None:
-                inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+                inner_state_block = get_self_model_block(
+                    db, user_id=user_id, section="inner_state")
                 working_memory_block = get_self_model_block(
                     db, user_id=user_id, section="working_memory"
                 )
             else:
                 with runtime_factory() as pg_db:
-                    working_context = get_working_context(pg_db, user_id=user_id)
+                    working_context = get_working_context(
+                        pg_db, user_id=user_id)
                     inner_state_block = working_context.get("inner_state")
-                    working_memory_block = working_context.get("working_memory")
+                    working_memory_block = working_context.get(
+                        "working_memory")
 
             inner_state_text = (
-                render_self_model_section(inner_state_block, user_id=user_id) or "No state yet."
+                render_self_model_section(
+                    inner_state_block, user_id=user_id) or "No state yet."
             )
             working_memory_text = (
-                render_self_model_section(working_memory_block, user_id=user_id) or "Empty."
+                render_self_model_section(
+                    working_memory_block, user_id=user_id) or "Empty."
             )
 
             # Get recent episodes
@@ -151,7 +156,7 @@ async def run_quick_reflection(
                 inner_state=inner_state_text,
                 working_memory=working_memory_text,
                 recent_episodes=episodes_text,
-                conversation=conversation_text[:3000],
+                conversation=conversation_text[:2000],
             )
 
             system_prompt = prompt_loader.quick_reflection_system()
@@ -259,7 +264,8 @@ async def run_quick_reflection(
                             confidence=float(emotional.get("confidence", 0.5)),
                             evidence_type="linguistic",
                             evidence=str(emotional.get("evidence", "")),
-                            trajectory=str(emotional.get("trajectory", "stable")),
+                            trajectory=str(emotional.get(
+                                "trajectory", "stable")),
                         )
                         result.emotional_signal_recorded = signal is not None
 
@@ -368,7 +374,8 @@ async def _run_deep_monologue_legacy(
                 )
             )
             persona_text = (
-                df(user_id, persona_block.content, table="self_model_blocks", field="content")
+                df(user_id, persona_block.content,
+                   table="self_model_blocks", field="content")
                 if persona_block
                 else "Default persona — not yet customized."
             )
@@ -612,35 +619,43 @@ async def run_deep_monologue(
             identity_block = get_identity_block(db, user_id=user_id)
             identity_version = identity_block.version if identity_block else 1
             identity_text = (
-                render_self_model_section(identity_block, user_id=user_id) or "Not yet created."
+                render_self_model_section(
+                    identity_block, user_id=user_id) or "Not yet created."
             )
 
-            persona_block = get_self_model_block(db, user_id=user_id, section="persona")
+            persona_block = get_self_model_block(
+                db, user_id=user_id, section="persona")
             persona_text = (
                 render_self_model_section(persona_block, user_id=user_id)
                 if persona_block
                 else "Default persona - not yet customized."
             )
             has_persona_block = persona_block is not None
-            growth_log_text = _last_n_entries(get_growth_log_text(db, user_id=user_id), 5)
+            growth_log_text = _last_n_entries(
+                get_growth_log_text(db, user_id=user_id), 5)
 
             if runtime_factory is None:
-                inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+                inner_state_block = get_self_model_block(
+                    db, user_id=user_id, section="inner_state")
                 working_memory_block = get_self_model_block(
                     db,
                     user_id=user_id,
                     section="working_memory",
                 )
-                intentions_block = get_self_model_block(db, user_id=user_id, section="intentions")
+                intentions_block = get_self_model_block(
+                    db, user_id=user_id, section="intentions")
 
                 inner_state_text = (
-                    render_self_model_section(inner_state_block, user_id=user_id) or "No state."
+                    render_self_model_section(
+                        inner_state_block, user_id=user_id) or "No state."
                 )
                 working_memory_text = (
-                    render_self_model_section(working_memory_block, user_id=user_id) or "Empty."
+                    render_self_model_section(
+                        working_memory_block, user_id=user_id) or "Empty."
                 )
                 intentions_text = (
-                    render_self_model_section(intentions_block, user_id=user_id) or "None."
+                    render_self_model_section(
+                        intentions_block, user_id=user_id) or "None."
                 )
 
                 from anima_server.models import EmotionalSignal
@@ -665,12 +680,16 @@ async def run_deep_monologue(
                 )
             else:
                 with runtime_factory() as pg_db:
-                    working_context = get_working_context(pg_db, user_id=user_id)
-                    intentions_block = get_active_intentions(pg_db, user_id=user_id)
-                    signals = get_recent_signals(pg_db, user_id=user_id, limit=10)
+                    working_context = get_working_context(
+                        pg_db, user_id=user_id)
+                    intentions_block = get_active_intentions(
+                        pg_db, user_id=user_id)
+                    signals = get_recent_signals(
+                        pg_db, user_id=user_id, limit=10)
 
                     inner_state_text = (
-                        render_self_model_section(working_context.get("inner_state"), user_id=user_id)
+                        render_self_model_section(
+                            working_context.get("inner_state"), user_id=user_id)
                         or "No state."
                     )
                     working_memory_text = (
@@ -681,7 +700,8 @@ async def run_deep_monologue(
                         or "Empty."
                     )
                     intentions_text = (
-                        render_self_model_section(intentions_block, user_id=user_id) or "None."
+                        render_self_model_section(
+                            intentions_block, user_id=user_id) or "None."
                     )
                     signals_text = (
                         "\n".join(
@@ -834,7 +854,8 @@ async def run_deep_monologue(
                         result.working_memory_updated = True
 
                     if parsed.get("intentions_update"):
-                        updated_intentions_text = str(parsed["intentions_update"])
+                        updated_intentions_text = str(
+                            parsed["intentions_update"])
                         set_active_intentions(
                             pg_db,
                             user_id=user_id,
@@ -950,7 +971,8 @@ def _last_n_entries(content: str, n: int) -> str:
     """Extract the last n entries from a markdown list."""
     if not content:
         return "No entries yet."
-    entries = [line for line in content.split("\n") if line.strip().startswith(("- ", "* "))]
+    entries = [line for line in content.split(
+        "\n") if line.strip().startswith(("- ", "* "))]
     return "\n".join(entries[-n:]) if entries else "No entries yet."
 
 

@@ -83,16 +83,7 @@ def send_message(message: str) -> str:
 
 @tool
 def note_to_self(key: str, value: str, note_type: str = "observation") -> str:
-    """Save a working note for THIS conversation session only. Notes do NOT survive
-    after the session ends — they are scratch-pad context, not permanent memory.
-    Use this for: session-level observations, mood reads, plans for this conversation,
-    temporary context you want across turns.
-    Do NOT use for lasting user facts — use update_human_memory or save_to_memory instead.
-    Types: observation, plan, context, emotion. Examples:
-    - key="user_mood", value="seems stressed about work deadline", note_type="emotion"
-    - key="conversation_goal", value="help user plan weekend trip", note_type="plan"
-    - key="technical_context", value="user is working on a React app with TypeScript", note_type="context"
-    """
+    """Save a scratch-pad note for this session only (not permanent). Types: observation, plan, context, emotion. For lasting facts use save_to_memory instead."""
     from anima_server.services.agent.session_memory import write_session_note
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -122,7 +113,8 @@ def dismiss_note(key: str) -> str:
     from anima_server.services.agent.tool_context import get_tool_context
 
     ctx = get_tool_context()
-    removed = remove_session_note(ctx.runtime_db, thread_id=ctx.thread_id, key=key)
+    removed = remove_session_note(
+        ctx.runtime_db, thread_id=ctx.thread_id, key=key)
     if removed:
         from anima_server.services.agent.companion import get_companion
 
@@ -135,21 +127,7 @@ def dismiss_note(key: str) -> str:
 
 @tool
 def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags: str = "") -> str:
-    """Save a fact to permanent long-term memory (discrete items, searchable).
-    Use this for specific, categorical user facts that benefit from structured recall.
-    If a matching session note exists it will be promoted; otherwise the key text
-    is stored directly — no prior note_to_self is required.
-    Categories and when to use each:
-    - fact: concrete details ("works at Google", "has two cats", "lactose intolerant")
-    - preference: stated likes/dislikes ("prefers dark mode", "hates small talk")
-    - goal: user aspirations ("wants to learn piano", "saving for a house")
-    - relationship: people in the user's life ("sister Emma, lives in Seattle")
-    Importance: 1-5 (5 = identity-defining).
-    Tags: optional comma-separated labels for retrieval filtering (e.g. "work,career").
-    IMPORTANT: If you already wrote something to update_human_memory, do NOT also
-    save the same information here. The human block is for your holistic understanding;
-    save_to_memory is for discrete searchable facts.
-    """
+    """Save a discrete fact to permanent searchable memory. Categories: fact, preference, goal, relationship. Importance: 1-5. Tags: comma-separated. Do not duplicate what's already in update_human_memory."""
     from anima_server.services.agent.candidate_ops import create_memory_candidate
     from anima_server.services.agent.session_memory import promote_session_note
     from anima_server.services.agent.tool_context import get_tool_context
@@ -162,7 +140,8 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
     if category not in ("fact", "preference", "goal", "relationship"):
         category = "fact"
 
-    parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
+    parsed_tags = [t.strip().lower()
+                   for t in tags.split(",") if t.strip()] if tags else None
 
     # Try session-note promotion first (the original two-step flow).
     promoted = promote_session_note(
@@ -208,13 +187,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
 def set_intention(
     title: str, evidence: str = "", priority: str = "background", deadline: str = ""
 ) -> str:
-    """Track an ongoing goal or intention for this user across sessions. Use when you notice
-    a recurring need, upcoming deadline, or something you should proactively follow up on.
-    Priority: high (deadline/urgent), ongoing (long-term), background (passive awareness).
-    Examples:
-    - title="Help prepare Q2 review", priority="high", deadline="2026-03-20"
-    - title="Track career transition progress", priority="ongoing"
-    """
+    """Track a goal or intention across sessions. Priority: high, ongoing, or background. Deadline: YYYY-MM-DD or empty."""
     from anima_server.services.agent.intentions import add_intention
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -259,14 +232,7 @@ def complete_goal(title: str) -> str:
 
 @tool
 def create_task(text: str, due_date: str = "", priority: str = "2") -> str:
-    """Create a task on the user's task list. Use this when the user asks you to add a
-    reminder, todo, or task. The task appears on their dashboard.
-    due_date should be YYYY-MM-DD format if mentioned, or empty string if not.
-    priority: 1 (low) to 5 (critical), default 2.
-    Examples:
-    - "remind me to call mom Friday" -> text="Call mom", due_date="2026-03-20", priority="2"
-    - "add buy groceries to my list" -> text="Buy groceries", due_date="", priority="2"
-    """
+    """Create a task on the user's task list. due_date: YYYY-MM-DD or empty. priority: 1 (low) to 5 (critical)."""
     from anima_server.models.task import Task
     from anima_server.schemas.task import normalize_due_date, normalize_task_text
     from anima_server.services.agent.tool_context import get_tool_context
@@ -302,9 +268,7 @@ def create_task(text: str, due_date: str = "", priority: str = "2") -> str:
 
 @tool
 def list_tasks(include_done: str = "false") -> str:
-    """List the user's current tasks. Returns a summary of open tasks (and optionally
-    completed ones). Use this when the user asks about their tasks, todos, or what they
-    need to do."""
+    """List the user's open tasks (set include_done=true to include completed)."""
     from sqlalchemy import select
 
     from anima_server.models.task import Task
@@ -314,7 +278,8 @@ def list_tasks(include_done: str = "false") -> str:
     query = select(Task).where(Task.user_id == ctx.user_id)
     if include_done.lower() not in ("true", "yes", "1"):
         query = query.where(Task.done == False)  # noqa: E712
-    query = query.order_by(Task.done, Task.priority.desc(), Task.created_at.desc())
+    query = query.order_by(
+        Task.done, Task.priority.desc(), Task.created_at.desc())
     tasks = list(ctx.db.scalars(query).all())
 
     if not tasks:
@@ -332,8 +297,7 @@ def list_tasks(include_done: str = "false") -> str:
 
 @tool
 def complete_task(text: str) -> str:
-    """Mark a task as done. Provide the task text (or a close match). Use when the user
-    says they finished something or wants to check off a task."""
+    """Mark a task as done by providing its text (or close match)."""
     from sqlalchemy import select
 
     from anima_server.models.task import Task
@@ -361,7 +325,8 @@ def complete_task(text: str) -> str:
         text_words = set(text_lower.split())
         task_words = set(task_lower.split())
         if text_words and task_words:
-            overlap = len(text_words & task_words) / max(len(text_words), len(task_words))
+            overlap = len(text_words & task_words) / \
+                max(len(text_words), len(task_words))
             if overlap > best_score:
                 best_score = overlap
                 best_task = t
@@ -404,7 +369,7 @@ def _search_candidates(
             MemoryCandidate.status.in_(["extracted", "queued"]),
         )
         .order_by(MemoryCandidate.created_at.desc())
-        .limit(100)
+        .limit(30)
     )
     candidates = list(runtime_db.scalars(stmt).all())
 
@@ -422,7 +387,8 @@ def _search_candidates(
         if query_words and content_words:
             overlap = len(query_words & content_words) / len(query_words)
             if overlap >= 0.4:
-                scored.append((overlap * 0.8, f"[pending] {c.content}", c.category))
+                scored.append(
+                    (overlap * 0.8, f"[pending] {c.content}", c.category))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:limit]
@@ -430,21 +396,9 @@ def _search_candidates(
 
 @tool
 def recall_memory(
-    query: str, category: str = "", tags: str = "", page: str = "0", count: str = "5"
+    query: str, category: str = "", tags: str = "", page: str = "1", count: str = "5"
 ) -> str:
-    """Search your memory for information about the user. Use this when the user asks
-    what you remember, or when you need to look up something specific about them.
-    Returns matching memories ranked by relevance (semantic + keyword hybrid search).
-    Optional category filter: fact, preference, goal, relationship (or empty for all).
-    Optional tags filter: comma-separated labels to narrow results (e.g. "work,career").
-    Optional page: 0-indexed page number for paginated results (default "0").
-    Optional count: number of results per page (default "5").
-    Examples:
-    - "what do you remember about my sister?" -> query="sister"
-    - "what are my goals?" -> query="goals", category="goal"
-    - "work-related facts" -> query="work", tags="work,career"
-    - "show me more memories" -> query="...", page="1"
-    """
+    """Search memory for user information (hybrid semantic + keyword). Filter by category (fact/preference/goal/relationship) and tags. Use one focused topic per query. Page 1 = first page."""
     import asyncio
 
     from sqlalchemy import select
@@ -461,7 +415,8 @@ def recall_memory(
     if cat and cat not in ("fact", "preference", "goal", "relationship"):
         cat = None
 
-    parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
+    parsed_tags = [t.strip().lower()
+                   for t in tags.split(",") if t.strip()] if tags else None
 
     # Use hybrid search (semantic + keyword) via Phase 1 infrastructure
     scored: list[tuple[float, str, str]] = []
@@ -483,7 +438,8 @@ def recall_memory(
             tags=parsed_tags,
         )
         if loop is not None:
-            result = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=30)
+            result = asyncio.run_coroutine_threadsafe(
+                coro, loop).result(timeout=30)
         else:
             result = asyncio.run(coro)
         hybrid_count = 0
@@ -494,13 +450,15 @@ def recall_memory(
             scored.append(
                 (
                     score,
-                    df(ctx.user_id, item.content, table="memory_items", field="content"),
+                    df(ctx.user_id, item.content,
+                       table="memory_items", field="content"),
                     item.category,
                 )
             )
         search_paths["hybrid"] = hybrid_count
     except Exception as exc:
-        logger.warning("hybrid_search failed for query=%r: %s", query_stripped, exc)
+        logger.warning("hybrid_search failed for query=%r: %s",
+                       query_stripped, exc)
         search_paths["hybrid"] = f"error: {exc}"
 
     # Text-based fallback: used when hybrid fails OR returns no items
@@ -513,10 +471,11 @@ def recall_memory(
             ctx.db,
             user_id=ctx.user_id,
             category=cat,
-            limit=100,
+            limit=40,
         )
         for item in items:
-            plaintext = df(ctx.user_id, item.content, table="memory_items", field="content")
+            plaintext = df(ctx.user_id, item.content,
+                           table="memory_items", field="content")
             content_lower = plaintext.lower()
             if query_lower in content_lower:
                 keyword_count += 1
@@ -531,32 +490,38 @@ def recall_memory(
                     scored.append((overlap, plaintext, item.category))
         search_paths["keyword"] = keyword_count
 
-    # Also search episodes
-    episodes = list(
-        ctx.db.scalars(
-            select(MemoryEpisode)
-            .where(MemoryEpisode.user_id == ctx.user_id)
-            .order_by(MemoryEpisode.created_at.desc())
-            .limit(50)
-        ).all()
-    )
+    # Also search episodes (skip when filtering to a specific non-episode category)
     episode_count = 0
-    query_lower = query_stripped.lower()
-    for ep in episodes:
-        ep_plaintext = df(ctx.user_id, ep.summary, table="memory_episodes", field="summary")
-        summary_lower = ep_plaintext.lower()
-        if query_lower in summary_lower:
-            episode_count += 1
-            scored.append((0.9, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
-            continue
-        query_words = set(query_lower.split())
-        summary_words = set(summary_lower.split())
-        if query_words and summary_words:
-            overlap = len(query_words & summary_words) / len(query_words)
-            if overlap >= 0.5:
+    if not cat or cat == "episode":
+        episodes = list(
+            ctx.db.scalars(
+                select(MemoryEpisode)
+                .where(MemoryEpisode.user_id == ctx.user_id)
+                .order_by(MemoryEpisode.created_at.desc())
+                .limit(20)
+            ).all()
+        )
+        query_lower = query_stripped.lower()
+        for ep in episodes:
+            ep_plaintext = df(ctx.user_id, ep.summary,
+                              table="memory_episodes", field="summary")
+            summary_lower = ep_plaintext.lower()
+            if query_lower in summary_lower:
                 episode_count += 1
-                scored.append((overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
-    search_paths["episodes"] = episode_count
+                scored.append(
+                    (0.9, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
+                continue
+            query_words = set(query_lower.split())
+            summary_words = set(summary_lower.split())
+            if query_words and summary_words:
+                overlap = len(query_words & summary_words) / len(query_words)
+                if overlap >= 0.5:
+                    episode_count += 1
+                    scored.append(
+                        (overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
+        search_paths["episodes"] = episode_count
+    else:
+        search_paths["episodes"] = "skipped (category filter)"
 
     # Candidate fallback: search PG for extracted-but-not-yet-promoted candidates
     candidate_count = 0
@@ -580,9 +545,9 @@ def recall_memory(
         paths_summary = ", ".join(f"{k}={v}" for k, v in search_paths.items())
         return f"No memories found matching: {query} [search: {paths_summary}]"
 
-    # Parse pagination parameters
+    # Parse pagination parameters (1-indexed input → 0-indexed internal)
     try:
-        page_num = max(0, int(page))
+        page_num = max(0, int(page) - 1)
     except (ValueError, TypeError):
         page_num = 0
     try:
@@ -606,7 +571,7 @@ def recall_memory(
     header = f"Found {total} matching memories (showing page {page_num + 1} of {total_pages}):"
     result = header + "\n" + "\n".join(lines)
     if page_num + 1 < total_pages:
-        result += f"\nUse page={page_num + 1} to see more results."
+        result += f"\nUse page={page_num + 2} to see more results."
     return result
 
 
@@ -614,22 +579,7 @@ def recall_memory(
 def recall_conversation(
     query: str, role: str = "", start_date: str = "", end_date: str = "", limit: str = "10"
 ) -> str:
-    """Search past conversations for specific exchanges or topics.
-    Use this when the user asks about something discussed previously,
-    or when you need to recall a specific past conversation.
-
-    Args:
-        query: What to search for — described naturally.
-        role: Filter by message role: 'user', 'assistant', or empty for all.
-        start_date: Only return messages from this date onward (YYYY-MM-DD). Inclusive.
-        end_date: Only return messages up to this date (YYYY-MM-DD). Inclusive.
-        limit: Maximum results to return (default 10).
-
-    Examples:
-        - "what did we talk about yesterday?" -> query="yesterday's topics"
-        - "what did I say about my job?" -> query="job work career"
-        - "conversations from last week" -> query="", start_date="2026-03-09", end_date="2026-03-15"
-    """
+    """Search past conversations by topic. Filter by role (user/assistant), date range (YYYY-MM-DD), and limit."""
     import asyncio
 
     from anima_server.services.agent.conversation_search import search_conversation_history
@@ -691,11 +641,7 @@ def recall_conversation(
 
 @tool
 def recall_transcript(query: str, days_back: int = 30) -> str:
-    """Search past conversation transcripts for specific details.
-    Use this when you need exact wording or verbatim recall from
-    past conversations, not just general memory of what happened.
-    Returns relevant snippets, not full conversations.
-    """
+    """Search past transcripts for exact wording or verbatim recall. Returns relevant snippets."""
     from anima_server.config import settings
     from anima_server.services.agent.tool_context import get_tool_context
     from anima_server.services.agent.transcript_search import format_snippets, search_transcripts
@@ -720,18 +666,7 @@ def recall_transcript(query: str, days_back: int = 30) -> str:
 
 @tool
 def update_human_memory(content: str) -> str:
-    """Update your holistic mental model of the user. This is your high-level
-    understanding — a living summary of who this person is. The content should be
-    the COMPLETE updated model (include existing knowledge plus new information).
-    Write in concise key-value or bullet style.
-    USE THIS FOR: big-picture understanding (job, life situation, personality,
-    communication style, key relationships, major life events).
-    DO NOT USE FOR: discrete searchable facts — use save_to_memory instead.
-    Rule of thumb: if it's a standalone detail you'd want to search later
-    ("allergic to peanuts"), use save_to_memory(category="fact"). If it changes
-    your overall picture of who this person is, update this block.
-    Do NOT duplicate the same information in both this tool and save_to_memory.
-    """
+    """Replace your holistic model of the user (complete rewrite). Use for big-picture understanding. For discrete searchable facts use save_to_memory instead."""
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -759,14 +694,7 @@ def update_human_memory(content: str) -> str:
 
 @tool
 def core_memory_append(label: str, content: str) -> str:
-    """Append new information to one of your in-context memory blocks. The change
-    takes effect in the CURRENT conversation — you will see the updated block
-    in your next reasoning step. Use this for incremental additions.
-    Valid labels: human (your understanding of the user), persona (your own identity/style).
-    Examples:
-    - core_memory_append("human", "Mentioned they recently adopted a rescue dog named Biscuit.")
-    - core_memory_append("persona", "I've noticed I tend to be more playful in evening chats.")
-    """
+    """Append to an in-context memory block (takes effect this conversation). Labels: human, persona."""
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -797,15 +725,7 @@ def core_memory_append(label: str, content: str) -> str:
 
 @tool
 def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
-    """Replace specific text in one of your in-context memory blocks. The change
-    takes effect in the CURRENT conversation. Use this to correct outdated
-    information or refine your understanding.
-    Valid labels: human (your understanding of the user), persona (your own identity/style).
-    The old_text must match exactly (case-sensitive) to be replaced.
-    Examples:
-    - core_memory_replace("human", "Works at Google", "Works at Apple (switched jobs March 2026)")
-    - core_memory_replace("persona", "I prefer formal language", "I adapt my formality to match the user's style")
-    """
+    """Replace exact text in an in-context memory block (takes effect this conversation). Labels: human, persona. old_text must match exactly."""
     from anima_server.services.agent.memory_blocks import build_merged_block_content
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
@@ -914,7 +834,8 @@ def prepare_action_tool_schemas(
     result: list[dict[str, Any]] = []
     for schema in schemas:
         s = copy.deepcopy(schema)
-        params = s.get("parameters", {"type": "object", "properties": {}, "required": []})
+        params = s.get(
+            "parameters", {"type": "object", "properties": {}, "required": []})
         result.append(
             {
                 "type": "function",
@@ -934,7 +855,8 @@ def get_tool_summaries(tools: Sequence[Any] | None = None) -> list[str]:
     summaries: list[str] = []
 
     for agent_tool in resolved_tools:
-        name = getattr(agent_tool, "name", "") or getattr(agent_tool, "__name__", "tool")
+        name = getattr(agent_tool, "name", "") or getattr(
+            agent_tool, "__name__", "tool")
         description = getattr(agent_tool, "description", "") or ""
         normalized_description = " ".join(description.strip().split())
         if normalized_description:

@@ -156,10 +156,13 @@ class OpenAICompatibleChatClient:
                     delta = {}
 
                 yield OpenAICompatibleStreamChunk(
-                    content_delta=_coerce_response_content(delta.get("content")),
-                    tool_call_deltas=_normalize_stream_tool_call_deltas(delta.get("tool_calls")),
+                    content_delta=_coerce_response_content(
+                        delta.get("content")),
+                    tool_call_deltas=_normalize_stream_tool_call_deltas(
+                        delta.get("tool_calls")),
                     usage_metadata=_extract_usage_metadata(body),
-                    done=choice.get("finish_reason") is not None or body.get("done") is True,
+                    done=choice.get("finish_reason") is not None or body.get(
+                        "done") is True,
                 )
 
     def _build_payload(
@@ -188,6 +191,8 @@ class OpenAICompatibleChatClient:
             payload["parallel_tool_calls"] = True
         if self._temperature is not None:
             payload["temperature"] = self._temperature
+        if stream and self.provider in ("openai", "openrouter"):
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
 
@@ -228,7 +233,8 @@ def _serialize_message(message: Any) -> dict[str, object]:
         "role": "assistant",
         "content": _serialize_content(getattr(message, "content", "")),
     }
-    tool_calls = _normalize_request_tool_calls(getattr(message, "tool_calls", ()))
+    tool_calls = _normalize_request_tool_calls(
+        getattr(message, "tool_calls", ()))
     if tool_calls:
         payload["tool_calls"] = tool_calls
     return payload
@@ -308,7 +314,8 @@ def _normalize_response_tool_calls(raw_tool_calls: object) -> tuple[dict[str, ob
         name = str(function.get("name", "")).strip()
         if not name:
             continue
-        arguments, parse_error, raw_arguments = _parse_tool_arguments(function.get("arguments"))
+        arguments, parse_error, raw_arguments = _parse_tool_arguments(
+            function.get("arguments"))
         payload: dict[str, object] = {
             "id": str(raw_tool_call.get("id") or f"tool-call-{index}"),
             "name": name,
@@ -420,7 +427,8 @@ def _serialize_tool_choice(
 def _serialize_tool(tool: Any) -> dict[str, object]:
     name = _tool_name(tool)
     if not name:
-        raise ValueError("Tool name is required for OpenAI-compatible serialization.")
+        raise ValueError(
+            "Tool name is required for OpenAI-compatible serialization.")
     description = _tool_description(tool)
     parameters = _tool_parameters(tool)
     function_payload: dict[str, object] = {

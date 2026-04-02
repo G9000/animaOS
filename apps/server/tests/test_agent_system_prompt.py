@@ -19,7 +19,8 @@ from jinja2 import UndefinedError
 def test_build_system_prompt_includes_structured_sections() -> None:
     prompt = build_system_prompt(
         SystemPromptContext(
-            tool_summaries=["current_datetime: Return the current date and time in UTC."],
+            tool_summaries=[
+                "current_datetime: Return the current date and time in UTC."],
             memory_blocks=(
                 MemoryBlock(
                     label="human",
@@ -38,7 +39,8 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "Persona:" in prompt
     assert "Runtime:" in prompt
     assert "Memory Blocks:" in prompt
-    assert "Available Tools:" in prompt
+    # Tool summaries no longer injected into prompt (sent via API tools parameter)
+    assert "Available Tools:" not in prompt
     assert "User Context:" in prompt
     assert "Additional Instructions:" in prompt
     assert "2026-03-14T09:30:00+00:00" in prompt
@@ -53,11 +55,12 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "No assumptions" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
-    assert "recall_transcript" in prompt
+    # Tool names no longer appear in prompt — they're in the API tools payload
 
 
 def test_build_system_prompt_omits_empty_optional_sections() -> None:
-    prompt = build_system_prompt(SystemPromptContext(now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC)))
+    prompt = build_system_prompt(SystemPromptContext(
+        now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC)))
 
     assert "Available Tools:" not in prompt
     assert "Memory Blocks:" not in prompt

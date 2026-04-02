@@ -430,6 +430,36 @@ export default function Chat() {
               <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
                 {messages.length} MSG
               </span>
+              {(() => {
+                const totals = messages.reduce(
+                  (acc, m) => {
+                    const u = m.traceEvents?.find((e) => e.type === "usage");
+                    if (u) {
+                      acc.prompt += u.promptTokens ?? 0;
+                      acc.completion += u.completionTokens ?? 0;
+                      acc.cached += u.cachedInputTokens ?? 0;
+                    }
+                    return acc;
+                  },
+                  { prompt: 0, completion: 0, cached: 0 },
+                );
+                const total = totals.prompt + totals.completion;
+                if (total === 0) return null;
+                return (
+                  <>
+                    <div className="w-px h-3 bg-border" />
+                    <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                      {total.toLocaleString()} TKN
+                      {totals.cached > 0 && (
+                        <span className="text-emerald-500/50 ml-1">
+                          {Math.round((totals.cached / totals.prompt) * 100)}%
+                          CACHED
+                        </span>
+                      )}
+                    </span>
+                  </>
+                );
+              })()}
             </div>
             <div className="flex items-center gap-4">
               {/* Language selector */}
@@ -759,6 +789,49 @@ function MessageBubble({
           </div>
         )}
       </div>
+
+      {/* Token usage badge — always visible for assistant messages with usage data */}
+      {!isUser &&
+        (() => {
+          const usage = message.traceEvents?.find((e) => e.type === "usage");
+          const timing = message.traceEvents?.filter(
+            (e) => e.type === "timing",
+          );
+          if (!usage) return null;
+          const totalMs =
+            timing?.reduce((sum, t) => sum + (t.stepDurationMs ?? 0), 0) ?? 0;
+          const steps =
+            message.traceEvents?.filter(
+              (e) => e.type === "step_state" && e.phase === "request",
+            ).length ?? 0;
+          return (
+            <div className="flex items-center gap-2 px-1 font-mono text-[9px] text-muted-foreground/35">
+              <span>{(usage.totalTokens ?? 0).toLocaleString()} tkn</span>
+              <span className="text-muted-foreground/20">·</span>
+              <span>{usage.promptTokens ?? 0}in</span>
+              <span>{usage.completionTokens ?? 0}out</span>
+              {(usage.cachedInputTokens ?? 0) > 0 && (
+                <span className="text-emerald-500/40">
+                  {usage.cachedInputTokens}cached
+                </span>
+              )}
+              {(usage.reasoningTokens ?? 0) > 0 && (
+                <span className="text-purple-400/40">
+                  {usage.reasoningTokens}reason
+                </span>
+              )}
+              {totalMs > 0 && (
+                <>
+                  <span className="text-muted-foreground/20">·</span>
+                  <span>{(totalMs / 1000).toFixed(1)}s</span>
+                </>
+              )}
+              {steps > 1 && (
+                <span className="text-muted-foreground/20">{steps} steps</span>
+              )}
+            </div>
+          );
+        })()}
 
       {/* Actions — fade in on hover */}
       <div className="flex items-center gap-3 px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
