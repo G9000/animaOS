@@ -32,7 +32,8 @@ class SelfModelBlock(Base):
 
     __tablename__ = "self_model_blocks"
     __table_args__ = (
-        UniqueConstraint("user_id", "section", name="uq_self_model_blocks_user_section"),
+        UniqueConstraint("user_id", "section",
+                         name="uq_self_model_blocks_user_section"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -85,13 +86,18 @@ class AgentProfile(Base):
         nullable=False,
         unique=True,
     )
-    agent_name: Mapped[str] = mapped_column(String(50), nullable=False, default="Anima")
-    creator_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
-    relationship: Mapped[str] = mapped_column(String(100), nullable=False, default="companion")
+    agent_name: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="Anima")
+    creator_name: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="")
+    relationship: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="companion")
     agent_type: Mapped[str] = mapped_column(
         String(32), nullable=False, default="companion", server_default="companion"
     )  # companion, mirror
-    setup_complete: Mapped[bool] = mapped_column(default=False, server_default="0")
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    setup_complete: Mapped[bool] = mapped_column(
+        default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -113,7 +119,8 @@ class EmotionalSignal(Base):
     """
 
     __tablename__ = "emotional_signals"
-    __table_args__ = (Index("ix_emotional_signals_user_created", "user_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_emotional_signals_user_created", "user_id", "created_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -128,7 +135,8 @@ class EmotionalSignal(Base):
         String(32),
         nullable=False,
     )  # frustrated, excited, anxious, calm, stressed, relieved, curious, disappointed
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    confidence: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.5)
     evidence_type: Mapped[str] = mapped_column(
         String(24),
         nullable=False,
@@ -140,9 +148,11 @@ class EmotionalSignal(Base):
         nullable=False,
         default="stable",
     )  # escalating, de-escalating, stable, shifted
-    previous_emotion: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    previous_emotion: Mapped[str | None] = mapped_column(
+        String(32), nullable=True)
     topic: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    acted_on: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    acted_on: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

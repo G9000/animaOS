@@ -3,6 +3,10 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { getDbViewerEnabled } from "../pages/settings/AdvancedSettings";
 import { getTheme, toggleTheme, type Theme } from "../lib/theme";
+import { api } from "../lib/api";
+import { getUnlockToken } from "../lib/api";
+import { API_BASE } from "../lib/runtime";
+import personaAvatar from "../assets/persona-default.svg";
 
 const STATIC_NAV_ITEMS = [
   { to: "/", label: "HOME", icon: "\u2302" },
@@ -31,6 +35,61 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   });
   const [showUser, setShowUser] = useState(false);
   const [theme, setTheme] = useState<Theme>(getTheme);
+  const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
+  const [agentName, setAgentName] = useState("ANIMA");
+
+  useEffect(() => {
+    if (user?.id == null) return;
+    let revoked = false;
+    api.consciousness
+      .getAgentProfile(user.id)
+      .then(async (profile) => {
+        if (profile.agentName) setAgentName(profile.agentName.toUpperCase());
+        if (!profile.avatarUrl) return;
+        const token = getUnlockToken();
+        const headers: Record<string, string> = {};
+        if (token) headers["x-anima-unlock"] = token;
+        const res = await fetch(`${API_BASE}${profile.avatarUrl}`, { headers });
+        if (!res.ok || revoked) return;
+        const blob = await res.blob();
+        if (!revoked) setAgentAvatarUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {});
+    return () => {
+      revoked = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (user?.id == null) return;
+      let revoked = false;
+      api.consciousness
+        .getAgentProfile(user.id)
+        .then(async (profile) => {
+          if (profile.agentName) setAgentName(profile.agentName.toUpperCase());
+          if (!profile.avatarUrl) {
+            setAgentAvatarUrl(personaAvatar);
+            return;
+          }
+          const token = getUnlockToken();
+          const headers: Record<string, string> = {};
+          if (token) headers["x-anima-unlock"] = token;
+          const res = await fetch(`${API_BASE}${profile.avatarUrl}`, {
+            headers,
+          });
+          if (!res.ok || revoked) return;
+          const blob = await res.blob();
+          if (!revoked) setAgentAvatarUrl(URL.createObjectURL(blob));
+        })
+        .catch(() => {});
+      return () => {
+        revoked = true;
+      };
+    };
+    window.addEventListener("anima-avatar-changed", refresh);
+    return () => window.removeEventListener("anima-avatar-changed", refresh);
+  }, [user?.id]);
 
   const syncSetting = useCallback(() => {
     setDbEnabled(getDbViewerEnabled());
@@ -38,7 +97,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     window.addEventListener("anima-settings-changed", syncSetting);
-    return () => window.removeEventListener("anima-settings-changed", syncSetting);
+    return () =>
+      window.removeEventListener("anima-settings-changed", syncSetting);
   }, [syncSetting]);
 
   // Keyboard toggle: Ctrl+/ or Cmd+/
@@ -70,9 +130,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         }`}
       >
         {/* Header: logo + toggle */}
-        <div className={`flex items-center border-b border-border h-10 flex-shrink-0 ${collapsed ? "justify-center" : "justify-between px-3"}`}>
+        <div
+          className={`flex items-center border-b border-border h-10 flex-shrink-0 ${collapsed ? "justify-center" : "justify-between px-3"}`}
+        >
           {!collapsed && (
-            <span className="font-mono text-[9px] text-primary tracking-[0.35em]">ANIMA</span>
+            <span className="font-mono text-[9px] text-primary tracking-[0.35em]">
+              ANIMA
+            </span>
           )}
           <button
             onClick={() => {
@@ -85,17 +149,36 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
             className="w-8 h-8 flex items-center justify-center text-muted-foreground/40 hover:text-foreground transition-colors"
           >
-            <span className="font-mono text-[11px]">{collapsed ? "\u25B8" : "\u25C2"}</span>
+            <span className="font-mono text-[11px]">
+              {collapsed ? "\u25B8" : "\u25C2"}
+            </span>
           </button>
         </div>
 
-        {/* Online indicator */}
-        <div className={`flex items-center gap-2 px-3 py-2 flex-shrink-0 ${collapsed ? "justify-center px-0" : ""}`}>
-          <div className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0" />
+        {/* Agent avatar — click to open agent config */}
+        <NavLink
+          to="/agent"
+          title={agentName}
+          className={({ isActive }) =>
+            `flex flex-col items-center py-4 border-b border-border flex-shrink-0 transition-colors hover:bg-accent/40 cursor-pointer ${
+              collapsed ? "gap-0" : "gap-1.5"
+            } ${isActive ? "bg-accent/30" : ""}`
+          }
+        >
+          <div className="relative">
+            <img
+              src={agentAvatarUrl}
+              alt={agentName}
+              className={`rounded-full border border-border object-cover transition-all duration-200 ${collapsed ? "w-7 h-7" : "w-12 h-12"}`}
+            />
+            <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-success border-2 border-sidebar" />
+          </div>
           {!collapsed && (
-            <span className="font-mono text-[8px] text-muted-foreground/50 tracking-wider">ONLINE</span>
+            <span className="font-mono text-[9px] text-muted-foreground/60 tracking-widest">
+              {agentName}
+            </span>
           )}
-        </div>
+        </NavLink>
 
         {/* Nav */}
         <nav className="flex-1 flex flex-col gap-px py-1 overflow-y-auto overflow-x-hidden">
@@ -115,7 +198,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 }`
               }
             >
-              <span className="text-[14px] leading-none flex-shrink-0">{item.icon}</span>
+              <span className="text-[14px] leading-none flex-shrink-0">
+                {item.icon}
+              </span>
               {!collapsed && (
                 <span className="text-[9px] tracking-wider">{item.label}</span>
               )}
@@ -130,9 +215,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             title={theme === "dark" ? "Light mode" : "Dark mode"}
             className={`w-full flex items-center gap-3 px-3 py-2.5 font-mono text-muted-foreground/50 hover:text-foreground transition-colors ${collapsed ? "justify-center px-0" : ""}`}
           >
-            <span className="text-[13px] flex-shrink-0">{theme === "dark" ? "\u2600" : "\u263E"}</span>
+            <span className="text-[13px] flex-shrink-0">
+              {theme === "dark" ? "\u2600" : "\u263E"}
+            </span>
             {!collapsed && (
-              <span className="text-[9px] tracking-wider">{theme === "dark" ? "LIGHT" : "DARK"}</span>
+              <span className="text-[9px] tracking-wider">
+                {theme === "dark" ? "LIGHT" : "DARK"}
+              </span>
             )}
           </button>
 
@@ -145,7 +234,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 {user?.name?.charAt(0) || "?"}
               </span>
               {!collapsed && (
-                <span className="text-[9px] tracking-wider truncate">{user?.name || "USER"}</span>
+                <span className="text-[9px] tracking-wider truncate">
+                  {user?.name || "USER"}
+                </span>
               )}
             </button>
 
@@ -155,13 +246,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 onMouseLeave={() => setShowUser(false)}
               >
                 <button
-                  onClick={() => { navigate("/profile"); setShowUser(false); }}
+                  onClick={() => {
+                    navigate("/profile");
+                    setShowUser(false);
+                  }}
                   className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-muted-foreground hover:text-foreground hover:bg-input/50 tracking-wider transition-colors"
                 >
                   PROFILE
                 </button>
                 <button
-                  onClick={() => { setShowUser(false); void logout().then(() => navigate("/login")); }}
+                  onClick={() => {
+                    setShowUser(false);
+                    void logout().then(() => navigate("/login"));
+                  }}
                   className="w-full text-left px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
                 >
                   LOGOUT

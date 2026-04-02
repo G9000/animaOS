@@ -39,15 +39,19 @@ class PersonaTemplateInfo(BaseModel):
     id: str
     name: str
     description: str
+    defaultAvatarUrl: str | None = None
 
 
 AVAILABLE_PROVIDERS: list[ProviderInfo] = [
-    ProviderInfo(name="scaffold", defaultModel="scaffold", requiresApiKey=False),
+    ProviderInfo(name="scaffold", defaultModel="scaffold",
+                 requiresApiKey=False),
     ProviderInfo(
         name="ollama", defaultModel="vaultbox/qwen3.5-uncensored:35b", requiresApiKey=False
     ),
-    ProviderInfo(name="openrouter", defaultModel="google/gemma-3-27b-it", requiresApiKey=True),
-    ProviderInfo(name="moonshot", defaultModel="kimi-k2-5", requiresApiKey=True),
+    ProviderInfo(name="openrouter",
+                 defaultModel="google/gemma-3-27b-it", requiresApiKey=True),
+    ProviderInfo(name="moonshot", defaultModel="kimi-k2-5",
+                 requiresApiKey=True),
     ProviderInfo(name="vllm", defaultModel="default", requiresApiKey=False),
     ProviderInfo(name="openai", defaultModel="gpt-4o", requiresApiKey=True),
 ]

@@ -48,8 +48,12 @@ export default function Settings() {
                 }`
               }
             >
-              <div className="font-mono text-[10px] tracking-wider">{section.label}</div>
-              <div className="mt-1.5 text-[11px] text-muted-foreground/50 leading-relaxed">{section.description}</div>
+              <div className="font-mono text-[10px] tracking-wider">
+                {section.label}
+              </div>
+              <div className="mt-1.5 text-[11px] text-muted-foreground/50 leading-relaxed">
+                {section.description}
+              </div>
             </NavLink>
           ))}
         </nav>

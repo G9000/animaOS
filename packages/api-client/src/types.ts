@@ -43,6 +43,7 @@ export interface PersonaTemplateInfo {
   id: string;
   name: string;
   description: string;
+  defaultAvatarUrl?: string | null;
 }
 
 export type PersonaTemplate = "default" | "companion" | "mirror" | "anima";
@@ -51,6 +52,8 @@ export interface AgentProfileData {
   agentName: string;
   relationship: string;
   personaTemplate: string;
+  agentType?: string;
+  avatarUrl?: string | null;
   setupComplete: boolean;
 }
 

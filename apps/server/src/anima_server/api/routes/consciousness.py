@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -174,7 +175,8 @@ async def get_full_self_model(
     intentions_block = get_active_intentions(runtime_db or db, user_id=user_id)
     if intentions_block is not None:
         sections["intentions"] = _section_dict(
-            content=render_self_model_section(intentions_block, user_id=user_id),
+            content=render_self_model_section(
+                intentions_block, user_id=user_id),
             version=intentions_block.version,
             updated_by=intentions_block.updated_by,
             updated_at=intentions_block.updated_at,
@@ -217,7 +219,8 @@ async def get_self_model_section(
     if section == "identity":
         block = get_identity_block(db, user_id=user_id)
         if block is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
             section=section,
             content=render_self_model_section(block, user_id=user_id),
@@ -246,9 +249,11 @@ async def get_self_model_section(
         )
 
     if section in {"inner_state", "working_memory"}:
-        block = get_working_context(runtime_db or db, user_id=user_id).get(section)
+        block = get_working_context(
+            runtime_db or db, user_id=user_id).get(section)
         if block is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
             section=section,
             content=render_self_model_section(block, user_id=user_id),
@@ -260,7 +265,8 @@ async def get_self_model_section(
     if section == "intentions":
         block = get_active_intentions(runtime_db or db, user_id=user_id)
         if block is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
             section=section,
             content=render_self_model_section(block, user_id=user_id),
@@ -271,7 +277,8 @@ async def get_self_model_section(
 
     block = get_self_model_block(db, user_id=user_id, section=section)
     if block is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
 
     return _section_response(
         section=block.section,
@@ -387,13 +394,15 @@ async def get_agent_profile(
 
     from anima_server.models import AgentProfile
 
-    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
+    profile = db.query(AgentProfile).filter(
+        AgentProfile.user_id == user_id).first()
     if profile is None:
         return {
             "agentName": "Anima",
             "relationship": "companion",
             "personaTemplate": "default",
             "agentType": "companion",
+            "avatarUrl": None,
             "setupComplete": False,
         }
     return {
@@ -401,6 +410,7 @@ async def get_agent_profile(
         "relationship": profile.relationship,
         "personaTemplate": "default",
         "agentType": profile.agent_type,
+        "avatarUrl": profile.avatar_url,
         "setupComplete": profile.setup_complete,
     }
 
@@ -419,9 +429,11 @@ async def update_agent_profile(
     from anima_server.services.agent.self_model import get_self_model_block, set_self_model_block
     from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
 
-    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
+    profile = db.query(AgentProfile).filter(
+        AgentProfile.user_id == user_id).first()
     if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
     name_changed = False
     if payload.agentName is not None:
@@ -450,11 +462,14 @@ async def update_agent_profile(
         )
 
     if relationship_changed:
-        human_block = get_self_model_block(db, user_id=user_id, section="human")
+        human_block = get_self_model_block(
+            db, user_id=user_id, section="human")
         if human_block:
-            content = df(user_id, human_block.content, table="self_model_blocks", field="content")
+            content = df(user_id, human_block.content,
+                         table="self_model_blocks", field="content")
             lines = content.split("\n")
-            new_lines = [line for line in lines if not line.startswith("Relationship:")]
+            new_lines = [
+                line for line in lines if not line.startswith("Relationship:")]
             if profile.relationship:
                 new_lines.append(f"Relationship: {profile.relationship}")
             set_self_model_block(
@@ -494,8 +509,130 @@ async def update_agent_profile(
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
         "agentType": profile.agent_type,
+        "avatarUrl": profile.avatar_url,
         "setupComplete": True,
     }
+
+
+ALLOWED_AVATAR_TYPES = {"image/png", "image/jpeg",
+                        "image/gif", "image/webp", "image/svg+xml"}
+MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2 MB
+
+
+@router.post("/{user_id}/agent-profile/avatar")
+async def upload_agent_avatar(
+    user_id: int,
+    file: UploadFile,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Upload a custom avatar image for the agent."""
+    require_unlocked_user(request, user_id)
+
+    if file.content_type not in ALLOWED_AVATAR_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported image type: {file.content_type}. "
+            f"Allowed: {', '.join(sorted(ALLOWED_AVATAR_TYPES))}",
+        )
+
+    data = await file.read()
+    if len(data) > MAX_AVATAR_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Avatar must be under {MAX_AVATAR_SIZE // 1024 // 1024} MB.",
+        )
+
+    from anima_server.models import AgentProfile
+    from anima_server.services.storage import get_user_data_dir
+
+    profile = db.query(AgentProfile).filter(
+        AgentProfile.user_id == user_id).first()
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+
+    ext_map = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/svg+xml": ".svg",
+    }
+    ext = ext_map.get(file.content_type, ".png")
+    avatar_dir = get_user_data_dir(user_id) / "avatars"
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    avatar_path = avatar_dir / f"agent{ext}"
+
+    # Remove old avatar files with different extensions
+    for old in avatar_dir.glob("agent.*"):
+        if old != avatar_path:
+            old.unlink(missing_ok=True)
+
+    avatar_path.write_bytes(data)
+
+    avatar_url = f"/consciousness/{user_id}/agent-profile/avatar"
+    profile.avatar_url = avatar_url
+    db.commit()
+
+    return {"avatarUrl": avatar_url}
+
+
+@router.get("/{user_id}/agent-profile/avatar")
+async def get_agent_avatar(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Serve the agent's avatar image."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.storage import get_user_data_dir
+
+    avatar_dir = get_user_data_dir(user_id) / "avatars"
+    if avatar_dir.is_dir():
+        for candidate in avatar_dir.glob("agent.*"):
+            if candidate.is_file():
+                media_map = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                    ".svg": "image/svg+xml",
+                }
+                media_type = media_map.get(
+                    candidate.suffix.lower(), "application/octet-stream")
+                return FileResponse(candidate, media_type=media_type)
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                        detail="No avatar found")
+
+
+@router.delete("/{user_id}/agent-profile/avatar")
+async def delete_agent_avatar(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Delete the agent's custom avatar, reverting to default."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.models import AgentProfile
+    from anima_server.services.storage import get_user_data_dir
+
+    profile = db.query(AgentProfile).filter(
+        AgentProfile.user_id == user_id).first()
+    if profile is not None:
+        profile.avatar_url = None
+        db.commit()
+
+    avatar_dir = get_user_data_dir(user_id) / "avatars"
+    if avatar_dir.is_dir():
+        for old in avatar_dir.glob("agent.*"):
+            old.unlink(missing_ok=True)
+
+    return {"avatarUrl": None}
 
 
 # --- Emotional State Endpoints ---
@@ -525,7 +662,8 @@ async def get_emotional_state(
     if signals:
         emotion_scores: dict[str, float] = {}
         for signal in signals[:5]:
-            emotion_scores[signal.emotion] = emotion_scores.get(signal.emotion, 0) + signal.confidence
+            emotion_scores[signal.emotion] = emotion_scores.get(
+                signal.emotion, 0) + signal.confidence
         if emotion_scores:
             dominant = max(emotion_scores, key=emotion_scores.get)
 

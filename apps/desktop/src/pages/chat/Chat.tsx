@@ -3,10 +3,13 @@ import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type { ChatMessage, Thread, TraceEvent } from "@anima/api-client";
 import { api } from "../../lib/api";
+import { API_BASE } from "../../lib/runtime";
+import { getUnlockToken } from "../../lib/api";
 import { serializeTraceAsJson, serializeTraceAsText } from "./chat-trace";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import personaAvatar from "../../assets/persona-default.svg";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -60,6 +63,29 @@ export default function Chat() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
+
+  useEffect(() => {
+    if (user?.id == null) return;
+    let revoked = false;
+    api.consciousness
+      .getAgentProfile(user.id)
+      .then(async (profile) => {
+        if (!profile.avatarUrl) return;
+        const token = getUnlockToken();
+        const headers: Record<string, string> = {};
+        if (token) headers["x-anima-unlock"] = token;
+        const res = await fetch(`${API_BASE}${profile.avatarUrl}`, { headers });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (revoked) return;
+        setAgentAvatarUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {});
+    return () => {
+      revoked = true;
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (user?.id == null) return;
@@ -482,6 +508,7 @@ export default function Chat() {
                 message={msg}
                 translateLang={translateLang}
                 showTrace={showTrace}
+                avatarUrl={agentAvatarUrl}
               />
             ))}
 
@@ -500,8 +527,15 @@ export default function Chat() {
             {/* Reasoning indicator */}
             {streaming && reasoningBuffer && (
               <div className="flex gap-3 animate-in fade-in duration-200">
-                <div className="font-mono text-[9px] text-primary/65 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
-                  THINK
+                <div className="flex flex-col items-center shrink-0 w-12 pt-2">
+                  <img
+                    src={agentAvatarUrl}
+                    alt="Anima"
+                    className="w-5 h-5 rounded-full mb-1"
+                  />
+                  <span className="font-mono text-[9px] text-primary/65 select-none tracking-wider">
+                    THINK
+                  </span>
                 </div>
                 <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-primary/[0.05] border-l-2 border-primary/35 px-4 py-3">
                   <div className="text-[12px] text-muted-foreground/80 whitespace-pre-wrap break-words leading-relaxed font-mono">
@@ -515,8 +549,15 @@ export default function Chat() {
             {/* Streaming content */}
             {streaming && streamBuffer && (
               <div className="flex gap-3 animate-in fade-in duration-200">
-                <div className="font-mono text-[9px] text-muted-foreground/65 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
-                  ANIMA
+                <div className="flex flex-col items-center shrink-0 w-12 pt-2">
+                  <img
+                    src={agentAvatarUrl}
+                    alt="Anima"
+                    className="w-5 h-5 rounded-full mb-1"
+                  />
+                  <span className="font-mono text-[9px] text-muted-foreground/65 select-none tracking-wider">
+                    ANIMA
+                  </span>
                 </div>
                 <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-card/80 border-l-2 border-primary/45 px-4 py-3">
                   <div className="prose prose-invert prose-sm md:prose-base max-w-none">
@@ -532,8 +573,15 @@ export default function Chat() {
             {/* Waiting indicator */}
             {streaming && !streamBuffer && !reasoningBuffer && (
               <div className="flex gap-3 animate-in fade-in duration-200">
-                <div className="font-mono text-[9px] text-muted-foreground/65 pt-2.5 select-none shrink-0 w-12 text-right tracking-wider">
-                  ANIMA
+                <div className="flex flex-col items-center shrink-0 w-12 pt-2">
+                  <img
+                    src={agentAvatarUrl}
+                    alt="Anima"
+                    className="w-5 h-5 rounded-full mb-1"
+                  />
+                  <span className="font-mono text-[9px] text-muted-foreground/65 select-none tracking-wider">
+                    ANIMA
+                  </span>
                 </div>
                 <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-card/80 border-l-2 border-primary/20 px-4 py-3">
                   <div className="flex gap-1.5 items-center h-5 font-mono text-[10px] text-muted-foreground/70 tracking-wider">
@@ -600,10 +648,12 @@ function MessageBubble({
   message,
   translateLang,
   showTrace,
+  avatarUrl,
 }: {
   message: ChatMessage;
   translateLang: string;
   showTrace: boolean;
+  avatarUrl: string;
 }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
@@ -642,10 +692,17 @@ function MessageBubble({
     : null;
 
   return (
-    <div className={`group flex flex-col gap-1.5 w-full ${isUser ? "items-end" : "items-start"}`}>
+    <div
+      className={`group flex flex-col gap-1.5 w-full ${isUser ? "items-end" : "items-start"}`}
+    >
       {/* Label + timestamp */}
       <div className="flex items-center gap-2 px-1 select-none">
-        <span className={`font-mono text-[9px] tracking-wider ${isUser ? "text-primary/70" : "text-muted-foreground/65"}`}>
+        {!isUser && (
+          <img src={avatarUrl} alt="Anima" className="w-5 h-5 rounded-full" />
+        )}
+        <span
+          className={`font-mono text-[9px] tracking-wider ${isUser ? "text-primary/70" : "text-muted-foreground/65"}`}
+        >
           {isUser ? "YOU" : isSystem ? "SYS" : "ANIMA"}
         </span>
         {timestamp && (

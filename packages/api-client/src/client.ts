@@ -169,6 +169,42 @@ export function createApiClient(options: ApiClientOptions) {
     return data as T;
   }
 
+  async function uploadFile<T>(
+    endpoint: string,
+    file: File | Blob,
+    fieldName = "file",
+  ): Promise<T> {
+    const token = getUnlockToken?.() || null;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["x-anima-unlock"] = token;
+    }
+    const nonce = getNonce?.() || null;
+    if (nonce) {
+      headers["x-anima-nonce"] = nonce;
+    }
+
+    const form = new FormData();
+    form.append(fieldName, file);
+
+    const response = await fetchImpl(`${normalizedBaseUrl}${endpoint}`, {
+      method: "POST",
+      credentials,
+      headers,
+      body: form,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message =
+        (data as { error?: string; message?: string }).error ||
+        (data as { error?: string; message?: string }).message ||
+        "Something went wrong";
+      throw new Error(message);
+    }
+    return data as T;
+  }
+
   async function* streamChat(
     message: string,
     userId: number,
@@ -184,7 +220,12 @@ export function createApiClient(options: ApiClientOptions) {
         ...(token ? { "x-anima-unlock": token } : {}),
         ...(streamNonce ? { "x-anima-nonce": streamNonce } : {}),
       },
-      body: JSON.stringify({ message, userId, stream: true, ...(threadId !== undefined ? { threadId } : {}) }),
+      body: JSON.stringify({
+        message,
+        userId,
+        stream: true,
+        ...(threadId !== undefined ? { threadId } : {}),
+      }),
     });
 
     if (!response.ok) {
@@ -445,9 +486,15 @@ export function createApiClient(options: ApiClientOptions) {
       send: (message: string, userId: number, threadId?: number) =>
         request<AgentResponse>("/chat", {
           method: "POST",
-          body: { message, userId, stream: false, ...(threadId !== undefined ? { threadId } : {}) },
+          body: {
+            message,
+            userId,
+            stream: false,
+            ...(threadId !== undefined ? { threadId } : {}),
+          },
         }),
-      stream: (message: string, userId: number, threadId?: number) => streamChat(message, userId, threadId),
+      stream: (message: string, userId: number, threadId?: number) =>
+        streamChat(message, userId, threadId),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
       clearHistory: (userId: number) =>
@@ -482,7 +529,8 @@ export function createApiClient(options: ApiClientOptions) {
     },
     config: {
       providers: () => request<ProviderInfo[]>("/config/providers"),
-      personaTemplates: () => request<PersonaTemplateInfo[]>("/config/persona-templates"),
+      personaTemplates: () =>
+        request<PersonaTemplateInfo[]>("/config/persona-templates"),
       get: (userId: number) => request<AgentConfig>(`/config/${userId}`),
       update: (
         userId: number,
@@ -532,7 +580,8 @@ export function createApiClient(options: ApiClientOptions) {
         },
       ) => {
         const params = new URLSearchParams();
-        if (options?.entityId) params.set("entity_id", String(options.entityId));
+        if (options?.entityId)
+          params.set("entity_id", String(options.entityId));
         if (options?.type) params.set("type", options.type);
         if (options?.limit) params.set("limit", String(options.limit));
         const qs = params.toString();
@@ -646,12 +695,30 @@ export function createApiClient(options: ApiClientOptions) {
         request<AgentProfileData>(`/consciousness/${userId}/agent-profile`),
       updateAgentProfile: (
         userId: number,
-        data: { agentName?: string; relationship?: string; personaTemplate?: string },
+        data: {
+          agentName?: string;
+          relationship?: string;
+          personaTemplate?: string;
+        },
       ) =>
         request<AgentProfileData>(`/consciousness/${userId}/agent-profile`, {
           method: "PATCH",
           body: data,
         }),
+      uploadAgentAvatar: (userId: number, file: File | Blob) =>
+        uploadFile<{ avatarUrl: string }>(
+          `/consciousness/${userId}/agent-profile/avatar`,
+          file,
+        ),
+      deleteAgentAvatar: (userId: number) =>
+        request<{ avatarUrl: null }>(
+          `/consciousness/${userId}/agent-profile/avatar`,
+          {
+            method: "DELETE",
+          },
+        ),
+      getAgentAvatarUrl: (userId: number) =>
+        `${normalizedBaseUrl}/api/consciousness/${userId}/agent-profile/avatar`,
     },
     vault: {
       export: (passphrase: string) =>
@@ -669,16 +736,18 @@ export function createApiClient(options: ApiClientOptions) {
         }),
     },
     threads: {
-      list: () =>
-        request<ThreadListResponse>("/threads"),
+      list: () => request<ThreadListResponse>("/threads"),
       create: () =>
         request<CreateThreadResponse>("/threads", { method: "POST" }),
       messages: (threadId: number) =>
         request<ThreadMessagesResponse>(`/threads/${threadId}/messages`),
       close: (threadId: number) =>
-        request<{ status: string; threadId: number }>(`/threads/${threadId}/close`, {
-          method: "POST",
-        }),
+        request<{ status: string; threadId: number }>(
+          `/threads/${threadId}/close`,
+          {
+            method: "POST",
+          },
+        ),
     },
     system: {
       health: () =>
@@ -701,9 +770,16 @@ export function createApiClient(options: ApiClientOptions) {
           `/db/tables/${encodeURIComponent(tableName)}?limit=${limit}&offset=${offset}`,
         ),
       tableSchema: (tableName: string) =>
-        request<{ columns: { name: string; type: string; nullable: boolean; default: string | null; primaryKey: boolean }[]; indexes: string[] }>(
-          `/db/tables/${encodeURIComponent(tableName)}/schema`,
-        ),
+        request<{
+          columns: {
+            name: string;
+            type: string;
+            nullable: boolean;
+            default: string | null;
+            primaryKey: boolean;
+          }[];
+          indexes: string[];
+        }>(`/db/tables/${encodeURIComponent(tableName)}/schema`),
       query: (sql: string) =>
         request<DbQueryResult>("/db/query", {
           method: "POST",
