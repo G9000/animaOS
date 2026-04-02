@@ -88,6 +88,7 @@ def note_to_self(key: str, value: str, note_type: str = "observation") -> str:
     from anima_server.services.agent.tool_context import get_tool_context
 
     ctx = get_tool_context()
+
     write_session_note(
         ctx.runtime_db,
         thread_id=ctx.thread_id,
@@ -127,7 +128,7 @@ def dismiss_note(key: str) -> str:
 
 @tool
 def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags: str = "") -> str:
-    """Save a discrete fact to permanent searchable memory. Categories: fact, preference, goal, relationship. Importance: 1-5. Tags: comma-separated. Do not duplicate what's already in update_human_memory."""
+    """Save a personal fact, preference, or relationship to permanent memory. Use this for anything about the user that should be remembered across sessions (names, pets, occupation, preferences, goals). Categories: fact, preference, goal, relationship. Importance: 1-5. Tags: comma-separated."""
     from anima_server.services.agent.candidate_ops import create_memory_candidate
     from anima_server.services.agent.session_memory import promote_session_note
     from anima_server.services.agent.tool_context import get_tool_context

@@ -160,21 +160,21 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           to="/agent"
           title={agentName}
           className={({ isActive }) =>
-            `flex flex-col items-center py-4 border-b border-border flex-shrink-0 transition-colors hover:bg-accent/40 cursor-pointer ${
-              collapsed ? "gap-0" : "gap-1.5"
-            } ${isActive ? "bg-accent/30" : ""}`
+            `flex flex-col items-center border-b border-border flex-shrink-0 transition-colors hover:bg-accent/40 cursor-pointer ${
+              isActive ? "bg-accent/30" : ""
+            }`
           }
         >
-          <div className="relative">
+          <div className="relative w-full aspect-square overflow-hidden">
             <img
               src={agentAvatarUrl}
               alt={agentName}
-              className={`rounded-full border border-border object-cover transition-all duration-200 ${collapsed ? "w-7 h-7" : "w-12 h-12"}`}
+              className="w-full h-full object-cover transition-all duration-200"
             />
-            <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-success border-2 border-sidebar" />
+            <span className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-success border-2 border-sidebar" />
           </div>
           {!collapsed && (
-            <span className="font-mono text-[9px] text-muted-foreground/60 tracking-widest">
+            <span className="font-mono text-[9px] text-muted-foreground/60 tracking-widest py-1.5">
               {agentName}
             </span>
           )}
