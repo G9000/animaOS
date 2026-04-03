@@ -1,49 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { api } from "../../lib/api";
-import { API_BASE } from "../../lib/runtime";
-import { getUnlockToken } from "../../lib/api";
-import personaAvatar from "../../assets/persona-default.svg";
+import { dispatchAgentProfileChanged } from "../../lib/events";
 
 export default function AgentProfileSettings() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [avatarUrl, setAvatarUrl] = useState<string>(personaAvatar);
-  const [agentName, setAgentName] = useState("");
-  const [relationship, setRelationship] = useState("");
-  const [agentType, setAgentType] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (user?.id == null) return;
-    let revoked = false;
-
-    api.consciousness
-      .getAgentProfile(user.id)
-      .then(async (profile) => {
-        setAgentName(profile.agentName ?? "");
-        setRelationship(profile.relationship ?? "");
-        setAgentType(profile.agentType ?? "");
-
-        if (!profile.avatarUrl) return;
-        const token = getUnlockToken();
-        const headers: Record<string, string> = {};
-        if (token) headers["x-anima-unlock"] = token;
-        const res = await fetch(`${API_BASE}${profile.avatarUrl}`, { headers });
-        if (!res.ok || revoked) return;
-        const blob = await res.blob();
-        if (!revoked) setAvatarUrl(URL.createObjectURL(blob));
-      })
-      .catch(() => {});
-
-    return () => {
-      revoked = true;
-    };
-  }, [user?.id]);
+  const { agentName, relationship, agentType, avatarUrl, hasCustomAvatar } =
+    useAgentProfile(user?.id);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -53,20 +23,7 @@ export default function AgentProfileSettings() {
     setError("");
     try {
       await api.consciousness.uploadAgentAvatar(user.id, file);
-      // Re-fetch to get the blob URL with auth
-      const token = getUnlockToken();
-      const headers: Record<string, string> = {};
-      if (token) headers["x-anima-unlock"] = token;
-      const res = await fetch(
-        `${API_BASE}/consciousness/${user.id}/agent-profile/avatar`,
-        { headers },
-      );
-      if (res.ok) {
-        const blob = await res.blob();
-        setAvatarUrl(URL.createObjectURL(blob));
-      }
-      // Notify Layout to refresh
-      window.dispatchEvent(new CustomEvent("anima-avatar-changed"));
+      dispatchAgentProfileChanged();
     } catch (err: any) {
       setError(err.message || "Upload failed");
     } finally {
@@ -80,8 +37,7 @@ export default function AgentProfileSettings() {
     setError("");
     try {
       await api.consciousness.deleteAgentAvatar(user.id);
-      setAvatarUrl(personaAvatar);
-      window.dispatchEvent(new CustomEvent("anima-avatar-changed"));
+      dispatchAgentProfileChanged();
     } catch (err: any) {
       setError(err.message || "Failed to remove avatar");
     }
@@ -141,7 +97,7 @@ export default function AgentProfileSettings() {
               </button>
               <button
                 onClick={handleRemoveAvatar}
-                disabled={uploading || avatarUrl === personaAvatar}
+                disabled={uploading || !hasCustomAvatar}
                 className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground/50 hover:text-destructive hover:border-destructive transition-colors disabled:opacity-30"
               >
                 REMOVE

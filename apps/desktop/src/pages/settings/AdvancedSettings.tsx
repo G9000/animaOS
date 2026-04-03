@@ -1,19 +1,8 @@
-import { useState, useEffect } from "react";
-
-const DB_VIEWER_KEY = "anima-debug-db-viewer";
-
-export function getDbViewerEnabled(): boolean {
-  return localStorage.getItem(DB_VIEWER_KEY) === "true";
-}
+import { useState } from "react";
+import { getDbViewerEnabled, setDbViewerEnabled } from "../../lib/preferences";
 
 export default function AdvancedSettings() {
   const [dbViewer, setDbViewer] = useState(getDbViewerEnabled);
-
-  useEffect(() => {
-    localStorage.setItem(DB_VIEWER_KEY, String(dbViewer));
-    // Notify other components (e.g. Layout sidebar) about the change
-    window.dispatchEvent(new Event("anima-settings-changed"));
-  }, [dbViewer]);
 
   return (
     <div className="space-y-6">
@@ -41,7 +30,11 @@ export default function AdvancedSettings() {
           <input
             type="checkbox"
             checked={dbViewer}
-            onChange={(e) => setDbViewer(e.target.checked)}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setDbViewer(enabled);
+              setDbViewerEnabled(enabled);
+            }}
             className="w-4 h-4 accent-primary cursor-pointer shrink-0"
           />
         </label>

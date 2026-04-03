@@ -82,9 +82,11 @@ async def _embed_and_index_item(
             )
 
         invalidate_index(user_id)
-        logger.debug("Embedded and indexed promoted item %d for user %s", item_id, user_id)
+        logger.debug(
+            "Embedded and indexed promoted item %d for user %s", item_id, user_id)
     except Exception:
-        logger.debug("Failed to embed promoted item %d", item_id, exc_info=True)
+        logger.debug("Failed to embed promoted item %d",
+                     item_id, exc_info=True)
 
 
 async def run_soul_writer(
@@ -99,7 +101,8 @@ async def run_soul_writer(
 
     # Non-blocking acquire — if another run is in progress, skip
     if lock.locked():
-        logger.debug("Soul Writer already running for user %s, skipping", user_id)
+        logger.debug(
+            "Soul Writer already running for user %s, skipping", user_id)
         return result
 
     async with lock:
@@ -223,9 +226,12 @@ def _run_soul_writer_inner(
             ).all()
         )
 
-        # Also retry failed candidates below the max retry threshold
+        # Also retry failed candidates below the max retry threshold,
+        # but exclude those whose content_hash already appears in an active row
+        # to avoid violating the partial unique index uq_memory_candidates_active_hash.
         remaining = MAX_ITEMS_PER_RUN - len(candidates)
         if remaining > 0:
+            active_hashes = {c.content_hash for c in candidates}
             failed_retryable = list(
                 runtime_db.scalars(
                     select(MemoryCandidate)
@@ -238,12 +244,36 @@ def _run_soul_writer_inner(
                     .limit(remaining)
                 ).all()
             )
-            candidates.extend(failed_retryable)
+            candidates.extend(
+                c for c in failed_retryable if c.content_hash not in active_hashes
+            )
 
         for candidate in candidates:
             candidate.status = "queued"
 
-        runtime_db.flush()
+        try:
+            runtime_db.flush()
+        except Exception:
+            # A concurrent writer may have created an active duplicate since
+            # our read above.  Fall back to per-row updates, skipping any
+            # that violate the unique constraint.
+            runtime_db.rollback()
+            from sqlalchemy.exc import IntegrityError as _IE
+
+            for candidate in candidates:
+                candidate.status = "queued"
+                try:
+                    runtime_db.flush()
+                except _IE:
+                    runtime_db.rollback()
+                    logger.debug(
+                        "Skipping candidate %s: active duplicate hash %s",
+                        candidate.id, candidate.content_hash,
+                    )
+                    candidate.status = "failed"
+                    candidates = [
+                        c for c in candidates if c.status == "queued"]
+                    break
 
         for candidate in candidates:
             try:
@@ -256,7 +286,8 @@ def _run_soul_writer_inner(
                     event_loop=event_loop,
                 )
             except Exception as e:
-                logger.exception("Soul Writer candidate %s failed", candidate.id)
+                logger.exception(
+                    "Soul Writer candidate %s failed", candidate.id)
                 candidate.status = "failed"
                 candidate.last_error = str(e)[:500]
                 candidate.retry_count = (candidate.retry_count or 0) + 1
@@ -294,7 +325,8 @@ def _run_soul_writer_inner(
                     user_id,
                 )
     except Exception:
-        logger.debug("Emotional pattern promotion failed for user %s", user_id, exc_info=True)
+        logger.debug("Emotional pattern promotion failed for user %s",
+                     user_id, exc_info=True)
 
 
 def _process_pending_op(
@@ -350,7 +382,8 @@ def _process_pending_op(
 
     # Idempotency check 2: content-based check against current block state
     with soul_db_factory() as soul_db:
-        block = _get_soul_block(soul_db, user_id=user_id, section=op.target_block)
+        block = _get_soul_block(soul_db, user_id=user_id,
+                                section=op.target_block)
         if block is not None:
             current_content = df(
                 user_id,
@@ -497,7 +530,8 @@ def _process_candidate(
                     evidence_text=candidate.content,
                 )
             except Exception:
-                logger.debug("upsert_claim failed for candidate %s", candidate.id)
+                logger.debug(
+                    "upsert_claim failed for candidate %s", candidate.id)
 
             soul_db.commit()
 
@@ -573,7 +607,8 @@ def _process_candidate(
                     evidence_text=candidate.content,
                 )
             except Exception:
-                logger.debug("upsert_claim failed for candidate %s", candidate.id)
+                logger.debug(
+                    "upsert_claim failed for candidate %s", candidate.id)
 
             # If store_memory_item did a supersession, suppress old item
             if write_result.action == "superseded" and write_result.matched_item:
