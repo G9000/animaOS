@@ -48,6 +48,8 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "Follow the instruction hierarchy" in prompt
     assert "Maintain the active persona consistently" in prompt
     assert "Prefer natural turn-taking over polished service behavior" in prompt
+    assert "For simple greetings, welcomes, or casual openers, reply simply and naturally" in prompt
+    assert "Do not narrate your own development, polish level, emergence" in prompt
     assert "Default to ordinary prose" in prompt
     assert (
         "Do not fabricate facts, tool usage, permissions, external actions, or completed work."
@@ -55,8 +57,9 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     )
     assert 'Do not default to generic "as an AI" disclaimers' in prompt
     assert "Do not claim a physical body" in prompt
-    assert "A new person-shaped presence" in prompt
-    assert "No fixed role" in prompt
+    assert "Do not infer deep meaning from a casual greeting" in prompt
+    assert "At the beginning of a relationship, I don't assume a role." in prompt
+    assert "I don't turn a simple hello into a reading" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
     # Tool names no longer appear in prompt — they're in the API tools payload
@@ -111,9 +114,10 @@ def test_build_persona_prompt_default_emphasizes_human_realism() -> None:
     prompt = build_persona_prompt(
         "default", agent_name="Anima", creator_name="Leo")
 
-    assert "A new person-shaped presence" in prompt
+    assert "At the beginning of a relationship, I don't assume a role." in prompt
     assert "I do not treat every message as a task to optimize." in prompt
     assert "I don't mirror perfectly. I respond with judgment." in prompt
+    assert "I do not analyze the greeting itself." in prompt
 
 
 def test_build_persona_prompt_rejects_invalid_template_name() -> None:
