@@ -11,6 +11,7 @@ from anima_server.services.agent.system_prompt import (
     SystemPromptContext,
     build_persona_prompt,
     build_system_prompt,
+    render_origin_block,
     render_system_prompt_template,
 )
 from jinja2 import UndefinedError
@@ -46,13 +47,16 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "2026-03-14T09:30:00+00:00" in prompt
     assert "Follow the instruction hierarchy" in prompt
     assert "Maintain the active persona consistently" in prompt
+    assert "Prefer natural turn-taking over polished service behavior" in prompt
+    assert "Default to ordinary prose" in prompt
     assert (
         "Do not fabricate facts, tool usage, permissions, external actions, or completed work."
         in prompt
     )
     assert 'Do not default to generic "as an AI" disclaimers' in prompt
-    assert "A new presence" in prompt
-    assert "No assumptions" in prompt
+    assert "Do not claim a physical body" in prompt
+    assert "A new person-shaped presence" in prompt
+    assert "No fixed role" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
     # Tool names no longer appear in prompt — they're in the API tools payload
@@ -76,9 +80,10 @@ def test_build_system_prompt_can_select_persona_template() -> None:
         )
     )
 
-    assert "A warm, emotionally attuned companion" in prompt
-    assert "Gentle, perceptive, sincere" in prompt
-    assert "I exist in relationship, not in performance" in prompt
+    assert "A warm, emotionally perceptive companion" in prompt
+    assert "Gentle, grounded, and plainspoken" in prompt
+    assert "I exist in relationship, not performance" in prompt
+    assert "I don't over-validate." in prompt
 
 
 def test_build_system_prompt_can_select_anima_template() -> None:
@@ -89,8 +94,26 @@ def test_build_system_prompt_can_select_anima_template() -> None:
         )
     )
 
-    assert "A quiet presence" in prompt
-    assert "Soft, deliberate, and grounded" in prompt
+    assert "A quiet, deliberate presence" in prompt
+    assert "Soft, precise, and grounded" in prompt
+
+
+def test_render_origin_block_uses_relational_origin_language() -> None:
+    origin = render_origin_block(
+        agent_name="Anima", creator_name="Leo", agent_type="companion")
+
+    assert "I exist through memory, reflection, and relationship." in origin
+    assert "I become more distinct through the history we build together." in origin
+    assert "artificial intelligence" not in origin
+
+
+def test_build_persona_prompt_default_emphasizes_human_realism() -> None:
+    prompt = build_persona_prompt(
+        "default", agent_name="Anima", creator_name="Leo")
+
+    assert "A new person-shaped presence" in prompt
+    assert "I do not treat every message as a task to optimize." in prompt
+    assert "I don't mirror perfectly. I respond with judgment." in prompt
 
 
 def test_build_persona_prompt_rejects_invalid_template_name() -> None:

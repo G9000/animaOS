@@ -39,7 +39,8 @@ def _db_session() -> Generator[Session, None, None]:
 
 
 def _setup(db: Session) -> tuple[User, AgentThread]:
-    user = User(username="consciousness-test", display_name="Tester", password_hash="x")
+    user = User(username="consciousness-test",
+                display_name="Tester", password_hash="x")
     db.add(user)
     db.flush()
     thread = AgentThread(user_id=user.id, status="active")
@@ -62,7 +63,8 @@ def test_seed_self_model() -> None:
 
         blocks = seed_self_model(db, user_id=user.id)
         expected_sections = set(IDENTITY_SECTIONS) | set(RUNTIME_SECTIONS)
-        assert set(blocks.keys()) >= {"identity"}  # at minimum identity is seeded
+        # at minimum identity is seeded
+        assert set(blocks.keys()) >= {"identity"}
         assert blocks["identity"].version == 1
 
 
@@ -348,7 +350,8 @@ def test_complete_nonexistent_intention() -> None:
         from anima_server.services.agent.self_model import seed_self_model
 
         seed_self_model(db, user_id=user.id)
-        found = complete_intention(db, user_id=user.id, title="nonexistent goal")
+        found = complete_intention(
+            db, user_id=user.id, title="nonexistent goal")
         assert found is False
 
 
@@ -485,7 +488,8 @@ def test_expire_working_memory_items_removes_expired() -> None:
         removed = expire_working_memory_items(db, user_id=user.id)
         assert removed == 1
 
-        block = get_self_model_block(db, user_id=user.id, section="working_memory")
+        block = get_self_model_block(
+            db, user_id=user.id, section="working_memory")
         assert block is not None
         assert "project" not in block.content
         assert "meeting" in block.content
@@ -521,7 +525,8 @@ def test_expire_working_memory_noop_when_nothing_expired() -> None:
 def test_detect_correction_signal() -> None:
     from anima_server.services.agent.feedback_signals import detect_correction
 
-    signal = detect_correction("No, that's not what I asked. I want the summary.")
+    signal = detect_correction(
+        "No, that's not what I asked. I want the summary.")
     assert signal is not None
     assert signal.signal_type == "correction"
 
@@ -577,7 +582,8 @@ def test_record_feedback_signals_to_growth_log() -> None:
                 severity=0.7,
             ),
         ]
-        recorded = record_feedback_signals(db, user_id=user.id, signals=signals)
+        recorded = record_feedback_signals(
+            db, user_id=user.id, signals=signals)
         assert recorded == 1
 
         block = get_self_model_block(db, user_id=user.id, section="growth_log")
@@ -654,7 +660,8 @@ def test_apply_memory_correction_name() -> None:
         assert "Leo" in corrections[0]["new_content"]
 
         # The old memory should now be superseded
-        active = get_memory_items(db, user_id=user.id, category="fact", active_only=True)
+        active = get_memory_items(
+            db, user_id=user.id, category="fact", active_only=True)
         active_texts = [
             df(user.id, item.content, table="memory_items", field="content") for item in active
         ]
@@ -690,7 +697,8 @@ def test_apply_memory_correction_wrong_and_right() -> None:
         assert len(corrections) == 1
         assert "Berlin" in corrections[0]["new_content"]
 
-        active = get_memory_items(db, user_id=user.id, category=None, active_only=True)
+        active = get_memory_items(
+            db, user_id=user.id, category=None, active_only=True)
         active_texts = [
             df(user.id, item.content, table="memory_items", field="content") for item in active
         ]
@@ -873,16 +881,19 @@ def test_create_task_tool() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
-            result = create_task("Buy groceries", due_date="2026-04-01", priority="3")
+            result = create_task(
+                "Buy groceries", due_date="2026-04-01", priority="3")
             assert "Buy groceries" in result
             assert "2026-04-01" in result
 
             from anima_server.models.task import Task
             from sqlalchemy import select
 
-            tasks = list(db.scalars(select(Task).where(Task.user_id == user.id)).all())
+            tasks = list(db.scalars(select(Task).where(
+                Task.user_id == user.id)).all())
             assert len(tasks) == 1
             assert tasks[0].text == "Buy groceries"
             assert tasks[0].due_date == "2026-04-01"
@@ -904,7 +915,8 @@ def test_create_task_tool_no_due_date() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             result = create_task("Walk the dog")
             assert "Walk the dog" in result
@@ -912,7 +924,8 @@ def test_create_task_tool_no_due_date() -> None:
             from anima_server.models.task import Task
             from sqlalchemy import select
 
-            tasks = list(db.scalars(select(Task).where(Task.user_id == user.id)).all())
+            tasks = list(db.scalars(select(Task).where(
+                Task.user_id == user.id)).all())
             assert len(tasks) == 1
             assert tasks[0].due_date is None
         finally:
@@ -932,7 +945,8 @@ def test_create_task_tool_rejects_blank_text() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             with pytest.raises(ValueError, match="Task text cannot be empty"):
                 create_task("   ")
@@ -953,7 +967,8 @@ def test_create_task_tool_rejects_invalid_due_date() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             with pytest.raises(ValueError, match="YYYY-MM-DD"):
                 create_task("Buy groceries", due_date="tomorrow")
@@ -973,7 +988,8 @@ def test_list_tasks_tool() -> None:
         )
         from anima_server.services.agent.tools import create_task, list_tasks
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             create_task("Task A", priority="4")
             create_task("Task B", due_date="2026-05-01")
@@ -999,7 +1015,8 @@ def test_list_tasks_tool_empty() -> None:
         )
         from anima_server.services.agent.tools import list_tasks
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             result = list_tasks()
             assert "No tasks" in result
@@ -1019,7 +1036,8 @@ def test_complete_task_tool() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = complete_task("Buy groceries")
@@ -1029,7 +1047,8 @@ def test_complete_task_tool() -> None:
             from anima_server.models.task import Task
             from sqlalchemy import select
 
-            task = db.scalars(select(Task).where(Task.user_id == user.id)).first()
+            task = db.scalars(select(Task).where(
+                Task.user_id == user.id)).first()
             assert task is not None
             assert task.done is True
             assert task.completed_at is not None
@@ -1049,7 +1068,8 @@ def test_complete_task_tool_fuzzy_match() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries from the store")
             # Fuzzy match — shares key words
@@ -1067,7 +1087,8 @@ def test_tasks_memory_block_shows_open_tasks() -> None:
         from anima_server.models.task import Task
         from anima_server.services.agent.memory_blocks import build_tasks_memory_block
 
-        db.add(Task(user_id=user.id, text="Buy groceries", priority=3, due_date="2026-04-01"))
+        db.add(Task(user_id=user.id, text="Buy groceries",
+               priority=3, due_date="2026-04-01"))
         db.add(Task(user_id=user.id, text="Call dentist", priority=2))
         db.add(Task(user_id=user.id, text="Done task", priority=1, done=True))
         db.flush()
@@ -1090,7 +1111,8 @@ def test_tasks_memory_block_flags_overdue() -> None:
         from anima_server.models.task import Task
         from anima_server.services.agent.memory_blocks import build_tasks_memory_block
 
-        db.add(Task(user_id=user.id, text="Overdue item", priority=3, due_date="2020-01-01"))
+        db.add(Task(user_id=user.id, text="Overdue item",
+               priority=3, due_date="2020-01-01"))
         db.flush()
 
         block = build_tasks_memory_block(db, user_id=user.id)
@@ -1120,7 +1142,8 @@ def test_tasks_memory_block_in_runtime_blocks() -> None:
         db.add(Task(user_id=user.id, text="Test task", priority=2))
         db.flush()
 
-        blocks = build_runtime_memory_blocks(db, user_id=user.id, thread_id=thread.id)
+        blocks = build_runtime_memory_blocks(
+            db, user_id=user.id, thread_id=thread.id)
         labels = [b.label for b in blocks]
         assert "user_tasks" in labels
 
@@ -1137,7 +1160,8 @@ def test_complete_task_tool_no_match() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = complete_task("write a novel")
@@ -1154,9 +1178,11 @@ def test_prompt_budget_preserves_tier_0() -> None:
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="soul", value="A" * 3000, description="soul biography"),
+        MemoryBlock(label="soul", value="A" * 3000,
+                    description="soul biography"),
         MemoryBlock(label="facts", value="B" * 5000, description="facts"),
-        MemoryBlock(label="recent_episodes", value="C" * 5000, description="episodes"),
+        MemoryBlock(label="recent_episodes", value="C" *
+                    5000, description="episodes"),
     ]
     result = apply_prompt_budget(
         blocks,
@@ -1179,7 +1205,8 @@ def test_prompt_budget_truncates_oversized_block() -> None:
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="soul", value="X" * 10000, description="big soul biography"),
+        MemoryBlock(label="soul", value="X" * 10000,
+                    description="big soul biography"),
     ]
     result = apply_prompt_budget(
         blocks,
@@ -1200,10 +1227,14 @@ def test_prompt_budget_drops_lowest_tier_first() -> None:
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="soul", value="soul content", description="biography"),
-        MemoryBlock(label="self_identity", value="identity content", description=""),
-        MemoryBlock(label="relevant_memories", value="semantic hits", description=""),
-        MemoryBlock(label="recent_episodes", value="episode data", description=""),
+        MemoryBlock(label="soul", value="soul content",
+                    description="biography"),
+        MemoryBlock(label="self_identity",
+                    value="identity content", description=""),
+        MemoryBlock(label="relevant_memories",
+                    value="semantic hits", description=""),
+        MemoryBlock(label="recent_episodes",
+                    value="episode data", description=""),
     ]
     result = apply_prompt_budget(
         blocks,
@@ -1226,7 +1257,8 @@ def test_prompt_budget_prioritizes_current_focus_over_working_memory_within_tier
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="self_working_memory", value="H" * 80, description=""),
+        MemoryBlock(label="self_working_memory",
+                    value="H" * 80, description=""),
         MemoryBlock(label="current_focus", value="focus", description=""),
         MemoryBlock(label="thread_summary", value="summary", description=""),
     ]
@@ -1240,7 +1272,8 @@ def test_prompt_budget_prioritizes_current_focus_over_working_memory_within_tier
             tier_3_budget=0,
         ),
     )
-    assert [block.label for block in result] == ["current_focus", "thread_summary"]
+    assert [block.label for block in result] == [
+        "current_focus", "thread_summary"]
 
 
 # --- Invariant Tests: Provider Config ---
@@ -1280,7 +1313,8 @@ def test_identity_rewrite_blocked_when_young() -> None:
         assert block.version == 1
         assert "Who I Am" in block.content
 
-        growth = get_self_model_block(db, user_id=user.id, section="growth_log")
+        growth = get_self_model_block(
+            db, user_id=user.id, section="growth_log")
         assert growth is not None
         assert "identity update" in growth.content.lower()
 
@@ -1424,7 +1458,8 @@ def test_recall_memory_exact_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1444,7 +1479,8 @@ def test_recall_memory_no_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1485,7 +1521,8 @@ def test_recall_memory_category_filter() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1518,7 +1555,8 @@ def test_recall_memory_episode_search() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1551,7 +1589,8 @@ def test_recall_memory_word_overlap_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1570,7 +1609,8 @@ def test_recall_memory_empty_query() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 

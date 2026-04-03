@@ -106,7 +106,8 @@ def get_identity_block(
     user_id: int,
 ) -> IdentityBlock | None:
     """Get the identity block for a user from the soul store."""
-    block = db.scalar(select(IdentityBlock).where(IdentityBlock.user_id == user_id))
+    block = db.scalar(select(IdentityBlock).where(
+        IdentityBlock.user_id == user_id))
     if block is not None:
         block.content = _maybe_decrypt_migrated(
             user_id, block.content, table="self_model_blocks", field="content"
@@ -133,7 +134,8 @@ def set_identity_block(
         existing_words = set(existing.content.lower().split())
         new_words = set(content.lower().split())
         if existing_words and new_words and max(len(existing_words), len(new_words)) >= 3:
-            overlap = len(existing_words & new_words) / max(len(existing_words), len(new_words))
+            overlap = len(existing_words & new_words) / \
+                max(len(existing_words), len(new_words))
             if overlap < 0.5:
                 logger.info(
                     "Blocked identity rewrite by %s (version %d < %d, overlap %.2f).",
@@ -203,7 +205,8 @@ def get_growth_log_text(
 
     lines: list[str] = []
     for entry in reversed(entries):
-        date_str = entry.created_at.strftime("%Y-%m-%d") if entry.created_at else "unknown"
+        date_str = entry.created_at.strftime(
+            "%Y-%m-%d") if entry.created_at else "unknown"
         lines.append(f"### {date_str} - {entry.entry}")
     return "\n\n".join(lines)
 
@@ -261,7 +264,8 @@ def get_working_context(
             row.section: _make_legacy_view(
                 user_id=user_id,
                 section=row.section,
-                plaintext=df(user_id, row.content, table="self_model_blocks", field="content"),
+                plaintext=df(user_id, row.content,
+                             table="self_model_blocks", field="content"),
                 version=row.version,
                 updated_by=row.updated_by,
                 created_at=row.created_at,
@@ -294,7 +298,8 @@ def set_working_context(
             )
         )
         if existing is not None:
-            existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+            existing.content = ef(
+                user_id, content, table="self_model_blocks", field="content")
             existing.version += 1
             existing.updated_by = updated_by
             existing.updated_at = datetime.now(UTC)
@@ -313,7 +318,8 @@ def set_working_context(
         legacy = SelfModelBlock(
             user_id=user_id,
             section=section,
-            content=ef(user_id, content, table="self_model_blocks", field="content"),
+            content=ef(user_id, content,
+                       table="self_model_blocks", field="content"),
             version=1,
             updated_by=updated_by,
         )
@@ -375,7 +381,8 @@ def get_active_intentions(
         return _make_legacy_view(
             user_id=user_id,
             section="intentions",
-            plaintext=df(user_id, row.content, table="self_model_blocks", field="content"),
+            plaintext=df(user_id, row.content,
+                         table="self_model_blocks", field="content"),
             version=row.version,
             updated_by=row.updated_by,
             created_at=row.created_at,
@@ -402,7 +409,8 @@ def set_active_intentions(
             )
         )
         if existing is not None:
-            existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+            existing.content = ef(
+                user_id, content, table="self_model_blocks", field="content")
             existing.version += 1
             existing.updated_by = updated_by
             existing.updated_at = datetime.now(UTC)
@@ -421,7 +429,8 @@ def set_active_intentions(
         legacy = SelfModelBlock(
             user_id=user_id,
             section="intentions",
-            content=ef(user_id, content, table="self_model_blocks", field="content"),
+            content=ef(user_id, content,
+                       table="self_model_blocks", field="content"),
             version=1,
             updated_by=updated_by,
         )
@@ -527,7 +536,8 @@ def get_self_model_block(
                 if section == "intentions":
                     row = get_active_intentions(pg_db, user_id=user_id)
                 else:
-                    row = get_working_context(pg_db, user_id=user_id).get(section)
+                    row = get_working_context(
+                        pg_db, user_id=user_id).get(section)
                 if row is not None:
                     return _make_legacy_view(
                         user_id=user_id,
@@ -554,14 +564,17 @@ def get_all_self_model_blocks(
     user_id: int,
 ) -> dict[str, SelfModelBlock | LegacySelfModelBlockView]:
     """Get all known self-model sections for a user keyed by section name."""
-    rows = db.scalars(select(SelfModelBlock).where(SelfModelBlock.user_id == user_id)).all()
-    blocks: dict[str, SelfModelBlock | LegacySelfModelBlockView] = {row.section: row for row in rows}
+    rows = db.scalars(select(SelfModelBlock).where(
+        SelfModelBlock.user_id == user_id)).all()
+    blocks: dict[str, SelfModelBlock | LegacySelfModelBlockView] = {
+        row.section: row for row in rows}
 
     identity = get_self_model_block(db, user_id=user_id, section="identity")
     if identity is not None:
         blocks["identity"] = identity
 
-    growth_log = get_self_model_block(db, user_id=user_id, section="growth_log")
+    growth_log = get_self_model_block(
+        db, user_id=user_id, section="growth_log")
     if growth_log is not None:
         blocks["growth_log"] = growth_log
 
@@ -599,7 +612,8 @@ def set_self_model_block(
         )
 
     if section == "identity":
-        block = set_identity_block(db, user_id=user_id, content=content, updated_by=updated_by)
+        block = set_identity_block(
+            db, user_id=user_id, content=content, updated_by=updated_by)
         return _make_legacy_view(
             user_id=user_id,
             section="identity",
@@ -612,8 +626,10 @@ def set_self_model_block(
         )
 
     if section == "growth_log":
-        _replace_growth_log_entries(db, user_id=user_id, content=content, source=updated_by)
-        growth_log = get_self_model_block(db, user_id=user_id, section="growth_log")
+        _replace_growth_log_entries(
+            db, user_id=user_id, content=content, source=updated_by)
+        growth_log = get_self_model_block(
+            db, user_id=user_id, section="growth_log")
         if growth_log is None:
             return _make_legacy_view(
                 user_id=user_id,
@@ -635,7 +651,8 @@ def set_self_model_block(
                 )
             )
             if existing is not None:
-                existing.content = ef(user_id, content, table="self_model_blocks", field="content")
+                existing.content = ef(
+                    user_id, content, table="self_model_blocks", field="content")
                 existing.version += 1
                 existing.updated_by = updated_by
                 existing.updated_at = datetime.now(UTC)
@@ -644,7 +661,8 @@ def set_self_model_block(
             block = SelfModelBlock(
                 user_id=user_id,
                 section=section,
-                content=ef(user_id, content, table="self_model_blocks", field="content"),
+                content=ef(user_id, content,
+                           table="self_model_blocks", field="content"),
                 version=1,
                 updated_by=updated_by,
             )
@@ -652,7 +670,8 @@ def set_self_model_block(
             db.flush()
             return block
         if section == "intentions":
-            row = set_active_intentions(pg_db, user_id=user_id, content=content, updated_by=updated_by)
+            row = set_active_intentions(
+                pg_db, user_id=user_id, content=content, updated_by=updated_by)
         else:
             row = set_working_context(
                 pg_db,
@@ -706,10 +725,12 @@ def seed_self_model(
     if get_identity_block(db, user_id=user_id) is None:
         created["identity"] = _make_legacy_view_from_identity(
             user_id=user_id,
-            block=set_identity_block(db, user_id=user_id, content=_SEED_IDENTITY, updated_by="system"),
+            block=set_identity_block(
+                db, user_id=user_id, content=_SEED_IDENTITY, updated_by="system"),
         )
     else:
-        existing = get_self_model_block(db, user_id=user_id, section="identity")
+        existing = get_self_model_block(
+            db, user_id=user_id, section="identity")
         if existing is not None:
             created["identity"] = existing
 
@@ -809,7 +830,8 @@ def expire_working_memory_items(
     """Remove expired items from runtime working memory."""
     with _runtime_session() as pg_db:
         if pg_db is not None:
-            row = get_working_context(pg_db, user_id=user_id).get("working_memory")
+            row = get_working_context(
+                pg_db, user_id=user_id).get("working_memory")
             if row is not None:
                 return _expire_working_memory_row(
                     set_row=lambda text: set_working_context(
@@ -830,7 +852,8 @@ def expire_working_memory_items(
     )
     if block is None:
         return 0
-    plaintext = df(user_id, block.content, table="self_model_blocks", field="content")
+    plaintext = df(user_id, block.content,
+                   table="self_model_blocks", field="content")
     return _expire_working_memory_row(
         set_row=lambda text: set_self_model_block(
             db,
@@ -856,7 +879,8 @@ def render_self_model_section(
     plaintext = getattr(block, "_plaintext", None)
     if plaintext is None:
         if isinstance(block, SelfModelBlock):
-            plaintext = df(user_id, block.content, table="self_model_blocks", field="content").strip()
+            plaintext = df(user_id, block.content,
+                           table="self_model_blocks", field="content").strip()
         else:
             plaintext = getattr(block, "content", "").strip()
     if not plaintext:
@@ -877,7 +901,8 @@ def _is_duplicate_growth_entry_text(existing_entry: str, new_entry: str) -> bool
     existing_words = set(existing_entry.lower().split())
     if not existing_words:
         return False
-    overlap = len(new_words & existing_words) / max(len(new_words), len(existing_words))
+    overlap = len(new_words & existing_words) / \
+        max(len(new_words), len(existing_words))
     return overlap > 0.7
 
 
@@ -888,14 +913,17 @@ def _replace_growth_log_entries(
     content: str,
     source: str,
 ) -> None:
-    existing = db.scalars(select(GrowthLogEntry).where(GrowthLogEntry.user_id == user_id)).all()
+    existing = db.scalars(select(GrowthLogEntry).where(
+        GrowthLogEntry.user_id == user_id)).all()
     for row in existing:
         db.delete(row)
     db.flush()
 
-    chunks = [c.strip() for c in re.split(r"(?:^|\n)### ", content) if c.strip()]
+    chunks = [c.strip() for c in re.split(
+        r"(?:^|\n)### ", content) if c.strip()]
     if not chunks and content.strip():
-        append_growth_log_entry_row(db, user_id=user_id, entry=content.strip(), source=source)
+        append_growth_log_entry_row(
+            db, user_id=user_id, entry=content.strip(), source=source)
         return
 
     for chunk in chunks:
@@ -904,7 +932,8 @@ def _replace_growth_log_entries(
             maybe_date, remainder = chunk.split(" - ", 1)
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", maybe_date.strip()):
                 entry_text = remainder.strip()
-        append_growth_log_entry_row(db, user_id=user_id, entry=entry_text, source=source)
+        append_growth_log_entry_row(
+            db, user_id=user_id, entry=entry_text, source=source)
 
 
 def _expire_working_memory_row(*, set_row, plaintext: str) -> int:
@@ -944,7 +973,8 @@ def _make_legacy_view(
     updated_at: datetime | None = None,
     row_id: int | None = None,
 ) -> LegacySelfModelBlockView:
-    encrypted = ef(user_id, plaintext, table="self_model_blocks", field="content")
+    encrypted = ef(user_id, plaintext,
+                   table="self_model_blocks", field="content")
     return LegacySelfModelBlockView(
         id=row_id,
         user_id=user_id,

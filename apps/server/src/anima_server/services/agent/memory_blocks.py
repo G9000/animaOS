@@ -87,25 +87,30 @@ def build_runtime_memory_blocks(
     agent_type = _get_agent_type(db, user_id=user_id)
 
     # Soul block (Priority 0 — immutable biography from DB)
-    soul_block = build_soul_biography_block(db, user_id=user_id, agent_type=agent_type)
+    soul_block = build_soul_biography_block(
+        db, user_id=user_id, agent_type=agent_type)
     blocks.append(soul_block)
 
     # Persona block (Priority 0 — living persona, seeded at provisioning, evolves)
-    persona_block = build_persona_block(db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
+    persona_block = build_persona_block(
+        db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
     if persona_block is not None:
         blocks.append(persona_block)
 
     # Human core block (Priority 0 — agent's living understanding of the user)
-    human_core_block = build_human_core_block(db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
+    human_core_block = build_human_core_block(
+        db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
     if human_core_block is not None:
         blocks.append(human_core_block)
 
     # User directive (Priority 0 — user-authored customisation)
-    user_directive_block = build_user_directive_memory_block(db, user_id=user_id, agent_type=agent_type)
+    user_directive_block = build_user_directive_memory_block(
+        db, user_id=user_id, agent_type=agent_type)
     if user_directive_block is not None:
         blocks.append(user_directive_block)
 
-    pending_ops_block = build_pending_ops_block(db, runtime_db, user_id=user_id, agent_type=agent_type)
+    pending_ops_block = build_pending_ops_block(
+        db, runtime_db, user_id=user_id, agent_type=agent_type)
     if pending_ops_block is not None:
         blocks.append(pending_ops_block)
 
@@ -114,18 +119,21 @@ def build_runtime_memory_blocks(
         blocks.append(sm_block)
 
     # Emotional context (Priority 2 — momentary signals from runtime)
-    emotional_block = build_emotional_context_block(runtime_db or db, user_id=user_id, agent_type=agent_type)
+    emotional_block = build_emotional_context_block(
+        runtime_db or db, user_id=user_id, agent_type=agent_type)
     if emotional_block is not None:
         blocks.append(emotional_block)
 
     # Emotional patterns (Priority 2 — enduring patterns from soul)
-    emotional_patterns_block = build_emotional_patterns_block(db, user_id=user_id, agent_type=agent_type)
+    emotional_patterns_block = build_emotional_patterns_block(
+        db, user_id=user_id, agent_type=agent_type)
     if emotional_patterns_block is not None:
         blocks.append(emotional_patterns_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     if semantic_results:
-        semantic_block = _build_semantic_block(semantic_results, agent_type=agent_type)
+        semantic_block = _build_semantic_block(
+            semantic_results, agent_type=agent_type)
         if semantic_block is not None:
             blocks.append(semantic_block)
 
@@ -147,7 +155,8 @@ def build_runtime_memory_blocks(
     if goals_block is not None:
         blocks.append(goals_block)
 
-    tasks_block = build_tasks_memory_block(db, user_id=user_id, agent_type=agent_type)
+    tasks_block = build_tasks_memory_block(
+        db, user_id=user_id, agent_type=agent_type)
     if tasks_block is not None:
         blocks.append(tasks_block)
 
@@ -158,19 +167,23 @@ def build_runtime_memory_blocks(
         blocks.append(relationships_block)
 
     # Knowledge graph block (Priority 4 — entity-relationship context)
-    kg_block = build_knowledge_graph_block(db, user_id=user_id, query=query, agent_type=agent_type)
+    kg_block = build_knowledge_graph_block(
+        db, user_id=user_id, query=query, agent_type=agent_type)
     if kg_block is not None:
         blocks.append(kg_block)
 
-    current_focus_block = build_current_focus_memory_block(db, user_id=user_id, agent_type=agent_type)
+    current_focus_block = build_current_focus_memory_block(
+        db, user_id=user_id, agent_type=agent_type)
     if current_focus_block is not None:
         blocks.append(current_focus_block)
 
-    summary_block = build_thread_summary_block(thread_id=thread_id, runtime_db=runtime_db, agent_type=agent_type)
+    summary_block = build_thread_summary_block(
+        thread_id=thread_id, runtime_db=runtime_db, agent_type=agent_type)
     if summary_block is not None:
         blocks.append(summary_block)
 
-    episodes_block = build_episodes_memory_block(db, user_id=user_id, agent_type=agent_type)
+    episodes_block = build_episodes_memory_block(
+        db, user_id=user_id, agent_type=agent_type)
     if episodes_block is not None:
         blocks.append(episodes_block)
 
@@ -286,7 +299,8 @@ def build_goals_memory_block(
         value = value[:1500]
     return MemoryBlock(
         label="goals",
-        description=_desc("goals", "User's goals and aspirations.", agent_type),
+        description=_desc(
+            "goals", "User's goals and aspirations.", agent_type),
         value=value,
     )
 
@@ -324,7 +338,8 @@ def build_tasks_memory_block(
                 overdue.append(t.text)
         lines.append(line)
 
-    header_parts = [f"{len(open_tasks)} open task{'s' if len(open_tasks) != 1 else ''}"]
+    header_parts = [
+        f"{len(open_tasks)} open task{'s' if len(open_tasks) != 1 else ''}"]
     if overdue:
         header_parts.append(f"{len(overdue)} overdue")
     header = ", ".join(header_parts) + f" (today: {today})"
@@ -365,7 +380,8 @@ def build_relationships_memory_block(
         value = value[:1500]
     return MemoryBlock(
         label="relationships",
-        description=_desc("relationships", "People and relationships the user has mentioned.", agent_type),
+        description=_desc(
+            "relationships", "People and relationships the user has mentioned.", agent_type),
         value=value,
     )
 
@@ -381,7 +397,8 @@ def build_current_focus_memory_block(
         return None
     return MemoryBlock(
         label="current_focus",
-        description=_desc("current_focus", "User's current focus.", agent_type),
+        description=_desc(
+            "current_focus", "User's current focus.", agent_type),
         value=focus,
     )
 
@@ -435,7 +452,8 @@ def build_thread_summary_block(
 
     return MemoryBlock(
         label="thread_summary",
-        description=_desc("thread_summary", "Summary of earlier conversation (compacted).", agent_type),
+        description=_desc(
+            "thread_summary", "Summary of earlier conversation (compacted).", agent_type),
         value=summary_text,
     )
 
@@ -462,7 +480,8 @@ def build_episodes_memory_block(
         )
     return MemoryBlock(
         label="recent_episodes",
-        description=_desc("recent_episodes", "Recent conversation experiences with the user.", agent_type),
+        description=_desc(
+            "recent_episodes", "Recent conversation experiences with the user.", agent_type),
         value="\n".join(lines),
     )
 
@@ -522,7 +541,8 @@ def build_soul_biography_block(
 
     return MemoryBlock(
         label="soul",
-        description=_desc("soul", "My origin — immutable biographical truth. This is who I am.", agent_type),
+        description=_desc(
+            "soul", "My origin — immutable biographical truth. This is who I am.", agent_type),
         value=value,
     )
 
@@ -556,8 +576,10 @@ def build_merged_block_content(
     """Return the soul block content with pending ops applied on top."""
     from anima_server.services.agent.pending_ops import apply_pending_ops, get_pending_ops
 
-    base_content, _exists = _read_soul_block_content(soul_db, user_id=user_id, section=section)
-    pending_ops = get_pending_ops(runtime_db, user_id=user_id, target_block=section)
+    base_content, _exists = _read_soul_block_content(
+        soul_db, user_id=user_id, section=section)
+    pending_ops = get_pending_ops(
+        runtime_db, user_id=user_id, target_block=section)
     return apply_pending_ops(base_content, pending_ops)
 
 
@@ -572,7 +594,8 @@ def build_persona_block(
 
     Seeded from a template at provisioning and evolved through reflection.
     """
-    plaintext, exists = _read_soul_block_content(db, user_id=user_id, section="persona")
+    plaintext, exists = _read_soul_block_content(
+        db, user_id=user_id, section="persona")
     if runtime_db is not None and exists:
         plaintext = build_merged_block_content(
             db,
@@ -623,7 +646,8 @@ def build_human_core_block(
             profile_lines.append(f"Birthday: {user.birthday}")
 
     # Agent-authored understanding (mutable via update_human_memory tool)
-    agent_understanding, exists = _read_soul_block_content(db, user_id=user_id, section="human")
+    agent_understanding, exists = _read_soul_block_content(
+        db, user_id=user_id, section="human")
     if runtime_db is not None and exists:
         agent_understanding = build_merged_block_content(
             db,
@@ -765,8 +789,10 @@ def build_self_model_memory_blocks(
 
     ensure_self_model_exists(db, user_id=user_id)
     blocks_map = get_all_self_model_blocks(db, user_id=user_id)
-    working_context = get_working_context(pg_db, user_id=user_id) if pg_db is not None else {}
-    intentions = get_active_intentions(pg_db, user_id=user_id) if pg_db is not None else None
+    working_context = get_working_context(
+        pg_db, user_id=user_id) if pg_db is not None else {}
+    intentions = get_active_intentions(
+        pg_db, user_id=user_id) if pg_db is not None else None
     result: list[MemoryBlock] = []
 
     section_config = [
@@ -791,28 +817,33 @@ def build_self_model_memory_blocks(
         (
             "working_memory",
             "self_working_memory",
-            _desc("self_working_memory", "Things I'm holding in mind across sessions.", agent_type),
+            _desc("self_working_memory",
+                  "Things I'm holding in mind across sessions.", agent_type),
         ),
         (
             "growth_log",
             "self_growth_log",
-            _desc("self_growth_log", "How I've evolved — my recent changes and why.", agent_type),
+            _desc("self_growth_log",
+                  "How I've evolved — my recent changes and why.", agent_type),
         ),
         (
             "intentions",
             "self_intentions",
-            _desc("self_intentions", "My active goals and learned behavioral rules.", agent_type),
+            _desc("self_intentions",
+                  "My active goals and learned behavioral rules.", agent_type),
         ),
     ]
 
     for section, label, description in section_config:
         if section == "identity":
-            block = get_identity_block(db, user_id=user_id) or blocks_map.get(section)
+            block = get_identity_block(
+                db, user_id=user_id) or blocks_map.get(section)
             text = render_self_model_section(block, user_id=user_id)
         elif section == "growth_log":
             text = get_growth_log_text(db, user_id=user_id)
             if not text:
-                text = render_self_model_section(blocks_map.get(section), user_id=user_id)
+                text = render_self_model_section(
+                    blocks_map.get(section), user_id=user_id)
         elif section in {"inner_state", "working_memory"}:
             block = working_context.get(section) or blocks_map.get(section)
             text = render_self_model_section(block, user_id=user_id)
@@ -914,7 +945,8 @@ def build_knowledge_graph_block(
     try:
         from anima_server.services.agent.knowledge_graph import graph_context_for_query
 
-        lines = graph_context_for_query(db, user_id=user_id, query=query, limit=10)
+        lines = graph_context_for_query(
+            db, user_id=user_id, query=query, limit=10)
         if not lines:
             return None
 
