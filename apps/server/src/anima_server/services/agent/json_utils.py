@@ -11,25 +11,15 @@ from typing import Any
 
 from json_repair import repair_json
 
+from anima_server.services.agent.output_filter import strip_reasoning_traces
+
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
     """Extract a JSON object from *text*, repairing if needed.
 
     Returns ``None`` when no object can be recovered.
     """
-    text = _strip_fences(text).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    candidate = text[start : end + 1]
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        try:
-            parsed = repair_json(candidate, return_objects=True)
-        except Exception:
-            return None
+    parsed = _extract_json_value(text, opening="{", closing="}")
     if not isinstance(parsed, dict):
         return None
     return parsed
@@ -40,19 +30,7 @@ def parse_json_array(text: str) -> list[Any]:
 
     Returns an empty list when no array can be recovered.
     """
-    text = _strip_fences(text).strip()
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        return []
-    candidate = text[start : end + 1]
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        try:
-            parsed = repair_json(candidate, return_objects=True)
-        except Exception:
-            return []
+    parsed = _extract_json_value(text, opening="[", closing="]")
     if not isinstance(parsed, list):
         return []
     return parsed
@@ -72,3 +50,86 @@ def _strip_fences(text: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines)
     return text
+
+
+def _extract_json_value(text: str, *, opening: str, closing: str) -> Any | None:
+    text = _strip_fences(text).strip()
+    if not text:
+        return None
+    text, _ = strip_reasoning_traces(text)
+    text = text.strip()
+    if not text:
+        return None
+
+    parsed = _extract_strict_json_value(text, opening=opening)
+    if parsed is not None:
+        return parsed
+
+    return _extract_repaired_json_value(text, opening=opening, closing=closing)
+
+
+def _extract_strict_json_value(text: str, *, opening: str) -> Any | None:
+    decoder = json.JSONDecoder()
+    for start in _iter_candidate_starts(text, opening):
+        try:
+            parsed, _ = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+        return parsed
+    return None
+
+
+def _extract_repaired_json_value(text: str, *, opening: str, closing: str) -> Any | None:
+    best_match: tuple[int, Any] | None = None
+    for candidate in _iter_candidate_segments(text, opening=opening, closing=closing):
+        try:
+            parsed = repair_json(candidate, return_objects=True)
+        except Exception:
+            continue
+        if best_match is None or len(candidate) > best_match[0]:
+            best_match = (len(candidate), parsed)
+    return None if best_match is None else best_match[1]
+
+
+def _iter_candidate_starts(text: str, opening: str):
+    for index, char in enumerate(text):
+        if char == opening:
+            yield index
+
+
+def _iter_candidate_segments(text: str, *, opening: str, closing: str):
+    for start in _iter_candidate_starts(text, opening):
+        yield _slice_candidate_segment(text, start=start, opening=opening, closing=closing)
+
+
+def _slice_candidate_segment(text: str, *, start: int, opening: str, closing: str) -> str:
+    depth = 0
+    quote_char: str | None = None
+    escaping = False
+
+    for index in range(start, len(text)):
+        char = text[index]
+
+        if quote_char is not None:
+            if escaping:
+                escaping = False
+                continue
+            if char == "\\":
+                escaping = True
+                continue
+            if char == quote_char:
+                quote_char = None
+            continue
+
+        if char in ('"', "'"):
+            quote_char = char
+            continue
+        if char == opening:
+            depth += 1
+            continue
+        if char == closing:
+            depth -= 1
+            if depth == 0:
+                return text[start: index + 1]
+
+    return text[start:]
