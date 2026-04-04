@@ -128,7 +128,8 @@ def _create_user(db: Session, *, user_id: int = 1) -> _FakeUser:
 
 
 def _create_thread(db: Session, *, user_id: int = 1, next_seq: int = 1) -> RuntimeThread:
-    thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=next_seq)
+    thread = RuntimeThread(user_id=user_id, status="active",
+                           next_message_sequence=next_seq)
     db.add(thread)
     db.flush()
     return thread
@@ -182,6 +183,13 @@ class TestTextOverlapScore:
     def test_word_overlap(self):
         score = _text_overlap_score("job work career", "i talked about my job")
         assert 0.3 <= score <= 0.5
+
+    def test_partial_word_overlap(self):
+        score = _text_overlap_score(
+            "snowboard mountain run",
+            "yeah someday i want to build your body to join me for snowboarding",
+        )
+        assert score >= 0.3
 
     def test_no_overlap(self):
         assert _text_overlap_score("xyz", "hello world") == 0.0
@@ -428,6 +436,41 @@ class TestSearchConversationHistory:
             )
             assert hits == []
 
+    @pytest.mark.asyncio
+    async def test_search_across_threads_for_same_user(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            old_thread = _create_thread(db, user_id=user.id)
+            active_thread = _create_thread(db, user_id=user.id)
+            old_thread.status = "closed"
+
+            _add_message(
+                db,
+                thread_id=old_thread.id,
+                user_id=user.id,
+                role="user",
+                content="yeah someday i want to build your body to join me for snowboarding",
+                sequence_id=1,
+            )
+            _add_message(
+                db,
+                thread_id=active_thread.id,
+                user_id=user.id,
+                role="user",
+                content="today we talked about cooking instead",
+                sequence_id=1,
+            )
+            db.commit()
+
+            hits = await search_conversation_history(
+                db,
+                db,
+                user_id=user.id,
+                query="snowboard mountain run",
+            )
+
+            assert any("snowboarding" in h.content.lower() for h in hits)
+
 
 # ===========================================================================
 # 2.2 — Upgraded recall_memory Tests
@@ -566,7 +609,8 @@ class TestBuildTranscript:
         with _db_session() as db:
             user = _create_user(db)
             thread = _create_thread(db, user_id=user.id)
-            msg = _add_message(db, thread_id=thread.id, role="user", content="", sequence_id=1)
+            msg = _add_message(db, thread_id=thread.id,
+                               role="user", content="", sequence_id=1)
             db.commit()
 
             transcript = _build_transcript([msg])
@@ -655,7 +699,8 @@ class TestSummarizeWithLlm:
                 mock_client = AsyncMock()
                 mock_client.__aenter__ = AsyncMock(return_value=mock_client)
                 mock_client.__aexit__ = AsyncMock(return_value=False)
-                mock_client.post = AsyncMock(side_effect=RuntimeError("Connection failed"))
+                mock_client.post = AsyncMock(
+                    side_effect=RuntimeError("Connection failed"))
                 mock_client_cls.return_value = mock_client
 
                 result = await summarize_with_llm([msg])
@@ -706,8 +751,10 @@ class TestCompactThreadContextWithLlm:
         with _db_session() as db:
             user = _create_user(db)
             thread = _create_thread(db, user_id=user.id, next_seq=100)
-            _add_message(db, thread_id=thread.id, role="user", content="Hi", sequence_id=1)
-            _add_message(db, thread_id=thread.id, role="assistant", content="Hello", sequence_id=2)
+            _add_message(db, thread_id=thread.id, role="user",
+                         content="Hi", sequence_id=1)
+            _add_message(db, thread_id=thread.id, role="assistant",
+                         content="Hello", sequence_id=2)
             db.commit()
 
             result = await compact_thread_context_with_llm(
@@ -830,7 +877,8 @@ class TestMemoryPressureWarning:
 
         with patch("anima_server.services.agent.service.settings") as mock_settings:
             mock_settings.agent_max_tokens = 4096
-            result = _inject_memory_pressure_warning(blocks, history, companion)
+            result = _inject_memory_pressure_warning(
+                blocks, history, companion)
 
         # Should be unchanged — no warning injected
         assert len(result) == len(blocks)
@@ -849,7 +897,8 @@ class TestMemoryPressureWarning:
 
         with patch("anima_server.services.agent.service.settings") as mock_settings:
             mock_settings.agent_max_tokens = 4096
-            result = _inject_memory_pressure_warning(blocks, history, companion)
+            result = _inject_memory_pressure_warning(
+                blocks, history, companion)
 
         assert len(result) == len(blocks) + 1
         assert result[-1].label == "memory_pressure_warning"
@@ -870,11 +919,13 @@ class TestMemoryPressureWarning:
             mock_settings.agent_max_tokens = 4096
 
             # First call: warning injected
-            result1 = _inject_memory_pressure_warning(blocks, history, companion)
+            result1 = _inject_memory_pressure_warning(
+                blocks, history, companion)
             assert len(result1) == len(blocks) + 1
 
             # Second call: already alerted, no duplicate
-            result2 = _inject_memory_pressure_warning(blocks, history, companion)
+            result2 = _inject_memory_pressure_warning(
+                blocks, history, companion)
             assert len(result2) == len(blocks)
 
     def test_warning_resets_when_pressure_drops(self):
@@ -967,7 +1018,8 @@ class TestRecallConversationTool:
                 return_value=[],
             ),
         ):
-            result = recall_conversation("", start_date="2026-03-01", end_date="2026-03-15")
+            result = recall_conversation(
+                "", start_date="2026-03-01", end_date="2026-03-15")
             assert "No conversations found in that date range" in result
 
 

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 BATCH_THRESHOLD: int = 8  # Min messages for batch segmentation
 _BATCH_SEGMENTATION_TIMEOUT_SECONDS: float = 15.0
 _BATCH_SEGMENTATION_MAX_TOKENS: int = 512
+_BATCH_SEGMENTATION_EMPTY_RESPONSE_RETRIES: int = 1
 
 # Batch segmentation prompt is now in Jinja2 template: batch_segmentation.md.j2
 # Use PromptLoader.batch_segmentation() instead.
@@ -130,39 +131,80 @@ async def _call_llm_for_segmentation(
 
     prompt_loader = PromptLoader(agent_name="Anima")
     prompt = prompt_loader.batch_segmentation(messages="\n".join(lines))
-    model = settings.agent_extraction_model.strip() or settings.agent_model
     timeout = min(settings.agent_llm_timeout,
                   _BATCH_SEGMENTATION_TIMEOUT_SECONDS)
     max_tokens = min(settings.agent_max_tokens, _BATCH_SEGMENTATION_MAX_TOKENS)
+    request_messages = [
+        SystemMessage(
+            content="You group conversation messages by topic. Respond only with a JSON array of arrays."
+        ),
+        HumanMessage(content=prompt),
+    ]
+    models = _segmentation_models()
+    last_error: Exception | None = None
 
-    # Segmentation is a small extraction task, so keep it on the faster path.
-    client = OpenAICompatibleChatClient(
-        provider=settings.agent_provider,
-        model=model,
-        base_url=resolve_base_url(settings.agent_provider),
-        headers=build_provider_headers(settings.agent_provider),
-        timeout=timeout,
-        max_tokens=max_tokens,
-        temperature=0.2,
-    )
-
-    try:
-        response = await client.ainvoke(
-            [
-                SystemMessage(
-                    content="You group conversation messages by topic. Respond only with a JSON array of arrays."
-                ),
-                HumanMessage(content=prompt),
-            ]
+    for model_index, model in enumerate(models):
+        # Segmentation is a small extraction task, so keep it on the faster path.
+        client = OpenAICompatibleChatClient(
+            provider=settings.agent_provider,
+            model=model,
+            base_url=resolve_base_url(settings.agent_provider),
+            headers=build_provider_headers(settings.agent_provider),
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=0.2,
         )
-    finally:
-        await client.aclose()
 
-    content = getattr(response, "content", "")
-    if not isinstance(content, str):
-        content = str(content)
+        try:
+            for attempt in range(1, _BATCH_SEGMENTATION_EMPTY_RESPONSE_RETRIES + 2):
+                response = await client.ainvoke(request_messages)
+                content = getattr(response, "content", "")
+                if not isinstance(content, str):
+                    content = str(content)
 
-    return _parse_json_array(content)
+                if not content.strip():
+                    last_error = ValueError(
+                        f"Empty response from segmentation model {model}")
+                    logger.warning(
+                        "LLM batch segmentation returned empty content (provider=%s, model=%s, attempt=%d/%d)",
+                        settings.agent_provider,
+                        model,
+                        attempt,
+                        _BATCH_SEGMENTATION_EMPTY_RESPONSE_RETRIES + 1,
+                    )
+                    continue
+
+                try:
+                    return _parse_json_array(content)
+                except ValueError as exc:
+                    last_error = exc
+                    break
+        finally:
+            await client.aclose()
+
+        if model_index < len(models) - 1:
+            logger.warning(
+                "LLM batch segmentation output unusable with model %s; retrying with fallback model %s",
+                model,
+                models[model_index + 1],
+            )
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Batch segmentation produced no usable output")
+
+
+def _segmentation_models() -> list[str]:
+    models: list[str] = []
+    for candidate in (
+        settings.agent_extraction_model.strip(),
+        settings.agent_model.strip(),
+    ):
+        if candidate and candidate not in models:
+            models.append(candidate)
+    if models:
+        return models
+    return [settings.agent_model]
 
 
 def _parse_json_array(text: str) -> list[list[int]]:

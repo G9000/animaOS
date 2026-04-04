@@ -215,6 +215,66 @@ async def test_call_llm_for_segmentation_prefers_extraction_model_and_caps_reque
 
 
 @pytest.mark.asyncio
+async def test_call_llm_for_segmentation_falls_back_to_primary_model_after_empty_response() -> None:
+    from anima_server.services.agent.batch_segmenter import _call_llm_for_segmentation
+
+    messages = [("User message 1", "Response 1")]
+    extraction_client = AsyncMock()
+    extraction_client.ainvoke = AsyncMock(
+        side_effect=[
+            SimpleNamespace(content=""),
+            SimpleNamespace(content=""),
+        ]
+    )
+    extraction_client.aclose = AsyncMock()
+
+    primary_client = AsyncMock()
+    primary_client.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="[[1]]"))
+    primary_client.aclose = AsyncMock()
+
+    prompt_loader = MagicMock()
+    prompt_loader.batch_segmentation.return_value = "prompt"
+
+    with (
+        patch("anima_server.services.agent.batch_segmenter.settings") as mock_settings,
+        patch(
+            "anima_server.services.agent.prompt_loader.PromptLoader",
+            return_value=prompt_loader,
+        ),
+        patch(
+            "anima_server.services.agent.llm.resolve_base_url",
+            return_value="https://example.test/v1",
+        ),
+        patch(
+            "anima_server.services.agent.llm.build_provider_headers",
+            return_value={"Authorization": "Bearer test"},
+        ),
+        patch(
+            "anima_server.services.agent.openai_compatible_client.OpenAICompatibleChatClient",
+            side_effect=[extraction_client, primary_client],
+        ) as mock_client_cls,
+    ):
+        mock_settings.agent_provider = "openai"
+        mock_settings.agent_model = "primary-model"
+        mock_settings.agent_extraction_model = "cheap-model"
+        mock_settings.agent_llm_timeout = 120.0
+        mock_settings.agent_max_tokens = 4096
+
+        groups = await _call_llm_for_segmentation(messages)
+
+    assert groups == [[1]]
+    assert [call.kwargs["model"] for call in mock_client_cls.call_args_list] == [
+        "cheap-model",
+        "primary-model",
+    ]
+    assert extraction_client.ainvoke.await_count == 2
+    primary_client.ainvoke.assert_awaited_once()
+    extraction_client.aclose.assert_awaited_once()
+    primary_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_segment_messages_batch_non_contiguous() -> None:
     """Non-contiguous indices are valid when properly covering all messages."""
     messages = [(f"User message {i}", f"Response {i}") for i in range(1, 10)]

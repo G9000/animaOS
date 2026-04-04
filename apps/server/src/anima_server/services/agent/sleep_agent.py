@@ -9,10 +9,13 @@ Each task opens its own DB session via ``db_factory()``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy.exc import OperationalError
 
 from anima_server.config import settings
 from anima_server.services.health.event_logger import emit as health_emit
@@ -22,6 +25,8 @@ logger = logging.getLogger(__name__)
 # ── Configuration ────────────────────────────────────────────────────
 
 HEAT_THRESHOLD_CONSOLIDATION: float = 5.0  # Min heat for expensive ops
+_EPISODE_GEN_LOCK_RETRIES: int = 2
+_EPISODE_GEN_LOCK_RETRY_DELAY_SECONDS: float = 1.0
 
 
 # ── Heat gating ──────────────────────────────────────────────────────
@@ -42,6 +47,10 @@ def _should_run_expensive(
     if heat is None:
         return False
     return heat >= HEAT_THRESHOLD_CONSOLIDATION
+
+
+def _is_database_locked_error(exc: OperationalError) -> bool:
+    return "database is locked" in str(exc).lower()
 
 
 # ── Task tracking ────────────────────────────────────────────────────
@@ -290,7 +299,8 @@ async def run_sleeptime_agents(
         if companion is not None:
             companion.invalidate_memory()
     except Exception:
-        logger.debug("Companion cache invalidation failed for user %s", user_id)
+        logger.debug(
+            "Companion cache invalidation failed for user %s", user_id)
 
     return run_ids
 
@@ -416,8 +426,29 @@ async def _task_episode_gen(
     """Check and generate episode if appropriate."""
     from anima_server.services.agent.episodes import maybe_generate_episode
 
-    episode = await maybe_generate_episode(user_id=user_id, db_factory=db_factory)
-    return {"generated": episode is not None}
+    for retry_index in range(_EPISODE_GEN_LOCK_RETRIES + 1):
+        try:
+            episode = await maybe_generate_episode(user_id=user_id, db_factory=db_factory)
+            return {"generated": episode is not None}
+        except OperationalError as exc:
+            if not _is_database_locked_error(exc):
+                raise
+            if retry_index >= _EPISODE_GEN_LOCK_RETRIES:
+                logger.warning(
+                    "Episode generation skipped for user %s after %d lock retries",
+                    user_id,
+                    _EPISODE_GEN_LOCK_RETRIES,
+                )
+                return {"generated": False, "skipped": "database_locked"}
+            delay = _EPISODE_GEN_LOCK_RETRY_DELAY_SECONDS * (retry_index + 1)
+            logger.warning(
+                "Episode generation hit locked database for user %s; retrying in %.1fs (retry %d/%d)",
+                user_id,
+                delay,
+                retry_index + 1,
+                _EPISODE_GEN_LOCK_RETRIES,
+            )
+            await asyncio.sleep(delay)
 
 
 async def _task_contradiction_scan(

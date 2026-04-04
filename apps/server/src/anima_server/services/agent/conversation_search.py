@@ -8,15 +8,19 @@ from retrieving its own tool calls.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.models.runtime import RuntimeMessage
 
 logger = logging.getLogger(__name__)
+
+_SEARCH_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_CONVERSATION_SEARCH_SCAN_LIMIT = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,17 +49,33 @@ def _text_overlap_score(query_lower: str, content_lower: str) -> float:
     """Compute a simple word-overlap score between query and content."""
     if not query_lower:
         return 0.0
-    query_words = set(query_lower.split())
-    content_words = set(content_lower.split())
-    if not query_words or not content_words:
-        return 0.0
     # Substring match is strongest
     if query_lower in content_lower:
         return 1.0
-    overlap = len(query_words & content_words)
+
+    query_words = set(_SEARCH_TOKEN_RE.findall(query_lower))
+    content_words = set(_SEARCH_TOKEN_RE.findall(content_lower))
+    if not query_words or not content_words:
+        return 0.0
+
+    overlap = sum(
+        1 for query_word in query_words if _has_token_overlap(query_word, content_words)
+    )
     if overlap == 0:
         return 0.0
     return overlap / len(query_words)
+
+
+def _has_token_overlap(query_word: str, content_words: set[str]) -> bool:
+    if query_word in content_words:
+        return True
+    if len(query_word) < 4:
+        return False
+
+    for content_word in content_words:
+        if query_word in content_word or content_word in query_word:
+            return True
+    return False
 
 
 async def search_conversation_history(
@@ -104,15 +124,6 @@ def _search_messages(
     parsed_end: date | None,
 ) -> list[ConversationHit]:
     """Search RuntimeMessage rows, excluding tool calls and summaries."""
-    thread = db.scalar(
-        select(RuntimeThread).where(
-            RuntimeThread.user_id == user_id,
-            RuntimeThread.status == "active",
-        )
-    )
-    if thread is None:
-        return []
-
     # Only search user and assistant messages — exclude tool, summary,
     # approval, and system roles to prevent agent from finding its own
     # tool-call metadata or recursive search results.
@@ -123,13 +134,13 @@ def _search_messages(
     stmt = (
         select(RuntimeMessage)
         .where(
-            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.user_id == user_id,
             RuntimeMessage.role.in_(allowed_roles),
             RuntimeMessage.content_text.is_not(None),
             RuntimeMessage.content_text != "",
         )
         .order_by(RuntimeMessage.created_at.desc())
-        .limit(500)  # cap scan to avoid very long histories
+        .limit(_CONVERSATION_SEARCH_SCAN_LIMIT)
     )
     rows = db.scalars(stmt).all()
 
@@ -178,5 +189,3 @@ def _search_messages(
         )
 
     return hits
-
-

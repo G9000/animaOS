@@ -13,11 +13,13 @@ from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.services.agent.sleep_agent import (
     _issue_background_task,
     _should_run_expensive,
+    _task_episode_gen,
     get_last_processed_message_id,
     run_sleeptime_agents,
     update_last_processed_message_id,
 )
 from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -198,7 +200,8 @@ class TestTaskFailureIsolation:
         assert len(call_log) == 3
 
         # Good tasks completed, bad task failed
-        good_ids = [r for r in results if isinstance(r, str) and r.startswith("good")]
+        good_ids = [r for r in results if isinstance(
+            r, str) and r.startswith("good")]
         assert len(good_ids) == 2
 
         with rt_factory() as db:
@@ -207,6 +210,48 @@ class TestTaskFailureIsolation:
             assert statuses["good1"] == "completed"
             assert statuses["good2"] == "completed"
             assert statuses["bad1"] == "failed"
+
+
+class TestEpisodeGenerationRetry:
+    @pytest.mark.asyncio()
+    async def test_retries_locked_database_then_succeeds(self, db_factory):
+        with (
+            patch(
+                "anima_server.services.agent.episodes.maybe_generate_episode",
+                new=AsyncMock(
+                    side_effect=[
+                        OperationalError(
+                            "insert", {}, Exception("database is locked")),
+                        object(),
+                    ]
+                ),
+            ) as maybe_generate_episode,
+            patch("anima_server.services.agent.sleep_agent.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+        ):
+            result = await _task_episode_gen(user_id=1, db_factory=db_factory)
+
+        assert result == {"generated": True}
+        assert maybe_generate_episode.await_count == 2
+        sleep_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio()
+    async def test_skips_when_database_remains_locked(self, db_factory):
+        locked_error = OperationalError(
+            "insert", {}, Exception("database is locked"))
+
+        with (
+            patch(
+                "anima_server.services.agent.episodes.maybe_generate_episode",
+                new=AsyncMock(
+                    side_effect=[locked_error, locked_error, locked_error]),
+            ) as maybe_generate_episode,
+            patch("anima_server.services.agent.sleep_agent.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+        ):
+            result = await _task_episode_gen(user_id=1, db_factory=db_factory)
+
+        assert result == {"generated": False, "skipped": "database_locked"}
+        assert maybe_generate_episode.await_count == 3
+        assert sleep_mock.await_count == 2
 
 
 # ── force=True ───────────────────────────────────────────────────────
@@ -296,7 +341,8 @@ class TestHeatGating:
 
 class TestRestartCursor:
     def test_no_runs_returns_none(self, rt_factory):
-        assert get_last_processed_message_id(1, runtime_db_factory=rt_factory) is None
+        assert get_last_processed_message_id(
+            1, runtime_db_factory=rt_factory) is None
 
     def test_round_trip(self, rt_factory):
         # Seed a completed consolidation run
@@ -315,7 +361,8 @@ class TestRestartCursor:
             db.add(run)
             db.commit()
 
-        msg_id = get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory)
+        msg_id = get_last_processed_message_id(
+            1, thread_id=10, runtime_db_factory=rt_factory)
         assert msg_id == 42
 
     def test_thread_scope_isolation(self, rt_factory):
@@ -336,9 +383,11 @@ class TestRestartCursor:
             db.commit()
 
         # Thread 20 has no cursor
-        assert get_last_processed_message_id(1, thread_id=20, runtime_db_factory=rt_factory) is None
+        assert get_last_processed_message_id(
+            1, thread_id=20, runtime_db_factory=rt_factory) is None
         # Thread 10 has the cursor
-        assert get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory) == 42
+        assert get_last_processed_message_id(
+            1, thread_id=10, runtime_db_factory=rt_factory) == 42
 
     def test_update_cursor(self, rt_factory):
         # Create a completed run first
@@ -365,7 +414,8 @@ class TestRestartCursor:
             runtime_db_factory=rt_factory,
         )
 
-        msg_id = get_last_processed_message_id(1, thread_id=None, runtime_db_factory=rt_factory)
+        msg_id = get_last_processed_message_id(
+            1, thread_id=None, runtime_db_factory=rt_factory)
         assert msg_id == 50
 
 
