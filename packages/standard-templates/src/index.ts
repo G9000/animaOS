@@ -3,7 +3,12 @@ export { cn } from "./utils/cn";
 // ── Primitives ─────────────────────────────────────────────────────────────
 export { Alert, type AlertProps, type AlertVariant } from "./primitives/Alert";
 export { Badge, type BadgeProps } from "./primitives/Badge";
-export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./primitives/Button";
+export {
+  Button,
+  type ButtonProps,
+  type ButtonVariant,
+  type ButtonSize,
+} from "./primitives/Button";
 export { buttonVariants } from "./primitives/Button";
 export { DotLoader, type DotLoaderProps } from "./primitives/DotLoader";
 export { Input, type InputProps } from "./primitives/Input";
@@ -33,10 +38,29 @@ export {
 // ── Icons ───────────────────────────────────────────────────────────────────
 export { type IconProps } from "./icons/BaseIcon";
 export {
-  PlusIcon, ImageIcon, FileIcon, DocumentIcon,
-  MicIcon, SendIcon, EyeIcon, EyeOffIcon,
-  ArrowRightIcon, ArrowLeftIcon, ChevronRightIcon, XIcon,
+  PlusIcon,
+  ImageIcon,
+  FileIcon,
+  DocumentIcon,
+  MicIcon,
+  SendIcon,
+  EyeIcon,
+  EyeOffIcon,
+  ArrowRightIcon,
+  ArrowLeftIcon,
+  ChevronRightIcon,
+  XIcon,
 } from "./icons";
+export {
+  HomeIcon,
+  TasksIcon,
+  ChatIcon,
+  MemoryIcon,
+  MindIcon,
+  ModsIcon,
+  ConfigIcon,
+  DatabaseIcon,
+} from "./icons/nav";
 
 // ── ASCII Art ───────────────────────────────────────────────────────────────
 export {

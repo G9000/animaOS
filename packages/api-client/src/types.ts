@@ -381,4 +381,5 @@ export interface ThreadMessagesResponse {
 export interface CreateThreadResponse {
   threadId: number;
   status: string;
+  thread?: Thread;
 }

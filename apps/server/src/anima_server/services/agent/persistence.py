@@ -88,7 +88,8 @@ def list_transcript_messages(
         )
 
     if user_id is None or limit is None:
-        raise TypeError("list_transcript_messages requires thread_id or user_id with limit")
+        raise TypeError(
+            "list_transcript_messages requires thread_id or user_id with limit")
 
     thread = get_or_create_thread(db, user_id)
 
@@ -100,7 +101,8 @@ def list_transcript_messages(
             RuntimeMessage.role.in_(("user", "assistant", "system", "tool")),
             RuntimeMessage.content_text.is_not(None),
             RuntimeMessage.content_text != "",
-            or_(RuntimeMessage.run_id.is_(None), RuntimeRun.status.notin_(("failed", "cancelled"))),
+            or_(RuntimeMessage.run_id.is_(None),
+                RuntimeRun.status.notin_(("failed", "cancelled"))),
         )
         .order_by(desc(RuntimeMessage.sequence_id))
         .limit(limit)
@@ -190,7 +192,8 @@ def persist_agent_result(
 
         if trace.assistant_text or trace.tool_calls:
             if sequence_id is None:
-                raise RuntimeError("Missing reserved message sequence for assistant output.")
+                raise RuntimeError(
+                    "Missing reserved message sequence for assistant output.")
             # Use extracted inner thinking as content (thinking kwarg
             # value stored as assistant message content), but only when
             # the step contains exclusively non-terminal tool calls.
@@ -229,7 +232,8 @@ def persist_agent_result(
                 sequence_id=sequence_id,
                 role="assistant",
                 content_text=content_text,
-                content_json={"tool_calls": [asdict(tool_call) for tool_call in trace.tool_calls]}
+                content_json={"tool_calls": [
+                    asdict(tool_call) for tool_call in trace.tool_calls]}
                 if trace.tool_calls
                 else None,
             )
@@ -237,7 +241,8 @@ def persist_agent_result(
 
         for tool_result in trace.tool_results:
             if sequence_id is None:
-                raise RuntimeError("Missing reserved message sequence for tool output.")
+                raise RuntimeError(
+                    "Missing reserved message sequence for tool output.")
             append_message(
                 db,
                 thread=thread,
@@ -319,7 +324,8 @@ def save_approval_checkpoint(
         content_json={"tool_calls": [asdict(tool_call)]},
         tool_name=tool_call.name,
         tool_call_id=tool_call.id,
-        tool_args_json=tool_call.arguments if isinstance(tool_call.arguments, dict) else {},
+        tool_args_json=tool_call.arguments if isinstance(
+            tool_call.arguments, dict) else {},
     )
 
     run.status = "awaiting_approval"
@@ -363,7 +369,8 @@ def clear_approval_checkpoint(
 
 
 def reset_thread(db: Session, user_id: int) -> None:
-    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
+    thread = db.scalar(select(RuntimeThread).where(
+        RuntimeThread.user_id == user_id))
     if thread is None:
         return
 
@@ -457,7 +464,8 @@ def create_step(
             "assistant_text": trace.assistant_text,
             "tool_results": [asdict(result) for result in trace.tool_results],
         },
-        tool_calls_json=[asdict(tool_call) for tool_call in trace.tool_calls] or None,
+        tool_calls_json=[asdict(tool_call)
+                         for tool_call in trace.tool_calls] or None,
         usage_json=_serialize_usage(trace.usage),
     )
     db.add(step)
@@ -507,7 +515,10 @@ def list_threads(db: Session, user_id: int) -> list[RuntimeThread]:
         db.scalars(
             select(RuntimeThread)
             .where(RuntimeThread.user_id == user_id)
-            .order_by(nulls_last(desc(RuntimeThread.last_message_at)))
+            .order_by(
+                nulls_last(desc(RuntimeThread.last_message_at)),
+                desc(RuntimeThread.created_at),
+            )
         ).all()
     )
 

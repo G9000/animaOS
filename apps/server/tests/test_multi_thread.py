@@ -126,6 +126,28 @@ def test_list_threads_sorted_by_last_message() -> None:
         assert threads[0].id == t2.id  # most recent first
 
 
+def test_list_threads_sorts_empty_threads_by_created_at() -> None:
+    from datetime import UTC, datetime
+
+    with _db_session() as db:
+        uid = _uid()
+        older = RuntimeThread(
+            user_id=uid,
+            status="closed",
+            created_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        newer = RuntimeThread(
+            user_id=uid,
+            status="active",
+            created_at=datetime(2026, 4, 2, tzinfo=UTC),
+        )
+        db.add_all([older, newer])
+        db.flush()
+
+        threads = list_threads(db, user_id=uid)
+        assert [thread.id for thread in threads] == [newer.id, older.id]
+
+
 def test_list_threads_excludes_other_users() -> None:
     with _db_session() as db:
         uid_a = _uid()
@@ -184,19 +206,29 @@ def test_reactivate_thread_with_pg_messages(db: Session) -> None:
 def test_maybe_set_thread_title() -> None:
     from anima_server.services.agent.thread_manager import maybe_set_thread_title
 
-    # Sets title from short message
+    # Sets title from a cleaned request instead of the raw prompt.
     thread = RuntimeThread(user_id=1, status="active", title=None)
-    maybe_set_thread_title(thread, "Hello world")
-    assert thread.title == "Hello world"
+    maybe_set_thread_title(thread, "Can you help me fix the chat sidebar layout?")
+    assert thread.title == "Fix the chat sidebar layout"
 
     # Does not overwrite existing title
     maybe_set_thread_title(thread, "New message")
-    assert thread.title == "Hello world"
+    assert thread.title == "Fix the chat sidebar layout"
 
-    # Truncates long message
+    # Leaves generic greetings untitled so the UI can fall back to date/time.
     thread2 = RuntimeThread(user_id=1, status="active", title=None)
-    maybe_set_thread_title(thread2, "A" * 100)
-    assert thread2.title == "A" * 60 + "..."
+    maybe_set_thread_title(thread2, "hello")
+    assert thread2.title is None
+
+    # Truncates long substantive prompts cleanly.
+    thread3 = RuntimeThread(user_id=1, status="active", title=None)
+    maybe_set_thread_title(
+        thread3,
+        "Please help me make the desktop sidebar thread titles shorter and less repetitive because it looks messy.",
+    )
+    assert thread3.title is not None
+    assert thread3.title.startswith("Make the desktop sidebar")
+    assert thread3.title.endswith("...")
 
 
 def test_display_messages_deduplicates_send_message(db: Session) -> None:

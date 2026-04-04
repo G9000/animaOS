@@ -14,6 +14,7 @@ from anima_server.config import settings
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models.runtime import RuntimeThread
+from anima_server.models.runtime import RuntimeMessage
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
@@ -35,6 +36,22 @@ def _thread_to_dict(thread: RuntimeThread) -> dict[str, object]:
         "closedAt": thread.closed_at.isoformat() if thread.closed_at else None,
         "isArchived": thread.is_archived,
     }
+
+
+def _create_thread_response(thread: RuntimeThread) -> dict[str, object]:
+    return {
+        "threadId": thread.id,
+        "status": thread.status,
+        "thread": _thread_to_dict(thread),
+    }
+
+
+def _thread_has_messages(runtime_db: Session, thread_id: int) -> bool:
+    return runtime_db.scalar(
+        select(RuntimeMessage.id)
+        .where(RuntimeMessage.thread_id == thread_id)
+        .limit(1)
+    ) is not None
 
 
 @router.get("")
@@ -60,13 +77,17 @@ async def create_new_thread(
     unlock_session = require_unlocked_session(request)
     user_id = unlock_session.user_id
 
-    # Identify the active thread (if any) so we can fire consolidation after closing it.
+    # Reuse the current active thread when it's still completely empty.
     active_thread = runtime_db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,
             RuntimeThread.status == "active",
         )
     )
+    if active_thread is not None and not _thread_has_messages(runtime_db, active_thread.id):
+        return _create_thread_response(active_thread)
+
+    # Identify the active thread (if any) so we can fire consolidation after closing it.
     old_thread_id: int | None = active_thread.id if active_thread is not None else None
 
     new_thread = create_thread(runtime_db, user_id)
@@ -82,7 +103,7 @@ async def create_new_thread(
             )
         )
 
-    return _thread_to_dict(new_thread)
+    return _create_thread_response(new_thread)
 
 
 @router.get("/{thread_id}/messages")
@@ -95,7 +116,8 @@ async def get_thread_messages(
     unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     dek = get_active_dek(unlock_session.user_id, "conversations")
     messages = get_thread_messages_for_display(
@@ -119,7 +141,8 @@ async def close_thread_endpoint(
     unlock_session = require_unlocked_session(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     if thread.status == "closed":
         return {"status": "already_closed", "threadId": thread_id}

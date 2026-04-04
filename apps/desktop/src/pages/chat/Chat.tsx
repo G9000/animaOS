@@ -39,6 +39,57 @@ function setDefaultLang(code: string) {
   localStorage.setItem(LANG_STORAGE_KEY, code);
 }
 
+function getThreadTimestamp(thread: Thread): Date | null {
+  const raw = thread.lastMessageAt ?? thread.createdAt;
+  if (!raw) return null;
+
+  const value = new Date(raw);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function sortThreads(threads: Thread[]): Thread[] {
+  return [...threads].sort((left, right) => {
+    const leftTime =
+      getThreadTimestamp(left)?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const rightTime =
+      getThreadTimestamp(right)?.getTime() ?? Number.NEGATIVE_INFINITY;
+    return rightTime - leftTime;
+  });
+}
+
+function dedupeThreads(threads: Thread[]): Thread[] {
+  const unique = new Map<number, Thread>();
+  for (const thread of threads) {
+    const existing = unique.get(thread.id);
+    unique.set(thread.id, existing ? { ...existing, ...thread } : thread);
+  }
+  return sortThreads(Array.from(unique.values()));
+}
+
+function formatThreadTitle(thread: Thread): string {
+  const title = thread.title?.trim();
+  if (title) return title;
+
+  const timestamp = getThreadTimestamp(thread);
+  if (!timestamp) return "Untitled chat";
+
+  return timestamp.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatThreadMeta(thread: Thread): string | null {
+  if (!thread.title?.trim()) return null;
+
+  const timestamp = getThreadTimestamp(thread);
+  if (!timestamp) return null;
+
+  return timestamp.toLocaleDateString();
+}
+
 export default function Chat() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -124,8 +175,9 @@ export default function Chat() {
     api.threads
       .list()
       .then((res) => {
-        setThreads(res.threads);
-        const active = res.threads.find((t) => t.status === "active");
+        const nextThreads = dedupeThreads(res.threads);
+        setThreads(nextThreads);
+        const active = nextThreads.find((t) => t.status === "active");
         if (active) {
           setCurrentThreadId(active.id);
           currentThreadIdRef.current = active.id;
@@ -228,18 +280,20 @@ export default function Chat() {
   const handleNewThread = async () => {
     try {
       const res = await api.threads.create();
-      const newThread: Thread = {
-        id: res.threadId,
-        title: null,
-        status: "active",
-        isArchived: false,
-        lastMessageAt: null,
-        createdAt: new Date().toISOString(),
-      };
-      setThreads((prev) => [newThread, ...prev]);
-      currentThreadIdRef.current = res.threadId;
-      setCurrentThreadId(res.threadId);
+      const threadId = res.thread?.id ?? res.threadId;
+
+      currentThreadIdRef.current = threadId;
+      setCurrentThreadId(threadId);
       setMessages([]);
+
+      try {
+        const listRes = await api.threads.list();
+        setThreads(dedupeThreads(listRes.threads));
+      } catch {
+        if (res.thread) {
+          setThreads((prev) => dedupeThreads([res.thread!, ...prev]));
+        }
+      }
     } catch {
       setError("Failed to create new thread.");
     }
@@ -295,7 +349,7 @@ export default function Chat() {
               setCurrentThreadId(evt.threadId);
               api.threads
                 .list()
-                .then((res) => setThreads(res.threads))
+                .then((res) => setThreads(dedupeThreads(res.threads)))
                 .catch(() => {});
             }
           } catch {}
@@ -385,26 +439,28 @@ export default function Chat() {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {threads.map((thread) => (
-              <button
-                key={thread.id}
-                onClick={() => handleSelectThread(thread.id)}
-                className={`w-full text-left px-3 py-2 font-mono text-[10px] tracking-wider transition-colors hover:bg-accent ${
-                  thread.id === currentThreadId
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground"
-                }`}
-              >
-                <div className="truncate">
-                  {thread.title ?? "New conversation"}
-                </div>
-                {thread.lastMessageAt && (
-                  <div className="text-[9px] text-muted-foreground/40 mt-0.5">
-                    {new Date(thread.lastMessageAt).toLocaleDateString()}
-                  </div>
-                )}
-              </button>
-            ))}
+            {threads.map((thread) => {
+              const meta = formatThreadMeta(thread);
+
+              return (
+                <button
+                  key={thread.id}
+                  onClick={() => handleSelectThread(thread.id)}
+                  className={`w-full text-left px-3 py-2 font-mono text-[10px] tracking-wider transition-colors hover:bg-accent ${
+                    thread.id === currentThreadId
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground"
+                  }`}
+                >
+                  <div className="truncate">{formatThreadTitle(thread)}</div>
+                  {meta && (
+                    <div className="text-[9px] text-muted-foreground/40 mt-0.5">
+                      {meta}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

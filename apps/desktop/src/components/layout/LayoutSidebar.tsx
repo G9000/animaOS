@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
+import {
+  HomeIcon,
+  TasksIcon,
+  ChatIcon,
+  MemoryIcon,
+  MindIcon,
+  ModsIcon,
+  ConfigIcon,
+  DatabaseIcon,
+  type IconProps,
+} from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
@@ -9,29 +20,29 @@ import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
 interface NavItem {
   to: string;
   label: string;
-  icon: string;
+  Icon: React.ComponentType<IconProps>;
   description: string;
 }
 
 const STATIC_NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "HOME", icon: "\u2302", description: "dashboard" },
-  { to: "/tasks", label: "TASKS", icon: "\u2610", description: "queue" },
-  { to: "/chat", label: "CHAT", icon: "\u25B9", description: "console" },
-  { to: "/memory", label: "MEM", icon: "\u25C7", description: "archive" },
+  { to: "/", label: "HOME", Icon: HomeIcon, description: "dashboard" },
+  { to: "/tasks", label: "TASKS", Icon: TasksIcon, description: "queue" },
+  { to: "/chat", label: "CHAT", Icon: ChatIcon, description: "console" },
+  { to: "/memory", label: "MEM", Icon: MemoryIcon, description: "archive" },
   {
     to: "/consciousness",
     label: "MIND",
-    icon: "\u25EF",
+    Icon: MindIcon,
     description: "consciousness",
   },
-  { to: "/mods", label: "MODS", icon: "\u2726", description: "extensions" },
-  { to: "/settings", label: "CFG", icon: "\u2699", description: "system" },
+  { to: "/mods", label: "MODS", Icon: ModsIcon, description: "extensions" },
+  { to: "/settings", label: "CFG", Icon: ConfigIcon, description: "system" },
 ];
 
 const DATABASE_NAV_ITEM: NavItem = {
   to: "/database",
   label: "DB",
-  icon: "\u25A4",
+  Icon: DatabaseIcon,
   description: "inspector",
 };
 
@@ -107,143 +118,63 @@ export function LayoutSidebar() {
         collapsed ? "w-14" : "w-[13.5rem]"
       }`}
     >
-      {/* Ambient layer */}
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-primary/10 via-primary/[0.03] to-transparent" />
-        <div className="absolute inset-y-0 right-0 w-px bg-gradient-to-b from-primary/25 via-primary/8 to-transparent" />
-      </div>
-
-      {/* Header */}
-      <div
-        className={`relative z-10 flex items-center border-b border-border/60 min-h-[3rem] flex-shrink-0 ${
-          collapsed ? "justify-center" : "justify-between px-3 py-2"
-        }`}
-      >
-        {!collapsed && (
-          <div className="min-w-0 select-none">
-            <div className="flex items-center gap-2">
-              <span className="h-1.5 w-1.5 bg-primary shadow-[0_0_10px_rgba(94,160,171,0.8)]" />
-              <span className="font-mono text-[9px] font-bold text-primary tracking-[0.42em]">
-                {agentLabel}
-              </span>
-            </div>
-            <div className="mt-0.5 font-mono text-[7px] text-muted-foreground/22 tracking-[0.28em] uppercase">
-              Cognitive Shell
-            </div>
-          </div>
-        )}
-        <button
-          onClick={toggleCollapsed}
-          title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
-          className="flex h-8 w-8 items-center justify-center border border-transparent text-muted-foreground/30 hover:border-border/80 hover:bg-card/80 hover:text-primary transition-all duration-150"
-        >
-          <span className="font-mono text-[10px]">
-            {collapsed ? "\u25B8" : "\u25C2"}
-          </span>
-        </button>
-      </div>
-
-      {/* Agent card */}
-      <NavLink
-        to="/agent"
-        title={agentLabel}
-        className={({ isActive }) =>
-          `relative z-10 border-b border-border/60 flex-shrink-0 transition-all duration-200 cursor-pointer ${
-            isActive ? "bg-primary/[0.06]" : "hover:bg-card/40"
-          }`
+      {/* Agent card — click to collapse/expand */}
+      <button
+        onClick={toggleCollapsed}
+        title={
+          collapsed ? `Expand (Ctrl+/)` : `${agentLabel} — click to collapse`
         }
+        className="relative z-10 border-b border-border flex-shrink-0 cursor-pointer w-full text-left"
       >
-        <div className={`p-2 ${collapsed ? "flex justify-center" : ""}`}>
-          <div
-            className={`relative overflow-hidden border border-border/70 bg-card/60 ${
-              collapsed ? "size-10" : "aspect-[1.08] w-full"
-            }`}
-          >
-            <img
-              src={avatarUrl}
-              alt={agentLabel}
-              className="h-full w-full object-cover transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] hover:scale-[1.04]"
-            />
-
-            {/* CRT scanline overlay */}
-            {!collapsed && (
-              <div className="absolute inset-0 bg-[repeating-linear-gradient(0deg,transparent,transparent_3px,rgba(0,0,0,0.06)_3px,rgba(0,0,0,0.06)_4px)] pointer-events-none" />
-            )}
-
-            {/* Online indicator */}
-            <span className="absolute right-1.5 top-1.5 h-2 w-2 border-[1.5px] border-sidebar bg-success shadow-[0_0_8px_rgba(74,222,128,0.65)]" />
-
-            {/* Agent info scrim */}
-            {!collapsed && (
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-sidebar/98 via-sidebar/75 to-transparent pt-8 pb-3 px-2.5">
-                <div className="font-mono text-[7px] text-muted-foreground/40 tracking-[0.25em] uppercase mb-0.5">
-                  Active Agent
-                </div>
-                <div className="font-mono text-[10px] font-bold text-foreground/90 tracking-[0.18em] truncate">
-                  {agentLabel}
-                </div>
-              </div>
-            )}
-          </div>
+        <div
+          className={`relative overflow-hidden bg-card/60 ${
+            collapsed ? "aspect-square w-full" : "aspect-[1.08] w-full"
+          }`}
+        >
+          <img
+            src={avatarUrl}
+            alt={agentLabel}
+            className="h-full w-full object-cover"
+          />
         </div>
-      </NavLink>
+      </button>
 
       {/* Navigation */}
-      <nav className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-1.5 py-2.5">
-        {!collapsed && (
-          <div className="px-2 pb-2 font-mono text-[7px] text-muted-foreground/22 tracking-[0.32em] uppercase">
-            Navigation
-          </div>
-        )}
-
+      <nav className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden pb-2">
         <div className="space-y-0.5">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === "/"}
-              title={
-                collapsed ? `${item.label} — ${item.description}` : undefined
-              }
+              title={`${item.label} — ${item.description}`}
               className={({ isActive }) =>
-                `group relative flex items-center border transition-all duration-150 ${
-                  collapsed
-                    ? "justify-center h-10 border-transparent"
-                    : "gap-2.5 px-2 py-2 border-transparent"
+                `group relative flex items-center transition-colors duration-150 ${
+                  collapsed ? "justify-center h-10" : "gap-2.5 px-3 py-2"
                 } ${
                   isActive
-                    ? "border-primary/18 bg-primary/[0.07] text-foreground"
-                    : "text-muted-foreground/50 hover:border-border/50 hover:bg-card/45 hover:text-foreground/85"
+                    ? "bg-primary/10 text-foreground"
+                    : "text-muted-foreground hover:bg-card/60 hover:text-foreground"
                 }`
               }
             >
               {({ isActive }) => (
                 <>
-                  {/* Left-edge active bar */}
-                  {isActive && (
-                    <span className="absolute left-0 inset-y-0 w-[2px] bg-primary shadow-[0_0_6px_rgba(94,160,171,0.6)]" />
-                  )}
-
                   {/* Icon */}
                   <span
-                    className={`flex h-7 w-7 flex-shrink-0 items-center justify-center border text-[12px] leading-none transition-all duration-150 ${
+                    className={`flex h-7 w-7 flex-shrink-0 items-center justify-center transition-colors duration-150 ${
                       isActive
-                        ? "border-primary/30 bg-primary/12 text-primary"
-                        : "border-border/45 bg-card/35 text-muted-foreground/45 group-hover:border-border/70 group-hover:bg-card/60 group-hover:text-foreground/75"
+                        ? "text-primary"
+                        : "text-muted-foreground group-hover:text-foreground"
                     }`}
                   >
-                    {item.icon}
+                    <item.Icon size="sm" />
                   </span>
 
-                  {/* Label + description */}
+                  {/* Label */}
                   {!collapsed && (
-                    <span className="min-w-0 flex-1">
-                      <span className="block font-mono text-[9px] tracking-[0.22em] leading-none text-current">
-                        {item.label}
-                      </span>
-                      <span className="mt-1 block font-mono text-[7px] text-muted-foreground/28 tracking-[0.14em] lowercase">
-                        {item.description}
-                      </span>
+                    <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current">
+                      {item.label}
                     </span>
                   )}
                 </>
@@ -254,32 +185,21 @@ export function LayoutSidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="relative z-10 border-t border-border/60 flex-shrink-0 px-1.5 py-2">
-        {!collapsed && (
-          <div className="px-2 pb-2 font-mono text-[7px] text-muted-foreground/22 tracking-[0.32em] uppercase">
-            System
-          </div>
-        )}
-
+      <div className="relative z-10 border-t border-border flex-shrink-0 px-1.5 py-2">
         {/* Theme toggle */}
         <button
           onClick={() => setTheme(toggleTheme())}
           title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground/40 hover:border-border/50 hover:bg-card/45 hover:text-foreground/80 ${
+          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground ${
             collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
           }`}
         >
-          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border/45 bg-card/35 text-[12px] transition-all duration-150 group-hover:border-border/70 group-hover:bg-card/60">
+          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border bg-card/50 text-[12px] transition-all duration-150 group-hover:bg-card">
             {theme === "dark" ? "\u2600" : "\u263E"}
           </span>
           {!collapsed && (
-            <span className="min-w-0 flex-1 text-left">
-              <span className="block font-mono text-[9px] tracking-[0.22em] leading-none text-current">
-                {theme === "dark" ? "LIGHT" : "DARK"}
-              </span>
-              <span className="mt-1 block font-mono text-[7px] text-muted-foreground/28 tracking-[0.14em] lowercase">
-                interface tone
-              </span>
+            <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current">
+              {theme === "dark" ? "LIGHT" : "DARK"}
             </span>
           )}
         </button>
@@ -288,34 +208,29 @@ export function LayoutSidebar() {
         <div className="relative mt-0.5">
           <button
             onClick={() => setShowUser((current) => !current)}
-            className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground/40 hover:border-border/50 hover:bg-card/45 hover:text-foreground/80 ${
+            className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground ${
               collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
             }`}
           >
-            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border/45 bg-card/35 font-mono text-[9px] font-bold uppercase transition-all duration-150 group-hover:border-primary/30 group-hover:bg-primary/8 group-hover:text-primary">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border bg-card/50 font-mono text-[9px] font-bold uppercase transition-all duration-150 group-hover:border-primary/50 group-hover:text-primary">
               {user?.name?.charAt(0) || "?"}
             </span>
             {!collapsed && (
-              <span className="min-w-0 flex-1 text-left">
-                <span className="block font-mono text-[9px] tracking-[0.22em] leading-none text-current truncate">
-                  {user?.name?.toUpperCase() || "USER"}
-                </span>
-                <span className="mt-1 block font-mono text-[7px] text-muted-foreground/28 tracking-[0.14em] lowercase">
-                  session
-                </span>
+              <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current truncate">
+                {user?.name?.toUpperCase() || "USER"}
               </span>
             )}
           </button>
 
           {showUser && (
             <div
-              className={`absolute bottom-full mb-1.5 border border-border/70 bg-sidebar shadow-[0_-8px_28px_rgba(0,0,0,0.35)] backdrop-blur-sm z-50 ${
+              className={`absolute bottom-full mb-1.5 border border-border bg-sidebar shadow-lg z-50 ${
                 collapsed ? "left-full ml-2 min-w-[148px]" : "left-0 right-0"
               }`}
               onMouseLeave={() => setShowUser(false)}
             >
-              <div className="px-3 py-2 border-b border-border/40">
-                <div className="font-mono text-[7px] text-muted-foreground/30 tracking-[0.28em] uppercase truncate">
+              <div className="px-3 py-2 border-b border-border">
+                <div className="font-mono text-[7px] text-muted-foreground tracking-[0.28em] uppercase truncate">
                   {user?.name || "Guest"}
                 </div>
               </div>
@@ -324,7 +239,7 @@ export function LayoutSidebar() {
                   navigate("/profile");
                   setShowUser(false);
                 }}
-                className="w-full text-left px-3 py-2 font-mono text-[9px] text-muted-foreground/65 hover:text-foreground hover:bg-primary/[0.07] tracking-[0.2em] transition-colors border-b border-border/30"
+                className="w-full text-left px-3 py-2 font-mono text-[9px] text-muted-foreground hover:text-foreground hover:bg-primary/10 tracking-[0.2em] transition-colors border-b border-border/50"
               >
                 PROFILE
               </button>
@@ -333,7 +248,7 @@ export function LayoutSidebar() {
                   setShowUser(false);
                   void logout().then(() => navigate("/login"));
                 }}
-                className="w-full text-left px-3 py-2 font-mono text-[9px] text-muted-foreground/35 hover:text-destructive hover:bg-destructive/[0.05] tracking-[0.2em] transition-colors"
+                className="w-full text-left px-3 py-2 font-mono text-[9px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 tracking-[0.2em] transition-colors"
               >
                 LOG OUT
               </button>
