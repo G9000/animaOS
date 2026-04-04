@@ -1,35 +1,36 @@
 from __future__ import annotations
-
-import asyncio
-import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass
-from threading import Lock
-from typing import Any
-
-logger = logging.getLogger(__name__)
-
-import contextlib
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
-
-from anima_server.config import settings
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
-from anima_server.services.agent.compaction import (
-    CompactionResult,
-    compact_thread_context,
+from anima_server.services.health.event_logger import emit as health_emit
+from anima_server.services.data_crypto import df, get_active_dek
+from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
+from anima_server.services.agent.tools import get_tools
+from anima_server.services.agent.tool_context import (
+    ToolContext,
+    clear_tool_context,
+    set_tool_context,
 )
-from anima_server.services.agent.companion import (
-    AnimaCompanion,
-    get_companion,
-    get_or_build_companion,
-    invalidate_companion,
+from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
+from anima_server.services.agent.streaming import (
+    AgentStreamEvent,
+    build_approval_pending_event,
+    build_cancelled_event,
+    build_done_event,
+    build_error_event,
+    build_usage_event,
+    summarize_usage,
 )
-from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
-from anima_server.services.agent.executor import ToolExecutor
-from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
-from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
+from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.agent.sequencing import (
+    count_persisted_result_messages,
+    reserve_message_sequences,
+)
+from anima_server.services.agent.runtime_types import (
+    DryRunResult,
+    StepFailedError,
+    StopReason,
+    ToolCall,
+)
+from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
+from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.persistence import (
     append_user_message,
     cancel_run,
@@ -44,38 +45,35 @@ from anima_server.services.agent.persistence import (
     persist_agent_result,
     save_approval_checkpoint,
 )
-from anima_server.services.agent.reflection import schedule_reflection
-from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
-from anima_server.services.agent.runtime_types import (
-    DryRunResult,
-    StepFailedError,
-    StopReason,
-    ToolCall,
+from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
+from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
+from anima_server.services.agent.executor import ToolExecutor
+from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
+from anima_server.services.agent.companion import (
+    AnimaCompanion,
+    get_companion,
+    get_or_build_companion,
+    invalidate_companion,
 )
-from anima_server.services.agent.sequencing import (
-    count_persisted_result_messages,
-    reserve_message_sequences,
+from anima_server.services.agent.compaction import (
+    CompactionResult,
+    compact_thread_context,
 )
-from anima_server.services.agent.state import AgentResult, StoredMessage
-from anima_server.services.agent.streaming import (
-    AgentStreamEvent,
-    build_approval_pending_event,
-    build_cancelled_event,
-    build_done_event,
-    build_error_event,
-    build_usage_event,
-    summarize_usage,
-)
-from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
-from anima_server.services.agent.tool_context import (
-    ToolContext,
-    clear_tool_context,
-    set_tool_context,
-)
-from anima_server.services.agent.tools import get_tools
-from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
-from anima_server.services.data_crypto import df, get_active_dek
-from anima_server.services.health.event_logger import emit as health_emit
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.config import settings
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+import contextlib
+
+import asyncio
+import logging
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass
+from threading import Lock
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
 
 _runner_lock = Lock()
 _cached_runner: AgentRuntime | None = None
@@ -160,7 +158,8 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
     if thread is not None:
         companion.thread_id = thread.id
         history = companion.ensure_history_loaded(runtime_db)
-        memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
+        memory_blocks = companion.ensure_memory_loaded(
+            db, runtime_db=runtime_db)
 
     runner = get_or_build_runner()
     result = await runner.invoke(
@@ -182,7 +181,8 @@ async def approve_or_deny_turn(
     runtime_db: Session,
     *,
     denial_reason: str | None = None,
-    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
 ) -> AgentResult:
     """Resume a turn after an approval decision.
 
@@ -219,7 +219,8 @@ async def approve_or_deny_turn(
 
     history = companion.ensure_history_loaded(runtime_db)
     memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
-    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(
+        runtime_db, thread.id, "user")
 
     cancel_event = companion.create_cancel_event(run.id)
     set_tool_context(
@@ -287,9 +288,11 @@ async def approve_or_deny_turn(
         run_id=run.id,
         trigger_token_limit=max(
             1,
-            int(settings.agent_max_tokens * settings.agent_compaction_trigger_ratio),
+            int(settings.agent_max_tokens *
+                settings.agent_compaction_trigger_ratio),
         ),
-        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
+        keep_last_messages=max(
+            1, settings.agent_compaction_keep_last_messages),
         reserved_prompt_tokens=(
             result.prompt_budget.system_prompt_token_estimate
             if result.prompt_budget is not None
@@ -303,6 +306,7 @@ async def approve_or_deny_turn(
     _run_post_turn_hooks(
         user_id=user_id,
         thread_id=thread.id,
+        conversation_turn_count=conversation_turn_count,
         user_message="",  # no new user message on resume
         result=result,
         db_factory=_build_db_factory(db),
@@ -377,7 +381,8 @@ async def _execute_agent_turn(
     runtime_db: Session,
     *,
     thread_id: int | None = None,
-    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
@@ -432,7 +437,8 @@ async def _execute_agent_turn_locked(
     runtime_db: Session,
     *,
     thread_id: int | None = None,
-    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
@@ -533,6 +539,7 @@ async def _execute_agent_turn_locked(
     _run_post_turn_hooks(
         user_id=user_id,
         thread_id=thread.id,
+        conversation_turn_count=turn_ctx.conversation_turn_count,
         user_message=user_message,
         result=result,
         db_factory=_build_db_factory(db),
@@ -561,7 +568,8 @@ async def _prepare_turn_context(
     runtime_db: Session,
     *,
     thread_id: int | None = None,
-    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
     source: str | None = None,
 ) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
@@ -579,7 +587,8 @@ async def _prepare_turn_context(
     if thread_id is not None:
         thread = runtime_db.get(RuntimeThread, thread_id)
         if thread is None or thread.user_id != user_id:
-            raise ValueError(f"Thread {thread_id} not found for user {user_id}")
+            raise ValueError(
+                f"Thread {thread_id} not found for user {user_id}")
         if thread.status != "active":
             dek = get_active_dek(user_id, "conversations")
             reactivate_thread_if_needed(
@@ -623,7 +632,8 @@ async def _prepare_turn_context(
         sequence_id=initial_sequence_id,
         source=source,
     )
-    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(
+        runtime_db, thread.id, "user")
 
     # Pre-turn Soul Writer check: if eligible candidates are queued,
     # promote them before building memory blocks so the current turn
@@ -636,7 +646,8 @@ async def _prepare_turn_context(
         if eligible > 0:
             await run_soul_writer(user_id)
     except Exception:
-        logger.debug("Pre-turn Soul Writer check failed for user %s", user_id, exc_info=True)
+        logger.debug("Pre-turn Soul Writer check failed for user %s",
+                     user_id, exc_info=True)
 
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
@@ -655,7 +666,8 @@ async def _prepare_turn_context(
         if search_result.items:
             filtered = adaptive_filter(search_result.items)
             semantic_results = [
-                (item.id, df(user_id, item.content, table="memory_items", field="content"), score)
+                (item.id, df(user_id, item.content,
+                 table="memory_items", field="content"), score)
                 for item, score in filtered
             ]
     except Exception:
@@ -795,7 +807,8 @@ async def _invoke_turn_runtime(
     run: RuntimeRun,
     user_msg: RuntimeMessage,
     turn_ctx: _TurnContext,
-    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
     cancel_event: asyncio.Event | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
@@ -843,7 +856,8 @@ async def _invoke_turn_runtime(
             if extra_tool_schemas:
                 from anima_server.services.agent.tools import prepare_action_tool_schemas
 
-                prepared_action_schemas = prepare_action_tool_schemas(extra_tool_schemas)
+                prepared_action_schemas = prepare_action_tool_schemas(
+                    extra_tool_schemas)
 
         try:
             return await runner.invoke(
@@ -880,7 +894,8 @@ async def _invoke_turn_runtime(
 
                 await run_soul_writer(user_id)
             except Exception:
-                logger.debug("Post-emergency-compaction Soul Writer failed", exc_info=True)
+                logger.debug(
+                    "Post-emergency-compaction Soul Writer failed", exc_info=True)
 
             turn_ctx = _rebuild_turn_context_after_compaction(
                 runtime_db,
@@ -933,7 +948,8 @@ async def _proactive_compact_if_needed(
     history_chars = sum(len(m.content or "") for m in turn_ctx.history)
     estimated_tokens = (block_chars + history_chars) // 4
 
-    threshold = int(settings.agent_max_tokens * settings.agent_compaction_trigger_ratio)
+    threshold = int(settings.agent_max_tokens *
+                    settings.agent_compaction_trigger_ratio)
     if estimated_tokens <= threshold:
         return turn_ctx
 
@@ -947,7 +963,8 @@ async def _proactive_compact_if_needed(
         thread=thread,
         run_id=run.id,
         trigger_token_limit=threshold,
-        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
+        keep_last_messages=max(
+            1, settings.agent_compaction_keep_last_messages),
         reserved_prompt_tokens=block_chars // 4,
     )
     if result is None:
@@ -1023,7 +1040,8 @@ def _rebuild_turn_context_after_compaction(
     companion = _get_companion(user_id)
     companion.invalidate_history()
     history = companion.ensure_history_loaded(runtime_db)
-    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(
+        runtime_db, thread.id, "user")
     return _TurnContext(
         history=history,
         conversation_turn_count=conversation_turn_count,
@@ -1123,11 +1141,13 @@ def _persist_approval_checkpoint(
             break
 
     if pending_tool_call is None:
-        mark_run_failed(runtime_db, run, "Could not reconstruct pending tool call for approval checkpoint")
+        mark_run_failed(
+            runtime_db, run, "Could not reconstruct pending tool call for approval checkpoint")
         runtime_db.commit()
         return None
 
-    seq_id = reserve_message_sequences(runtime_db, thread_id=thread.id, count=1)
+    seq_id = reserve_message_sequences(
+        runtime_db, thread_id=thread.id, count=1)
     save_approval_checkpoint(
         runtime_db,
         thread=thread,
@@ -1180,9 +1200,11 @@ async def _persist_turn_result(
         run_id=run.id,
         trigger_token_limit=max(
             1,
-            int(settings.agent_max_tokens * settings.agent_compaction_trigger_ratio),
+            int(settings.agent_max_tokens *
+                settings.agent_compaction_trigger_ratio),
         ),
-        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
+        keep_last_messages=max(
+            1, settings.agent_compaction_keep_last_messages),
         reserved_prompt_tokens=(
             result.prompt_budget.system_prompt_token_estimate
             if result.prompt_budget is not None
@@ -1235,6 +1257,7 @@ def _run_post_turn_hooks(
     *,
     user_id: int,
     thread_id: int,
+    conversation_turn_count: int | None,
     user_message: str,
     result: AgentResult,
     db_factory: Callable[[], Session],
@@ -1256,6 +1279,7 @@ def _run_post_turn_hooks(
         user_message=user_message,
         assistant_response=enriched_response,
         thread_id=thread_id,
+        conversation_turn_count=conversation_turn_count,
         db_factory=db_factory,
         runtime_db_factory=runtime_db_factory,
     )

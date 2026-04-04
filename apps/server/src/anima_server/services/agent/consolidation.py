@@ -483,6 +483,7 @@ async def run_background_extraction(
     user_message: str,
     assistant_response: str,
     runtime_db_factory: Callable[..., object] | None = None,
+    trigger_soul_writer: bool = True,
 ) -> None:
     """Per-turn extraction. Writes ONLY to PG. Never touches SQLCipher."""
     from anima_server.services.agent.candidate_ops import (
@@ -589,13 +590,15 @@ async def run_background_extraction(
 
             rt_db.commit()
 
-            # 3. Eager promotion — run soul writer whenever there are pending candidates
+            # 3. Eager promotion — run Soul Writer unless a higher-level
+            # orchestrator is taking ownership of the post-turn pipeline.
             count = count_eligible_candidates(rt_db, user_id=user_id)
-            if count > 0:
+            if trigger_soul_writer and count > 0:
                 from anima_server.services.agent.soul_writer import run_soul_writer
 
                 task = asyncio.create_task(run_soul_writer(user_id))
-                _background_tasks.add(task)
+                with _background_tasks_lock:
+                    _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
                 logger.info(
                     "Triggered eager Soul Writer for user %s (%d candidates)",
@@ -619,8 +622,9 @@ async def run_background_extraction(
             },
         )
 
-    # Embedding backfill moved to inactivity-only path (reflection.py)
-    # to avoid per-turn SQLCipher writes from the conversation hot path.
+    # Embedding backfill moved out of the plain per-turn extraction path
+    # to avoid SQLCipher writes on every chat turn. It only runs as part
+    # of the full sleeptime orchestrator / inactivity reflection.
 
 
 async def _backfill_user_embeddings(
@@ -642,12 +646,43 @@ async def _backfill_user_embeddings(
             logger.info("Backfilled %d embeddings for user %s", count, user_id)
 
 
+async def _run_post_turn_sleeptime_pipeline(
+    *,
+    user_id: int,
+    user_message: str,
+    assistant_response: str,
+    thread_id: int | None = None,
+    db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Run the post-turn extraction pipeline, then hand off to sleeptime orchestration."""
+    await run_background_extraction(
+        user_id=user_id,
+        user_message=user_message,
+        assistant_response=assistant_response,
+        runtime_db_factory=runtime_db_factory,
+        trigger_soul_writer=False,
+    )
+
+    from anima_server.services.agent.sleep_agent import run_sleeptime_agents
+
+    await run_sleeptime_agents(
+        user_id=user_id,
+        user_message=user_message,
+        assistant_response=assistant_response,
+        thread_id=thread_id,
+        db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
+
+
 def schedule_background_memory_consolidation(
     *,
     user_id: int,
     user_message: str,
     assistant_response: str,
     thread_id: int | None = None,
+    conversation_turn_count: int | None = None,
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
@@ -659,21 +694,35 @@ def schedule_background_memory_consolidation(
     except RuntimeError:
         return
 
-    # Per-turn: PG-only extraction + embedding backfill
-    task = loop.create_task(
-        run_background_extraction(
-            user_id=user_id,
-            user_message=user_message,
-            assistant_response=assistant_response,
-            runtime_db_factory=runtime_db_factory,
+    from anima_server.services.agent.sleep_agent import should_run_sleeptime
+
+    if should_run_sleeptime(conversation_turn_count):
+        # Every Nth turn: run extraction, then hand off to the full
+        # sleeptime orchestrator.
+        task = loop.create_task(
+            _run_post_turn_sleeptime_pipeline(
+                user_id=user_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                thread_id=thread_id,
+                db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
         )
-    )
+    else:
+        # Most turns only do PG extraction + eager Soul Writer promotion.
+        task = loop.create_task(
+            run_background_extraction(
+                user_id=user_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                runtime_db_factory=runtime_db_factory,
+            )
+        )
+
     with _background_tasks_lock:
         _background_tasks.add(task)
     task.add_done_callback(_on_background_task_done)
-
-    # Embedding backfill moved to inactivity-only path (reflection.py)
-    # to avoid per-turn SQLCipher writes from the conversation hot path.
 
 
 async def drain_background_memory_tasks() -> None:

@@ -16,6 +16,7 @@ from anima_server.services.agent.sleep_agent import (
     _task_episode_gen,
     get_last_processed_message_id,
     run_sleeptime_agents,
+    should_run_sleeptime,
     update_last_processed_message_id,
 )
 from sqlalchemy import create_engine, event, select
@@ -334,6 +335,15 @@ class TestHeatGating:
     def test_no_items_means_no_expensive(self, db_factory):
         with db_factory() as db:
             assert _should_run_expensive(db, user_id=999) is False
+
+
+class TestTurnFrequency:
+    def test_should_run_sleeptime_every_third_turn(self):
+        assert should_run_sleeptime(None) is False
+        assert should_run_sleeptime(1) is False
+        assert should_run_sleeptime(2) is False
+        assert should_run_sleeptime(3) is True
+        assert should_run_sleeptime(6) is True
 
 
 # ── Restart cursor ───────────────────────────────────────────────────

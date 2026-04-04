@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from anima_server.config import settings
@@ -96,24 +97,79 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
         settings.agent_provider = "scaffold"
         invalidate_agent_runtime_cache()
 
-        with _db_session() as session, runtime_db_session() as runtime_session:
-            user = User(
-                username="background-memory",
-                password_hash="not-used",
-                display_name="Background Memory",
-            )
-            session.add(user)
-            session.commit()
+        with patch(
+            "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
+            new=AsyncMock(return_value=[]),
+        ) as run_sleeptime_agents:
+            with patch(
+                "anima_server.services.agent.consolidation.run_background_extraction",
+                new=AsyncMock(return_value=None),
+            ) as run_background_extraction:
+                with _db_session() as session, runtime_db_session() as runtime_session:
+                    user = User(
+                        username="background-memory",
+                        password_hash="not-used",
+                        display_name="Background Memory",
+                    )
+                    session.add(user)
+                    session.commit()
 
-            result = await run_agent(
-                "I prefer short walks. My current focus is finishing the memory pipeline.",
-                user.id,
-                session,
-                runtime_session,
-            )
-            await drain_background_memory_tasks()
+                    result = await run_agent(
+                        "I prefer short walks. My current focus is finishing the memory pipeline.",
+                        user.id,
+                        session,
+                        runtime_session,
+                    )
+                    await drain_background_memory_tasks()
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()
 
     assert "turn 1" in result.response
+    run_background_extraction.assert_awaited_once()
+    run_sleeptime_agents.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_routes_third_turn_into_sleeptime_orchestrator() -> None:
+    original_provider = settings.agent_provider
+    invalidate_agent_runtime_cache()
+
+    try:
+        settings.agent_provider = "scaffold"
+        invalidate_agent_runtime_cache()
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
+            new=AsyncMock(return_value=[]),
+        ) as run_sleeptime_agents:
+            with patch(
+                "anima_server.services.agent.consolidation.run_background_extraction",
+                new=AsyncMock(return_value=None),
+            ) as run_background_extraction:
+                with _db_session() as session, runtime_db_session() as runtime_session:
+                    user = User(
+                        username="background-memory-third-turn",
+                        password_hash="not-used",
+                        display_name="Background Memory Third Turn",
+                    )
+                    session.add(user)
+                    session.commit()
+
+                    await run_agent("first turn", user.id, session, runtime_session)
+                    await drain_background_memory_tasks()
+
+                    await run_agent("second turn", user.id, session, runtime_session)
+                    await drain_background_memory_tasks()
+
+                    result = await run_agent("third turn", user.id, session, runtime_session)
+                    await drain_background_memory_tasks()
+    finally:
+        settings.agent_provider = original_provider
+        invalidate_agent_runtime_cache()
+
+    assert "turn 3" in result.response
+    assert run_background_extraction.await_count == 3
+    run_sleeptime_agents.assert_awaited_once()
+    assert run_sleeptime_agents.await_args.kwargs["user_id"] == user.id
+    assert run_background_extraction.await_args_list[-1].kwargs["trigger_soul_writer"] is False

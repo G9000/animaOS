@@ -24,9 +24,17 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────
 
+SLEEPTIME_FREQUENCY: int = 3
 HEAT_THRESHOLD_CONSOLIDATION: float = 5.0  # Min heat for expensive ops
 _EPISODE_GEN_LOCK_RETRIES: int = 2
 _EPISODE_GEN_LOCK_RETRY_DELAY_SECONDS: float = 1.0
+
+
+def should_run_sleeptime(conversation_turn_count: int | None) -> bool:
+    """Return whether the full sleeptime orchestrator should fire on this turn."""
+    if conversation_turn_count is None or conversation_turn_count <= 0:
+        return False
+    return conversation_turn_count % SLEEPTIME_FREQUENCY == 0
 
 
 # ── Heat gating ──────────────────────────────────────────────────────
