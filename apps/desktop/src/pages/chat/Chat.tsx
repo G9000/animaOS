@@ -81,15 +81,6 @@ function formatThreadTitle(thread: Thread): string {
   });
 }
 
-function formatThreadMeta(thread: Thread): string | null {
-  if (!thread.title?.trim()) return null;
-
-  const timestamp = getThreadTimestamp(thread);
-  if (!timestamp) return null;
-
-  return timestamp.toLocaleDateString();
-}
-
 export default function Chat() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -114,6 +105,8 @@ export default function Chat() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [threadSearch, setThreadSearch] = useState("");
+  const [inputCollapsed, setInputCollapsed] = useState(false);
   const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
 
   useEffect(() => {
@@ -277,25 +270,27 @@ export default function Chat() {
     }
   };
 
-  const handleNewThread = async () => {
+  const handleNewThread = () => {
+    // Just reset to a blank slate — the backend creates the thread
+    // automatically when the first message is sent via get_or_create_thread().
+    currentThreadIdRef.current = null;
+    setCurrentThreadId(null);
+    setMessages([]);
+    setError("");
+    inputRef.current?.focus();
+  };
+
+  const handleDeleteThread = async (threadId: number) => {
     try {
-      const res = await api.threads.create();
-      const threadId = res.thread?.id ?? res.threadId;
-
-      currentThreadIdRef.current = threadId;
-      setCurrentThreadId(threadId);
-      setMessages([]);
-
-      try {
-        const listRes = await api.threads.list();
-        setThreads(dedupeThreads(listRes.threads));
-      } catch {
-        if (res.thread) {
-          setThreads((prev) => dedupeThreads([res.thread!, ...prev]));
-        }
+      await api.threads.delete(threadId);
+      setThreads((prev) => prev.filter((t) => t.id !== threadId));
+      if (currentThreadId === threadId) {
+        currentThreadIdRef.current = null;
+        setCurrentThreadId(null);
+        setMessages([]);
       }
     } catch {
-      setError("Failed to create new thread.");
+      setError("Failed to delete thread.");
     }
   };
 
@@ -426,144 +421,108 @@ export default function Chat() {
     LANGUAGES.find((l) => l.code === translateLang)?.label || translateLang;
 
   return (
-    <div className="flex h-full">
-      {/* Sidebar */}
-      {sidebarOpen && (
-        <div className="w-60 flex-shrink-0 border-r border-border flex flex-col bg-card/20">
-          <div className="p-2 border-b border-border">
-            <button
-              onClick={handleNewThread}
-              className="w-full text-left px-3 py-2 rounded hover:bg-accent font-mono text-[10px] tracking-wider text-muted-foreground hover:text-foreground transition-colors"
-            >
-              + NEW CHAT
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {threads.map((thread) => {
-              const meta = formatThreadMeta(thread);
-
-              return (
-                <button
-                  key={thread.id}
-                  onClick={() => handleSelectThread(thread.id)}
-                  className={`w-full text-left px-3 py-2 font-mono text-[10px] tracking-wider transition-colors hover:bg-accent ${
-                    thread.id === currentThreadId
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  <div className="truncate">{formatThreadTitle(thread)}</div>
-                  {meta && (
-                    <div className="text-[9px] text-muted-foreground/40 mt-0.5">
-                      {meta}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Main chat area */}
+    <div className="flex h-full overflow-hidden">
+      {/* Main chat column */}
       <div className="flex-1 flex flex-col min-w-0 relative bg-background">
         {/* Toolbar */}
-        <div className="px-3 md:px-5 py-2 border-b border-border bg-card/40">
-          <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
-            <div className="flex items-center gap-3">
+        <div className="px-4 py-2 border-b border-border bg-card/40 flex items-center justify-between gap-3 flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
+              CHAT
+            </span>
+            <div className="w-px h-3 bg-border" />
+            <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+              {messages.length} MSG
+            </span>
+            {(() => {
+              const totals = messages.reduce(
+                (acc, m) => {
+                  const u = m.traceEvents?.find((e) => e.type === "usage");
+                  if (u) {
+                    acc.prompt += u.promptTokens ?? 0;
+                    acc.completion += u.completionTokens ?? 0;
+                    acc.cached += u.cachedInputTokens ?? 0;
+                  }
+                  return acc;
+                },
+                { prompt: 0, completion: 0, cached: 0 },
+              );
+              const total = totals.prompt + totals.completion;
+              if (total === 0) return null;
+              return (
+                <>
+                  <div className="w-px h-3 bg-border" />
+                  <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                    {total.toLocaleString()} TKN
+                    {totals.cached > 0 && (
+                      <span className="text-emerald-500/50 ml-1">
+                        {Math.round((totals.cached / totals.prompt) * 100)}%
+                        CACHED
+                      </span>
+                    )}
+                  </span>
+                </>
+              );
+            })()}
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Language selector */}
+            <div className="relative" ref={langDropdownRef}>
               <button
-                onClick={() => setSidebarOpen((v) => !v)}
-                className="font-mono text-[10px] text-muted-foreground/40 hover:text-muted-foreground tracking-wider transition-colors"
-                aria-label="Toggle sidebar"
+                onClick={() => setShowLangSettings((v) => !v)}
+                className="font-mono text-[9px] text-muted-foreground/40 hover:text-muted-foreground tracking-wider transition-colors"
               >
-                ☰
+                TL:{currentLangLabel.toUpperCase()}
               </button>
-              <div className="w-px h-3 bg-border" />
-              <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
-                CHAT
-              </span>
-              <div className="w-px h-3 bg-border" />
-              <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-                {messages.length} MSG
-              </span>
-              {(() => {
-                const totals = messages.reduce(
-                  (acc, m) => {
-                    const u = m.traceEvents?.find((e) => e.type === "usage");
-                    if (u) {
-                      acc.prompt += u.promptTokens ?? 0;
-                      acc.completion += u.completionTokens ?? 0;
-                      acc.cached += u.cachedInputTokens ?? 0;
-                    }
-                    return acc;
-                  },
-                  { prompt: 0, completion: 0, cached: 0 },
-                );
-                const total = totals.prompt + totals.completion;
-                if (total === 0) return null;
-                return (
-                  <>
-                    <div className="w-px h-3 bg-border" />
-                    <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-                      {total.toLocaleString()} TKN
-                      {totals.cached > 0 && (
-                        <span className="text-emerald-500/50 ml-1">
-                          {Math.round((totals.cached / totals.prompt) * 100)}%
-                          CACHED
-                        </span>
-                      )}
-                    </span>
-                  </>
-                );
-              })()}
-            </div>
-            <div className="flex items-center gap-4">
-              {/* Language selector */}
-              <div className="relative" ref={langDropdownRef}>
-                <button
-                  onClick={() => setShowLangSettings((v) => !v)}
-                  className="flex items-center gap-1.5 font-mono text-[9px] text-muted-foreground/50 hover:text-muted-foreground tracking-wider transition-colors"
-                >
-                  TL:{currentLangLabel.toUpperCase()}
-                </button>
-                {showLangSettings && (
-                  <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-border py-1 min-w-[140px] max-h-64 overflow-y-auto">
-                    <div className="px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 tracking-widest border-b border-border">
-                      TRANSLATE TO
-                    </div>
-                    {LANGUAGES.map((lang) => (
-                      <button
-                        key={lang.code}
-                        onClick={() => handleLangChange(lang.code)}
-                        className={`block w-full text-left px-3 py-1.5 font-mono text-[10px] transition-colors ${
-                          translateLang === lang.code
-                            ? "text-primary bg-primary/[0.06]"
-                            : "text-muted-foreground hover:text-foreground hover:bg-input"
-                        }`}
-                      >
-                        {lang.label}
-                      </button>
-                    ))}
+              {showLangSettings && (
+                <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-border py-1 min-w-[140px] max-h-64 overflow-y-auto">
+                  <div className="px-3 py-1.5 font-mono text-[9px] text-muted-foreground/40 tracking-widest border-b border-border">
+                    TRANSLATE TO
                   </div>
-                )}
-              </div>
-              <button
-                onClick={() => setShowTrace((v) => !v)}
-                className={`font-mono text-[9px] tracking-wider transition-colors ${
-                  showTrace
-                    ? "text-primary"
-                    : "text-muted-foreground/40 hover:text-muted-foreground"
-                }`}
-              >
-                TRACE
-              </button>
-              <button
-                onClick={clearHistory}
-                className="font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
-              >
-                CLEAR
-              </button>
+                  {LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.code}
+                      onClick={() => handleLangChange(lang.code)}
+                      className={`block w-full text-left px-3 py-1.5 font-mono text-[10px] transition-colors ${
+                        translateLang === lang.code
+                          ? "text-primary bg-primary/[0.06]"
+                          : "text-muted-foreground hover:text-foreground hover:bg-input"
+                      }`}
+                    >
+                      {lang.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+            <button
+              onClick={() => setShowTrace((v) => !v)}
+              className={`font-mono text-[9px] tracking-wider transition-colors ${
+                showTrace
+                  ? "text-primary"
+                  : "text-muted-foreground/40 hover:text-muted-foreground"
+              }`}
+            >
+              TRACE
+            </button>
+            <button
+              onClick={clearHistory}
+              className="font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider transition-colors"
+            >
+              CLEAR
+            </button>
+            <div className="w-px h-3 bg-border" />
+            <button
+              onClick={() => setSidebarOpen((v) => !v)}
+              className={`font-mono text-[9px] tracking-wider transition-colors ${
+                sidebarOpen
+                  ? "text-primary/70"
+                  : "text-muted-foreground/40 hover:text-muted-foreground"
+              }`}
+              title="Toggle thread list"
+            >
+              {sidebarOpen ? "THREADS" : "EXPAND ◀"}
+            </button>
           </div>
         </div>
 
@@ -698,34 +657,148 @@ export default function Chat() {
         )}
 
         {/* Input */}
-        <form
-          onSubmit={handleSubmit}
-          className="border-t border-border px-2.5 md:px-5 py-3 md:py-4 bg-card/40"
-        >
-          <div className="flex gap-2.5 md:gap-3 items-end max-w-5xl mx-auto border border-border px-2.5 md:px-3 py-2 bg-card">
-            <div className="font-mono text-[10px] text-primary/40 pt-1.5 md:pt-2 select-none shrink-0">
-              &gt;
+        <div className="border-t border-border bg-card/60 flex-shrink-0">
+          {/* Collapse toggle bar */}
+          <button
+            onClick={() => setInputCollapsed((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-1.5 group hover:bg-card/80 transition-colors"
+          >
+            <span className="font-mono text-[9px] tracking-widest text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors">
+              INPUT
+            </span>
+            <span className="font-mono text-[9px] text-muted-foreground/25 group-hover:text-muted-foreground/50 transition-colors">
+              {inputCollapsed ? "▲" : "▼"}
+            </span>
+          </button>
+
+          {!inputCollapsed && (
+            <div className="px-4 pb-4">
+              <form onSubmit={handleSubmit}>
+                <div className="flex gap-3 items-end border border-border bg-card hover:border-primary/40 focus-within:border-primary/60 transition-colors duration-150 px-4 py-3 shadow-[0_0_12px_0_hsl(var(--primary)/0.06)]">
+                  <div className="font-mono text-[11px] text-primary/50 pt-1 select-none shrink-0 tracking-wider">
+                    &gt;_
+                  </div>
+                  <textarea
+                    ref={inputRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="type something..."
+                    disabled={streaming}
+                    rows={1}
+                    className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/30 outline-none resize-none max-h-40 py-0.5 leading-relaxed"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!input.trim() || streaming}
+                    className="font-mono text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground/50 hover:border-primary/60 hover:text-primary disabled:opacity-20 transition-colors duration-150 shrink-0 self-end"
+                  >
+                    SEND
+                  </button>
+                </div>
+                <div className="mt-1.5 px-1">
+                  <span className="font-mono text-[9px] text-muted-foreground/25 tracking-wider">
+                    ENTER to send · SHIFT+ENTER for newline
+                  </span>
+                </div>
+              </form>
             </div>
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="..."
-              disabled={streaming}
-              rows={1}
-              className="flex-1 bg-transparent text-[14px] md:text-sm text-foreground placeholder:text-muted-foreground/20 outline-none resize-none max-h-40 md:max-h-32 py-1 leading-relaxed"
-            />
+          )}
+        </div>
+      </div>
+
+      {/* Thread list — right panel */}
+      {sidebarOpen && (
+        <div className="w-72 flex-shrink-0 border-l border-border flex flex-col bg-sidebar">
+          {/* Header */}
+          <div className="px-4 py-2.5 border-b border-border flex items-center justify-between gap-2 flex-shrink-0">
             <button
-              type="submit"
-              disabled={!input.trim() || streaming}
-              className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary disabled:opacity-15 tracking-wider pb-1 transition-colors"
+              onClick={() => setSidebarOpen(false)}
+              className="font-mono text-[9px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground transition-colors"
+              title="Minimize"
             >
-              SEND
+              ▶
+            </button>
+            <button
+              onClick={handleNewThread}
+              className="font-mono text-[9px] tracking-widest text-muted-foreground/40 hover:text-primary transition-colors"
+              title="New chat"
+            >
+              + NEW
             </button>
           </div>
-        </form>
-      </div>
+
+          {/* Thread list */}
+          <div className="flex-1 overflow-y-auto">
+            {(() => {
+              const query = threadSearch.trim().toLowerCase();
+              const filtered = threads.filter((t) =>
+                query
+                  ? formatThreadTitle(t).toLowerCase().includes(query)
+                  : true,
+              );
+              if (filtered.length === 0) {
+                return (
+                  <div className="px-4 py-6 font-mono text-[9px] text-muted-foreground/25 tracking-widest text-center">
+                    {threadSearch ? "NO MATCH" : "NO CONVERSATIONS"}
+                  </div>
+                );
+              }
+              return filtered.map((thread) => {
+                const isActive = thread.id === currentThreadId;
+                return (
+                  <div
+                    key={thread.id}
+                    className={`group/thread flex items-center transition-colors border-b border-border/20 ${
+                      isActive
+                        ? "bg-primary/10 text-foreground"
+                        : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+                    }`}
+                  >
+                    <button
+                      onClick={() => handleSelectThread(thread.id)}
+                      className="flex-1 text-left px-4 py-3 min-w-0"
+                    >
+                      <div className="text-sm truncate leading-snug">
+                        {formatThreadTitle(thread)}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteThread(thread.id)}
+                      className="opacity-0 group-hover/thread:opacity-100 shrink-0 px-3 py-3 font-mono text-[9px] text-muted-foreground/40 hover:text-destructive transition-all"
+                      title="Delete thread"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+
+          {/* Search — bottom */}
+          <div className="border-t border-border bg-card/40 px-4 py-3 flex-shrink-0 flex items-center gap-2.5">
+            <span className="font-mono text-[10px] text-primary/40 tracking-wider select-none shrink-0">
+              /
+            </span>
+            <input
+              type="text"
+              value={threadSearch}
+              onChange={(e) => setThreadSearch(e.target.value)}
+              placeholder="search conversations..."
+              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/35 outline-none py-0.5"
+            />
+            {threadSearch && (
+              <button
+                onClick={() => setThreadSearch("")}
+                className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

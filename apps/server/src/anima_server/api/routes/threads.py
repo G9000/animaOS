@@ -6,15 +6,14 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.config import settings
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
-from anima_server.models.runtime import RuntimeThread
-from anima_server.models.runtime import RuntimeMessage
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
@@ -161,3 +160,26 @@ async def close_thread_endpoint(
         )
 
     return {"status": "closed", "threadId": thread_id}
+
+
+@router.delete("/{thread_id}")
+async def delete_thread_endpoint(
+    thread_id: int,
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, object]:
+    """Permanently delete a thread and all its messages."""
+    unlock_session = require_unlocked_session(request)
+    thread = runtime_db.get(RuntimeThread, thread_id)
+    if thread is None or thread.user_id != unlock_session.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+
+    # Delete all messages, then the thread itself.
+    runtime_db.execute(
+        delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id)
+    )
+    runtime_db.delete(thread)
+    runtime_db.commit()
+
+    return {"status": "deleted", "threadId": thread_id}

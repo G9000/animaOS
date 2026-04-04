@@ -748,6 +748,10 @@ export function createApiClient(options: ApiClientOptions) {
             method: "POST",
           },
         ),
+      delete: (threadId: number) =>
+        request<{ status: string; threadId: number }>(`/threads/${threadId}`, {
+          method: "DELETE",
+        }),
     },
     system: {
       health: () =>

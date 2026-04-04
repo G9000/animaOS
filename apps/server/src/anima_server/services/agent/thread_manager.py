@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 _THREAD_TITLE_SPLIT_RE = re.compile(
-    r"(?:\r?\n+|[.!?](?=\s|$)|\s+[—–-]\s+|:\s+)")
+    r"(?:\r?\n+|[.!?](?=\s|$)|\s+[\u2014\u2013-]\s+|:\s+)")
 _THREAD_TITLE_WORD_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9']*")
 _THREAD_TITLE_PREFIXES = (
     "can you ",
@@ -81,8 +81,11 @@ _GENERIC_THREAD_MESSAGES = frozenset(
 )
 
 
+_STRIP_CHARS = " -\u2013\u2014:;,.!?"
+
+
 def _normalize_thread_title_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip(" -–—:;,.!?")
+    return re.sub(r"\s+", " ", text).strip(_STRIP_CHARS)
 
 
 def _strip_thread_title_prefixes(text: str) -> str:
@@ -101,7 +104,7 @@ def _strip_thread_title_prefixes(text: str) -> str:
             None,
         )
         if matched_prefix is None:
-            return candidate.strip(" -–—:;,.!?")
+            return candidate.strip(_STRIP_CHARS)
 
         stripped = candidate[len(matched_prefix):]
 
@@ -133,8 +136,8 @@ def _derive_thread_title(user_message: str) -> str | None:
 
     if len(cleaned) > 48:
         truncated = cleaned[:48].rsplit(" ", maxsplit=1)[
-            0].rstrip(" -–—:;,.!?")
-        cleaned = truncated or cleaned[:48].rstrip(" -–—:;,.!?")
+            0].rstrip(_STRIP_CHARS)
+        cleaned = truncated or cleaned[:48].rstrip(_STRIP_CHARS)
         cleaned = f"{cleaned}..."
 
     return cleaned[:1].upper() + cleaned[1:]
