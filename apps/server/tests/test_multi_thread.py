@@ -247,6 +247,7 @@ def test_display_messages_deduplicates_send_message(db: Session) -> None:
 def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
     """If PG messages are gone, rehydrate from JSONL and insert summary."""
     import json
+
     from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
     from sqlalchemy import select
 

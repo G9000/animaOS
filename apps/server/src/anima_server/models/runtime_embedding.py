@@ -15,7 +15,6 @@ from sqlalchemy import BigInteger, Index, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
-from anima_server.config import settings
 from anima_server.db.runtime_base import RuntimeBase
 
 TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)

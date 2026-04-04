@@ -32,7 +32,6 @@ from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import settings
-from .services.health.event_logger import emit as health_emit
 from .db.pg_lifecycle import EmbeddedPG
 from .db.runtime import (
     dispose_runtime_engine,
@@ -42,6 +41,7 @@ from .db.runtime import (
 )
 from .db.user_store import ensure_per_user_databases_ready
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
+from .services.health.event_logger import emit as health_emit
 
 
 def get_cors_origins() -> list[str]:
@@ -161,10 +161,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             # Flush pending Soul Writer candidates for all active users
             try:
-                from .services.agent.soul_writer import run_soul_writer
+                from sqlalchemy import select as _sel
+
                 from .db.runtime import get_runtime_session_factory
                 from .models.runtime import RuntimeThread
-                from sqlalchemy import select as _sel
+                from .services.agent.soul_writer import run_soul_writer
 
                 rt_factory = get_runtime_session_factory()
                 with rt_factory() as rt_db:

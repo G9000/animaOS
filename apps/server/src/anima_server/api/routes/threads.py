@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

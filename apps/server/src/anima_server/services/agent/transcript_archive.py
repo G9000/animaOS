@@ -17,16 +17,7 @@ if TYPE_CHECKING:
     from anima_server.models.runtime import RuntimeMessage
 
 _STOP_WORDS = frozenset(
-    (
-        "a an the is are was were be been being have has had do does did will would "
-        "shall should may might can could am i me my we our you your he she it they "
-        "them his her its their this that these those in on at to for of with by from "
-        "and or but not so if then else when how what which who whom where why all any "
-        "some no nor too also very just about up down out off over under again further "
-        "once here there each every both few more most other such only own same than "
-        "into through during before after above below between don doesn didn isn aren "
-        "wasn weren won wouldn hasn hadn ll ve re"
-    ).split()
+    ["a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall", "should", "may", "might", "can", "could", "am", "i", "me", "my", "we", "our", "you", "your", "he", "she", "it", "they", "them", "his", "her", "its", "their", "this", "that", "these", "those", "in", "on", "at", "to", "for", "of", "with", "by", "from", "and", "or", "but", "not", "so", "if", "then", "else", "when", "how", "what", "which", "who", "whom", "where", "why", "all", "any", "some", "no", "nor", "too", "also", "very", "just", "about", "up", "down", "out", "off", "over", "under", "again", "further", "once", "here", "there", "each", "every", "both", "few", "more", "most", "other", "such", "only", "own", "same", "than", "into", "through", "during", "before", "after", "above", "below", "between", "don", "doesn", "didn", "isn", "aren", "wasn", "weren", "won", "wouldn", "hasn", "hadn", "ll", "ve", "re"]
 )
 
 
@@ -37,7 +28,7 @@ class TranscriptExportResult:
     message_count: int
 
 
-def messages_to_transcript_dicts(messages: list["RuntimeMessage"]) -> list[dict[str, object]]:
+def messages_to_transcript_dicts(messages: list[RuntimeMessage]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for message in messages:
         role = "assistant" if message.role == "tool" and message.tool_name == "send_message" else message.role
@@ -144,7 +135,7 @@ def decrypt_transcript(enc_path: Path, *, dek: bytes | None, thread_id: int) -> 
 
 
 def _build_aad(thread_id: int, date_str: str) -> bytes:
-    return f"transcript:{thread_id}:{date_str}".encode("utf-8")
+    return f"transcript:{thread_id}:{date_str}".encode()
 
 
 def _build_sidecar(

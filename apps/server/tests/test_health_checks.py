@@ -54,7 +54,8 @@ async def test_db_integrity_pg_unreachable():
         runtime_db_factory=bad_factory,
     )
     assert result.status == "unhealthy"
-    assert "runtime" in result.message.lower() or "unreachable" in result.message.lower()
+    assert "runtime" in result.message.lower(
+    ) or "unreachable" in result.message.lower()
 
 
 # -- llm_connectivity ----------------------------------------------------
@@ -157,7 +158,8 @@ async def test_background_tasks_healthy_multiple_consolidations():
                 task_type="consolidation",
                 status="completed",
                 started_at=datetime.now(UTC) - timedelta(minutes=60 - i * 10),
-                completed_at=datetime.now(UTC) - timedelta(minutes=55 - i * 10),
+                completed_at=datetime.now(
+                    UTC) - timedelta(minutes=55 - i * 10),
             ))
         db.commit()
 
@@ -177,7 +179,7 @@ async def test_background_tasks_degraded_failures():
 
     factory = get_runtime_session_factory()
     with factory() as db:
-        for i in range(3):
+        for _i in range(3):
             db.add(RuntimeBackgroundTaskRun(
                 user_id=1,
                 task_type="consolidation",

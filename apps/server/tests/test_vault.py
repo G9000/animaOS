@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import User
-from anima_server.services.storage import get_user_data_dir
 from anima_server.services import vault as vault_module
+from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import decrypt_string, encrypt_string
 from conftest import managed_test_client
 from fastapi.testclient import TestClient

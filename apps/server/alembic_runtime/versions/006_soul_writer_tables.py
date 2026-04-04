@@ -4,8 +4,8 @@ Revision ID: 006_soul_writer
 Revises: 005
 Create Date: 2026-03-30
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY, TIMESTAMP
 
 revision = "006_soul_writer"

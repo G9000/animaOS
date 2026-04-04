@@ -29,6 +29,7 @@ class QuickReflectionResult:
     inner_state_updated: bool = False
     working_memory_updated: bool = False
     emotional_signal_recorded: bool = False
+    emotional_synthesis_updated: bool = False
     quick_take: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -43,6 +44,7 @@ class DeepMonologueResult:
     intentions_updated: bool = False
     procedural_rules_added: int = 0
     insights_generated: int = 0
+    emotional_synthesis_stored: bool = False
     errors: list[str] = field(default_factory=list)
 
 
@@ -105,6 +107,9 @@ async def run_quick_reflection(
             if runtime_factory is None:
                 inner_state_block = get_self_model_block(
                     db, user_id=user_id, section="inner_state")
+                emotional_synthesis_block = get_self_model_block(
+                    db, user_id=user_id, section="emotional_synthesis"
+                )
                 working_memory_block = get_self_model_block(
                     db, user_id=user_id, section="working_memory"
                 )
@@ -113,12 +118,21 @@ async def run_quick_reflection(
                     working_context = get_working_context(
                         pg_db, user_id=user_id)
                     inner_state_block = working_context.get("inner_state")
+                    emotional_synthesis_block = working_context.get(
+                        "emotional_synthesis"
+                    )
                     working_memory_block = working_context.get(
                         "working_memory")
 
             inner_state_text = (
                 render_self_model_section(
                     inner_state_block, user_id=user_id) or "No state yet."
+            )
+            emotional_synthesis_text = (
+                render_self_model_section(
+                    emotional_synthesis_block, user_id=user_id
+                )
+                or "None yet."
             )
             working_memory_text = (
                 render_self_model_section(
@@ -154,6 +168,7 @@ async def run_quick_reflection(
             # Render prompt using template
             prompt = prompt_loader.quick_reflection(
                 inner_state=inner_state_text,
+                emotional_synthesis=emotional_synthesis_text,
                 working_memory=working_memory_text,
                 recent_episodes=episodes_text,
                 conversation=conversation_text[:2000],
@@ -173,6 +188,7 @@ async def run_quick_reflection(
             # Update inner state
             inner_state_data = parsed.get("inner_state")
             wm_updates = parsed.get("working_memory_updates", [])
+            self_feelings = parsed.get("self_feelings")
 
             current_wm = (
                 working_memory_text
@@ -220,6 +236,16 @@ async def run_quick_reflection(
                     )
                     result.working_memory_updated = True
 
+                if self_feelings and isinstance(self_feelings, str):
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="emotional_synthesis",
+                        content=self_feelings,
+                        updated_by="post_turn",
+                    )
+                    result.emotional_synthesis_updated = True
+
                 if isinstance(emotional, dict) and emotional.get("emotion"):
                     signal = record_emotional_signal(
                         db,
@@ -254,6 +280,16 @@ async def run_quick_reflection(
                             updated_by="post_turn",
                         )
                         result.working_memory_updated = True
+
+                    if self_feelings and isinstance(self_feelings, str):
+                        set_working_context(
+                            pg_db,
+                            user_id=user_id,
+                            section="emotional_synthesis",
+                            content=self_feelings,
+                            updated_by="post_turn",
+                        )
+                        result.emotional_synthesis_updated = True
 
                     if isinstance(emotional, dict) and emotional.get("emotion"):
                         signal = record_emotional_signal(
@@ -379,7 +415,6 @@ async def _run_deep_monologue_legacy(
                 if persona_block
                 else "Default persona — not yet customized."
             )
-            has_persona_block = persona_block is not None
 
             # Render prompt using template
             prompt = prompt_loader.deep_monologue(
@@ -398,6 +433,14 @@ async def _run_deep_monologue_legacy(
                 )
                 if "inner_state" in blocks
                 else "No state.",
+                emotional_synthesis=df(
+                    user_id,
+                    blocks["emotional_synthesis"].content,
+                    table="self_model_blocks",
+                    field="content",
+                )
+                if "emotional_synthesis" in blocks
+                else "None yet.",
                 working_memory=df(
                     user_id,
                     blocks["working_memory"].content,
@@ -528,7 +571,6 @@ async def _run_deep_monologue_legacy(
                     for r in rules
                     if isinstance(r, dict)
                 )
-                from anima_server.services.data_crypto import ef
 
                 set_self_model_block(
                     db,
@@ -538,6 +580,16 @@ async def _run_deep_monologue_legacy(
                     updated_by="sleep_time",
                 )
                 result.procedural_rules_added = len(rules)
+
+            if parsed.get("emotional_synthesis"):
+                set_self_model_block(
+                    db,
+                    user_id=user_id,
+                    section="emotional_synthesis",
+                    content=parsed["emotional_synthesis"],
+                    updated_by="sleep_time",
+                )
+                result.emotional_synthesis_stored = True
 
             insights = parsed.get("insights", [])
             if insights and isinstance(insights, list):
@@ -630,13 +682,17 @@ async def run_deep_monologue(
                 if persona_block
                 else "Default persona - not yet customized."
             )
-            has_persona_block = persona_block is not None
             growth_log_text = _last_n_entries(
                 get_growth_log_text(db, user_id=user_id), 5)
 
             if runtime_factory is None:
                 inner_state_block = get_self_model_block(
                     db, user_id=user_id, section="inner_state")
+                emotional_synthesis_block = get_self_model_block(
+                    db,
+                    user_id=user_id,
+                    section="emotional_synthesis",
+                )
                 working_memory_block = get_self_model_block(
                     db,
                     user_id=user_id,
@@ -648,6 +704,12 @@ async def run_deep_monologue(
                 inner_state_text = (
                     render_self_model_section(
                         inner_state_block, user_id=user_id) or "No state."
+                )
+                emotional_synthesis_text = (
+                    render_self_model_section(
+                        emotional_synthesis_block, user_id=user_id
+                    )
+                    or "None yet."
                 )
                 working_memory_text = (
                     render_self_model_section(
@@ -692,6 +754,13 @@ async def run_deep_monologue(
                             working_context.get("inner_state"), user_id=user_id)
                         or "No state."
                     )
+                    emotional_synthesis_text = (
+                        render_self_model_section(
+                            working_context.get("emotional_synthesis"),
+                            user_id=user_id,
+                        )
+                        or "None yet."
+                    )
                     working_memory_text = (
                         render_self_model_section(
                             working_context.get("working_memory"),
@@ -721,6 +790,7 @@ async def run_deep_monologue(
                 identity=identity_text,
                 persona=persona_text[:1000],
                 inner_state=inner_state_text,
+                emotional_synthesis=emotional_synthesis_text,
                 working_memory=working_memory_text,
                 growth_log=growth_log_text,
                 intentions=intentions_text,
@@ -880,6 +950,37 @@ async def run_deep_monologue(
                         result.procedural_rules_added = len(rules)
 
                     pg_db.commit()
+
+            # Store emotional synthesis from the reflection
+            emotional_synthesis = parsed.get("emotional_synthesis")
+            if emotional_synthesis and isinstance(emotional_synthesis, str):
+                if runtime_factory is not None:
+                    try:
+                        with runtime_factory() as pg_db:
+                            set_working_context(
+                                pg_db,
+                                user_id=user_id,
+                                section="emotional_synthesis",
+                                content=emotional_synthesis,
+                                updated_by="sleep_time",
+                            )
+                            pg_db.commit()
+                            result.emotional_synthesis_stored = True
+                    except Exception:
+                        logger.warning(
+                            "Emotional synthesis storage failed for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
+                else:
+                    set_self_model_block(
+                        db,
+                        user_id=user_id,
+                        section="emotional_synthesis",
+                        content=emotional_synthesis,
+                        updated_by="sleep_time",
+                    )
+                    result.emotional_synthesis_stored = True
 
             # Promote recurring emotional signals to enduring soul patterns
             if runtime_factory is not None:

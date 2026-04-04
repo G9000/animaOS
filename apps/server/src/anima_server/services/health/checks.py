@@ -55,9 +55,7 @@ async def check_db_integrity(
 
     elapsed = (time.monotonic() - start) * 1000
 
-    if any("unreachable" in i.lower() or "failed" in i.lower() for i in issues):
-        status = "unhealthy"
-    elif any("integrity" in i.lower() for i in issues):
+    if any("unreachable" in i.lower() or "failed" in i.lower() for i in issues) or any("integrity" in i.lower() for i in issues):
         status = "unhealthy"
     else:
         status = "healthy"

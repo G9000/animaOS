@@ -13,6 +13,12 @@ from anima_server.config import settings
 from anima_server.services.agent.adapters import build_adapter
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.compaction import estimate_message_tokens
+from anima_server.services.agent.conversation_policy import (
+    RelationshipPolicy,
+    build_relationship_stage_instructions,
+    detect_relationship_policy,
+    validate_terminal_reply,
+)
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import (
     ContextWindowOverflowError,
@@ -114,14 +120,17 @@ class AgentRuntime:
         max_steps: int = 4,
     ) -> None:
         self._adapter = adapter
-        self._tool_registry = {tool_name: tool for tool in tools if (tool_name := _tool_name(tool))}
+        self._tool_registry = {tool_name: tool for tool in tools if (
+            tool_name := _tool_name(tool))}
         self._tool_names = tuple(self._tool_registry)
         self._tool_rules = tuple(tool_rules)
         if self._tool_rules:
-            ToolRulesSolver(self._tool_rules).warn_unknown_tools(self._tool_names)
+            ToolRulesSolver(self._tool_rules).warn_unknown_tools(
+                self._tool_names)
         self._persona_template = persona_template
         self._tool_summaries = tuple(tool_summaries)
-        self._tool_executor = tool_executor or ToolExecutor(list(self._tool_registry.values()))
+        self._tool_executor = tool_executor or ToolExecutor(
+            list(self._tool_registry.values()))
         self._max_steps = max_steps
 
     def prepare_system_prompt(self) -> str:
@@ -131,9 +140,11 @@ class AgentRuntime:
         self,
         *,
         memory_blocks: Sequence[MemoryBlock] = (),
+        conversation_turn_count: int | None = None,
     ) -> str:
         system_prompt, _prompt_budget = self.build_system_prompt_with_budget(
-            memory_blocks=memory_blocks
+            memory_blocks=memory_blocks,
+            conversation_turn_count=conversation_turn_count,
         )
         return system_prompt
 
@@ -141,8 +152,13 @@ class AgentRuntime:
         self,
         *,
         memory_blocks: Sequence[MemoryBlock] = (),
+        conversation_turn_count: int | None = None,
     ) -> tuple[str, PromptBudgetTrace | None]:
         self._adapter.prepare()
+        relationship_policy = detect_relationship_policy(
+            memory_blocks=tuple(memory_blocks),
+            conversation_turn_count=conversation_turn_count,
+        )
         dynamic_identity, persona_content, prompt_memory_blocks = split_prompt_memory_blocks(
             memory_blocks
         )
@@ -154,6 +170,9 @@ class AgentRuntime:
                 tool_summaries=self._tool_summaries,
                 memory_blocks=budget_plan.blocks,
                 dynamic_identity=dynamic_identity,
+                additional_instructions=build_relationship_stage_instructions(
+                    relationship_policy
+                ),
             )
         )
         prompt_budget = replace(
@@ -191,6 +210,11 @@ class AgentRuntime:
         executor = tool_executor or self._tool_executor
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
             memory_blocks=memory_blocks,
+            conversation_turn_count=conversation_turn_count,
+        )
+        relationship_policy = detect_relationship_policy(
+            memory_blocks=tuple(memory_blocks),
+            conversation_turn_count=conversation_turn_count,
         )
 
         # When action tools are registered (from a connected client like
@@ -219,7 +243,8 @@ class AgentRuntime:
         )
 
         rules_solver = ToolRulesSolver(self._tool_rules)
-        allowed_tool_names = tuple(sorted(rules_solver.get_allowed_tools(self._tool_names)))
+        allowed_tool_names = tuple(
+            sorted(rules_solver.get_allowed_tools(self._tool_names)))
 
         # --- Dry-run: return prompt assembly without side effects ---
         if dry_run:
@@ -299,7 +324,8 @@ class AgentRuntime:
                     "tool": last_failed_tool,
                 }, user_id=user_id)
             allowed_tool_names = tuple(sorted(allowed_set))
-            force_tool_call = bool(allowed_tool_names) and rules_solver.should_force_tool_call()
+            force_tool_call = bool(
+                allowed_tool_names) and rules_solver.should_force_tool_call()
             if event_callback is not None:
                 # Include tool schemas on the first step for trace debugging.
                 schemas: dict[str, object] | None = None
@@ -370,6 +396,7 @@ class AgentRuntime:
                     step_index=step_index,
                     event_callback=event_callback,
                     extra_tool_names=extra_tool_names,
+                    relationship_policy=relationship_policy,
                     tool_executor=executor,
                 )
                 if coerced is not None:
@@ -402,7 +429,8 @@ class AgentRuntime:
                     )
                     if event_callback is not None:
                         await event_callback(
-                            build_timing_event(step_index, _compute_timing(step_ctx))
+                            build_timing_event(
+                                step_index, _compute_timing(step_ctx))
                         )
                     # Check if any coerced call was terminal (send_message).
                     terminal_hit = any(tr.is_terminal for _, tr in coerced)
@@ -450,7 +478,7 @@ class AgentRuntime:
                 for tool_call in step_result.tool_calls:
                     await event_callback(build_tool_call_event(step_index, tool_call))
 
-            for tc_index, tool_call in enumerate(step_result.tool_calls):
+            for tool_call in step_result.tool_calls:
                 violation = rules_solver.validate_tool_call(
                     tool_call.name,
                     self._tool_names,
@@ -506,10 +534,13 @@ class AgentRuntime:
                     if validated_calls:
                         step_ctx.progression = StepProgression.TOOLS_STARTED
                         pre_approval_results = await executor.execute_parallel(validated_calls)
-                        for (tc, _), tr in zip(validated_calls, pre_approval_results):
+                        for (tc, _), tr in zip(
+                            validated_calls, pre_approval_results, strict=True
+                        ):
                             tool_results.append(tr)
                             messages.append(
-                                make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
+                                make_tool_message(
+                                    tr.output, tool_call_id=tr.call_id, name=tr.name)
                             )
                             if event_callback is not None:
                                 await event_callback(build_tool_return_event(step_index, tr))
@@ -559,10 +590,11 @@ class AgentRuntime:
                 parallel_results = await executor.execute_parallel(non_terminal) if non_terminal else []
 
                 # Process non-terminal results.
-                for (tc, _), tr in zip(non_terminal, parallel_results):
+                for (tc, _), tr in zip(non_terminal, parallel_results, strict=True):
                     tool_results.append(tr)
                     messages.append(
-                        make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
+                        make_tool_message(
+                            tr.output, tool_call_id=tr.call_id, name=tr.name)
                     )
                     if event_callback is not None:
                         await event_callback(build_tool_return_event(step_index, tr))
@@ -581,9 +613,15 @@ class AgentRuntime:
                 # Execute terminal tool last (sequentially).
                 for tc, _ in terminal:
                     tr = await executor.execute(tc, is_terminal=True)
+                    tr = self._apply_terminal_reply_policy(
+                        tool_call=tc,
+                        tool_result=tr,
+                        relationship_policy=relationship_policy,
+                    )
                     tool_results.append(tr)
                     messages.append(
-                        make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
+                        make_tool_message(
+                            tr.output, tool_call_id=tr.call_id, name=tr.name)
                     )
                     if event_callback is not None:
                         await event_callback(build_tool_return_event(step_index, tr))
@@ -635,7 +673,8 @@ class AgentRuntime:
 
                             messages[0] = make_system_message(system_prompt)
                 except Exception:
-                    logger.debug("Memory refresh between steps failed", exc_info=True)
+                    logger.debug(
+                        "Memory refresh between steps failed", exc_info=True)
 
             is_final_step = step_index == self._max_steps - 1
             should_continue, continuation_reason = self._decide_continuation(
@@ -769,6 +808,7 @@ class AgentRuntime:
         executor = tool_executor or self._tool_executor
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
             memory_blocks=memory_blocks,
+            conversation_turn_count=conversation_turn_count,
         )
         messages = build_conversation_messages(
             history,
@@ -819,7 +859,8 @@ class AgentRuntime:
 
         step_ctx.progression = StepProgression.TOOLS_COMPLETED
         request_messages = _snapshot_messages(messages)
-        allowed_tool_names = tuple(sorted(rules_solver.get_allowed_tools(self._tool_names)))
+        allowed_tool_names = tuple(
+            sorted(rules_solver.get_allowed_tools(self._tool_names)))
         step_traces.append(
             _build_step_trace(
                 step_ctx,
@@ -860,7 +901,8 @@ class AgentRuntime:
                 prompt_budget=prompt_budget,
             )
 
-        allowed_tool_names = tuple(sorted(rules_solver.get_allowed_tools(self._tool_names)))
+        allowed_tool_names = tuple(
+            sorted(rules_solver.get_allowed_tools(self._tool_names)))
         force_tool_call = bool(allowed_tool_names) and (
             rules_solver.should_force_tool_call() or "send_message" in allowed_tool_names
         )
@@ -1022,7 +1064,8 @@ class AgentRuntime:
             s for s in extra_tool_schemas if s.get("function", {}).get("name") in allowed_tool_names
         ]
         if action_tools:
-            action_names = [s.get("function", {}).get("name") for s in action_tools]
+            action_names = [s.get("function", {}).get("name")
+                            for s in action_tools]
             logger.info(
                 "Step %d: %d server tools + %d action tools (%s)",
                 step_index,
@@ -1121,9 +1164,11 @@ class AgentRuntime:
                     ctx.llm_end_time = time.monotonic()
 
                     if step_result is None:
-                        raise RuntimeError("Adapter stream ended without a final step result.")
+                        raise RuntimeError(
+                            "Adapter stream ended without a final step result.")
                     if step_result.ttft_ms is not None:
-                        ttft_time = ctx.start_time + (step_result.ttft_ms / 1000)
+                        ttft_time = ctx.start_time + \
+                            (step_result.ttft_ms / 1000)
                         if ctx.ttft_time is None or ttft_time < ctx.ttft_time:
                             ctx.ttft_time = ttft_time
 
@@ -1179,6 +1224,7 @@ class AgentRuntime:
         step_index: int,
         event_callback: StreamEventCallback | None,
         extra_tool_names: frozenset[str] = frozenset(),
+        relationship_policy: RelationshipPolicy | None = None,
         tool_executor: ToolExecutor | None = None,
     ) -> list[tuple[ToolCall, ToolExecutionResult]] | None:
         """Detect and execute tool calls that the model output as plain text.
@@ -1234,16 +1280,51 @@ class AgentRuntime:
                 tool_call,
                 is_terminal=is_terminal,
             )
+            tool_result = self._apply_terminal_reply_policy(
+                tool_call=tool_call,
+                tool_result=tool_result,
+                relationship_policy=relationship_policy,
+            )
             if event_callback is not None:
                 await event_callback(build_tool_call_event(step_index, tool_call))
                 await event_callback(build_tool_return_event(step_index, tool_result))
                 if tool_result.inner_thinking:
                     await event_callback(
-                        build_thought_event(step_index, tool_result.inner_thinking)
+                        build_thought_event(
+                            step_index, tool_result.inner_thinking)
                     )
             results.append((tool_call, tool_result))
 
         return results if results else None
+
+    @staticmethod
+    def _apply_terminal_reply_policy(
+        *,
+        tool_call: ToolCall,
+        tool_result: ToolExecutionResult,
+        relationship_policy: RelationshipPolicy | None,
+    ) -> ToolExecutionResult:
+        if not tool_result.is_terminal or tool_call.name != "send_message":
+            return tool_result
+        if relationship_policy is None:
+            return tool_result
+
+        policy_error = validate_terminal_reply(
+            tool_result.output,
+            policy=relationship_policy,
+        )
+        if policy_error is None:
+            return tool_result
+
+        return ToolExecutionResult(
+            call_id=tool_result.call_id,
+            name=tool_result.name,
+            output=policy_error,
+            is_error=True,
+            is_terminal=False,
+            memory_modified=tool_result.memory_modified,
+            inner_thinking=tool_result.inner_thinking,
+        )
 
 
 def build_loop_runtime() -> AgentRuntime:
@@ -1357,8 +1438,9 @@ def _parse_function_tag_tool_calls(
         if name not in known_tool_names:
             continue
 
-        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        raw_content = text[match.end() : next_start]
+        next_start = matches[index + 1].start() if index + \
+            1 < len(matches) else len(text)
+        raw_content = text[match.end(): next_start]
         closing_index = raw_content.find("</function>")
         if closing_index != -1:
             raw_content = raw_content[:closing_index]
@@ -1388,7 +1470,8 @@ def _parse_function_tag_tool_calls(
             continue
 
         arg_name = _infer_first_arg_name(name)
-        results.append(_ParsedTextToolCall(name=name, arguments={arg_name: content}))
+        results.append(_ParsedTextToolCall(
+            name=name, arguments={arg_name: content}))
     return results
 
 
@@ -1494,7 +1577,8 @@ def _resolve_empty_forced_tool_stop_reason(
 def _compute_timing(ctx: StepContext) -> StepTiming:
     now = time.monotonic()
     return StepTiming(
-        step_duration_ms=round((now - ctx.start_time) * 1000, 2) if ctx.start_time else None,
+        step_duration_ms=round((now - ctx.start_time) *
+                               1000, 2) if ctx.start_time else None,
         llm_duration_ms=round((ctx.llm_end_time - ctx.start_time) * 1000, 2)
         if ctx.llm_end_time and ctx.start_time
         else None,
@@ -1551,7 +1635,8 @@ def _snapshot_messages(messages: list[object]) -> tuple[MessageSnapshot, ...]:
                 content=message_content(message),
                 tool_name=getattr(message, "name", None),
                 tool_call_id=getattr(message, "tool_call_id", None),
-                tool_calls=_snapshot_tool_calls(getattr(message, "tool_calls", ())),
+                tool_calls=_snapshot_tool_calls(
+                    getattr(message, "tool_calls", ())),
             )
         )
 
@@ -1572,7 +1657,8 @@ def _snapshot_tool_calls(raw_tool_calls: object) -> tuple[ToolCall, ...]:
             raw_arguments = raw_tool_call.get("raw_arguments")
         else:
             name = str(getattr(raw_tool_call, "name", "")).strip()
-            call_id = str(getattr(raw_tool_call, "id", None) or f"tool-call-{index}")
+            call_id = str(getattr(raw_tool_call, "id", None)
+                          or f"tool-call-{index}")
             arguments = getattr(raw_tool_call, "args", {})
             parse_error = getattr(raw_tool_call, "parse_error", None)
             raw_arguments = getattr(raw_tool_call, "raw_arguments", None)
@@ -1610,7 +1696,8 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
         try:
             schema["parameters"] = tool.args_schema.model_json_schema()
         except Exception:
-            logger.warning("Failed to extract schema for tool %s", _tool_name(tool))
+            logger.warning(
+                "Failed to extract schema for tool %s", _tool_name(tool))
     return schema
 
 

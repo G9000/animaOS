@@ -9,16 +9,22 @@ Benchmarks AnimaOS memory against LoCoMo and LongMemEval datasets.
 python download_data.py
 
 # 2. Run LoCoMo benchmark (requires running AnimaOS server)
-python run_locomo.py --base-url http://localhost:8000
+python run_locomo.py --base-url http://127.0.0.1:3031
 
 # 3. Run LongMemEval benchmark
-python run_longmemeval.py --base-url http://localhost:8000
+python run_longmemeval.py --base-url http://127.0.0.1:3031
 
-# 4. Score results (uses LLM-as-judge via Ollama)
+# 4. Run the lightweight conversation eval against the real app stack
+python run_conversation_eval.py --mode in-process
+
+# 5. Or run the conversation eval against an already running server
+python run_conversation_eval.py --mode http --base-url http://127.0.0.1:3031 --username <user> --password <pass>
+
+# 6. Score benchmark results (uses LLM-as-judge via Ollama)
 python score_results.py results/locomo_results.json
 python score_results.py results/longmemeval_results.json
 
-# 5. Print summary
+# 7. Print summary
 python print_summary.py results/
 ```
 

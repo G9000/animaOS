@@ -9,7 +9,6 @@ Each task opens its own DB session via ``db_factory()``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime

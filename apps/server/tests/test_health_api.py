@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from conftest import managed_test_client
-
 from anima_server.services.health.models import CheckResult, HealthReport, HealthStatus
+from conftest import managed_test_client
 
 
 def _make_check_result(

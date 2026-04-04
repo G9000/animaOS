@@ -10,10 +10,10 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import runtime as _runtime_models  # noqa: F401
-from sqlalchemy import BigInteger, create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy import select
+from cryptography.exceptions import InvalidTag
+from sqlalchemy import BigInteger, create_engine, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -46,7 +46,8 @@ def soul_db() -> Session:
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     session = factory()
-    session.add(User(id=1, username="test", display_name="Test", password_hash="x"))
+    session.add(User(id=1, username="test",
+                display_name="Test", password_hash="x"))
     session.commit()
     try:
         yield session
@@ -266,7 +267,7 @@ class TestBlobEncryption:
 
         ciphertext = encrypt_blob(plaintext, dek, aad=aad)
 
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTag):
             decrypt_blob(ciphertext, wrong_key, aad=aad)
 
     def test_decrypt_wrong_aad_fails(self) -> None:
@@ -279,7 +280,7 @@ class TestBlobEncryption:
 
         ciphertext = encrypt_blob(plaintext, dek, aad=b"correct-aad")
 
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTag):
             decrypt_blob(ciphertext, dek, aad=b"wrong-aad")
 
     def test_empty_plaintext(self) -> None:
@@ -298,8 +299,10 @@ class TestTranscriptExport:
         from anima_server.services.agent.transcript_archive import serialize_messages_to_jsonl
 
         messages = [
-            {"role": "user", "content": "Hello", "ts": "2026-03-28T10:00:00Z", "seq": 1},
-            {"role": "assistant", "content": "Hi!", "ts": "2026-03-28T10:00:05Z", "seq": 2},
+            {"role": "user", "content": "Hello",
+                "ts": "2026-03-28T10:00:00Z", "seq": 1},
+            {"role": "assistant", "content": "Hi!",
+                "ts": "2026-03-28T10:00:05Z", "seq": 2},
         ]
         result = serialize_messages_to_jsonl(messages)
         lines = result.strip().split("\n")
@@ -313,7 +316,8 @@ class TestTranscriptExport:
         from anima_server.services.agent.transcript_archive import export_transcript
 
         messages = [
-            {"role": "user", "content": "Hello", "ts": "2026-03-28T10:00:00Z", "seq": 1},
+            {"role": "user", "content": "Hello",
+                "ts": "2026-03-28T10:00:00Z", "seq": 1},
         ]
         result = export_transcript(
             messages=messages,
@@ -368,7 +372,8 @@ class TestTranscriptExport:
         )
 
         messages = [
-            {"role": "user", "content": "Hello", "ts": "2026-03-28T10:00:00Z", "seq": 1},
+            {"role": "user", "content": "Hello",
+                "ts": "2026-03-28T10:00:00Z", "seq": 1},
         ]
         result = export_transcript(
             messages=messages,
@@ -378,7 +383,8 @@ class TestTranscriptExport:
             transcripts_dir=transcripts_dir,
         )
 
-        recovered = decrypt_transcript(result.enc_path, dek=test_dek, thread_id=42)
+        recovered = decrypt_transcript(
+            result.enc_path, dek=test_dek, thread_id=42)
         assert len(recovered) == 1
         assert recovered[0]["content"] == "Hello"
 
@@ -389,7 +395,8 @@ class TestTranscriptExport:
         )
 
         messages = [
-            {"role": "user", "content": "Hello", "ts": "2026-03-28T10:00:00Z", "seq": 1},
+            {"role": "user", "content": "Hello",
+                "ts": "2026-03-28T10:00:00Z", "seq": 1},
         ]
         result = export_transcript(
             messages=messages,
@@ -673,7 +680,10 @@ class TestTranscriptSearch:
         transcripts_dir: Path,
         test_dek: bytes,
     ) -> None:
-        from anima_server.services.agent.transcript_search import format_snippets, search_transcripts
+        from anima_server.services.agent.transcript_search import (
+            format_snippets,
+            search_transcripts,
+        )
 
         self._create_test_transcript(
             transcripts_dir,
@@ -954,7 +964,8 @@ class TestEagerConsolidation:
 
         refreshed_episode = soul_db.get(MemoryEpisode, episode.id)
         assert refreshed_episode is not None
-        assert refreshed_episode.transcript_ref == next(transcripts_dir.glob("*.jsonl.enc")).name
+        assert refreshed_episode.transcript_ref == next(
+            transcripts_dir.glob("*.jsonl.enc")).name
         assert meta["episodic_memory_ids"] == [str(episode.id)]
         assert meta["summary"] == "Episode summary from consolidation"
 
@@ -1033,7 +1044,9 @@ class TestBackgroundSweeps:
         thread = RuntimeThread(user_id=1, status="closed", is_archived=False)
         runtime_db.add(thread)
         runtime_db.commit()
-        runtime_db_factory = lambda: runtime_db
+
+        def runtime_db_factory() -> Session:
+            return runtime_db
 
         with patch(
             "anima_server.services.agent.eager_consolidation.on_thread_close",
@@ -1201,12 +1214,11 @@ class TestThreadCloseRoute:
     def test_close_thread_returns_404_for_other_users_thread(self, runtime_db: Session) -> None:
         import asyncio
 
-        from fastapi import HTTPException
-        from starlette.requests import Request
-
         from anima_server.api.routes.threads import close_thread_endpoint
         from anima_server.models.runtime import RuntimeThread
         from anima_server.services.sessions import unlock_session_store
+        from fastapi import HTTPException
+        from starlette.requests import Request
 
         thread = RuntimeThread(user_id=2, status="active")
         runtime_db.add(thread)
@@ -1223,6 +1235,7 @@ class TestThreadCloseRoute:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(close_thread_endpoint(thread.id, request=request, runtime_db=runtime_db))
+            asyncio.run(close_thread_endpoint(
+                thread.id, request=request, runtime_db=runtime_db))
 
         assert exc_info.value.status_code == 404

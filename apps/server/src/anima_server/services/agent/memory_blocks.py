@@ -542,7 +542,10 @@ def build_soul_biography_block(
     return MemoryBlock(
         label="soul",
         description=_desc(
-            "soul", "My origin — immutable biographical truth. This is who I am.", agent_type),
+            "soul",
+            "Private background facts about my origin. Relevant when asked who I am or where I came from, not something to volunteer in ordinary conversation.",
+            agent_type,
+        ),
         value=value,
     )
 
@@ -815,6 +818,15 @@ def build_self_model_memory_blocks(
             ),
         ),
         (
+            "emotional_synthesis",
+            "self_emotional_state",
+            _desc(
+                "self_emotional_state",
+                "My recent emotional trajectory and what I feel toward this person. Private context for tone and closeness, not something to narrate unless it belongs naturally.",
+                agent_type,
+            ),
+        ),
+        (
             "working_memory",
             "self_working_memory",
             _desc("self_working_memory",
@@ -844,7 +856,7 @@ def build_self_model_memory_blocks(
             if not text:
                 text = render_self_model_section(
                     blocks_map.get(section), user_id=user_id)
-        elif section in {"inner_state", "working_memory"}:
+        elif section in {"inner_state", "working_memory", "emotional_synthesis"}:
             block = working_context.get(section) or blocks_map.get(section)
             text = render_self_model_section(block, user_id=user_id)
         elif section == "intentions":

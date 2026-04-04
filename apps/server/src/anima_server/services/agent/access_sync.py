@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session

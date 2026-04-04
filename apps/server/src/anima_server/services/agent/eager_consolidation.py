@@ -15,8 +15,8 @@ from anima_server.config import settings
 from anima_server.models.agent_runtime import MemoryEpisode
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.episodes import maybe_generate_episode
-from anima_server.services.agent.soul_writer import run_soul_writer
 from anima_server.services.agent.persistence import list_transcript_messages
+from anima_server.services.agent.soul_writer import run_soul_writer
 from anima_server.services.agent.transcript_archive import (
     export_transcript,
     messages_to_transcript_dicts,

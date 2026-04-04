@@ -16,8 +16,8 @@ def log_dir(tmp_path: Path) -> Path:
 @pytest.mark.asyncio
 async def test_full_health_check_flow(log_dir: Path):
     """End-to-end: emit events, run health checks, verify report."""
-    from anima_server.services.health.event_logger import EventLogger
     from anima_server.services.health.checks import check_llm_connectivity
+    from anima_server.services.health.event_logger import EventLogger
     from anima_server.services.health.registry import HealthCheckRegistry
 
     el = EventLogger(log_dir=log_dir, min_level="trace")

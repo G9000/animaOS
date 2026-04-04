@@ -85,11 +85,11 @@ class ToolDelegator:
 
         try:
             return await asyncio.wait_for(future, timeout=self._timeout)
-        except TimeoutError:
+        except TimeoutError as err:
             self._pending.pop(tool_call_id, None)
             raise DelegationTimeout(
                 f"Tool {tool_name} (call_id={tool_call_id}) timed out after {self._timeout}s"
-            )
+            ) from err
 
     def resolve(self, tool_call_id: str, data: dict[str, Any]) -> None:
         """Resolve a pending delegation with the client's result.
@@ -100,7 +100,8 @@ class ToolDelegator:
         """
         future = self._pending.pop(tool_call_id, None)
         if future is None:
-            logger.warning("Received tool_result for unknown call_id: %s", tool_call_id)
+            logger.warning(
+                "Received tool_result for unknown call_id: %s", tool_call_id)
             return
         if future.done():
             return
@@ -118,7 +119,7 @@ class ToolDelegator:
 
     def cancel_all(self, reason: str = "Connection lost") -> None:
         """Cancel all pending delegations (e.g. on client disconnect)."""
-        for call_id, future in self._pending.items():
+        for _call_id, future in self._pending.items():
             if not future.done():
                 future.set_exception(DelegationTimeout(reason))
         self._pending.clear()

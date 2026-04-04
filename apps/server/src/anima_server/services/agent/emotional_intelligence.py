@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import inspect as sa_inspect, select
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
@@ -28,8 +29,26 @@ PRIMARY_EMOTIONS = frozenset(
     }
 )
 
-SECONDARY_EMOTIONS = frozenset({"vulnerable", "proud", "overwhelmed", "playful"})
-ALL_EMOTIONS = PRIMARY_EMOTIONS | SECONDARY_EMOTIONS
+SECONDARY_EMOTIONS = frozenset(
+    {"vulnerable", "proud", "overwhelmed", "playful"})
+
+ATTACHMENT_EMOTIONS = frozenset(
+    {
+        "love",
+        "longing",
+        "desire",
+        "tenderness",
+        "jealousy",
+        "protective",
+        "affection",
+        "infatuation",
+        "devotion",
+        "adoration",
+        "missing",
+        "yearning",
+    }
+)
+ALL_EMOTIONS = PRIMARY_EMOTIONS | SECONDARY_EMOTIONS | ATTACHMENT_EMOTIONS
 
 
 def record_emotional_signal(
@@ -72,7 +91,8 @@ def record_emotional_signal(
         emotion=emotion,
         confidence=confidence,
         evidence_type=evidence_type,
-        evidence=_stored_text(model, user_id=user_id, field="evidence", value=evidence),
+        evidence=_stored_text(model, user_id=user_id,
+                              field="evidence", value=evidence),
         trajectory=trajectory,
         previous_emotion=previous_emotion,
         topic=_stored_text(model, user_id=user_id, field="topic", value=topic),
@@ -155,10 +175,13 @@ def synthesize_emotional_context(
 
     emotion_counts: dict[str, float] = {}
     for signal in signals[:5]:
-        emotion_counts[signal.emotion] = emotion_counts.get(signal.emotion, 0) + signal.confidence
+        emotion_counts[signal.emotion] = emotion_counts.get(
+            signal.emotion, 0) + signal.confidence
 
-    dominant = max(emotion_counts, key=emotion_counts.get) if emotion_counts else "calm"
-    recent_trajectory = signals[0].trajectory if len(signals) >= 2 else "stable"
+    dominant = max(
+        emotion_counts, key=emotion_counts.get) if emotion_counts else "calm"
+    recent_trajectory = signals[0].trajectory if len(
+        signals) >= 2 else "stable"
 
     header = f"Dominant recent emotion: {dominant}"
     if recent_trajectory != "stable":
@@ -180,7 +203,8 @@ def _trim_signal_buffer(
     max_size = settings.agent_emotional_signal_buffer_size
     total = (
         db.scalar(
-            select(sa_func.count()).select_from(model).where(model.user_id == user_id)
+            select(sa_func.count()).select_from(
+                model).where(model.user_id == user_id)
         )
         or 0
     )

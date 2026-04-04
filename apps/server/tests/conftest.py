@@ -1,10 +1,19 @@
 from __future__ import annotations
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy import BigInteger, create_engine, event
+from fastapi.testclient import TestClient
+from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
+from anima_server.services.agent.vector_store import reset_vector_store
+from anima_server.services.agent import invalidate_agent_runtime_cache
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.db import runtime as runtime_mod
+from anima_server.db import dispose_cached_engines
+from anima_server.config import settings
+import pytest
 
 import os
-
-# Disable encryption requirement for tests (must be set before settings import).
-os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
-
 import shutil
 import tempfile
 from collections.abc import Generator
@@ -13,18 +22,15 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-import pytest
-from anima_server.config import settings
-from anima_server.db import dispose_cached_engines
-from anima_server.db import runtime as runtime_mod
-from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import runtime_consciousness as _runtime_consciousness_models  # noqa: F401
+# Disable encryption requirement for tests (must be set before settings import).
+os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
+
+
 from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
-from anima_server.models import runtime_memory as _runtime_memory_models  # noqa: F401 — register runtime_session_notes
-from sqlalchemy import BigInteger, create_engine, event
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from anima_server.models import runtime_consciousness as _runtime_consciousness_models  # noqa: F401
+from anima_server.models import (
+    runtime_memory as _runtime_memory_models,  # noqa: F401 — register runtime_session_notes
+)
 
 # ---------------------------------------------------------------------------
 # SQLite compat: BigInteger → INTEGER so AUTOINCREMENT works for runtime models.
@@ -33,13 +39,10 @@ from sqlalchemy.pool import StaticPool
 # ensures BigInteger emits plain INTEGER on SQLite.
 # ---------------------------------------------------------------------------
 
+
 @compiles(BigInteger, "sqlite")
 def _compile_biginteger_sqlite(type_: BigInteger, compiler: object, **kw: object) -> str:
     return "INTEGER"
-from anima_server.services.agent import invalidate_agent_runtime_cache
-from anima_server.services.agent.vector_store import reset_vector_store
-from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
-from fastapi.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
@@ -139,9 +142,8 @@ def managed_test_client(
     app = main_module.create_app()
 
     try:
-        with patch.object(main_module, "_start_embedded_pg", return_value=None):
-            with TestClient(app) as client:
-                yield client
+        with patch.object(main_module, "_start_embedded_pg", return_value=None), TestClient(app) as client:
+            yield client
     finally:
         unlock_session_store.clear()
         clear_sqlcipher_key()

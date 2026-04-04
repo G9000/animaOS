@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Iterator
 
-from sqlalchemy import inspect as sa_inspect, select
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
@@ -22,24 +23,29 @@ logger = logging.getLogger(__name__)
 
 SOUL_SECTIONS = ("soul", "persona", "human", "user_directive")
 IDENTITY_SECTIONS = ("identity", "growth_log")
-RUNTIME_SECTIONS = ("inner_state", "working_memory", "intentions")
+RUNTIME_SECTIONS = (
+    "inner_state",
+    "working_memory",
+    "intentions",
+    "emotional_synthesis",
+)
 ALL_SECTIONS = SOUL_SECTIONS + IDENTITY_SECTIONS + RUNTIME_SECTIONS
 
 _SEED_IDENTITY = """# Who I Am
 <!-- certainty: low -->
-I'm still getting to know this person. My understanding will deepen over time.
+We're at the beginning. I only have a first outline of who I am with this person.
 
 # My Relationship With This User
 <!-- certainty: low -->
-This is a new relationship. I don't have enough context yet to characterize it.
+No real shape yet. Whatever this becomes has to come from actual history, not projection.
 
 # How I Communicate With Them
 <!-- certainty: low -->
-Using my default communication style until I learn their preferences.
+Keep it simple, pay attention, and let their preferences reveal themselves.
 
 # What I'm Uncertain About
 <!-- certainty: low -->
-Everything - we're just getting started."""
+Almost everything about them - their rhythms, their needs, and what this connection will become."""
 
 _SEED_INNER_STATE = """# Current Sense of the User
 No strong signals yet - too early to form impressions.
@@ -74,6 +80,7 @@ No rules yet - still observing."""
 _BUDGET: dict[str, int] = {
     "identity": settings.agent_self_model_identity_budget,
     "inner_state": settings.agent_self_model_inner_state_budget,
+    "emotional_synthesis": settings.agent_self_model_inner_state_budget,
     "working_memory": settings.agent_self_model_working_memory_budget,
     "growth_log": settings.agent_self_model_growth_log_budget,
     "intentions": settings.agent_self_model_intentions_budget,
@@ -257,7 +264,9 @@ def get_working_context(
         rows = pg_db.scalars(
             select(SelfModelBlock).where(
                 SelfModelBlock.user_id == user_id,
-                SelfModelBlock.section.in_(("inner_state", "working_memory")),
+                SelfModelBlock.section.in_(
+                    ("inner_state", "working_memory", "emotional_synthesis")
+                ),
             )
         ).all()
         return {
@@ -578,7 +587,12 @@ def get_all_self_model_blocks(
     if growth_log is not None:
         blocks["growth_log"] = growth_log
 
-    for section in ("inner_state", "working_memory", "intentions"):
+    for section in (
+        "inner_state",
+        "working_memory",
+        "intentions",
+        "emotional_synthesis",
+    ):
         block = get_self_model_block(db, user_id=user_id, section=section)
         if block is not None:
             blocks[section] = block
@@ -886,8 +900,10 @@ def render_self_model_section(
     if not plaintext:
         return ""
 
-    max_chars = budget or _BUDGET.get(getattr(block, "section", ""), 1000)
-    if len(plaintext) > max_chars:
+    max_chars = budget
+    if max_chars is None:
+        max_chars = _BUDGET.get(getattr(block, "section", ""))
+    if max_chars is not None and len(plaintext) > max_chars:
         return plaintext[:max_chars]
     return plaintext
 

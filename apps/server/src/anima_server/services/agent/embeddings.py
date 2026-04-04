@@ -4,9 +4,8 @@ Generates embeddings via LLM providers and stores them in both:
 - RuntimeEmbedding table in PostgreSQL via pgvector (for fast ANN search)
 - MemoryItem.embedding_json (portable cache for .anima/ transfers)
 
-All supported providers (ollama, openrouter, vllm) expose an
-OpenAI-compatible /v1/embeddings endpoint, so we use a single
-httpx-based implementation for all of them.
+OpenAI-compatible providers use /v1/embeddings. Ollama uses its native
+/api/embed endpoint.
 """
 
 from __future__ import annotations
@@ -29,16 +28,15 @@ from anima_server.config import settings
 from anima_server.models import MemoryItem
 from anima_server.services.agent.llm import (
     LLMConfigError,
-    build_provider_headers,
-    resolve_base_url,
-    validate_provider_configuration,
+    validate_provider,
 )
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
-# Default embedding models per provider.  Users can override via
-# ANIMA_AGENT_EXTRACTION_MODEL.
+# Default embedding models per provider. Users can override via the
+# dedicated embedding settings, with extraction_model kept as a
+# backwards-compatible fallback.
 _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "ollama": "nomic-embed-text",
     "openrouter": "openai/text-embedding-3-small",
@@ -46,27 +44,88 @@ _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "vllm": "text-embedding-3-small",
 }
 
+_DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
+    "ollama": "http://127.0.0.1:11434",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
+    "vllm": "http://127.0.0.1:8000/v1",
+    "openai": "https://api.openai.com/v1",
+}
+
+
+def _resolve_embedding_provider() -> str:
+    configured = settings.agent_embedding_provider.strip()
+    if configured:
+        return configured
+    return settings.agent_provider
+
+
+def _resolve_embedding_api_key() -> str:
+    configured = settings.agent_embedding_api_key.strip()
+    if configured:
+        return configured
+    return settings.agent_api_key.strip()
+
 
 def _resolve_embedding_model() -> str:
     """Return the embedding model to use, preferring the user-configured one."""
+    configured = settings.agent_embedding_model.strip()
+    if configured:
+        return configured
     configured = settings.agent_extraction_model.strip()
     if configured:
         return configured
-    return _DEFAULT_EMBEDDING_MODELS.get(settings.agent_provider, "nomic-embed-text")
+    return _DEFAULT_EMBEDDING_MODELS.get(_resolve_embedding_provider(), "nomic-embed-text")
 
 
 def _resolve_embedding_base_url() -> str:
-    """Resolve the base URL for embeddings.
+    """Resolve the base URL for the active embedding provider."""
+    provider = _resolve_embedding_provider()
+    configured = settings.agent_embedding_base_url.strip()
+    if configured:
+        return configured.removesuffix("/v1") if provider == "ollama" else configured
 
-    For openrouter we always use the canonical API URL regardless of any
-    local ``agent_base_url`` override (which is typically pointed at a
-    local Ollama instance for chat).  For other providers, delegate to
-    the shared ``resolve_base_url`` helper.
-    """
-    provider = settings.agent_provider
+    configured_agent = settings.agent_base_url.strip()
+    if configured_agent and not settings.agent_embedding_provider.strip():
+        if provider == "openrouter":
+            return _DEFAULT_EMBEDDING_BASE_URLS[provider]
+        return configured_agent.removesuffix("/v1") if provider == "ollama" else configured_agent
+
+    return _DEFAULT_EMBEDDING_BASE_URLS[provider]
+
+
+def _validate_embedding_provider_configuration(provider: str) -> None:
+    validate_provider(provider)
+    if provider in ("openrouter", "moonshot", "openai") and not _resolve_embedding_api_key():
+        raise LLMConfigError(
+            f"ANIMA_AGENT_EMBEDDING_API_KEY (or ANIMA_AGENT_API_KEY) is required "
+            f"when embedding_provider='{provider}'"
+        )
+
+
+def _build_embedding_headers(provider: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    api_key = _resolve_embedding_api_key()
+
     if provider == "openrouter":
-        return "https://openrouter.ai/api/v1"
-    return resolve_base_url(provider)
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["HTTP-Referer"] = "https://anima.local"
+        headers["X-Title"] = "ANIMA"
+        return headers
+
+    if provider == "moonshot":
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["Content-Type"] = "application/json"
+        return headers
+
+    if provider == "openai":
+        headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    if provider == "vllm" and api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    return headers
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +142,7 @@ _cache_misses = 0
 
 
 def _cache_key(text: str) -> str:
-    provider = settings.agent_provider
+    provider = _resolve_embedding_provider()
     model = _resolve_embedding_model()
     raw = f"{provider}:{model}:{text}"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -133,12 +192,12 @@ def get_embedding_cache_stats() -> dict[str, int]:
 
 async def generate_embedding(text: str) -> list[float] | None:
     """Generate an embedding vector for the given text using the configured provider."""
-    provider = settings.agent_provider
+    provider = _resolve_embedding_provider()
 
     if provider == "scaffold":
         return None
 
-    if provider == "openrouter":
+    if provider == "openrouter" and not settings.agent_embedding_provider.strip():
         try:
             result = await _embed_ollama(text)
         except Exception:
@@ -159,9 +218,10 @@ async def generate_embedding(text: str) -> list[float] | None:
         return cached
 
     try:
-        validate_provider_configuration(provider)
+        _validate_embedding_provider_configuration(provider)
     except LLMConfigError as exc:
-        logger.debug("Skipping embedding generation for provider %s: %s", provider, exc)
+        logger.debug(
+            "Skipping embedding generation for provider %s: %s", provider, exc)
         return None
 
     try:
@@ -171,10 +231,12 @@ async def generate_embedding(text: str) -> list[float] | None:
             # openrouter, vllm — all OpenAI-compatible
             result = await _embed_openai_compatible(text)
     except LLMConfigError as exc:
-        logger.debug("Skipping embedding generation for provider %s: %s", provider, exc)
+        logger.debug(
+            "Skipping embedding generation for provider %s: %s", provider, exc)
         return None
     except Exception:
-        logger.exception("Embedding generation failed for provider %s", provider)
+        logger.exception(
+            "Embedding generation failed for provider %s", provider)
         return None
 
     if result is not None:
@@ -195,9 +257,10 @@ async def _embed_openai_compatible(text: str) -> list[float] | None:
     """Generate embeddings via any OpenAI-compatible /v1/embeddings endpoint."""
     import httpx
 
+    provider = _resolve_embedding_provider()
     base_url = _resolve_embedding_base_url()
     model = _resolve_embedding_model()
-    headers = build_provider_headers(settings.agent_provider)
+    headers = _build_embedding_headers(provider)
     headers["Content-Type"] = "application/json"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -217,14 +280,10 @@ async def _embed_openai_compatible(text: str) -> list[float] | None:
 
 
 async def _embed_ollama(text: str) -> list[float] | None:
-    """Generate embeddings via ollama's native /api/embed endpoint."""
+    """Generate embeddings via Ollama's native /api/embed endpoint."""
     import httpx
 
-    # For ollama, use the raw base URL (without /v1 suffix)
-    configured = settings.agent_base_url.strip()
-    base_url = configured if configured else "http://127.0.0.1:11434"
-    # Strip /v1 suffix if present (resolve_base_url adds it for chat)
-    base_url = base_url.removesuffix("/v1")
+    base_url = _resolve_embedding_base_url()
     model = _resolve_embedding_model()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -234,10 +293,10 @@ async def _embed_ollama(text: str) -> list[float] | None:
         )
         resp.raise_for_status()
         data = resp.json()
-        embeddings = data.get("embeddings", [])
-        if embeddings and isinstance(embeddings[0], list):
-            return embeddings[0]
-        return None
+    embeddings = data.get("embeddings", [])
+    if embeddings and isinstance(embeddings[0], list):
+        return embeddings[0]
+    return None
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -276,7 +335,8 @@ async def semantic_search(
     if not vs_results:
         return []
 
-    item_ids = [r["id"] for r in vs_results if r["similarity"] >= similarity_threshold]
+    item_ids = [r["id"]
+                for r in vs_results if r["similarity"] >= similarity_threshold]
     if not item_ids:
         return []
 
@@ -309,7 +369,8 @@ async def embed_memory_item(
     and the RuntimeEmbedding table in PG (for fast search via pgvector).
     Returns True if successful.
     """
-    plaintext = df(item.user_id, item.content, table="memory_items", field="content")
+    plaintext = df(item.user_id, item.content,
+                   table="memory_items", field="content")
     embedding = await generate_embedding(plaintext)
     if embedding is None:
         return False
@@ -423,7 +484,8 @@ def sync_to_vector_store(
         ]
         return rebuild_user_index(user_id, index_data, db=db)
     except Exception:
-        logger.exception("Failed to sync embeddings to vector store for user %d", user_id)
+        logger.exception(
+            "Failed to sync embeddings to vector store for user %d", user_id)
         return 0
 
 
@@ -451,10 +513,12 @@ def sync_embeddings_to_runtime(
 
         runtime_db = get_runtime_session_factory()()
     except RuntimeError:
-        logger.debug("Runtime PG unavailable for embedding sync for user %d", user_id)
+        logger.debug(
+            "Runtime PG unavailable for embedding sync for user %d", user_id)
         return -1
     except Exception:
-        logger.debug("Failed to open runtime PG session for user %d", user_id, exc_info=True)
+        logger.debug("Failed to open runtime PG session for user %d",
+                     user_id, exc_info=True)
         return -1
 
     try:
@@ -468,7 +532,8 @@ def sync_embeddings_to_runtime(
             if embedding is None:
                 continue
 
-            plaintext = df(user_id, item.content, table="memory_items", field="content")
+            plaintext = df(user_id, item.content,
+                           table="memory_items", field="content")
             store.upsert(
                 user_id,
                 item_id=item.id,
@@ -484,7 +549,8 @@ def sync_embeddings_to_runtime(
         return count
     except Exception:
         runtime_db.rollback()
-        logger.exception("Failed to sync embeddings to runtime PG for user %d", user_id)
+        logger.exception(
+            "Failed to sync embeddings to runtime PG for user %d", user_id)
         return -1
     finally:
         runtime_db.close()
@@ -556,7 +622,8 @@ def _bm25_rerank(
     # Decrypt and tokenize each document
     doc_tokens: list[list[str]] = []
     for item, _score in results:
-        plaintext = df(item.user_id, item.content, table="memory_items", field="content")
+        plaintext = df(item.user_id, item.content,
+                       table="memory_items", field="content")
         doc_tokens.append(_tokenize(plaintext))
 
     n = len(doc_tokens)
@@ -589,7 +656,8 @@ def _bm25_rerank(
 
     # Normalise BM25 scores to [0, 1]
     max_bm25 = max(bm25_scores) if bm25_scores else 0.0
-    norm_bm25 = [s / max_bm25 for s in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
+    norm_bm25 = [
+        s / max_bm25 for s in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
 
     # Normalise RRF scores to [0, 1]
     rrf_scores = [score for _, score in results]
@@ -617,10 +685,12 @@ def _reciprocal_rank_fusion(
     scores: dict[int, float] = {}
 
     for rank, (item_id, _sim) in enumerate(semantic_ranked):
-        scores[item_id] = scores.get(item_id, 0.0) + semantic_weight / (_RRF_K + rank + 1)
+        scores[item_id] = scores.get(
+            item_id, 0.0) + semantic_weight / (_RRF_K + rank + 1)
 
     for rank, (item_id, _sim) in enumerate(keyword_ranked):
-        scores[item_id] = scores.get(item_id, 0.0) + keyword_weight / (_RRF_K + rank + 1)
+        scores[item_id] = scores.get(
+            item_id, 0.0) + keyword_weight / (_RRF_K + rank + 1)
 
     merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return merged
@@ -801,12 +871,12 @@ async def generate_embeddings_batch(
     if not texts:
         return []
 
-    provider = settings.agent_provider
+    provider = _resolve_embedding_provider()
     if provider == "scaffold":
         return [None] * len(texts)
 
     try:
-        validate_provider_configuration(provider)
+        _validate_embedding_provider_configuration(provider)
     except LLMConfigError:
         return [None] * len(texts)
 
@@ -824,16 +894,17 @@ async def _batch_embed_openai_compatible(
     """Batch embedding via OpenAI-compatible /v1/embeddings with adaptive retry."""
     import httpx
 
+    provider = _resolve_embedding_provider()
     base_url = _resolve_embedding_base_url()
     model = _resolve_embedding_model()
-    headers = build_provider_headers(settings.agent_provider)
+    headers = _build_embedding_headers(provider)
     headers["Content-Type"] = "application/json"
 
     results: list[list[float] | None] = [None] * len(texts)
     batch_size = min(max_batch_size, len(texts))
 
     for start in range(0, len(texts), batch_size):
-        chunk = texts[start : start + batch_size]
+        chunk = texts[start: start + batch_size]
         current_batch = len(chunk)
 
         while current_batch >= 1:
@@ -841,7 +912,7 @@ async def _batch_embed_openai_compatible(
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     # Process sub-chunks if we had to halve
                     for sub_start in range(0, len(chunk), current_batch):
-                        sub_chunk = chunk[sub_start : sub_start + current_batch]
+                        sub_chunk = chunk[sub_start: sub_start + current_batch]
                         resp = await client.post(
                             f"{base_url}/embeddings",
                             headers=headers,

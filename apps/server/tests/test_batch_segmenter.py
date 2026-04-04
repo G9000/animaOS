@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from anima_server.db.base import Base
@@ -147,8 +148,7 @@ async def test_segment_messages_batch_llm_failure() -> None:
     ):
         groups = await segment_messages_batch(messages)
 
-    # Falls back to single group with all indices
-    assert groups == [list(range(1, 9))]
+    assert groups == []
 
 
 @pytest.mark.asyncio
@@ -163,8 +163,55 @@ async def test_segment_messages_batch_invalid_indices_fallback() -> None:
     ):
         groups = await segment_messages_batch(messages)
 
-    # Falls back to single group
-    assert groups == [list(range(1, 9))]
+    assert groups == []
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_segmentation_prefers_extraction_model_and_caps_request() -> None:
+    from anima_server.services.agent.batch_segmenter import _call_llm_for_segmentation
+
+    messages = [("User message 1", "Response 1"),
+                ("User message 2", "Response 2")]
+    mock_client = AsyncMock()
+    mock_client.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="[[1], [2]]"))
+    mock_client.aclose = AsyncMock()
+    prompt_loader = MagicMock()
+    prompt_loader.batch_segmentation.return_value = "prompt"
+
+    with (
+        patch("anima_server.services.agent.batch_segmenter.settings") as mock_settings,
+        patch(
+            "anima_server.services.agent.prompt_loader.PromptLoader",
+            return_value=prompt_loader,
+        ),
+        patch(
+            "anima_server.services.agent.llm.resolve_base_url",
+            return_value="https://example.test/v1",
+        ),
+        patch(
+            "anima_server.services.agent.llm.build_provider_headers",
+            return_value={"Authorization": "Bearer test"},
+        ),
+        patch(
+            "anima_server.services.agent.openai_compatible_client.OpenAICompatibleChatClient",
+            return_value=mock_client,
+        ) as mock_client_cls,
+    ):
+        mock_settings.agent_provider = "openai"
+        mock_settings.agent_model = "primary-model"
+        mock_settings.agent_extraction_model = "cheap-model"
+        mock_settings.agent_llm_timeout = 120.0
+        mock_settings.agent_max_tokens = 4096
+
+        groups = await _call_llm_for_segmentation(messages)
+
+    assert groups == [[1], [2]]
+    assert mock_client_cls.call_args.kwargs["model"] == "cheap-model"
+    assert mock_client_cls.call_args.kwargs["timeout"] == 15.0
+    assert mock_client_cls.call_args.kwargs["max_tokens"] == 512
+    prompt_loader.batch_segmentation.assert_called_once()
+    mock_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -373,7 +420,6 @@ async def test_maybe_generate_episode_batch_path() -> None:
         rt_session.add(thread)
         rt_session.commit()
 
-        today = datetime.now(UTC).date().isoformat()
         _create_runtime_messages(
             rt_session,
             user_id=user.id,
@@ -404,7 +450,8 @@ async def test_maybe_generate_episode_batch_path() -> None:
 
         # Check that episodes were created in DB (may be merged if topics overlap)
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) >= 1
             assert all(e.segmentation_method == "batch_llm" for e in episodes)
             total_turns = sum(e.turn_count for e in episodes)
@@ -450,7 +497,8 @@ async def test_maybe_generate_episode_sequential_under_threshold() -> None:
         assert result.message_indices_json is None
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) == 1
 
 
@@ -500,9 +548,60 @@ async def test_maybe_generate_episode_batch_fallback_on_error() -> None:
         assert result.segmentation_method == "sequential"
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) == 1
             # Sequential takes up to 6 pairs
+            assert episodes[0].turn_count <= 6
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_batch_empty_groups_falls_back_to_sequential() -> None:
+    """Empty batch groups fall back to sequential method."""
+    from anima_server.services.agent.episodes import maybe_generate_episode
+
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="batch-empty-fallback-test",
+            password_hash="not-used",
+            display_name="Empty Fallback Test",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            count=10,
+        )
+
+        with (
+            patch(
+                "anima_server.services.agent.batch_segmenter.segment_messages_batch",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("anima_server.services.agent.episodes.settings") as mock_settings,
+        ):
+            mock_settings.agent_provider = "scaffold"
+            result = await maybe_generate_episode(
+                user_id=user.id,
+                db_factory=soul_factory,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result is not None
+        assert result.segmentation_method == "sequential"
+
+        with soul_factory() as db2:
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
+            assert len(episodes) == 1
             assert episodes[0].turn_count <= 6
 
 
@@ -559,7 +658,8 @@ async def test_log_pointer_advances_correctly_after_batch() -> None:
         assert second is None
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) >= 1  # may be merged if topics overlap
             total = sum(e.turn_count for e in episodes)
             assert total == 10

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeThread
-from anima_server.models.runtime_memory import MemoryCandidate, RuntimeSessionNote
+from anima_server.models.runtime_memory import MemoryCandidate
 from anima_server.services.agent.session_memory import (
     clear_session_notes,
     get_session_notes,

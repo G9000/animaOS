@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 
 def test_structured_handler_installed_at_startup():
     """After app creation, the StructuredLogHandler should be on the anima_server logger."""
@@ -16,9 +14,10 @@ def test_structured_handler_installed_at_startup():
     assert StructuredLogHandler is not None
 
     # Verify the handler can be instantiated
-    from anima_server.services.health.event_logger import EventLogger
     import tempfile
     from pathlib import Path
+
+    from anima_server.services.health.event_logger import EventLogger
 
     with tempfile.TemporaryDirectory() as td:
         el = EventLogger(log_dir=Path(td), min_level="trace")

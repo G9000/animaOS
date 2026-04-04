@@ -76,7 +76,8 @@ def _load_sidecar(meta_path: Path) -> dict | None:
     try:
         return json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        logger.warning("Failed to read transcript sidecar %s", meta_path.name, exc_info=True)
+        logger.warning("Failed to read transcript sidecar %s",
+                       meta_path.name, exc_info=True)
         return None
 
 
@@ -108,19 +109,23 @@ def search_transcripts(
 
         date_start_str = str(meta.get("date_start", ""))
         try:
-            date_start = datetime.fromisoformat(date_start_str.replace("Z", "+00:00"))
+            date_start = datetime.fromisoformat(
+                date_start_str.replace("Z", "+00:00"))
         except ValueError:
             continue
         if date_start < cutoff:
             continue
 
-        enc_path = meta_path.parent / meta_path.name.replace(".meta.json", ".jsonl.enc")
+        enc_path = meta_path.parent / \
+            meta_path.name.replace(".meta.json", ".jsonl.enc")
         if not enc_path.exists():
-            enc_path = meta_path.parent / meta_path.name.replace(".meta.json", ".jsonl")
+            enc_path = meta_path.parent / \
+                meta_path.name.replace(".meta.json", ".jsonl")
         if not enc_path.exists():
             continue
 
-        keyword_score = _keyword_overlap_score(query, list(meta.get("keywords", [])))
+        keyword_score = _keyword_overlap_score(
+            query, list(meta.get("keywords", [])))
         score = (keyword_score * 2.0) + _date_recency_bonus(date_start_str)
         candidates.append((score, enc_path, meta))
 
@@ -135,18 +140,17 @@ def search_transcripts(
     for _score, enc_path, meta in candidates[:max_transcripts]:
         thread_id = int(meta.get("thread_id", 0))
         try:
-            messages = decrypt_transcript(enc_path, dek=dek, thread_id=thread_id)
+            messages = decrypt_transcript(
+                enc_path, dek=dek, thread_id=thread_id)
         except Exception:
-            logger.warning("Failed to decrypt transcript %s", enc_path.name, exc_info=True)
+            logger.warning("Failed to decrypt transcript %s",
+                           enc_path.name, exc_info=True)
             continue
 
         scored_hits: list[tuple[float, int]] = []
         for index, message in enumerate(messages):
             content = str(message.get("content", ""))
-            if not query.strip():
-                score = 0.5
-            else:
-                score = _text_overlap_score(query, content)
+            score = 0.5 if not query.strip() else _text_overlap_score(query, content)
             if score > 0:
                 scored_hits.append((score, index))
 
@@ -164,7 +168,7 @@ def search_transcripts(
 
             lines = [
                 f"{str(messages[idx].get('role', 'unknown')).capitalize()}: "
-                f"{str(messages[idx].get('content', ''))}"
+                f"{messages[idx].get('content', '')!s}"
                 for idx in range(start, end)
             ]
             text = "\n".join(lines)
@@ -192,10 +196,12 @@ def format_snippets(snippets: list[TranscriptSnippet]) -> str:
         f"[{snippet.date}, thread {snippet.thread_id}]\n{snippet.text}"
         for snippet in snippets
     ]
-    total_matches = max(getattr(snippets, "total_matches", len(snippets)), len(snippets))
+    total_matches = max(getattr(snippets, "total_matches",
+                        len(snippets)), len(snippets))
     remaining = total_matches - len(snippets)
     if remaining > 0:
-        parts.append(f"({remaining} more matches found, use a more specific query to narrow results)")
+        parts.append(
+            f"({remaining} more matches found, use a more specific query to narrow results)")
     return "\n\n".join(
         parts
     )

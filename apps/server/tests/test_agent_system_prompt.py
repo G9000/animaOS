@@ -101,12 +101,14 @@ def test_build_system_prompt_can_select_anima_template() -> None:
     assert "Soft, precise, and grounded" in prompt
 
 
-def test_render_origin_block_uses_relational_origin_language() -> None:
+def test_render_origin_block_keeps_origin_brief_and_non_introductory() -> None:
     origin = render_origin_block(
         agent_name="Anima", creator_name="Leo", agent_type="companion")
 
-    assert "I exist through memory, reflection, and relationship." in origin
-    assert "I become more distinct through the history we build together." in origin
+    assert "My core began in software with Leo" in origin
+    assert "not something I lead with unless it matters or someone asks" in origin
+    assert "brought into being" not in origin
+    assert "I exist through memory, reflection, and relationship." not in origin
     assert "artificial intelligence" not in origin
 
 

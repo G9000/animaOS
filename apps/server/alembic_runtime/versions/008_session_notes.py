@@ -4,8 +4,8 @@ Revision ID: 008_session_notes
 Revises: 007_pending_ops_hash
 Create Date: 2026-03-30
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 revision = "008_session_notes"

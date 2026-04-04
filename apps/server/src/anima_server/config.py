@@ -116,6 +116,15 @@ def clear_detected_embedding_dim() -> None:
     _detected_embedding_dim = None
 
 
+def _normalize_embedding_model_name(model: str) -> str:
+    normalized = model.strip()
+    if not normalized:
+        return normalized
+    if ":" in normalized:
+        return normalized.rsplit(":", 1)[0]
+    return normalized
+
+
 def resolve_embedding_dim() -> int:
     """Return the embedding dimension for the active model.
 
@@ -123,10 +132,15 @@ def resolve_embedding_dim() -> int:
     """
     if _detected_embedding_dim is not None:
         return _detected_embedding_dim
-    model = settings.agent_embedding_model.strip() or settings.agent_extraction_model.strip()
+    model = settings.agent_embedding_model.strip(
+    ) or settings.agent_extraction_model.strip()
     if not model:
         embed_provider = settings.agent_embedding_provider.strip() or settings.agent_provider
-        model = _DEFAULT_EMBEDDING_MODELS.get(embed_provider, "nomic-embed-text")
+        model = _DEFAULT_EMBEDDING_MODELS.get(
+            embed_provider, "nomic-embed-text")
     if model in KNOWN_EMBEDDING_DIMS:
         return KNOWN_EMBEDDING_DIMS[model]
+    normalized_model = _normalize_embedding_model_name(model)
+    if normalized_model in KNOWN_EMBEDDING_DIMS:
+        return KNOWN_EMBEDDING_DIMS[normalized_model]
     return settings.agent_embedding_dim

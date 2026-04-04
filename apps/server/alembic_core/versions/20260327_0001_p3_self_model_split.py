@@ -7,6 +7,7 @@ that move to runtime storage.
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
@@ -24,8 +25,10 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False, server_default=""),
-        sa.Column("version", sa.Integer(), nullable=False, server_default=sa.text("1")),
-        sa.Column("updated_by", sa.String(length=32), nullable=False, server_default="system"),
+        sa.Column("version", sa.Integer(), nullable=False,
+                  server_default=sa.text("1")),
+        sa.Column("updated_by", sa.String(length=32),
+                  nullable=False, server_default="system"),
         sa.Column("metadata_json", sa.JSON(), nullable=True),
         sa.Column(
             "created_at",
@@ -49,7 +52,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("entry", sa.Text(), nullable=False),
-        sa.Column("source", sa.String(length=32), nullable=False, server_default="sleep_time"),
+        sa.Column("source", sa.String(length=32),
+                  nullable=False, server_default="sleep_time"),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -66,9 +70,12 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("pattern", sa.Text(), nullable=False),
         sa.Column("dominant_emotion", sa.String(length=32), nullable=False),
-        sa.Column("trigger_context", sa.Text(), nullable=False, server_default=""),
-        sa.Column("frequency", sa.Integer(), nullable=False, server_default=sa.text("1")),
-        sa.Column("confidence", sa.Float(), nullable=False, server_default=sa.text("0.5")),
+        sa.Column("trigger_context", sa.Text(),
+                  nullable=False, server_default=""),
+        sa.Column("frequency", sa.Integer(), nullable=False,
+                  server_default=sa.text("1")),
+        sa.Column("confidence", sa.Float(), nullable=False,
+                  server_default=sa.text("0.5")),
         sa.Column(
             "first_observed",
             sa.DateTime(timezone=True),
@@ -125,12 +132,12 @@ def upgrade() -> None:
             entry_text = chunk
             entry_ts = fallback_ts
             # Try to parse "YYYY-MM-DD — entry" or "YYYY-MM-DD - entry"
-            m = re.match(r"(\d{4}-\d{2}-\d{2})\s*[-—]\s*(.*)", chunk, re.DOTALL)
+            m = re.match(
+                r"(\d{4}-\d{2}-\d{2})\s*[-—]\s*(.*)", chunk, re.DOTALL)
             if m:
-                try:
-                    entry_ts = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=UTC)
-                except ValueError:
-                    pass
+                with suppress(ValueError):
+                    entry_ts = datetime.strptime(
+                        m.group(1), "%Y-%m-%d").replace(tzinfo=UTC)
                 entry_text = m.group(2).strip()
             if entry_text:
                 conn.execute(

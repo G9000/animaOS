@@ -13,7 +13,6 @@ Notes now live in PG (RuntimeSessionNote) — no field-level encryption needed.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

@@ -13,10 +13,13 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryEpisode
+from anima_server.services.agent.json_utils import parse_json_array
 
 logger = logging.getLogger(__name__)
 
 BATCH_THRESHOLD: int = 8  # Min messages for batch segmentation
+_BATCH_SEGMENTATION_TIMEOUT_SECONDS: float = 15.0
+_BATCH_SEGMENTATION_MAX_TOKENS: int = 512
 
 # Batch segmentation prompt is now in Jinja2 template: batch_segmentation.md.j2
 # Use PromptLoader.batch_segmentation() instead.
@@ -64,38 +67,42 @@ async def segment_messages_batch(
 
     Returns:
         List of groups, each a list of 1-based message indices.
-        Falls back to single-group [[1, 2, ..., N]] on LLM failure.
+        Returns [] on LLM failure or invalid output so the caller can use
+        sequential fallback.
     """
     total = len(messages)
-    fallback = [list(range(1, total + 1))]
 
     try:
         groups = await _call_llm_for_segmentation(messages)
-    except Exception:
-        logger.exception("LLM batch segmentation failed, using single-group fallback")
-        return fallback
+    except Exception as exc:
+        logger.warning(
+            "LLM batch segmentation failed, using sequential fallback: %s", exc)
+        return []
 
     if not isinstance(groups, list) or not groups:
-        logger.warning("LLM returned non-list or empty result, using fallback")
-        return fallback
+        logger.warning(
+            "LLM returned no usable segmentation groups, using sequential fallback")
+        return []
 
     # Validate structure: list of lists of ints
     for group in groups:
         if not isinstance(group, list):
-            logger.warning("LLM returned non-list group, using fallback")
-            return fallback
+            logger.warning(
+                "LLM returned a non-list group, using sequential fallback")
+            return []
         for idx in group:
             if not isinstance(idx, int):
-                logger.warning("LLM returned non-int index, using fallback")
-                return fallback
+                logger.warning(
+                    "LLM returned a non-integer index, using sequential fallback")
+                return []
 
     if not validate_indices(groups, total):
         logger.warning(
-            "LLM segmentation indices invalid (total=%d, groups=%s), using fallback",
+            "LLM segmentation indices invalid (total=%d, groups=%s), using sequential fallback",
             total,
             groups,
         )
-        return fallback
+        return []
 
     return groups
 
@@ -123,15 +130,19 @@ async def _call_llm_for_segmentation(
 
     prompt_loader = PromptLoader(agent_name="Anima")
     prompt = prompt_loader.batch_segmentation(messages="\n".join(lines))
+    model = settings.agent_extraction_model.strip() or settings.agent_model
+    timeout = min(settings.agent_llm_timeout,
+                  _BATCH_SEGMENTATION_TIMEOUT_SECONDS)
+    max_tokens = min(settings.agent_max_tokens, _BATCH_SEGMENTATION_MAX_TOKENS)
 
-    # Create a dedicated client with low temperature for deterministic grouping
+    # Segmentation is a small extraction task, so keep it on the faster path.
     client = OpenAICompatibleChatClient(
         provider=settings.agent_provider,
-        model=settings.agent_model,
+        model=model,
         base_url=resolve_base_url(settings.agent_provider),
         headers=build_provider_headers(settings.agent_provider),
-        timeout=settings.agent_llm_timeout,
-        max_tokens=settings.agent_max_tokens,
+        timeout=timeout,
+        max_tokens=max_tokens,
         temperature=0.2,
     )
 
@@ -152,9 +163,6 @@ async def _call_llm_for_segmentation(
         content = str(content)
 
     return _parse_json_array(content)
-
-
-from anima_server.services.agent.json_utils import parse_json_array
 
 
 def _parse_json_array(text: str) -> list[list[int]]:

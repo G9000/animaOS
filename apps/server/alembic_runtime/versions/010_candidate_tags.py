@@ -4,8 +4,8 @@ Revision ID: 010_candidate_tags
 Revises: 009_multi_thread
 Create Date: 2026-04-01
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY
 
 revision = "010_candidate_tags"

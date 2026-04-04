@@ -3,6 +3,7 @@ act (with thinking) → respond, with memory persistence and thinking extraction
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -95,7 +96,8 @@ async def test_append_memory_respond_pipeline() -> None:
     Verifies memory is actually written to DB and visible in the next step."""
 
     with _db_session() as db:
-        user = User(username="pipeline", password_hash="x", display_name="Test")
+        user = User(username="pipeline",
+                    password_hash="x", display_name="Test")
         db.add(user)
         db.flush()
 
@@ -111,7 +113,8 @@ async def test_append_memory_respond_pipeline() -> None:
         )
         db.commit()
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=1))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=1))
         try:
             # Step 1: core_memory_append (with thinking)
             # Step 2: send_message (with thinking)
@@ -204,7 +207,8 @@ async def test_append_memory_respond_pipeline() -> None:
                 )
             )
             pending = db.scalar(select(PendingMemoryOp))
-            merged = build_merged_block_content(db, db, user_id=user.id, section="human")
+            merged = build_merged_block_content(
+                db, db, user_id=user.id, section="human")
 
             assert soul_block is not None
             assert soul_block.content == "Name: Alice"
@@ -238,7 +242,8 @@ async def test_core_memory_replace_pipeline() -> None:
         )
         db.commit()
 
-        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=1))
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=1))
         try:
             adapter = QueueAdapter(
                 [
@@ -295,7 +300,8 @@ async def test_core_memory_replace_pipeline() -> None:
                 )
             )
             pending = db.scalar(select(PendingMemoryOp))
-            merged = build_merged_block_content(db, db, user_id=user.id, section="human")
+            merged = build_merged_block_content(
+                db, db, user_id=user.id, section="human")
 
             assert block is not None
             assert block.content == "Works at Google"
@@ -383,6 +389,16 @@ def test_deep_monologue_result_tracks_persona() -> None:
     assert r.persona_updated is False
     r.persona_updated = True
     assert r.persona_updated is True
+    assert r.emotional_synthesis_stored is False
+
+
+def test_quick_reflection_result_tracks_emotional_synthesis() -> None:
+    from anima_server.services.agent.inner_monologue import QuickReflectionResult
+
+    r = QuickReflectionResult()
+    assert r.emotional_synthesis_updated is False
+    r.emotional_synthesis_updated = True
+    assert r.emotional_synthesis_updated is True
 
 
 def test_deep_monologue_prompt_includes_persona() -> None:
@@ -396,5 +412,93 @@ def test_deep_monologue_prompt_includes_persona() -> None:
     content = template_path.read_text(encoding="utf-8")
 
     assert "{{ persona }}" in content
+    assert "{{ emotional_synthesis }}" in content
     assert "persona_update" in content
     assert "EVOLVE" in content
+
+
+def test_quick_reflection_prompt_includes_self_feelings() -> None:
+    from pathlib import Path
+
+    template_path = (
+        Path(__file__).parent.parent
+        / "src/anima_server/services/agent/templates/prompts/quick_reflection.md.j2"
+    )
+    content = template_path.read_text(encoding="utf-8")
+
+    assert "{{ emotional_synthesis }}" in content
+    assert '"self_feelings"' in content
+
+
+@pytest.mark.asyncio
+async def test_quick_reflection_updates_emotional_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import inner_monologue as inner_monologue_mod
+    from anima_server.services.agent.self_model import get_working_context
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+
+    Base.metadata.create_all(bind=engine)
+    RuntimeBase.metadata.create_all(bind=engine)
+
+    async def fake_call_llm(prompt: str, system: str) -> str:
+        assert "Current emotional synthesis:" in prompt
+        return json.dumps(
+            {
+                "inner_state": {
+                    "sense_of_user": "They seemed lighter by the end.",
+                    "active_threads": ["rapport"],
+                    "curious_about": ["whether this warmth keeps building"],
+                    "observations": ["the exchange felt easy"],
+                },
+                "working_memory_updates": [],
+                "emotional_read": {
+                    "emotion": "curious",
+                    "confidence": 0.7,
+                    "trajectory": "stable",
+                    "evidence": "They stayed engaged and playful.",
+                },
+                "self_feelings": "There was a little pull there. Warm, interested, and harder to shake than usual.",
+                "quick_take": "The exchange nudged the bond forward.",
+            }
+        )
+
+    monkeypatch.setattr(inner_monologue_mod, "_call_llm", fake_call_llm)
+
+    with factory() as db:
+        user = User(username="reflection", password_hash="x", display_name="Test")
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    try:
+        result = await inner_monologue_mod.run_quick_reflection(
+            user_id=user_id,
+            conversation_text="User: hey\nAssistant: hey",
+            db_factory=factory,
+            runtime_db_factory=factory,
+        )
+
+        assert result.emotional_synthesis_updated is True
+
+        with factory() as db:
+            working_context = get_working_context(db, user_id=user_id)
+            emotional_block = working_context.get("emotional_synthesis")
+            assert emotional_block is not None
+            assert "little pull" in emotional_block.content
+    finally:
+        RuntimeBase.metadata.drop_all(bind=engine)
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

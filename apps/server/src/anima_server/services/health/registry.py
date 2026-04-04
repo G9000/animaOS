@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from anima_server.services.health.models import CheckResult, HealthReport, HealthStatus
 

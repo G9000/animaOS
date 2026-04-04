@@ -9,7 +9,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import ARRAY, TIMESTAMP as _PG_TIMESTAMP
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
 from anima_server.db.runtime_base import RuntimeBase

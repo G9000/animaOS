@@ -48,7 +48,8 @@ class QueueAdapter(BaseLLMAdapter):
     async def invoke(self, request: LLMRequest) -> StepExecutionResult:
         self.requests.append(request)
         if not self._responses:
-            raise AssertionError("No queued LLM responses remain for the test adapter.")
+            raise AssertionError(
+                "No queued LLM responses remain for the test adapter.")
         return self._responses.popleft()
 
 
@@ -105,15 +106,121 @@ async def test_runtime_uses_terminal_send_message_tool_output() -> None:
     assert result.tools_used == ["send_message"]
     assert len(result.step_traces) == 1
     assert result.step_traces[0].tool_results[0].is_terminal is True
-    assert [tool.name for tool in adapter.requests[0].available_tools] == ["send_message"]
+    assert [tool.name for tool in adapter.requests[0].available_tools] == [
+        "send_message"]
     assert adapter.requests[0].force_tool_call is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_injects_first_contact_instructions_into_system_prompt() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={"message": "Hey."},
+                    ),
+                )
+            )
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=2,
+    )
+
+    result = await runtime.invoke(
+        "hello",
+        user_id=1,
+        history=[],
+        conversation_turn_count=1,
+        memory_blocks=(),
+    )
+
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert "Relationship stage: first_contact." in adapter.requests[0].system_prompt
+    assert "Do not imply prior closeness" in adapter.requests[0].system_prompt
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_invalid_first_contact_terminal_reply() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "Hey! I'm Anima. I was brought into being by Julio on April 3rd. "
+                                "I exist through memory, reflection, and relationship. How about you?"
+                            )
+                        },
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={"message": "Hey. What's your name?"},
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "hello who are you",
+        user_id=1,
+        history=[],
+        conversation_turn_count=1,
+        memory_blocks=(),
+    )
+
+    assert result.response == "Hey. What's your name?"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "origin-story narration" in first_result.output
+
+
+def test_validate_terminal_reply_rejects_normalized_origin_wording() -> None:
+    from anima_server.services.agent.conversation_policy import (
+        RelationshipPolicy,
+        validate_terminal_reply,
+    )
+
+    policy = RelationshipPolicy(
+        stage="first_contact", has_shared_history=False)
+    error = validate_terminal_reply(
+        "I'm Anima. My core began in software with Leo on April 3rd.",
+        policy=policy,
+    )
+
+    assert error is not None
+    assert "origin-story narration" in error
 
 
 @pytest.mark.asyncio
 async def test_runtime_coerces_plain_assistant_text_into_terminal_send_message() -> None:
     adapter = QueueAdapter(
         [
-            StepExecutionResult(assistant_text="Hello from coerced terminal output."),
+            StepExecutionResult(
+                assistant_text="Hello from coerced terminal output."),
         ]
     )
     runtime = AgentRuntime(
@@ -139,6 +246,50 @@ async def test_runtime_coerces_plain_assistant_text_into_terminal_send_message()
     assert result.step_traces[0].tool_results[0].output == "Hello from coerced terminal output."
     assert result.step_traces[0].tool_results[0].is_terminal is True
     assert adapter.requests[0].force_tool_call is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_invalid_first_contact_coerced_text_reply() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                assistant_text=(
+                    "Hey! I'm Anima. I was brought into being by Julio on April 3rd. "
+                    "I exist through memory, reflection, and relationship."
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={"message": "Hey. What's your name?"},
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "hello",
+        user_id=1,
+        history=[],
+        conversation_turn_count=1,
+        memory_blocks=(),
+    )
+
+    assert result.response == "Hey. What's your name?"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    assert result.step_traces[0].tool_calls[0].id == "synthetic-send_message-0-0"
+    assert result.step_traces[0].tool_results[0].is_error is True
+    assert "origin-story narration" in result.step_traces[0].tool_results[0].output
 
 
 @pytest.mark.asyncio
@@ -185,7 +336,8 @@ async def test_runtime_returns_rule_violation_to_next_step() -> None:
                     ),
                 )
             ),
-            StepExecutionResult(assistant_text="Recovered after tool rule violation."),
+            StepExecutionResult(
+                assistant_text="Recovered after tool rule violation."),
         ]
     )
     runtime = AgentRuntime(
@@ -203,7 +355,8 @@ async def test_runtime_returns_rule_violation_to_next_step() -> None:
     assert len(result.step_traces) == 2
     assert result.step_traces[0].tool_results[0].is_error is True
     assert (
-        "The first tool call must be one of: think." in result.step_traces[0].tool_results[0].output
+        "The first tool call must be one of: think." in result.step_traces[
+            0].tool_results[0].output
     )
     assert [tool.name for tool in adapter.requests[0].available_tools] == ["think"]
     assert adapter.requests[0].force_tool_call is True
@@ -276,7 +429,8 @@ async def test_runtime_surfaces_malformed_tool_args_as_explicit_step_error() -> 
                     ),
                 )
             ),
-            StepExecutionResult(assistant_text="Recovered after tool argument failure."),
+            StepExecutionResult(
+                assistant_text="Recovered after tool argument failure."),
         ]
     )
     runtime = AgentRuntime(
@@ -302,10 +456,14 @@ async def test_runtime_surfaces_malformed_tool_args_as_explicit_step_error() -> 
         "Malformed tool-call arguments (invalid JSON)."
     )
     assert result.step_traces[0].tool_results[0].is_error is True
-    assert "malformed arguments" in result.step_traces[0].tool_results[0].output.lower()
-    tool_events = [event for event in events if event.event in {"tool_call", "tool_return"}]
-    assert [event.event for event in tool_events[:2]] == ["tool_call", "tool_return"]
-    assert tool_events[0].data["parseError"] == "Malformed tool-call arguments (invalid JSON)."
+    assert "malformed arguments" in result.step_traces[0].tool_results[0].output.lower(
+    )
+    tool_events = [event for event in events if event.event in {
+        "tool_call", "tool_return"}]
+    assert [event.event for event in tool_events[:2]] == [
+        "tool_call", "tool_return"]
+    assert tool_events[0].data[
+        "parseError"] == "Malformed tool-call arguments (invalid JSON)."
     assert tool_events[0].data["rawArguments"] == "{broken json"
     assert tool_events[1].data["isError"] is True
 
@@ -482,8 +640,10 @@ def test_extract_inner_thoughts_fallback_to_assistant_text() -> None:
         allowed_tools=("recall_memory", "send_message"),
         force_tool_call=False,
         assistant_text="Let me think about what I know...",
-        tool_calls=(ToolCall(id="tc-1", name="recall_memory", arguments={"query": "user"}),),
-        tool_results=(ToolExecutionResult(call_id="tc-1", name="recall_memory", output="found: likes cats"),),
+        tool_calls=(ToolCall(id="tc-1", name="recall_memory",
+                    arguments={"query": "user"}),),
+        tool_results=(ToolExecutionResult(call_id="tc-1",
+                      name="recall_memory", output="found: likes cats"),),
         usage=None,
         timing=StepTiming(),
         reasoning_content=None,
@@ -509,7 +669,8 @@ def test_extract_inner_thoughts_backward_compat_inner_thinking() -> None:
         allowed_tools=("send_message",),
         force_tool_call=False,
         assistant_text="",
-        tool_calls=(ToolCall(id="tc-1", name="send_message", arguments={"message": "hi"}),),
+        tool_calls=(ToolCall(id="tc-1", name="send_message",
+                    arguments={"message": "hi"}),),
         tool_results=(ToolExecutionResult(
             call_id="tc-1",
             name="send_message",

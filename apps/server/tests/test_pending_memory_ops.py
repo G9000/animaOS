@@ -10,7 +10,11 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.models import User
 from anima_server.models.consciousness import SelfModelBlock
-from anima_server.services.agent.tool_context import ToolContext, clear_tool_context, set_tool_context
+from anima_server.services.agent.tool_context import (
+    ToolContext,
+    clear_tool_context,
+    set_tool_context,
+)
 from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine

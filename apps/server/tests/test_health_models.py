@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-import pytest
-
 
 def test_event_record_serializes_to_json():
     from anima_server.services.health.models import EventRecord

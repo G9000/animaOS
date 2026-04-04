@@ -56,13 +56,10 @@ def test_seed_self_model() -> None:
     with _db_session() as db:
         user, _ = _setup(db)
         from anima_server.services.agent.self_model import (
-            IDENTITY_SECTIONS,
-            RUNTIME_SECTIONS,
             seed_self_model,
         )
 
         blocks = seed_self_model(db, user_id=user.id)
-        expected_sections = set(IDENTITY_SECTIONS) | set(RUNTIME_SECTIONS)
         # at minimum identity is seeded
         assert set(blocks.keys()) >= {"identity"}
         assert blocks["identity"].version == 1
@@ -166,6 +163,28 @@ def test_render_self_model_section_budget() -> None:
         assert len(rendered) == 100
 
 
+def test_render_self_model_section_does_not_default_truncate_persona() -> None:
+    with _db_session() as db:
+        user, _ = _setup(db)
+        from anima_server.services.agent.self_model import (
+            render_self_model_section,
+            set_self_model_block,
+        )
+
+        long_content = "x" * 5000
+        block = set_self_model_block(
+            db,
+            user_id=user.id,
+            section="persona",
+            content=long_content,
+            updated_by="test",
+        )
+
+        rendered = render_self_model_section(block, user_id=user.id)
+
+        assert rendered == long_content
+
+
 # --- Emotional Intelligence Tests ---
 
 
@@ -189,6 +208,27 @@ def test_record_emotional_signal() -> None:
         assert signal.emotion == "frustrated"
         assert signal.confidence == 0.8
         assert signal.trajectory == "escalating"
+
+
+def test_record_attachment_emotion_signal() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+
+        signal = record_emotional_signal(
+            db,
+            user_id=user.id,
+            thread_id=thread.id,
+            emotion="longing",
+            confidence=0.8,
+            evidence_type="linguistic",
+            evidence="Keeps returning to wanting the person around",
+            trajectory="stable",
+            topic="relationship",
+        )
+
+        assert signal is not None
+        assert signal.emotion == "longing"
 
 
 def test_emotional_signal_below_threshold_ignored() -> None:
@@ -1286,7 +1326,7 @@ def test_config_rejects_invalid_provider() -> None:
     assert "openrouter" in VALID_PROVIDERS
     assert "vllm" in VALID_PROVIDERS
     assert "scaffold" in VALID_PROVIDERS
-    assert "openai" not in VALID_PROVIDERS
+    assert "openai" in VALID_PROVIDERS
     assert "anthropic" not in VALID_PROVIDERS
 
 

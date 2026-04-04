@@ -127,7 +127,8 @@ async def test_direct_send_message_without_init_tool() -> None:
                     ToolCall(
                         id="c1",
                         name="send_message",
-                        arguments={"thinking": "Simple greeting", "message": "Hey!"},
+                        arguments={"thinking": "Simple greeting",
+                                   "message": "Hey!"},
                     ),
                 )
             ),
@@ -169,9 +170,8 @@ def test_system_prompt_contains_memory_architecture() -> None:
     from anima_server.services.agent.system_prompt import build_system_prompt
 
     prompt = build_system_prompt()
-    assert "Memory Architecture:" in prompt
+    assert "Memory:" in prompt
     assert "core_memory_append" in prompt
-    assert "core_memory_replace" in prompt
     assert "save_to_memory" in prompt
 
 
@@ -276,7 +276,8 @@ def test_extract_inner_thoughts_from_thinking_kwarg() -> None:
                     ToolCall(
                         id="c1",
                         name="send_message",
-                        arguments={"thinking": "User seems happy today.", "message": "Hey!"},
+                        arguments={
+                            "thinking": "User seems happy today.", "message": "Hey!"},
                     ),
                 ),
                 tool_results=(

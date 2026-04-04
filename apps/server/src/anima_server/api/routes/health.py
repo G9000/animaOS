@@ -7,7 +7,6 @@ from fastapi import APIRouter, Query, Request
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.services.health.event_logger import get_event_logger
-from anima_server.services.health.models import EventCategory, EventLevel
 from anima_server.services.health.registry import get_default_registry
 
 router = APIRouter(prefix="/api/health", tags=["health"])

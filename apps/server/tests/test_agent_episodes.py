@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 
 import pytest
@@ -20,10 +20,12 @@ from sqlalchemy.pool import StaticPool
 # BigInteger → INTEGER override is already registered in conftest.py.
 # Re-registering is harmless (SQLAlchemy deduplicates), but we include
 # the import guard so this test file can also run standalone.
-try:
-    compiles(BigInteger, "sqlite")(_bi_sqlite := lambda t, c, **kw: "INTEGER")
-except Exception:
-    pass
+def _bi_sqlite(_type: BigInteger, _compiler: object, **_kw: object) -> str:
+    return "INTEGER"
+
+
+with suppress(Exception):
+    compiles(BigInteger, "sqlite")(_bi_sqlite)
 
 
 @contextmanager
@@ -177,7 +179,8 @@ async def test_maybe_generate_episode_creates_episode_with_enough_turns() -> Non
             message_pairs=[
                 ("I'm working on a project.", "Tell me more about it!"),
                 ("It's an AI companion.", "Sounds fascinating."),
-                ("I want it to remember things.", "Memory is crucial for companionship."),
+                ("I want it to remember things.",
+                 "Memory is crucial for companionship."),
             ],
         )
 
@@ -193,7 +196,8 @@ async def test_maybe_generate_episode_creates_episode_with_enough_turns() -> Non
         assert result.summary
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) == 1
 
 

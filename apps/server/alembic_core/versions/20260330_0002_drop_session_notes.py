@@ -4,8 +4,8 @@ Revision ID: 20260330_0002
 Revises: 20260330_drop_daily_logs
 Create Date: 2026-03-30
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260330_0002"
 down_revision = "20260330_drop_daily_logs"

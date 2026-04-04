@@ -4,16 +4,14 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, sessionmaker
-
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
     PromotionJournal,
 )
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
 
 @pytest.fixture()
@@ -148,12 +146,11 @@ def test_sync_access_metadata(pg_session: Session) -> None:
 
 def test_store_memory_item_dry_run_does_not_write() -> None:
     """store_memory_item(dry_run=True) returns analysis without writing."""
-    from sqlalchemy import create_engine, func, select
-    from sqlalchemy.orm import sessionmaker
-
     from anima_server.db.base import Base
     from anima_server.models import MemoryItem, User
     from anima_server.services.agent.memory_store import store_memory_item
+    from sqlalchemy import create_engine, func, select
+    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)

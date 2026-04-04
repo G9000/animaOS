@@ -12,8 +12,8 @@ from sqlalchemy.pool import StaticPool
 @pytest.fixture()
 def soul_db() -> Session:
     """In-memory SQLite session with soul tables."""
-    from anima_server.models.user import User
     import anima_server.models.soul_consciousness  # noqa: F401
+    from anima_server.models.user import User
 
     engine = create_engine("sqlite://", poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -61,9 +61,8 @@ class TestIdentityBlock:
         assert loaded.user_id == 1
 
     def test_unique_per_user(self, soul_db: Session) -> None:
-        from sqlalchemy.exc import IntegrityError
-
         from anima_server.models.soul_consciousness import IdentityBlock
+        from sqlalchemy.exc import IntegrityError
 
         soul_db.add(
             IdentityBlock(
@@ -88,13 +87,14 @@ class TestIdentityBlock:
 
 class TestGrowthLogEntry:
     def test_create_and_list(self, soul_db: Session) -> None:
+        from anima_server.models.soul_consciousness import GrowthLogEntry
         from sqlalchemy import select
 
-        from anima_server.models.soul_consciousness import GrowthLogEntry
-
         entries = [
-            GrowthLogEntry(user_id=1, entry="Learned patience", source="sleep_time"),
-            GrowthLogEntry(user_id=1, entry="Adapted tone", source="post_turn"),
+            GrowthLogEntry(user_id=1, entry="Learned patience",
+                           source="sleep_time"),
+            GrowthLogEntry(user_id=1, entry="Adapted tone",
+                           source="post_turn"),
         ]
         soul_db.add_all(entries)
         soul_db.flush()
@@ -110,13 +110,13 @@ class TestGrowthLogEntry:
 
     def test_multiple_entries_per_user(self, soul_db: Session) -> None:
         """Unlike IdentityBlock, multiple entries per user are allowed."""
-        from sqlalchemy import func, select
-
         from anima_server.models.soul_consciousness import GrowthLogEntry
+        from sqlalchemy import func, select
 
         for i in range(5):
             soul_db.add(
-                GrowthLogEntry(user_id=1, entry=f"Entry {i}", source="sleep_time")
+                GrowthLogEntry(
+                    user_id=1, entry=f"Entry {i}", source="sleep_time")
             )
         soul_db.flush()
 
@@ -170,13 +170,14 @@ class TestWorkingContext:
 
     def test_unique_constraint(self, runtime_db: Session) -> None:
         """Only one row per (user_id, section)."""
+        from anima_server.models.runtime_consciousness import WorkingContext
         from sqlalchemy.exc import IntegrityError
 
-        from anima_server.models.runtime_consciousness import WorkingContext
-
-        runtime_db.add(WorkingContext(user_id=1, section="inner_state", content="a"))
+        runtime_db.add(WorkingContext(
+            user_id=1, section="inner_state", content="a"))
         runtime_db.flush()
-        runtime_db.add(WorkingContext(user_id=1, section="inner_state", content="b"))
+        runtime_db.add(WorkingContext(
+            user_id=1, section="inner_state", content="b"))
         with pytest.raises(IntegrityError):
             runtime_db.flush()
 
@@ -185,7 +186,8 @@ class TestActiveIntention:
     def test_create_and_read(self, runtime_db: Session) -> None:
         from anima_server.models.runtime_consciousness import ActiveIntention
 
-        ai = ActiveIntention(user_id=1, content="Learn their preferences", version=1)
+        ai = ActiveIntention(
+            user_id=1, content="Learn their preferences", version=1)
         runtime_db.add(ai)
         runtime_db.flush()
 
@@ -194,9 +196,8 @@ class TestActiveIntention:
         assert loaded.content == "Learn their preferences"
 
     def test_unique_per_user(self, runtime_db: Session) -> None:
-        from sqlalchemy.exc import IntegrityError
-
         from anima_server.models.runtime_consciousness import ActiveIntention
+        from sqlalchemy.exc import IntegrityError
 
         runtime_db.add(ActiveIntention(user_id=1, content="a"))
         runtime_db.flush()
@@ -228,12 +229,12 @@ class TestCurrentEmotion:
 
     def test_multiple_per_user(self, runtime_db: Session) -> None:
         """Rolling buffer - many signals per user."""
+        from anima_server.models.runtime_consciousness import CurrentEmotion
         from sqlalchemy import func, select
 
-        from anima_server.models.runtime_consciousness import CurrentEmotion
-
         for emotion in ["excited", "calm", "curious"]:
-            runtime_db.add(CurrentEmotion(user_id=1, emotion=emotion, confidence=0.6))
+            runtime_db.add(CurrentEmotion(
+                user_id=1, emotion=emotion, confidence=0.6))
         runtime_db.flush()
 
         count = runtime_db.scalar(
@@ -257,7 +258,8 @@ class TestSelfModelIdentityBlock:
             set_identity_block,
         )
 
-        set_identity_block(soul_db, user_id=1, content="I am a companion.", updated_by="system")
+        set_identity_block(soul_db, user_id=1,
+                           content="I am a companion.", updated_by="system")
         soul_db.flush()
 
         block = get_identity_block(soul_db, user_id=1)
@@ -271,9 +273,11 @@ class TestSelfModelIdentityBlock:
             set_identity_block,
         )
 
-        set_identity_block(soul_db, user_id=1, content="v1", updated_by="system")
+        set_identity_block(soul_db, user_id=1, content="v1",
+                           updated_by="system")
         soul_db.flush()
-        set_identity_block(soul_db, user_id=1, content="v2", updated_by="sleep_time")
+        set_identity_block(soul_db, user_id=1, content="v2",
+                           updated_by="sleep_time")
         soul_db.flush()
 
         block = get_identity_block(soul_db, user_id=1)
@@ -287,7 +291,8 @@ class TestSelfModelIdentityBlock:
             set_identity_block,
         )
 
-        set_identity_block(soul_db, user_id=1, content="original", updated_by="system")
+        set_identity_block(soul_db, user_id=1,
+                           content="original", updated_by="system")
         soul_db.flush()
 
         set_identity_block(
@@ -310,7 +315,8 @@ class TestSelfModelGrowthLog:
             get_growth_log_entries,
         )
 
-        append_growth_log_entry_row(soul_db, user_id=1, entry="Learned patience")
+        append_growth_log_entry_row(
+            soul_db, user_id=1, entry="Learned patience")
         soul_db.flush()
 
         entries = get_growth_log_entries(soul_db, user_id=1)
@@ -323,7 +329,8 @@ class TestSelfModelGrowthLog:
             get_growth_log_entries,
         )
 
-        append_growth_log_entry_row(soul_db, user_id=1, entry="Learned to be patient with the user")
+        append_growth_log_entry_row(
+            soul_db, user_id=1, entry="Learned to be patient with the user")
         soul_db.flush()
         result = append_growth_log_entry_row(
             soul_db,
@@ -385,7 +392,8 @@ class TestSelfModelWorkingContext:
             set_active_intentions,
         )
 
-        set_active_intentions(runtime_db, user_id=1, content="Learn preferences")
+        set_active_intentions(runtime_db, user_id=1,
+                              content="Learn preferences")
         runtime_db.flush()
 
         result = get_active_intentions(runtime_db, user_id=1)
@@ -414,8 +422,10 @@ class TestEmotionalIntelligenceRuntime:
             record_emotional_signal,
         )
 
-        record_emotional_signal(runtime_db, user_id=1, emotion="calm", confidence=0.7)
-        record_emotional_signal(runtime_db, user_id=1, emotion="curious", confidence=0.6)
+        record_emotional_signal(runtime_db, user_id=1,
+                                emotion="calm", confidence=0.7)
+        record_emotional_signal(runtime_db, user_id=1,
+                                emotion="curious", confidence=0.6)
         runtime_db.flush()
 
         signals = get_recent_signals(runtime_db, user_id=1)
@@ -440,27 +450,29 @@ class TestEmotionalIntelligenceRuntime:
         assert "frustrated" in context
 
     def test_trim_buffer(self, runtime_db: Session) -> None:
-        from sqlalchemy import func, select
-
         from anima_server.models.runtime_consciousness import CurrentEmotion
         from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+        from sqlalchemy import func, select
 
         for _ in range(25):
-            record_emotional_signal(runtime_db, user_id=1, emotion="calm", confidence=0.5)
+            record_emotional_signal(
+                runtime_db, user_id=1, emotion="calm", confidence=0.5)
             runtime_db.flush()
 
         count = runtime_db.scalar(
-            select(func.count()).select_from(CurrentEmotion).where(CurrentEmotion.user_id == 1)
+            select(func.count()).select_from(
+                CurrentEmotion).where(CurrentEmotion.user_id == 1)
         )
         assert count <= 20
 
 
 class TestIntentionsRuntime:
     def test_add_intention_to_runtime(self, runtime_db: Session) -> None:
-        from anima_server.services.agent.self_model import set_active_intentions
         from anima_server.services.agent.intentions import add_intention
+        from anima_server.services.agent.self_model import set_active_intentions
 
-        set_active_intentions(runtime_db, user_id=1, content="# Active Intentions\n\n## Ongoing")
+        set_active_intentions(runtime_db, user_id=1,
+                              content="# Active Intentions\n\n## Ongoing")
         runtime_db.flush()
 
         content = add_intention(
@@ -472,10 +484,11 @@ class TestIntentionsRuntime:
         assert "Learn communication style" in content
 
     def test_complete_intention_in_runtime(self, runtime_db: Session) -> None:
-        from anima_server.services.agent.self_model import set_active_intentions
         from anima_server.services.agent.intentions import add_intention, complete_intention
+        from anima_server.services.agent.self_model import set_active_intentions
 
-        set_active_intentions(runtime_db, user_id=1, content="# Active Intentions\n\n## Ongoing")
+        set_active_intentions(runtime_db, user_id=1,
+                              content="# Active Intentions\n\n## Ongoing")
         runtime_db.flush()
 
         add_intention(runtime_db, user_id=1, title="Test goal")
@@ -516,6 +529,12 @@ class TestMemoryBlocksDualRead:
         set_working_context(
             runtime_db,
             user_id=1,
+            section="emotional_synthesis",
+            content="I've been feeling more attached lately.",
+        )
+        set_working_context(
+            runtime_db,
+            user_id=1,
             section="working_memory",
             content="- Remember to ask about project",
         )
@@ -526,19 +545,26 @@ class TestMemoryBlocksDualRead:
         )
         runtime_db.flush()
 
-        blocks = build_self_model_memory_blocks(soul_db, pg_db=runtime_db, user_id=1)
+        blocks = build_self_model_memory_blocks(
+            soul_db, pg_db=runtime_db, user_id=1)
 
         labels = {b.label for b in blocks}
         assert "self_identity" in labels
         assert "self_inner_state" in labels
+        assert "self_emotional_state" in labels
         assert "self_working_memory" in labels
         assert "self_intentions" in labels
+
+        emotional_block = next(
+            b for b in blocks if b.label == "self_emotional_state")
+        assert "attached" in emotional_block.value
 
     def test_build_emotional_context_from_runtime(self, runtime_db: Session) -> None:
         from anima_server.services.agent.emotional_intelligence import record_emotional_signal
         from anima_server.services.agent.memory_blocks import build_emotional_context_block
 
-        record_emotional_signal(runtime_db, user_id=1, emotion="curious", confidence=0.7)
+        record_emotional_signal(runtime_db, user_id=1,
+                                emotion="curious", confidence=0.7)
         runtime_db.flush()
 
         block = build_emotional_context_block(runtime_db, user_id=1)
@@ -568,11 +594,10 @@ class TestMemoryBlocksDualRead:
 
 class TestEmotionalPatternPromotion:
     def test_promote_from_signals(self, soul_db: Session, runtime_db: Session) -> None:
-        from sqlalchemy import select
-
         from anima_server.models.soul_consciousness import CoreEmotionalPattern
         from anima_server.services.agent.emotional_intelligence import record_emotional_signal
         from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
+        from sqlalchemy import select
 
         for _ in range(5):
             record_emotional_signal(
@@ -585,12 +610,15 @@ class TestEmotionalPatternPromotion:
             )
         runtime_db.flush()
 
-        promoted = promote_emotional_patterns(soul_db=soul_db, pg_db=runtime_db, user_id=1)
+        promoted = promote_emotional_patterns(
+            soul_db=soul_db, pg_db=runtime_db, user_id=1)
         soul_db.flush()
 
         assert promoted >= 1
         patterns = soul_db.scalars(
-            select(CoreEmotionalPattern).where(CoreEmotionalPattern.user_id == 1)
+            select(CoreEmotionalPattern).where(
+                CoreEmotionalPattern.user_id == 1)
         ).all()
         assert len(patterns) >= 1
-        assert any(pattern.dominant_emotion == "frustrated" for pattern in patterns)
+        assert any(pattern.dominant_emotion ==
+                   "frustrated" for pattern in patterns)

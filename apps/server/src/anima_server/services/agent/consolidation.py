@@ -12,6 +12,9 @@ from typing import Any
 from sqlalchemy import select, text
 
 from anima_server.config import settings
+from anima_server.services.agent.emotional_intelligence import (
+    record_emotional_signal,
+)
 from anima_server.services.agent.json_utils import (
     parse_json_array as _parse_json_array,
 )
@@ -54,11 +57,13 @@ class PendingOpsConsolidationResult:
 
 _FACT_EXTRACTORS: tuple[PatternExtractor, ...] = (
     PatternExtractor(
-        pattern=re.compile(r"\bI am (?P<value>\d{1,3}) years old\b", re.IGNORECASE),
+        pattern=re.compile(
+            r"\bI am (?P<value>\d{1,3}) years old\b", re.IGNORECASE),
         formatter=lambda value: f"Age: {value}",
     ),
     PatternExtractor(
-        pattern=re.compile(r"\bmy birthday is (?P<value>[^.?!\n]+)", re.IGNORECASE),
+        pattern=re.compile(
+            r"\bmy birthday is (?P<value>[^.?!\n]+)", re.IGNORECASE),
         formatter=lambda value: f"Birthday: {value}",
     ),
     PatternExtractor(
@@ -98,7 +103,8 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bmy current focus is (?P<value>[^.?!\n]+)", re.IGNORECASE),
     re.compile(r"\bmy main focus is (?P<value>[^.?!\n]+)", re.IGNORECASE),
     re.compile(r"\bmy main priority is (?P<value>[^.?!\n]+)", re.IGNORECASE),
-    re.compile(r"\bI(?:'m| am) focused on (?P<value>[^.?!\n]+)", re.IGNORECASE),
+    re.compile(
+        r"\bI(?:'m| am) focused on (?P<value>[^.?!\n]+)", re.IGNORECASE),
     re.compile(r"\bI need to focus on (?P<value>[^.?!\n]+)", re.IGNORECASE),
 )
 
@@ -150,8 +156,10 @@ async def consolidate_pending_ops(
                 # Scope by run to avoid false matches on non-unique call IDs
                 # (e.g. fallback IDs like "tool-call-0" can repeat across runs)
                 if op.source_run_id is not None:
-                    dedup_filters.append(PendingMemoryOp.source_run_id == op.source_run_id)
-                duplicate = runtime_db.scalar(select(PendingMemoryOp.id).where(*dedup_filters))
+                    dedup_filters.append(
+                        PendingMemoryOp.source_run_id == op.source_run_id)
+                duplicate = runtime_db.scalar(
+                    select(PendingMemoryOp.id).where(*dedup_filters))
                 if duplicate is not None:
                     op.consolidated = True
                     op.consolidated_at = now
@@ -241,7 +249,8 @@ async def extract_memories_via_llm(
         )
         response = await llm.ainvoke(
             [
-                SystemMessage(content="You extract memories and emotions. Respond only with JSON."),
+                SystemMessage(
+                    content="You extract memories and emotions. Respond only with JSON."),
                 HumanMessage(content=prompt),
             ]
         )
@@ -292,7 +301,8 @@ async def resolve_conflict(
         )
         response = await llm.ainvoke(
             [
-                SystemMessage(content="Respond with exactly one word: UPDATE or DIFFERENT"),
+                SystemMessage(
+                    content="Respond with exactly one word: UPDATE or DIFFERENT"),
                 HumanMessage(content=prompt),
             ]
         )
@@ -335,7 +345,8 @@ async def resolve_conflict_batch(
     # --- Single item: delegate to the simpler prompt ---
     if len(similar_items) == 1:
         item = similar_items[0]
-        plaintext = df(user_id, item.content, table="memory_items", field="content")
+        plaintext = df(user_id, item.content,
+                       table="memory_items", field="content")
         verdict = await resolve_conflict(
             existing_content=plaintext,
             new_content=new_content,
@@ -350,7 +361,8 @@ async def resolve_conflict_batch(
     lines: list[str] = []
     for idx, item in enumerate(similar_items):
         int_to_real[idx] = item.id
-        plaintext = df(user_id, item.content, table="memory_items", field="content")
+        plaintext = df(user_id, item.content,
+                       table="memory_items", field="content")
         lines.append(f"[{idx}] {plaintext}")
 
     existing_memories_block = "\n".join(lines)
@@ -371,7 +383,8 @@ async def resolve_conflict_batch(
         )
         response = await llm.ainvoke(
             [
-                SystemMessage(content="Respond with exactly: UPDATE <id> or DIFFERENT"),
+                SystemMessage(
+                    content="Respond with exactly: UPDATE <id> or DIFFERENT"),
                 HumanMessage(content=prompt),
             ]
         )
@@ -406,7 +419,8 @@ async def resolve_conflict_batch(
 
 def extract_turn_memory(user_message: str) -> ExtractedTurnMemory:
     facts = tuple(extract_pattern_items(user_message, _FACT_EXTRACTORS))
-    preferences = tuple(extract_pattern_items(user_message, _PREFERENCE_EXTRACTORS))
+    preferences = tuple(extract_pattern_items(
+        user_message, _PREFERENCE_EXTRACTORS))
     current_focus = extract_current_focus(user_message)
     return ExtractedTurnMemory(
         facts=facts,
@@ -538,6 +552,25 @@ async def run_background_extraction(
                             source="llm",
                         )
                     llm_count = len(llm_result.memories)
+
+                    # Persist detected emotion (was previously only logged)
+                    if llm_result.emotion and llm_result.emotion.get("emotion"):
+                        record_emotional_signal(
+                            rt_db,
+                            user_id=user_id,
+                            emotion=llm_result.emotion["emotion"],
+                            confidence=float(
+                                llm_result.emotion.get("confidence", 0.5)
+                            ),
+                            evidence_type="linguistic",
+                            evidence=str(
+                                llm_result.emotion.get("evidence", "")
+                            ),
+                            trajectory=str(
+                                llm_result.emotion.get("trajectory", "stable")
+                            ),
+                        )
+
                     logger.info(
                         "LLM extraction for user %s: %d memories extracted%s",
                         user_id,

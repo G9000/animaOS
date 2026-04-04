@@ -48,12 +48,11 @@ class GreetingResult:
 
 def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
     """Collect context for greeting generation."""
-    ctx = GreetingContext()
-
     # Get tasks info
     now = datetime.now(UTC)
     tasks = db.scalars(
-        select(Task).where(Task.user_id == user_id, Task.completed_at.is_(None))
+        select(Task).where(Task.user_id == user_id,
+                           Task.completed_at.is_(None))
     ).all()
 
     open_count = 0
@@ -119,8 +118,10 @@ def gather_greeting_context(db: Session, user_id: int) -> GreetingContext:
             inner_state_block = working_context.get("inner_state")
             working_memory_block = working_context.get("working_memory")
     except Exception:
-        inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
-        working_memory_block = get_self_model_block(db, user_id=user_id, section="working_memory")
+        inner_state_block = get_self_model_block(
+            db, user_id=user_id, section="inner_state")
+        working_memory_block = get_self_model_block(
+            db, user_id=user_id, section="working_memory")
 
     inner_state_summary = (
         render_self_model_section(inner_state_block, user_id=user_id)
@@ -183,7 +184,8 @@ def build_static_greeting(ctx: GreetingContext) -> str:
     elif ctx.days_since_last_chat == 1:
         parts.append("Good to see you today.")
     else:
-        parts.append(f"It's been {ctx.days_since_last_chat} days. Welcome back.")
+        parts.append(
+            f"It's been {ctx.days_since_last_chat} days. Welcome back.")
 
     if ctx.overdue_task_count:
         s = "s" if ctx.overdue_task_count != 1 else ""
@@ -237,21 +239,26 @@ async def generate_greeting(
         s = "s" if ctx.overdue_task_count != 1 else ""
         task_parts.append(f"{ctx.overdue_task_count} overdue task{s}")
     if ctx.upcoming_deadlines:
-        task_parts.append(f"Upcoming deadlines: {', '.join(ctx.upcoming_deadlines[:3])}")
+        task_parts.append(
+            f"Upcoming deadlines: {', '.join(ctx.upcoming_deadlines[:3])}")
     if ctx.open_task_count:
         task_parts.append(f"{ctx.open_task_count} open tasks total")
     if ctx.current_focus:
         task_parts.append(f"Current focus: {ctx.current_focus}")
     if task_parts:
-        task_context = "Task context:\n" + "\n".join(f"- {p}" for p in task_parts)
+        task_context = "Task context:\n" + \
+            "\n".join(f"- {p}" for p in task_parts)
 
     memory_context_parts: list[str] = []
     if ctx.inner_state_summary:
-        memory_context_parts.append(f"Your inner state:\n{ctx.inner_state_summary}")
+        memory_context_parts.append(
+            f"Your inner state:\n{ctx.inner_state_summary}")
     if ctx.working_memory_summary:
-        memory_context_parts.append(f"Things you're holding in mind:\n{ctx.working_memory_summary}")
+        memory_context_parts.append(
+            f"Things you're holding in mind:\n{ctx.working_memory_summary}")
     if ctx.recent_episode_summary:
-        memory_context_parts.append(f"Recent conversations:\n{ctx.recent_episode_summary}")
+        memory_context_parts.append(
+            f"Recent conversations:\n{ctx.recent_episode_summary}")
     memory_context = "\n\n".join(memory_context_parts)
 
     # Use templated greeting prompt

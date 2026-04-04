@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -26,8 +27,10 @@ from sqlalchemy import text
 from starlette.requests import Request
 
 HAS_PGSERVER = importlib.util.find_spec("pgserver") is not None
-HAS_PSYCOPG = importlib.util.find_spec("psycopg") is not None or importlib.util.find_spec("psycopg2") is not None
-EXPLICIT_RUNTIME_DATABASE_URL = os.getenv("ANIMA_RUNTIME_DATABASE_URL", "").strip()
+HAS_PSYCOPG = importlib.util.find_spec(
+    "psycopg") is not None or importlib.util.find_spec("psycopg2") is not None
+EXPLICIT_RUNTIME_DATABASE_URL = os.getenv(
+    "ANIMA_RUNTIME_DATABASE_URL", "").strip()
 
 requires_embedded_pg = pytest.mark.skipif(
     bool(EXPLICIT_RUNTIME_DATABASE_URL) or not HAS_PGSERVER,
@@ -37,7 +40,8 @@ requires_embedded_pg = pytest.mark.skipif(
     ),
 )
 requires_runtime_backend = pytest.mark.skipif(
-    not HAS_PSYCOPG or (not EXPLICIT_RUNTIME_DATABASE_URL and not HAS_PGSERVER),
+    not HAS_PSYCOPG or (
+        not EXPLICIT_RUNTIME_DATABASE_URL and not HAS_PGSERVER),
     reason=(
         "Runtime PostgreSQL integration tests require psycopg plus either "
         "pgserver or ANIMA_RUNTIME_DATABASE_URL."
@@ -59,7 +63,8 @@ def runtime_database_url(managed_tmp_path: Path) -> str:
         return
 
     if not HAS_PGSERVER:
-        pytest.skip("pgserver is not installed and no external runtime database URL is configured.")
+        pytest.skip(
+            "pgserver is not installed and no external runtime database URL is configured.")
 
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
     pg.start()
@@ -180,6 +185,170 @@ def test_embedded_pg_keeps_lockfile_on_permission_error(
     assert pid_file.exists() is True
 
 
+def test_embedded_pg_bootstrap_log_is_outside_pgdata(managed_tmp_path: Path) -> None:
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+
+    assert pg._bootstrap_log_path() == managed_tmp_path / "runtime" / \
+        f"pg_bootstrap_{os.getpid()}.log"
+
+
+def test_embedded_pg_patches_pgserver_windows_startup(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import anima_server.db.pg_lifecycle as pg_lifecycle_module
+
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+    pg.data_dir.mkdir(parents=True, exist_ok=True)
+    calls: list[tuple[list[str], Path | None, dict[str, object]]] = []
+
+    def fake_pg_ctl(args: list[str], pgdata: Path | None = None, **kwargs: object) -> str:
+        calls.append((list(args), pgdata, dict(kwargs)))
+        return ""
+
+    postgres_server_module = SimpleNamespace(pg_ctl=fake_pg_ctl)
+
+    class FakePostgresServer:
+        _instances: ClassVar[dict[Path, object]] = {}
+
+        def __init__(self) -> None:
+            self.pgdata = pg.data_dir
+            self.log = self.pgdata / "log"
+
+        def ensure_postgres_running(self) -> None:
+            postgres_server_module.pg_ctl(
+                [
+                    "-w",
+                    "-o",
+                    '-h "127.0.0.1"',
+                    "-o",
+                    "-p 55432",
+                    "-l",
+                    str(self.log),
+                    "start",
+                ],
+                pgdata=self.pgdata,
+                timeout=10,
+            )
+
+    fake_pgserver = SimpleNamespace(PostgresServer=FakePostgresServer)
+    monkeypatch.setattr(pg_lifecycle_module.os, "name", "nt", raising=False)
+    monkeypatch.setitem(
+        sys.modules, "pgserver.postgres_server", postgres_server_module)
+
+    pg._patch_pgserver_windows_startup(fake_pgserver)
+
+    server = FakePostgresServer()
+    server.ensure_postgres_running()
+
+    assert server.log == pg._bootstrap_log_path()
+    assert len(calls) == 1
+    assert calls[0][1] == pg.data_dir
+    assert calls[0][2]["timeout"] == 60.0
+    assert calls[0][0][calls[0][0].index(
+        "-l") + 1] == str(pg._bootstrap_log_path())
+
+
+def test_embedded_pg_terminates_postgres_processes_for_data_dir(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+    target = str(pg.data_dir.expanduser().resolve())
+    terminated: list[int] = []
+    killed: list[int] = []
+
+    class FakeTimeoutExpired(Exception):
+        pass
+
+    class FakeProcess:
+        def __init__(self, pid: int, name: str, cmdline: list[str], *, times_out: bool = False) -> None:
+            self.info = {"pid": pid, "name": name, "cmdline": cmdline}
+            self._times_out = times_out
+
+        def terminate(self) -> None:
+            terminated.append(self.info["pid"])
+
+        def wait(self, _timeout: int) -> None:
+            if self._times_out:
+                raise FakeTimeoutExpired
+
+        def kill(self) -> None:
+            killed.append(self.info["pid"])
+
+    fake_psutil = SimpleNamespace(
+        TimeoutExpired=FakeTimeoutExpired,
+        Error=RuntimeError,
+        process_iter=lambda attrs=None: [
+            FakeProcess(1, "postgres", ["postgres", "-D", target]),
+            FakeProcess(2, "postgres", ["postgres",
+                        "-D", target], times_out=True),
+            FakeProcess(3, "postgres", ["postgres", "-D", "C:/other/pg_data"]),
+            FakeProcess(4, "python", ["python", "app.py"]),
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    pg._terminate_postgres_processes_for_data_dir()
+
+    assert terminated == [1, 2]
+    assert killed == [2]
+
+
+def test_embedded_pg_start_discards_cached_unready_pgserver_instance(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+    instance_key = pg.data_dir.expanduser().resolve()
+
+    class BrokenServer:
+        def __init__(self) -> None:
+            self.cleaned = False
+
+        def get_uri(self) -> str:
+            raise AssertionError("_postmaster_info is missing")
+
+        def cleanup(self) -> None:
+            self.cleaned = True
+
+    class ReadyServer:
+        def get_uri(self) -> str:
+            return "postgresql://127.0.0.1:5432/postgres"
+
+    class FakePostgresServer:
+        _instances: ClassVar[dict[Path, object]] = {}
+
+    broken = BrokenServer()
+    ready = ReadyServer()
+    FakePostgresServer._instances[instance_key] = broken
+
+    def fake_get_server(pgdata: str, cleanup_mode: str = "stop") -> object:
+        del cleanup_mode
+        resolved = Path(pgdata).expanduser().resolve()
+        cached = FakePostgresServer._instances.get(resolved)
+        if cached is not None:
+            return cached
+        FakePostgresServer._instances[resolved] = ready
+        return ready
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pgserver",
+        SimpleNamespace(
+            get_server=fake_get_server,
+            PostgresServer=FakePostgresServer,
+        ),
+    )
+
+    pg.start()
+
+    assert pg.running is True
+    assert pg.database_url == "postgresql://127.0.0.1:5432/postgres"
+    assert broken.cleaned is True
+    assert FakePostgresServer._instances[instance_key] is ready
+
+
 @requires_runtime_backend
 def test_runtime_session_factory_creates_working_sync_sessions(
     runtime_database_url: str,
@@ -206,12 +375,14 @@ def test_get_runtime_session_commits(runtime_database_url: str) -> None:
         factory = get_runtime_session_factory()
         with factory() as session:
             session.execute(
-                text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'committed')")
+                text(
+                    f"INSERT INTO {table_name} (id, value) VALUES (1, 'committed')")
             )
             session.commit()
 
         with factory() as session:
-            result = session.execute(text(f"SELECT value FROM {table_name} WHERE id = 1"))
+            result = session.execute(
+                text(f"SELECT value FROM {table_name} WHERE id = 1"))
 
         assert result.scalar_one() == "committed"
     finally:
@@ -232,12 +403,14 @@ def test_get_runtime_session_rolls_back_on_exception(runtime_database_url: str) 
 
         with pytest.raises(RuntimeError, match="force rollback"), factory() as session:
             session.execute(
-                text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')")
+                text(
+                    f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')")
             )
             raise RuntimeError("force rollback")
 
         with factory() as session:
-            result = session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+            result = session.execute(
+                text(f"SELECT COUNT(*) FROM {table_name}"))
 
         assert result.scalar_one() == 0
     finally:
@@ -307,7 +480,8 @@ def test_dual_engine_coexistence(
             db_dependency = get_db(request)
             soul_session = next(db_dependency)
             try:
-                soul_result = soul_session.execute(text("SELECT 1")).scalar_one()
+                soul_result = soul_session.execute(
+                    text("SELECT 1")).scalar_one()
             finally:
                 db_dependency.close()
 
@@ -356,11 +530,13 @@ def test_config_auto_derives_url_from_embedded_pg(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
+            lambda database_url, *, echo=False, **kw: init_calls.append(
+                (database_url, echo)),
         )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
-        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(
+            main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
             cancel_pending_reflection,
@@ -373,7 +549,8 @@ def test_config_auto_derives_url_from_embedded_pg(
         app = main_module.create_app()
 
         with TestClient(app):
-            assert init_calls == [(fake_pg.database_url, settings.database_echo)]
+            assert init_calls == [
+                (fake_pg.database_url, settings.database_echo)]
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
@@ -413,11 +590,13 @@ def test_explicit_runtime_url_skips_embedded_pg(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
+            lambda database_url, *, echo=False, **kw: init_calls.append(
+                (database_url, echo)),
         )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
-        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(
+            main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
             cancel_pending_reflection,
@@ -482,7 +661,8 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
             "ensure_runtime_tables",
             lambda: startup_calls.append("migrate"),
         )
-        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(
+            main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
             cancel_pending_reflection,

@@ -4,7 +4,9 @@ import atexit
 import logging
 import os
 import subprocess
+import sys
 import time
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _PG_START_RETRIES = 3
 _PG_RETRY_DELAY = 3.0
+_PGSERVER_WINDOWS_START_TIMEOUT = 60.0
 
 
 class EmbeddedPG:
@@ -44,22 +47,34 @@ class EmbeddedPG:
             return
 
         self._data_dir.mkdir(parents=True, exist_ok=True)
-        self._recover_stale_lockfile()
+        removed_stale_lockfile = self._recover_stale_lockfile()
+        if removed_stale_lockfile:
+            self._terminate_postgres_processes_for_data_dir()
         self._clear_stale_log()
 
         import pgserver
+        self._patch_pgserver_windows_startup(pgserver)
 
         last_err: Exception | None = None
         for attempt in range(1, _PG_START_RETRIES + 1):
             try:
-                self._server = pgserver.get_server(
+                self._discard_stale_pgserver_instance(pgserver)
+                server = pgserver.get_server(
                     str(self._data_dir), cleanup_mode="stop")
+                # pgserver keeps a process-global cache. Validate the returned
+                # handle now so a half-started cached instance does not leak
+                # into FastAPI startup and explode later on get_uri().
+                server.get_uri()
+                self._server = server
                 self._started = True
                 logger.info("Embedded PostgreSQL started in %s",
                             self._data_dir)
                 return
             except Exception as exc:
+                self._server = None
+                self._started = False
                 last_err = exc
+                self._discard_stale_pgserver_instance(pgserver, force=True)
                 logger.warning(
                     "Embedded PostgreSQL start attempt %d/%d failed: %s",
                     attempt, _PG_START_RETRIES, exc,
@@ -70,13 +85,105 @@ class EmbeddedPG:
                     # before retrying, otherwise the lockfile is valid, the log
                     # file is locked, and the next attempt will also fail.
                     self._force_stop_pg()
-                    self._recover_stale_lockfile()
+                    removed_stale_lockfile = self._recover_stale_lockfile()
+                    if removed_stale_lockfile:
+                        self._terminate_postgres_processes_for_data_dir()
                     self._clear_stale_log()
                     time.sleep(_PG_RETRY_DELAY)
 
         raise RuntimeError(
             f"Embedded PostgreSQL failed to start after {_PG_START_RETRIES} attempts"
         ) from last_err
+
+    def _patch_pgserver_windows_startup(self, pgserver_module: Any) -> None:
+        """Patch pgserver's Windows start path to tolerate recovery delays.
+
+        The bundled pgserver package hardcodes ``timeout=10`` for ``pg_ctl
+        start`` and writes its bootstrap log into ``PGDATA/log``. On Windows,
+        crash recovery can take longer than 10 seconds and opening that log in
+        place can fail with a sharing violation. We patch the package at runtime
+        instead of vendoring or editing the dependency.
+        """
+        if os.name != "nt":
+            return
+
+        server_cls = getattr(pgserver_module, "PostgresServer", None)
+        if server_cls is None or getattr(server_cls, "_anima_windows_startup_patched", False):
+            return
+
+        postgres_server_module = sys.modules.get("pgserver.postgres_server")
+        if postgres_server_module is None:
+            return
+
+        original_ensure = getattr(server_cls, "ensure_postgres_running", None)
+        original_pg_ctl = getattr(postgres_server_module, "pg_ctl", None)
+        if not callable(original_ensure) or not callable(original_pg_ctl):
+            return
+
+        def patched_pg_ctl(args: list[str], pgdata: Path | None = None, **kwargs: Any) -> str:
+            cmd_args = list(args)
+            if cmd_args and cmd_args[-1] == "start":
+                timeout = float(kwargs.get("timeout", 0) or 0)
+                kwargs["timeout"] = max(
+                    timeout, _PGSERVER_WINDOWS_START_TIMEOUT)
+            return original_pg_ctl(cmd_args, pgdata=pgdata, **kwargs)
+
+        def patched_ensure(server_self: Any) -> None:
+            server_self.log = self._bootstrap_log_path()
+            server_self.log.parent.mkdir(parents=True, exist_ok=True)
+            original_ensure(server_self)
+
+        postgres_server_module.pg_ctl = patched_pg_ctl
+        server_cls.ensure_postgres_running = patched_ensure
+        server_cls._anima_windows_startup_patched = True
+
+    def _bootstrap_log_path(self) -> Path:
+        return self._data_dir.parent / f"pg_bootstrap_{os.getpid()}.log"
+
+    def _discard_stale_pgserver_instance(self, pgserver_module: Any, *, force: bool = False) -> None:
+        instances = self._pgserver_instances(pgserver_module)
+        if instances is None:
+            return
+
+        instance_key = self._data_dir.expanduser().resolve()
+        server = instances.get(instance_key)
+        if server is None:
+            return
+        if not force and self._pgserver_instance_is_ready(server):
+            return
+
+        cleanup = getattr(server, "cleanup", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception:
+                logger.debug(
+                    "Failed to clean up stale pgserver instance for %s",
+                    instance_key,
+                    exc_info=True,
+                )
+
+        instances.pop(instance_key, None)
+
+    @staticmethod
+    def _pgserver_instances(pgserver_module: Any) -> MutableMapping[Path, Any] | None:
+        server_cls = getattr(pgserver_module, "PostgresServer", None)
+        instances = getattr(server_cls, "_instances", None)
+        if isinstance(instances, MutableMapping):
+            return instances
+        return None
+
+    @staticmethod
+    def _pgserver_instance_is_ready(server: Any) -> bool:
+        get_uri = getattr(server, "get_uri", None)
+        if not callable(get_uri):
+            return False
+
+        try:
+            get_uri()
+        except Exception:
+            return False
+        return True
 
     def stop(self) -> None:
         """Stop the embedded PostgreSQL instance cleanly."""
@@ -138,11 +245,48 @@ class EmbeddedPG:
             logger.debug(
                 "pg_ctl stop returned: %s (may not have been running)", exc)
 
-    def _recover_stale_lockfile(self) -> None:
+        self._terminate_postgres_processes_for_data_dir()
+
+    def _terminate_postgres_processes_for_data_dir(self) -> None:
+        """Kill lingering postgres.exe processes still bound to this PGDATA."""
+        try:
+            import psutil
+        except ImportError:
+            return
+
+        data_dir_str = str(self._data_dir.expanduser().resolve()).lower()
+        for proc in psutil.process_iter(attrs=["name", "cmdline", "pid"]):
+            try:
+                name = str(proc.info.get("name") or "")
+                cmdline = proc.info.get("cmdline") or []
+            except (psutil.Error, OSError):
+                continue
+
+            if "postgres" not in name.lower():
+                continue
+
+            cmdline_text = " ".join(str(part) for part in cmdline).lower()
+            if data_dir_str not in cmdline_text:
+                continue
+
+            try:
+                proc.terminate()
+                proc.wait(3)
+            except psutil.TimeoutExpired:
+                proc.kill()
+            except (psutil.Error, OSError):
+                logger.debug(
+                    "Failed to terminate lingering postgres PID %s for %s",
+                    proc.info.get("pid"),
+                    self._data_dir,
+                    exc_info=True,
+                )
+
+    def _recover_stale_lockfile(self) -> bool:
         """Remove a stale postmaster.pid whose process no longer exists."""
         pid_file = self._data_dir / "postmaster.pid"
         if not pid_file.exists():
-            return
+            return False
 
         try:
             pid = int(pid_file.read_text(encoding="utf-8").splitlines()[0])
@@ -150,7 +294,7 @@ class EmbeddedPG:
             logger.warning(
                 "Malformed postmaster.pid found at %s, removing", pid_file)
             pid_file.unlink(missing_ok=True)
-            return
+            return True
 
         try:
             os.kill(pid, 0)
@@ -163,6 +307,7 @@ class EmbeddedPG:
                 "leaving lockfile in place.",
                 pid,
             )
+            return False
         except (ProcessLookupError, OSError):
             # ProcessLookupError: PID does not exist (Unix).
             # OSError: PID does not exist or is invalid (Windows raises
@@ -172,28 +317,25 @@ class EmbeddedPG:
                 pid,
             )
             pid_file.unlink(missing_ok=True)
+            return True
+
+        return False
 
     def _clear_stale_log(self) -> None:
-        """Truncate or remove the PG log file to prevent sharing-violation hangs.
-
-        After an unclean shutdown on Windows, antivirus or backup software may
-        hold the log file open, causing pg_ctl to hang when it tries to open
-        it for writing.  Removing or truncating the file before start avoids
-        this.
-        """
-        log_file = self._data_dir / "log"
-        if not log_file.exists():
-            return
-        try:
-            log_file.write_text("", encoding="utf-8")
-            logger.debug("Truncated stale PG log at %s", log_file)
-        except OSError:
+        """Truncate or remove stale PG bootstrap logs before restart."""
+        for log_file in (self._data_dir / "log", self._bootstrap_log_path()):
+            if not log_file.exists():
+                continue
             try:
-                log_file.unlink()
-                logger.debug("Removed stale PG log at %s", log_file)
-            except OSError as exc:
-                logger.warning(
-                    "Could not clear stale PG log at %s: %s", log_file, exc)
+                log_file.write_text("", encoding="utf-8")
+                logger.debug("Truncated stale PG log at %s", log_file)
+            except OSError:
+                try:
+                    log_file.unlink()
+                    logger.debug("Removed stale PG log at %s", log_file)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not clear stale PG log at %s: %s", log_file, exc)
 
     @staticmethod
     def to_sync_url(url: str) -> str:

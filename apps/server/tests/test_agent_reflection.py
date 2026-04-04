@@ -44,7 +44,6 @@ def _db_session() -> Generator[Session, None, None]:
 @pytest.mark.asyncio
 async def test_run_reflection_generates_episode_when_turns_available() -> None:
     """Episode generation reads from RuntimeMessage (not MemoryDailyLog)."""
-    from anima_server.db.runtime_base import RuntimeBase
     from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 
     with _db_session() as session, runtime_db_session() as runtime_session:
@@ -103,14 +102,15 @@ async def test_run_reflection_generates_episode_when_turns_available() -> None:
 
         from anima_server.services.agent.episodes import maybe_generate_episode
 
-        episode = await maybe_generate_episode(
+        await maybe_generate_episode(
             user_id=user.id,
             db_factory=soul_factory,
             runtime_db_factory=rt_factory,
         )
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) == 1
             assert episodes[0].turn_count == 3
 
@@ -141,7 +141,8 @@ async def test_run_reflection_does_not_fail_with_no_turns() -> None:
         )
 
         with test_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(
+                user_id=user.id).all()
             assert len(episodes) == 0
 
 
