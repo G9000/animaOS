@@ -31,7 +31,7 @@ from .api.routes.threads import router as threads_router
 from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
-from .config import settings
+from .config import load_persisted_runtime_settings, settings
 from .db.pg_lifecycle import EmbeddedPG
 from .db.runtime import (
     dispose_runtime_engine,
@@ -61,7 +61,8 @@ def get_cors_origins() -> list[str]:
 
 
 # Paths exempt from sidecar-nonce validation.
-_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed", "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
+_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed",
+                                "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
 _NONCE_EXEMPT_PREFIXES = ("/api/health/",)
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,6 @@ def _start_embedded_pg() -> EmbeddedPG | None:
     pg = EmbeddedPG(data_dir=pg_data_dir)
     pg.start()
     return pg
-
 
 
 @asynccontextmanager
@@ -170,15 +170,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 rt_factory = get_runtime_session_factory()
                 with rt_factory() as rt_db:
                     active_user_ids = list(rt_db.scalars(
-                        _sel(RuntimeThread.user_id).where(RuntimeThread.status == "active")
+                        _sel(RuntimeThread.user_id).where(
+                            RuntimeThread.status == "active")
                     ).all())
                 for uid in set(active_user_ids):
                     try:
                         await run_soul_writer(uid)
                     except Exception:
-                        logger.debug("Shutdown Soul Writer failed for user %s", uid)
+                        logger.debug(
+                            "Shutdown Soul Writer failed for user %s", uid)
             except Exception:
-                logger.debug("Shutdown Soul Writer sweep failed", exc_info=True)
+                logger.debug(
+                    "Shutdown Soul Writer sweep failed", exc_info=True)
 
             for task in sweep_tasks:
                 task.cancel()
@@ -210,7 +213,8 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     def __init__(self, app) -> None:
         super().__init__(app)
         if not settings.sidecar_nonce and settings.app_env != "development":
-            logger.warning("Sidecar nonce is not configured in non-development environment")
+            logger.warning(
+                "Sidecar nonce is not configured in non-development environment")
 
     # type: ignore[override]
     async def dispatch(self, request: Request, call_next):
@@ -233,11 +237,14 @@ def create_app() -> FastAPI:
         and not settings.sidecar_nonce
         and settings.app_env != "development"
     ):
-        raise RuntimeError("Sidecar nonce must be configured when encryption is required.")
+        raise RuntimeError(
+            "Sidecar nonce must be configured when encryption is required.")
     if not settings.sidecar_nonce and settings.app_env != "development":
-        logger.warning("Sidecar nonce is not configured in non-development environment")
+        logger.warning(
+            "Sidecar nonce is not configured in non-development environment")
     ensure_core_manifest()
     acquire_core_lock()
+    load_persisted_runtime_settings()
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

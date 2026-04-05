@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -128,17 +129,26 @@ def _build_embedding_headers(provider: str) -> dict[str, str]:
     return headers
 
 
+def _embedding_skip_reason(provider: str) -> str | None:
+    if provider == "openrouter":
+        return "provider has no supported embeddings endpoint; configure an explicit embedding provider"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 3.2 — Embedding cache (LRU with TTL)
 # ---------------------------------------------------------------------------
 
 _CACHE_MAX_SIZE = 2048
 _CACHE_TTL_S = 3600  # 1 hour
+_PROVIDER_FAILURE_COOLDOWN_S = 30.0
 
 _embedding_cache: OrderedDict[str, tuple[list[float], float]] = OrderedDict()
 _cache_lock = Lock()
 _cache_hits = 0
 _cache_misses = 0
+_provider_unavailable_until: dict[str, float] = {}
+_provider_unavailable_lock = Lock()
 
 
 def _cache_key(text: str) -> str:
@@ -173,6 +183,55 @@ def _cache_put(key: str, embedding: list[float]) -> None:
             _embedding_cache.popitem(last=False)
 
 
+def _provider_failure_key(
+    provider: str,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> str:
+    resolved_base_url = (base_url or _resolve_embedding_base_url()).rstrip("/")
+    resolved_model = model or _resolve_embedding_model()
+    return f"{provider}:{resolved_base_url}:{resolved_model}"
+
+
+def _provider_in_cooldown(key: str) -> bool:
+    with _provider_unavailable_lock:
+        unavailable_until = _provider_unavailable_until.get(key)
+        if unavailable_until is None:
+            return False
+        if unavailable_until <= time.monotonic():
+            _provider_unavailable_until.pop(key, None)
+            return False
+        return True
+
+
+def _mark_provider_unavailable(
+    key: str,
+    *,
+    provider: str,
+    base_url: str,
+    exc: Exception,
+) -> None:
+    now = time.monotonic()
+    with _provider_unavailable_lock:
+        unavailable_until = _provider_unavailable_until.get(key)
+        if unavailable_until is not None and unavailable_until > now:
+            return
+        _provider_unavailable_until[key] = now + _PROVIDER_FAILURE_COOLDOWN_S
+    logger.warning(
+        "Embedding provider %s unavailable at %s: %s. Cooling down for %.0fs",
+        provider,
+        base_url,
+        exc,
+        _PROVIDER_FAILURE_COOLDOWN_S,
+    )
+
+
+def _clear_provider_unavailable(key: str) -> None:
+    with _provider_unavailable_lock:
+        _provider_unavailable_until.pop(key, None)
+
+
 def clear_embedding_cache() -> None:
     """Clear the embedding cache. Called on model config change or in tests."""
     global _cache_hits, _cache_misses
@@ -180,6 +239,8 @@ def clear_embedding_cache() -> None:
         _embedding_cache.clear()
         _cache_hits = 0
         _cache_misses = 0
+    with _provider_unavailable_lock:
+        _provider_unavailable_until.clear()
     from anima_server.config import clear_detected_embedding_dim
 
     clear_detected_embedding_dim()
@@ -187,35 +248,47 @@ def clear_embedding_cache() -> None:
 
 def get_embedding_cache_stats() -> dict[str, int]:
     """Return cache hit/miss counters for monitoring."""
-    return {"hits": _cache_hits, "misses": _cache_misses, "size": len(_embedding_cache)}
+    with _provider_unavailable_lock:
+        cooling_down = sum(
+            1 for unavailable_until in _provider_unavailable_until.values()
+            if unavailable_until > time.monotonic()
+        )
+    return {
+        "hits": _cache_hits,
+        "misses": _cache_misses,
+        "size": len(_embedding_cache),
+        "cooling_down": cooling_down,
+    }
 
 
 async def generate_embedding(text: str) -> list[float] | None:
     """Generate an embedding vector for the given text using the configured provider."""
     provider = _resolve_embedding_provider()
+    base_url = _resolve_embedding_base_url()
+    model = _resolve_embedding_model()
+    provider_key = _provider_failure_key(
+        provider,
+        base_url=base_url,
+        model=model,
+    )
 
     if provider == "scaffold":
         return None
 
-    if provider == "openrouter" and not settings.agent_embedding_provider.strip():
-        try:
-            result = await _embed_ollama(text)
-        except Exception:
-            logger.debug(
-                "OpenRouter has no embeddings endpoint and local Ollama "
-                "fallback unavailable — skipping embedding generation"
-            )
-            return None
-        if result is not None:
-            key = _cache_key(text)
-            _cache_put(key, result)
-        return result
+    skip_reason = _embedding_skip_reason(provider)
+    if skip_reason is not None:
+        logger.debug(
+            "Skipping embedding generation for provider %s: %s", provider, skip_reason)
+        return None
 
     # Check cache first
     key = _cache_key(text)
     cached = _cache_get(key)
     if cached is not None:
         return cached
+
+    if _provider_in_cooldown(provider_key):
+        return None
 
     try:
         _validate_embedding_provider_configuration(provider)
@@ -234,12 +307,21 @@ async def generate_embedding(text: str) -> list[float] | None:
         logger.debug(
             "Skipping embedding generation for provider %s: %s", provider, exc)
         return None
+    except httpx.HTTPError as exc:
+        _mark_provider_unavailable(
+            provider_key,
+            provider=provider,
+            base_url=base_url,
+            exc=exc,
+        )
+        return None
     except Exception:
         logger.exception(
             "Embedding generation failed for provider %s", provider)
         return None
 
     if result is not None:
+        _clear_provider_unavailable(provider_key)
         _cache_put(key, result)
         from anima_server.config import _detected_embedding_dim, set_detected_embedding_dim
 
@@ -255,8 +337,6 @@ async def generate_embedding(text: str) -> list[float] | None:
 
 async def _embed_openai_compatible(text: str) -> list[float] | None:
     """Generate embeddings via any OpenAI-compatible /v1/embeddings endpoint."""
-    import httpx
-
     provider = _resolve_embedding_provider()
     base_url = _resolve_embedding_base_url()
     model = _resolve_embedding_model()
@@ -281,8 +361,6 @@ async def _embed_openai_compatible(text: str) -> list[float] | None:
 
 async def _embed_ollama(text: str) -> list[float] | None:
     """Generate embeddings via Ollama's native /api/embed endpoint."""
-    import httpx
-
     base_url = _resolve_embedding_base_url()
     model = _resolve_embedding_model()
 
@@ -875,6 +953,12 @@ async def generate_embeddings_batch(
     if provider == "scaffold":
         return [None] * len(texts)
 
+    skip_reason = _embedding_skip_reason(provider)
+    if skip_reason is not None:
+        logger.debug(
+            "Skipping batch embedding generation for provider %s: %s", provider, skip_reason)
+        return [None] * len(texts)
+
     try:
         _validate_embedding_provider_configuration(provider)
     except LLMConfigError:
@@ -892,8 +976,6 @@ async def _batch_embed_openai_compatible(
     max_batch_size: int = 32,
 ) -> list[list[float] | None]:
     """Batch embedding via OpenAI-compatible /v1/embeddings with adaptive retry."""
-    import httpx
-
     provider = _resolve_embedding_provider()
     base_url = _resolve_embedding_base_url()
     model = _resolve_embedding_model()
@@ -946,5 +1028,17 @@ async def _batch_embed_openai_compatible(
 
 async def _batch_embed_ollama(texts: list[str]) -> list[list[float] | None]:
     """Batch embedding for ollama via asyncio.gather over individual calls."""
-    tasks = [generate_embedding(text) for text in texts]
-    return list(await asyncio.gather(*tasks))
+    if not texts:
+        return []
+
+    first_result = await generate_embedding(texts[0])
+    if len(texts) == 1:
+        return [first_result]
+
+    provider_key = _provider_failure_key("ollama")
+    if first_result is None and _provider_in_cooldown(provider_key):
+        return [None] * len(texts)
+
+    tasks = [generate_embedding(text) for text in texts[1:]]
+    remainder = list(await asyncio.gather(*tasks))
+    return [first_result, *remainder]

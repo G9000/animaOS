@@ -6,14 +6,32 @@ import { MicIcon, SendIcon } from "../icons";
 
 export interface PromptInputProps {
   agentName?: string;
+  value?: string;
+  onChange?: (value: string) => void;
   onSubmit: (value: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
   className?: string;
+  showAttach?: boolean;
+  showMic?: boolean;
 }
 
 const MAX_ROWS = 6;
 
-export function PromptInput({ agentName = "Anima", onSubmit, className }: PromptInputProps) {
-  const [input, setInput] = useState("");
+export function PromptInput({ 
+  agentName = "Anima", 
+  value: controlledValue,
+  onChange,
+  onSubmit, 
+  disabled = false,
+  placeholder,
+  className,
+  showAttach = true,
+  showMic = true,
+}: PromptInputProps) {
+  const [internalValue, setInternalValue] = useState("");
+  const isControlled = controlledValue !== undefined;
+  const value = isControlled ? controlledValue : internalValue;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const autoResize = () => {
@@ -23,11 +41,22 @@ export function PromptInput({ agentName = "Anima", onSubmit, className }: Prompt
     el.style.height = `${Math.min(el.scrollHeight, 20 * MAX_ROWS)}px`;
   };
 
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newValue = e.target.value;
+    if (!isControlled) {
+      setInternalValue(newValue);
+    }
+    onChange?.(newValue);
+    autoResize();
+  };
+
   const submit = () => {
-    const v = input.trim();
-    if (!v) return;
+    const v = value.trim();
+    if (!v || disabled) return;
     onSubmit(v);
-    setInput("");
+    if (!isControlled) {
+      setInternalValue("");
+    }
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
@@ -41,35 +70,39 @@ export function PromptInput({ agentName = "Anima", onSubmit, className }: Prompt
   return (
     <form onSubmit={(e) => { e.preventDefault(); submit(); }} className={cn("w-full", className)}>
       <div className="flex items-end gap-2">
-        <AttachMenu />
+        {showAttach && <AttachMenu />}
 
         <textarea
           ref={textareaRef}
-          value={input}
-          onChange={(e) => { setInput(e.target.value); autoResize(); }}
+          value={value}
+          onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder={`talk to ${agentName}...`}
+          placeholder={placeholder || `talk to ${agentName}...`}
+          disabled={disabled}
           rows={1}
           className="flex-1 bg-transparent text-body text-foreground font-mono placeholder:text-foreground/15 outline-none resize-none pb-1 leading-6"
         />
 
         <div className="flex items-center shrink-0">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            iconOnly
-            icon={<MicIcon />}
-            className="opacity-25 hover:opacity-60"
-          />
-          {input.trim() && (
+          {showMic && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              iconOnly
+              icon={<MicIcon />}
+              className="opacity-25 hover:opacity-60"
+            />
+          )}
+          {(value.trim() || disabled) && (
             <Button
               type="submit"
               variant="ghost"
               size="sm"
               iconOnly
               icon={<SendIcon />}
-              className="opacity-50 hover:opacity-90 animate-fade-in"
+              disabled={disabled || !value.trim()}
+              className="opacity-50 hover:opacity-90 animate-fade-in disabled:opacity-20"
             />
           )}
         </div>

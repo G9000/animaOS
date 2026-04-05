@@ -79,3 +79,39 @@ export {
   GLOW,
   hash,
 } from "./ascii-art";
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+export {
+  // Components
+  ChatBubble,
+  CompactChatBubble,
+  ChatAvatar,
+  CopyButton,
+  TracePanel,
+  ChatInput,
+  // Types
+  type ChatBubbleProps,
+  type CompactChatBubbleProps,
+  type ChatAvatarProps,
+  type CopyButtonProps,
+  type TracePanelProps,
+  type ChatInputProps,
+  type ChatMessage,
+  type MessageRole,
+  type Thread,
+  type TraceEvent,
+  type TraceEventType,
+  // Icons (chat-specific)
+  ThinkIcon,
+  TranslateIcon,
+  TraceIcon,
+  LightbulbIcon,
+  ChevronDownIcon,
+  // Utils
+  shouldGroupMessages,
+  formatTimestamp,
+  formatFullTimestamp,
+  formatJson,
+  serializeTraceAsJson,
+  serializeTraceAsText,
+} from "./chat";

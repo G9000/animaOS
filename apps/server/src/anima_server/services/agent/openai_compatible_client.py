@@ -54,7 +54,8 @@ class OpenAICompatibleChatClient:
         """Return a shared httpx client for connection reuse."""
         if self._shared_client is None or self._shared_client.is_closed:
             self._shared_client = httpx.AsyncClient(
-                timeout=self._timeout,
+                timeout=httpx.Timeout(
+                    self._timeout, read=max(self._timeout * 5, 600.0)),
                 transport=self._transport,
             )
         return self._shared_client

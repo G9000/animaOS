@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.api.deps.unlock import require_unlocked_user
-from anima_server.config import settings
+from anima_server.config import persist_runtime_settings, settings
 from anima_server.db import get_db
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
 
@@ -99,9 +99,9 @@ async def get_config(
 ) -> AgentConfigResponse:
     """Return the active agent config.
 
-    NOTE: Config is process-global, not per-user storage.  The ``user_id``
-    path param exists only for auth gating (single-user local app).  If
-    multi-tenant support is needed, migrate to a ``user_config`` DB table.
+    NOTE: Config is still process-global for the current single-user app,
+    but updates are persisted in the local runtime config so restart does
+    not silently revert to defaults.
     """
     require_unlocked_user(request, user_id)
     return AgentConfigResponse(
@@ -120,7 +120,7 @@ async def update_config(
     _mode: None = Depends(require_sqlite_mode),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Update the active agent config (process-global — see GET docstring)."""
+    """Update and persist the active agent config."""
     require_unlocked_user(request, user_id)
 
     if payload.provider not in VALID_PROVIDERS:
@@ -142,8 +142,18 @@ async def update_config(
         # Clear base_url for providers with fixed endpoints (openrouter, moonshot)
         settings.agent_base_url = ""
 
-    from anima_server.services.agent import invalidate_agent_runtime_cache
+    try:
+        persist_runtime_settings()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to persist AI settings: {exc}",
+        ) from exc
 
+    from anima_server.services.agent import invalidate_agent_runtime_cache
+    from anima_server.services.agent.embeddings import clear_embedding_cache
+
+    clear_embedding_cache()
     invalidate_agent_runtime_cache()
 
     return {"status": "updated"}

@@ -17,6 +17,11 @@ const SETTINGS_SECTIONS = [
     description: "Encrypted backup export/import.",
   },
   {
+    to: "/settings/language",
+    label: "LANGUAGE",
+    description: "Translation and display preferences.",
+  },
+  {
     to: "/settings/advanced",
     label: "ADVANCED",
     description: "Debug tools, developer options.",

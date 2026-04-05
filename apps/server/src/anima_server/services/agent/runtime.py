@@ -1020,7 +1020,7 @@ class AgentRuntime:
             return False, None
         if rule_violation_hit:
             return True, (
-                "Tool rule violation \u2014 the tool was not allowed at "
+                "Tool rule violation — the tool was not allowed at "
                 "this point. Check allowed tools and try again."
             )
         if any(tr.is_error for tr in tool_results):

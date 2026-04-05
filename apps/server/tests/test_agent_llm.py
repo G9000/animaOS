@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import httpx
@@ -10,26 +11,30 @@ from anima_server.services.agent.llm import LLMConfigError, build_provider_heade
 
 
 @pytest.mark.asyncio
-async def test_generate_embedding_skips_openrouter_when_ollama_unavailable(
+async def test_generate_embedding_skips_openrouter_without_embedding_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # OpenRouter has no embeddings endpoint; it falls back to local Ollama.
-    # When Ollama is also unavailable the function should return None.
-    original_provider = settings.agent_provider
+    from anima_server.services.agent import embeddings as embeddings_module
 
-    async def ollama_unavailable(text: str) -> list[float] | None:
-        raise RuntimeError("Ollama not reachable")
+    async def unexpected_embed(text: str) -> list[float] | None:
+        raise AssertionError(
+            "OpenRouter embeddings should be skipped without an explicit embedding provider")
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
 
     try:
         settings.agent_provider = "openrouter"
-        monkeypatch.setattr(
-            "anima_server.services.agent.embeddings._embed_ollama",
-            ollama_unavailable,
-        )
+        settings.agent_embedding_provider = ""
+        monkeypatch.setattr(embeddings_module,
+                            "_embed_ollama", unexpected_embed)
+        monkeypatch.setattr(embeddings_module,
+                            "_embed_openai_compatible", unexpected_embed)
 
         result = await generate_embedding("hello")
     finally:
         settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
 
     assert result is None
 
@@ -193,3 +198,91 @@ async def test_embed_ollama_uses_explicit_embedding_settings(
             {"model": "all-minilm:latest", "input": "hello"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_cools_down_unreachable_ollama(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    call_count = 0
+    request = httpx.Request("POST", "http://127.0.0.1:11434/api/embed")
+
+    async def ollama_unreachable(text: str) -> list[float] | None:
+        nonlocal call_count
+        call_count += 1
+        raise httpx.ConnectError(
+            "All connection attempts failed", request=request)
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="ollama",
+            agent_base_url="http://127.0.0.1:11434",
+            agent_api_key="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+    monkeypatch.setattr(embeddings_module, "_embed_ollama", ollama_unreachable)
+    embeddings_module.clear_embedding_cache()
+
+    with caplog.at_level(logging.WARNING, logger="anima_server.services.agent.embeddings"):
+        first = await embeddings_module.generate_embedding("hello")
+        second = await embeddings_module.generate_embedding("world")
+
+    assert first is None
+    assert second is None
+    assert call_count == 1
+
+    records = [
+        record for record in caplog.records
+        if record.name == "anima_server.services.agent.embeddings"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    assert "Cooling down for 30s" in records[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_ollama_skips_remainder_when_provider_is_cooling_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    call_count = 0
+
+    async def mock_generate(text: str) -> list[float] | None:
+        nonlocal call_count
+        call_count += 1
+        return None
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="ollama",
+            agent_base_url="http://127.0.0.1:11434",
+            agent_api_key="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+    monkeypatch.setattr(embeddings_module, "generate_embedding", mock_generate)
+    monkeypatch.setattr(embeddings_module,
+                        "_provider_in_cooldown", lambda key: True)
+
+    result = await embeddings_module._batch_embed_ollama(["a", "b", "c"])
+
+    assert result == [None, None, None]
+    assert call_count == 1

@@ -1,3 +1,5 @@
+import json
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -5,6 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[4] / ".anima" / "dev"
 DEFAULT_DATABASE_URL = "sqlite:///" + str(DEFAULT_DATA_DIR / "anima.db")
+RUNTIME_SETTINGS_FILENAME = "runtime-config.json"
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -77,6 +82,87 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_PERSISTED_RUNTIME_SETTING_FIELDS: tuple[str, ...] = (
+    "agent_provider",
+    "agent_model",
+    "agent_persona_template",
+    "agent_base_url",
+    "agent_api_key",
+    "agent_extraction_model",
+    "agent_extraction_provider",
+    "agent_embedding_provider",
+    "agent_embedding_model",
+    "agent_embedding_api_key",
+    "agent_embedding_base_url",
+)
+
+
+def get_runtime_settings_path() -> Path:
+    """Return the local runtime settings file path."""
+    return settings.data_dir / RUNTIME_SETTINGS_FILENAME
+
+
+def load_persisted_runtime_settings() -> None:
+    """Load locally persisted runtime settings into the active process."""
+    path = get_runtime_settings_path()
+    if not path.exists():
+        return
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Failed to read persisted runtime settings from %s: %s", path, exc)
+        return
+
+    if not isinstance(payload, dict):
+        logger.warning(
+            "Ignoring persisted runtime settings from %s: expected object", path)
+        return
+
+    for field in _PERSISTED_RUNTIME_SETTING_FIELDS:
+        value = payload.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            logger.warning(
+                "Ignoring persisted runtime setting %s from %s: expected string",
+                field,
+                path,
+            )
+            continue
+        setattr(settings, field, value)
+
+
+def persist_runtime_settings() -> Path:
+    """Persist runtime settings for the next server restart."""
+    path = get_runtime_settings_path()
+    payload: dict[str, str] = {}
+
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to read existing runtime settings from %s: %s", path, exc)
+        else:
+            if isinstance(existing, dict):
+                payload.update(
+                    {
+                        key: value
+                        for key, value in existing.items()
+                        if isinstance(key, str) and isinstance(value, str)
+                    }
+                )
+
+    for field in _PERSISTED_RUNTIME_SETTING_FIELDS:
+        payload[field] = str(getattr(settings, field, ""))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2,
+                    sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 # ---------------------------------------------------------------------------
