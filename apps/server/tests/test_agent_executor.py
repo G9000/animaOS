@@ -324,6 +324,22 @@ def test_tool_schemas_do_not_contain_thinking() -> None:
         )
 
 
+def test_core_memory_label_schema_is_enum_constrained() -> None:
+    from anima_server.services.agent.tools import core_memory_append, core_memory_replace
+
+    append_schema = core_memory_append.args_schema.model_json_schema()
+    replace_schema = core_memory_replace.args_schema.model_json_schema()
+
+    assert append_schema["properties"]["label"] == {
+        "type": "string",
+        "enum": ["human", "persona"],
+    }
+    assert replace_schema["properties"]["label"] == {
+        "type": "string",
+        "enum": ["human", "persona"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_executor_strips_thinking_defensively() -> None:
     """Even without schema injection, if a model sends 'thinking' in args,

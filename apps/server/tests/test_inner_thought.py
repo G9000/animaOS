@@ -173,6 +173,8 @@ def test_system_prompt_contains_memory_architecture() -> None:
     assert "Memory:" in prompt
     assert "core_memory_append" in prompt
     assert "save_to_memory" in prompt
+    assert "self_working_memory" in prompt
+    assert "note_to_self" in prompt
 
 
 # ---------------------------------------------------------------------------

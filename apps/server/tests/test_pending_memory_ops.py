@@ -127,7 +127,8 @@ def test_core_memory_append_creates_pending_op_without_writing_soul() -> None:
         from anima_server.models import PendingMemoryOp
         from anima_server.services.agent.tools import core_memory_append
 
-        user = User(username="append-pending", password_hash="x", display_name="Append Pending")
+        user = User(username="append-pending", password_hash="x",
+                    display_name="Append Pending")
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -176,13 +177,26 @@ def test_core_memory_append_creates_pending_op_without_writing_soul() -> None:
     assert pending[0].source_tool_call_id == "tool-append-1"
 
 
+def test_core_memory_append_invalid_label_explains_runtime_block_misuse() -> None:
+    from anima_server.services.agent.tools import core_memory_append
+
+    result = core_memory_append(
+        "self_working_memory", "Remember this for later.")
+
+    assert "Invalid label 'self_working_memory'." in result
+    assert "runtime block label" in result
+    assert "note_to_self" in result
+    assert "save_to_memory" in result
+
+
 def test_core_memory_replace_validates_against_merged_view() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.models import PendingMemoryOp
         from anima_server.services.agent.pending_ops import create_pending_op
         from anima_server.services.agent.tools import core_memory_replace
 
-        user = User(username="replace-merged", password_hash="x", display_name="Replace Merged")
+        user = User(username="replace-merged", password_hash="x",
+                    display_name="Replace Merged")
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -240,12 +254,55 @@ def test_core_memory_replace_validates_against_merged_view() -> None:
     assert pending[1].source_tool_call_id == "replace-1"
 
 
+def test_core_memory_replace_guides_when_old_text_is_missing() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.tools import core_memory_replace
+
+        user = User(username="replace-missing", password_hash="x",
+                    display_name="Replace Missing")
+        soul_db.add(user)
+        soul_db.flush()
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="human",
+                content="Name: Alice",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=45,
+            current_tool_call_id="replace-missing-1",
+        )
+        set_tool_context(ctx)
+        try:
+            result = core_memory_replace(
+                "human",
+                "Works at Google",
+                "Works at Apple",
+            )
+        finally:
+            clear_tool_context()
+
+    assert "Could not find the exact text to replace in human memory." in result
+    assert "core_memory_append" in result
+    assert "update_human_memory" in result
+
+
 def test_update_human_memory_creates_full_replace_pending_op() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.models import PendingMemoryOp
         from anima_server.services.agent.tools import update_human_memory
 
-        user = User(username="full-replace", password_hash="x", display_name="Full Replace")
+        user = User(username="full-replace", password_hash="x",
+                    display_name="Full Replace")
         soul_db.add(user)
         soul_db.flush()
 
@@ -281,7 +338,8 @@ def test_build_merged_block_content_applies_ops_in_order() -> None:
         from anima_server.services.agent.memory_blocks import build_merged_block_content
         from anima_server.services.agent.pending_ops import create_pending_op
 
-        user = User(username="merged-order", password_hash="x", display_name="Merged Order")
+        user = User(username="merged-order", password_hash="x",
+                    display_name="Merged Order")
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -342,7 +400,8 @@ def test_build_pending_ops_block_renders_orphaned_updates() -> None:
         from anima_server.services.agent.memory_blocks import build_pending_ops_block
         from anima_server.services.agent.pending_ops import create_pending_op
 
-        user = User(username="pending-block", password_hash="x", display_name="Pending Block")
+        user = User(username="pending-block", password_hash="x",
+                    display_name="Pending Block")
         soul_db.add(user)
         soul_db.flush()
 
@@ -370,7 +429,8 @@ def test_build_pending_ops_block_returns_none_when_empty() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.memory_blocks import build_pending_ops_block
 
-        user = User(username="pending-empty", password_hash="x", display_name="Pending Empty")
+        user = User(username="pending-empty", password_hash="x",
+                    display_name="Pending Empty")
         soul_db.add(user)
         soul_db.flush()
 
@@ -384,7 +444,8 @@ def test_runtime_memory_blocks_show_pending_writes_in_later_turns() -> None:
         from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
         from anima_server.services.agent.pending_ops import create_pending_op
 
-        user = User(username="pending-future-turn", password_hash="x", display_name="Future Turn")
+        user = User(username="pending-future-turn",
+                    password_hash="x", display_name="Future Turn")
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -478,7 +539,8 @@ def test_consolidate_pending_ops_applies_ops_in_order_and_is_idempotent() -> Non
         )
         runtime_db.commit()
 
-        soul_factory = sessionmaker(bind=soul_db.get_bind(), autoflush=False, expire_on_commit=False)
+        soul_factory = sessionmaker(
+            bind=soul_db.get_bind(), autoflush=False, expire_on_commit=False)
         runtime_factory = sessionmaker(
             bind=runtime_db.get_bind(),
             autoflush=False,
@@ -572,7 +634,8 @@ def test_consolidate_pending_ops_marks_failed_replace_and_continues() -> None:
         )
         runtime_db.commit()
 
-        soul_factory = sessionmaker(bind=soul_db.get_bind(), autoflush=False, expire_on_commit=False)
+        soul_factory = sessionmaker(
+            bind=soul_db.get_bind(), autoflush=False, expire_on_commit=False)
         runtime_factory = sessionmaker(
             bind=runtime_db.get_bind(),
             autoflush=False,
@@ -627,7 +690,8 @@ async def test_run_agent_records_pending_op_traceability(
                 ToolCall(
                     id="call-1",
                     name="core_memory_append",
-                    arguments={"label": "human", "content": "Has a dog named Biscuit"},
+                    arguments={"label": "human",
+                               "content": "Has a dog named Biscuit"},
                 )
             )
             assert result.is_error is False
@@ -641,16 +705,19 @@ async def test_run_agent_records_pending_op_traceability(
 
     runner = RecordingRunner()
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
-    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(
+        agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
-        user = User(username="service-trace", password_hash="x", display_name="Service Trace")
+        user = User(username="service-trace", password_hash="x",
+                    display_name="Service Trace")
         soul_db.add(user)
         soul_db.commit()
 
         result = await agent_service.run_agent("remember this", user.id, soul_db, runtime_db)
 
-        run = runtime_db.scalar(select(RuntimeRun).order_by(RuntimeRun.id.desc()))
+        run = runtime_db.scalar(
+            select(RuntimeRun).order_by(RuntimeRun.id.desc()))
         op = runtime_db.scalar(select(PendingMemoryOp))
 
     assert result.response == "Noted."

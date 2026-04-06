@@ -12,12 +12,23 @@ import inspect
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any, get_type_hints
+from types import UnionType
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from anima_server.services.agent.rules import ToolRule, build_default_tool_rules
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
+
+CoreMemoryLabel = Literal["human", "persona"]
+
+_CORE_MEMORY_LABELS = ("human", "persona")
+_RUNTIME_BLOCK_LABEL_HINTS: dict[str, str] = {
+    "self_working_memory": "Use note_to_self for session-only scratch context instead.",
+    "self_inner_state": "This is a runtime self-state block, not a writable core-memory label.",
+    "current_focus": "Use note_to_self for temporary focus, not core_memory_*.",
+    "thread_summary": "This block is system-generated and should not be edited with core_memory_*.",
+}
 
 
 class _SimpleSchema:
@@ -47,16 +58,8 @@ def _build_args_schema(func: Callable[..., Any]) -> _SimpleSchema:
     for name, param in params.items():
         if name == "return":
             continue
-        prop: dict[str, str] = {"type": "string"}
         hint = hints.get(name)
-        if hint is str:
-            prop["type"] = "string"
-        elif hint is int:
-            prop["type"] = "integer"
-        elif hint is float:
-            prop["type"] = "number"
-        elif hint is bool:
-            prop["type"] = "boolean"
+        prop = _schema_for_hint(hint)
         properties[name] = prop
         if param.default is inspect.Parameter.empty:
             required.append(name)
@@ -67,6 +70,58 @@ def _build_args_schema(func: Callable[..., Any]) -> _SimpleSchema:
             "required": required,
         }
     )
+
+
+def _schema_for_hint(hint: Any) -> dict[str, object]:
+    if hint is None:
+        return {"type": "string"}
+
+    origin = get_origin(hint)
+    if origin in (Union, UnionType):
+        non_none_args = [arg for arg in get_args(
+            hint) if arg is not type(None)]
+        if len(non_none_args) == 1:
+            return _schema_for_hint(non_none_args[0])
+
+    if origin is Literal:
+        values = [value for value in get_args(hint) if value is not None]
+        if not values:
+            return {"type": "string"}
+
+        value_types = {type(value) for value in values}
+        if len(value_types) == 1:
+            value_type = value_types.pop()
+            if value_type is str:
+                return {"type": "string", "enum": list(values)}
+            if value_type is int:
+                return {"type": "integer", "enum": list(values)}
+            if value_type is float:
+                return {"type": "number", "enum": list(values)}
+            if value_type is bool:
+                return {"type": "boolean", "enum": list(values)}
+        return {"type": "string", "enum": [str(value) for value in values]}
+
+    if hint is str:
+        return {"type": "string"}
+    if hint is int:
+        return {"type": "integer"}
+    if hint is float:
+        return {"type": "number"}
+    if hint is bool:
+        return {"type": "boolean"}
+    return {"type": "string"}
+
+
+def _core_memory_label_error(label: str) -> str:
+    guidance = (
+        "Valid labels are 'human' and 'persona'. Use 'human' for your evolving "
+        "understanding of the user and 'persona' for your own voice and style."
+    )
+    runtime_hint = _RUNTIME_BLOCK_LABEL_HINTS.get(label)
+    if runtime_hint is not None:
+        guidance += f" '{label}' is a runtime block label, not a writable core-memory label. {runtime_hint}"
+    guidance += " Use note_to_self for session-only scratch context and save_to_memory for durable facts or preferences."
+    return f"Invalid label '{label}'. {guidance}"
 
 
 @tool
@@ -667,7 +722,7 @@ def recall_transcript(query: str, days_back: int = 30) -> str:
 
 @tool
 def update_human_memory(content: str) -> str:
-    """Replace your holistic model of the user (complete rewrite). Use for big-picture understanding. For discrete searchable facts use save_to_memory instead."""
+    """Replace the full human block in one shot. Use only when you already know the complete desired user model. For one-off facts or preferences, prefer save_to_memory or core_memory_append."""
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -694,13 +749,13 @@ def update_human_memory(content: str) -> str:
 
 
 @tool
-def core_memory_append(label: str, content: str) -> str:
-    """Append to an in-context memory block (takes effect this conversation). Labels: human, persona."""
+def core_memory_append(label: CoreMemoryLabel, content: str) -> str:
+    """Append text to one of the two writable core memory blocks for this conversation. Use label='human' for user facts or evolving understanding, and label='persona' for your own voice/style. Never use runtime block names like self_working_memory, self_inner_state, current_focus, or thread_summary here. Use note_to_self for session-only scratch context and save_to_memory for durable discrete facts/preferences. If you do not know the exact existing text, append instead of replace."""
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
-    if label not in ("human", "persona"):
-        return f"Invalid label '{label}'. Use 'human' or 'persona'."
+    if label not in _CORE_MEMORY_LABELS:
+        return _core_memory_label_error(label)
 
     ctx = get_tool_context()
     create_pending_op(
@@ -725,14 +780,14 @@ def core_memory_append(label: str, content: str) -> str:
 
 
 @tool
-def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
-    """Replace exact text in an in-context memory block (takes effect this conversation). Labels: human, persona. old_text must match exactly."""
+def core_memory_replace(label: CoreMemoryLabel, old_text: str, new_text: str) -> str:
+    """Replace exact text inside one writable core memory block for this conversation. Use label='human' for the user model and label='persona' for your own voice/style. Never use runtime block names like self_working_memory here. Only use this when the exact old_text is visible in current memory or prior tool output; otherwise use core_memory_append or update_human_memory."""
     from anima_server.services.agent.memory_blocks import build_merged_block_content
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.agent.tool_context import get_tool_context
 
-    if label not in ("human", "persona"):
-        return f"Invalid label '{label}'. Use 'human' or 'persona'."
+    if label not in _CORE_MEMORY_LABELS:
+        return _core_memory_label_error(label)
 
     ctx = get_tool_context()
     existing_text = build_merged_block_content(
@@ -745,7 +800,11 @@ def core_memory_replace(label: str, old_text: str, new_text: str) -> str:
         return f"No {label} memory block exists yet. Use core_memory_append to create one."
 
     if old_text not in existing_text:
-        return f"Could not find the exact text to replace in {label} memory."
+        return (
+            f"Could not find the exact text to replace in {label} memory. "
+            "Use core_memory_append if you are adding new information, or "
+            "update_human_memory for a full rewrite."
+        )
 
     create_pending_op(
         ctx.runtime_db,
