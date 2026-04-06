@@ -5,7 +5,7 @@ import json
 import pytest
 from anima_server.services.agent.executor import ToolExecutor, _stringify_output
 from anima_server.services.agent.runtime_types import ToolCall
-from anima_server.services.agent.tools import tool
+from anima_server.services.agent.tools import current_datetime, tool
 
 
 def _extract_message(output: str) -> str:
@@ -338,6 +338,14 @@ def test_core_memory_label_schema_is_enum_constrained() -> None:
         "type": "string",
         "enum": ["human", "persona"],
     }
+
+
+def test_current_datetime_returns_local_time_and_utc_context() -> None:
+    message = current_datetime()
+
+    assert "Local time:" in message
+    assert "UTC:" in message
+    assert "+00:00" in message
 
 
 @pytest.mark.asyncio

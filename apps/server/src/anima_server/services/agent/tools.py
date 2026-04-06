@@ -126,8 +126,14 @@ def _core_memory_label_error(label: str) -> str:
 
 @tool
 def current_datetime() -> str:
-    """Return the current date and time in ISO-8601 format (UTC)."""
-    return datetime.now(UTC).isoformat()
+    """Return the current date and time in local machine time with timezone information, plus UTC."""
+    local_now = datetime.now().astimezone()
+    utc_now = local_now.astimezone(UTC)
+    timezone_name = local_now.tzname() or "local"
+    return (
+        f"Local time: {local_now.isoformat()} ({timezone_name}). "
+        f"UTC: {utc_now.isoformat()}"
+    )
 
 
 @tool
