@@ -25,6 +25,8 @@ import type {
   MemoryOverviewData,
   MemorySearchResult,
   Nudge,
+  PendingMemoryConsolidationResponse,
+  PendingMemoryOpsResponse,
   PersonaTemplate,
   PersonaTemplateInfo,
   ProviderInfo,
@@ -672,6 +674,15 @@ export function createApiClient(options: ApiClientOptions) {
     consciousness: {
       getSelfModel: (userId: number) =>
         request<SelfModelData>(`/consciousness/${userId}/self-model`),
+      getPendingOps: (userId: number) =>
+        request<PendingMemoryOpsResponse>(
+          `/consciousness/${userId}/pending-ops`,
+        ),
+      consolidatePendingOps: (userId: number) =>
+        request<PendingMemoryConsolidationResponse>(
+          `/consciousness/${userId}/pending-ops/consolidate`,
+          { method: "POST" },
+        ),
       getSelfModelSection: (userId: number, section: string) =>
         request<SelfModelSection>(
           `/consciousness/${userId}/self-model/${section}`,

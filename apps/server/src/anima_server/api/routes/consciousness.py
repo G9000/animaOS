@@ -43,6 +43,29 @@ class SelfModelSectionResponse(BaseModel):
     updatedAt: str | None = None
 
 
+class PendingMemoryOpResponse(BaseModel):
+    id: int
+    opType: str
+    targetBlock: str
+    content: str
+    oldContent: str | None = None
+    createdAt: str | None = None
+
+
+class PendingMemoryOpsResponse(BaseModel):
+    userId: int
+    pendingOps: list[PendingMemoryOpResponse]
+
+
+class PendingMemoryConsolidationResponse(BaseModel):
+    userId: int
+    status: str
+    opsProcessed: int
+    opsSkipped: int
+    opsFailed: int
+    remainingPendingOps: int
+
+
 class SelfModelUpdateRequest(BaseModel):
     content: str
 
@@ -93,6 +116,29 @@ def _section_response(
         updatedBy=updated_by,
         updatedAt=updated_at.isoformat() if updated_at else None,
     )
+
+
+def _pending_op_dict(*, op) -> dict[str, object]:
+    return {
+        "id": op.id,
+        "opType": op.op_type,
+        "targetBlock": op.target_block,
+        "content": op.content,
+        "oldContent": op.old_content,
+        "createdAt": op.created_at.isoformat() if op.created_at else None,
+    }
+
+
+def _list_pending_ops(runtime_db: Session | None, *, user_id: int) -> list[dict[str, object]]:
+    if runtime_db is None:
+        return []
+
+    from anima_server.services.agent.pending_ops import get_pending_ops
+
+    return [
+        _pending_op_dict(op=op)
+        for op in get_pending_ops(runtime_db, user_id=user_id)
+    ]
 
 
 # --- Self-Model Endpoints ---
@@ -191,7 +237,60 @@ async def get_full_self_model(
             updated_at=intentions_block.updated_at,
         )
 
-    return {"userId": user_id, "sections": sections}
+    return {
+        "userId": user_id,
+        "sections": sections,
+        "pendingOps": _list_pending_ops(runtime_db, user_id=user_id),
+    }
+
+
+@router.get("/{user_id}/pending-ops")
+async def get_pending_memory_ops(
+    user_id: int,
+    request: Request,
+    runtime_db: Session = Depends(_get_optional_runtime_db),
+) -> PendingMemoryOpsResponse:
+    """Get unconsolidated core-memory writes waiting for Soul Writer."""
+    require_unlocked_user(request, user_id)
+
+    return PendingMemoryOpsResponse(
+        userId=user_id,
+        pendingOps=[
+            PendingMemoryOpResponse(**op)
+            for op in _list_pending_ops(runtime_db, user_id=user_id)
+        ],
+    )
+
+
+@router.post("/{user_id}/pending-ops/consolidate")
+async def consolidate_pending_memory_ops(
+    user_id: int,
+    request: Request,
+    runtime_db: Session = Depends(_get_optional_runtime_db),
+) -> PendingMemoryConsolidationResponse:
+    """Run Soul Writer immediately for this user's pending memory ops."""
+    require_unlocked_user(request, user_id)
+
+    if runtime_db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Runtime database is not available.",
+        )
+
+    from anima_server.services.agent.soul_writer import run_soul_writer
+
+    result = await run_soul_writer(user_id)
+    runtime_db.expire_all()
+    remaining = len(_list_pending_ops(runtime_db, user_id=user_id))
+
+    return PendingMemoryConsolidationResponse(
+        userId=user_id,
+        status="ok",
+        opsProcessed=result.ops_processed,
+        opsSkipped=result.ops_skipped,
+        opsFailed=result.ops_failed,
+        remainingPendingOps=remaining,
+    )
 
 
 @router.get("/{user_id}/self-model/{section}")

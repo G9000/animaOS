@@ -211,9 +211,33 @@ export interface SelfModelSection {
   updatedAt: string | null;
 }
 
+export interface PendingMemoryOpData {
+  id: number;
+  opType: string;
+  targetBlock: string;
+  content: string;
+  oldContent: string | null;
+  createdAt: string | null;
+}
+
 export interface SelfModelData {
   userId: number;
   sections: Record<string, SelfModelSection>;
+  pendingOps: PendingMemoryOpData[];
+}
+
+export interface PendingMemoryOpsResponse {
+  userId: number;
+  pendingOps: PendingMemoryOpData[];
+}
+
+export interface PendingMemoryConsolidationResponse {
+  userId: number;
+  status: string;
+  opsProcessed: number;
+  opsSkipped: number;
+  opsFailed: number;
+  remainingPendingOps: number;
 }
 
 export interface EmotionalSignalData {
