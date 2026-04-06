@@ -69,6 +69,24 @@ def get_pending_ops(
     return list(runtime_db.scalars(query).all())
 
 
+def count_pending_ops(runtime_db: Session, *, user_id: int) -> int:
+    """Return the number of unconsolidated, unfailed pending ops for a user."""
+    from sqlalchemy import func as _func
+
+    return (
+        runtime_db.scalar(
+            select(_func.count())
+            .select_from(PendingMemoryOp)
+            .where(
+                PendingMemoryOp.user_id == user_id,
+                PendingMemoryOp.consolidated.is_(False),
+                PendingMemoryOp.failed.is_(False),
+            )
+        )
+        or 0
+    )
+
+
 def apply_pending_op(content: str, op: PendingMemoryOp) -> str:
     """Apply a single pending op to plaintext content without mutating storage."""
     current = content.strip()

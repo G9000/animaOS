@@ -635,15 +635,17 @@ async def _prepare_turn_context(
     conversation_turn_count = count_messages_by_role(
         runtime_db, thread.id, "user")
 
-    # Pre-turn Soul Writer check: if eligible candidates are queued,
-    # promote them before building memory blocks so the current turn
-    # sees the freshest soul data.
+    # Pre-turn Soul Writer check: if eligible candidates or unconsolidated
+    # pending ops exist, promote them before building memory blocks so the
+    # current turn sees the freshest soul data.
     try:
         from anima_server.services.agent.candidate_ops import count_eligible_candidates
+        from anima_server.services.agent.pending_ops import count_pending_ops
         from anima_server.services.agent.soul_writer import run_soul_writer
 
         eligible = count_eligible_candidates(runtime_db, user_id=user_id)
-        if eligible > 0:
+        pending = count_pending_ops(runtime_db, user_id=user_id)
+        if eligible > 0 or pending > 0:
             await run_soul_writer(user_id)
     except Exception:
         logger.debug("Pre-turn Soul Writer check failed for user %s",

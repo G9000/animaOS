@@ -592,8 +592,13 @@ async def run_background_extraction(
 
             # 3. Eager promotion — run Soul Writer unless a higher-level
             # orchestrator is taking ownership of the post-turn pipeline.
-            count = count_eligible_candidates(rt_db, user_id=user_id)
-            if trigger_soul_writer and count > 0:
+            # Check both candidates (from extraction) and pending ops
+            # (from core_memory_append/replace) so neither pathway stalls.
+            from anima_server.services.agent.pending_ops import count_pending_ops
+
+            candidate_count = count_eligible_candidates(rt_db, user_id=user_id)
+            pending_count = count_pending_ops(rt_db, user_id=user_id)
+            if trigger_soul_writer and (candidate_count > 0 or pending_count > 0):
                 from anima_server.services.agent.soul_writer import run_soul_writer
 
                 task = asyncio.create_task(run_soul_writer(user_id))
@@ -601,9 +606,10 @@ async def run_background_extraction(
                     _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
                 logger.info(
-                    "Triggered eager Soul Writer for user %s (%d candidates)",
+                    "Triggered eager Soul Writer for user %s (%d candidates, %d pending ops)",
                     user_id,
-                    count,
+                    candidate_count,
+                    pending_count,
                 )
 
     except Exception as exc:

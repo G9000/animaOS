@@ -127,8 +127,17 @@ async def get_full_self_model(
     for section_name, block in blocks.items():
         if section_name in {"identity", "growth_log", "inner_state", "working_memory", "intentions"}:
             continue
+        content = render_self_model_section(block, user_id=user_id)
+        # Overlay unconsolidated pending ops for writable core-memory blocks
+        # so the UI reflects what the agent actually sees.
+        if runtime_db is not None and section_name in ("human", "persona"):
+            from anima_server.services.agent.memory_blocks import build_merged_block_content
+
+            content = build_merged_block_content(
+                db, runtime_db, user_id=user_id, section=section_name,
+            )
         sections[section_name] = _section_dict(
-            content=render_self_model_section(block, user_id=user_id),
+            content=content,
             version=block.version,
             updated_by=block.updated_by,
             updated_at=block.updated_at,
@@ -280,9 +289,17 @@ async def get_self_model_section(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
 
+    content = render_self_model_section(block, user_id=user_id)
+    if runtime_db is not None and section in ("human", "persona"):
+        from anima_server.services.agent.memory_blocks import build_merged_block_content
+
+        content = build_merged_block_content(
+            db, runtime_db, user_id=user_id, section=section,
+        )
+
     return _section_response(
         section=block.section,
-        content=render_self_model_section(block, user_id=user_id),
+        content=content,
         version=block.version,
         updated_by=block.updated_by,
         updated_at=block.updated_at,
