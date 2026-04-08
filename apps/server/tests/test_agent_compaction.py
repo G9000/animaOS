@@ -97,6 +97,11 @@ def test_estimate_tokens_with_json() -> None:
     assert tokens > 0
 
 
+def test_estimate_tokens_with_non_dict_json() -> None:
+    tokens = estimate_message_tokens(content_text=None, content_json=["a", "b"])
+    assert tokens > 0
+
+
 def test_estimate_tokens_minimum_one() -> None:
     # Single character => ceil(1/4) = 1
     assert estimate_message_tokens(content_text="x") == 1

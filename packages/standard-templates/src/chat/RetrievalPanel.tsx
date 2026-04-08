@@ -1,3 +1,5 @@
+"use client";
+
 import type { RetrievalTrace } from "./types";
 import { cn } from "../utils/cn";
 

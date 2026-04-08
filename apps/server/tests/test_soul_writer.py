@@ -24,6 +24,7 @@ from anima_server.services.agent.soul_writer import (
     plan_candidate_promotion,
     run_soul_writer,
 )
+from anima_server.services.agent.retrieval_feedback import sync_retrieval_feedback
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -822,6 +823,156 @@ async def test_retrieval_feedback_sync_updates_used_items_without_penalizing_mix
             select(MemoryRetrievalFeedback).where(MemoryRetrievalFeedback.user_id == user_id)
         ).all()
         assert remaining == []
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_retrieval_feedback_sync_dry_run_keeps_rows_unsynced() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-dry-run", password_hash="x", display_name="Dry Run")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db, soul_factory() as soul_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=707,
+                memory_item_id=item_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+        result = sync_retrieval_feedback(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=True,
+        )
+
+        runtime_db.expire_all()
+        remaining = runtime_db.scalars(
+            select(MemoryRetrievalFeedback).where(MemoryRetrievalFeedback.user_id == user_id)
+        ).all()
+        assert len(remaining) == 1
+        assert remaining[0].synced is False
+        assert result["items_synced"] == 1
+
+        refreshed = soul_db.get(MemoryItem, item_id)
+        assert refreshed is not None
+        assert refreshed.importance == 3
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_retrieval_feedback_sync_only_marks_selected_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-selected-rows", password_hash="x", display_name="Selected Rows")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db, soul_factory() as soul_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=808,
+                memory_item_id=item_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+        original_execute = runtime_db.execute
+        injected_row_id: int | None = None
+        execute_calls = 0
+
+        def execute_with_injected_row(statement, *args, **kwargs):
+            nonlocal execute_calls, injected_row_id
+            execute_calls += 1
+            if execute_calls == 2:
+                runtime_db.add(
+                    MemoryRetrievalFeedback(
+                        user_id=user_id,
+                        run_id=809,
+                        memory_item_id=item_id,
+                        was_used=True,
+                        evidence_score=0.6,
+                        synced=False,
+                    )
+                )
+                runtime_db.flush()
+                injected_row_id = runtime_db.scalar(
+                    select(MemoryRetrievalFeedback.id)
+                    .where(MemoryRetrievalFeedback.user_id == user_id)
+                    .order_by(MemoryRetrievalFeedback.id.desc())
+                    .limit(1)
+                )
+            return original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(runtime_db, "execute", execute_with_injected_row)
+
+        result = sync_retrieval_feedback(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=False,
+        )
+
+        runtime_db.expire_all()
+        remaining = runtime_db.scalars(
+            select(MemoryRetrievalFeedback)
+            .where(MemoryRetrievalFeedback.user_id == user_id)
+            .order_by(MemoryRetrievalFeedback.id)
+        ).all()
+
+        assert result["items_synced"] == 1
+        assert injected_row_id is not None
+        assert len(remaining) == 1
+        assert remaining[0].id == injected_row_id
+        assert remaining[0].synced is False
 
     soul_engine.dispose()
     runtime_engine.dispose()

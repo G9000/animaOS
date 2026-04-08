@@ -55,7 +55,7 @@ class CompactionResult:
 def estimate_message_tokens(
     *,
     content_text: str | None,
-    content_json: dict[str, object] | None = None,
+    content_json: object | None = None,
     tool_name: str | None = None,
 ) -> int:
     text_parts: list[str] = []
@@ -64,13 +64,16 @@ def estimate_message_tokens(
     if content_text:
         text_parts.append(content_text)
     if content_json:
-        filtered_content_json = {
-            key: value
-            for key, value in content_json.items()
-            if key != RETRIEVAL_CONTENT_KEY
-        }
-        if filtered_content_json:
-            text_parts.append(json.dumps(filtered_content_json, sort_keys=True))
+        if isinstance(content_json, dict):
+            filtered_content_json = {
+                key: value
+                for key, value in content_json.items()
+                if key != RETRIEVAL_CONTENT_KEY
+            }
+            if filtered_content_json:
+                text_parts.append(json.dumps(filtered_content_json, sort_keys=True))
+        else:
+            text_parts.append(json.dumps(content_json, sort_keys=True))
 
     combined_text = "\n".join(text_parts).strip()
     if not combined_text:

@@ -244,6 +244,8 @@ def sync_retrieval_feedback(
             "heat_decay_factors": {},
         }
 
+    row_ids = [int(row.id) for row in rows]
+
     run_feedback: dict[int | tuple[str, int], list] = defaultdict(list)
     unused_counts: dict[int, int] = defaultdict(int)
 
@@ -287,16 +289,6 @@ def sync_retrieval_feedback(
         corrected_evidence_totals=corrected_evidence_totals,
     )
 
-    runtime_db.execute(
-        update(MemoryRetrievalFeedback)
-        .where(
-            MemoryRetrievalFeedback.user_id == user_id,
-            MemoryRetrievalFeedback.synced.is_(False),
-        )
-        .values(synced=True)
-    )
-    runtime_db.flush()
-
     if dry_run or soul_db is None:
         return {
             "items_synced": len(rows),
@@ -312,8 +304,6 @@ def sync_retrieval_feedback(
             "evidence_heat_factors": evidence_heat_factors,
             "heat_decay_factors": {},
         }
-
-    runtime_db.commit()
 
     from anima_server.models import MemoryItem
     from anima_server.services.agent.heat_scoring import compute_heat
@@ -387,8 +377,18 @@ def sync_retrieval_feedback(
     soul_db.commit()
 
     runtime_db.execute(
+        update(MemoryRetrievalFeedback)
+        .where(
+            MemoryRetrievalFeedback.user_id == user_id,
+            MemoryRetrievalFeedback.id.in_(row_ids),
+        )
+        .values(synced=True)
+    )
+
+    runtime_db.execute(
         delete(MemoryRetrievalFeedback).where(
             MemoryRetrievalFeedback.user_id == user_id,
+            MemoryRetrievalFeedback.id.in_(row_ids),
             MemoryRetrievalFeedback.synced.is_(True),
         )
     )

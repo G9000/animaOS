@@ -744,7 +744,12 @@ async def _prepare_turn_context(
                 ),
             )
     except Exception:
-        pass
+        logger.debug(
+            "Hybrid retrieval failed for user %s thread %s",
+            user_id,
+            thread.id,
+            exc_info=True,
+        )
 
     # Use companion-cached static blocks, reload from DB only if stale.
     static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
