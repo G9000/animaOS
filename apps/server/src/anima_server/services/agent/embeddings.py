@@ -32,6 +32,11 @@ from anima_server.services.agent.adaptive_retrieval import (
     AdaptiveRetrievalConfig,
     apply_adaptive_filter,
 )
+from anima_server.services.agent.embedding_integrity import (
+    check_embedding,
+    compute_embedding_checksum,
+    parse_embedding_payload,
+)
 from anima_server.services.agent.llm import (
     LLMConfigError,
     validate_provider,
@@ -415,6 +420,40 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _set_embedding_checksum(target: Any, checksum: str) -> bool:
+    try:
+        setattr(target, "embedding_checksum", checksum)
+        return True
+    except Exception:
+        return False
+
+
+def _validated_cached_embedding(item: Any) -> tuple[list[float] | None, bool]:
+    checked = check_embedding(
+        getattr(item, "embedding_json", None),
+        getattr(item, "embedding_checksum", None),
+    )
+    item_id = getattr(item, "id", "unknown")
+
+    if checked.status == "missing_checksum" and checked.embedding is not None:
+        repaired = checked.actual_checksum is not None and _set_embedding_checksum(
+            item, checked.actual_checksum
+        )
+        if repaired:
+            logger.info("Backfilled missing embedding checksum for memory item %s", item_id)
+        return checked.embedding, repaired
+
+    if checked.status == "checksum_mismatch":
+        logger.warning("Skipping memory item %s due to embedding checksum mismatch", item_id)
+        return None, False
+
+    if checked.status == "invalid":
+        logger.warning("Skipping memory item %s due to malformed embedding payload", item_id)
+        return None, False
+
+    return checked.embedding, False
+
+
 async def semantic_search(
     db: Session,
     *,
@@ -485,6 +524,7 @@ async def embed_memory_item(
         return False
 
     item.embedding_json = embedding
+    item.embedding_checksum = compute_embedding_checksum(embedding)
     db.flush()
 
     try:
@@ -538,6 +578,7 @@ async def backfill_embeddings(
             continue
         prepared_text = prepare_embedding_text(plaintext)
         item.embedding_json = embedding
+        item.embedding_checksum = compute_embedding_checksum(embedding)
         try:
             from anima_server.services.agent.vector_store import upsert_memory
 
@@ -578,23 +619,32 @@ def sync_to_vector_store(
     if not items:
         return 0
 
-    try:
-        from anima_server.services.agent.vector_store import rebuild_user_index
-
-        index_data = [
+    repaired_any = False
+    index_data: list[tuple[int, str, list[float], str, int]] = []
+    for item in items:
+        embedding, repaired = _validated_cached_embedding(item)
+        if embedding is None:
+            continue
+        plaintext = df(user_id, item.content, table="memory_items", field="content")
+        index_data.append(
             (
                 item.id,
-                prepare_embedding_text(
-                    df(user_id, item.content, table="memory_items", field="content")
-                )
-                or df(user_id, item.content, table="memory_items", field="content"),
-                item.embedding_json,
+                prepare_embedding_text(plaintext) or plaintext,
+                embedding,
                 item.category,
                 item.importance,
             )
-            for item in items
-            if isinstance(item.embedding_json, list) and item.embedding_json
-        ]
+        )
+        repaired_any = repaired_any or repaired
+
+    if repaired_any:
+        db.flush()
+    if not index_data:
+        return 0
+
+    try:
+        from anima_server.services.agent.vector_store import rebuild_user_index
+
         return rebuild_user_index(user_id, index_data, db=db)
     except Exception:
         logger.exception(
@@ -639,9 +689,10 @@ def sync_embeddings_to_runtime(
 
         store = PgVecStore(runtime_db)
         count = 0
+        repaired_any = False
 
         for item in items:
-            embedding = _parse_embedding(item.embedding_json)
+            embedding, repaired = _validated_cached_embedding(item)
             if embedding is None:
                 continue
 
@@ -656,7 +707,10 @@ def sync_embeddings_to_runtime(
                 importance=item.importance,
             )
             count += 1
+            repaired_any = repaired_any or repaired
 
+        if repaired_any:
+            soul_db.flush()
         if count > 0:
             runtime_db.commit()
         return count
@@ -671,18 +725,7 @@ def sync_embeddings_to_runtime(
 
 def _parse_embedding(raw: Any) -> list[float] | None:
     """Parse an embedding from the JSON column value."""
-    if raw is None:
-        return None
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return None
+    return parse_embedding_payload(raw)
 
 
 # ---------------------------------------------------------------------------

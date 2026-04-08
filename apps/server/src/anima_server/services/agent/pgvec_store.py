@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.agent.embedding_integrity import check_embedding, compute_embedding_checksum
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
 
 logger = logging.getLogger(__name__)
@@ -37,11 +38,13 @@ class PgVecStore(VectorStore):
         importance: int = 3,
     ) -> None:
         content_hash = hashlib.sha256(content.encode()).hexdigest()
+        embedding_checksum = compute_embedding_checksum(embedding)
         stmt = pg_insert(RuntimeEmbedding).values(
             user_id=user_id,
             source_type="memory_item",
             source_id=item_id,
             content_hash=content_hash,
+            embedding_checksum=embedding_checksum,
             embedding=embedding,
             content_preview=content[:200],
             category=category,
@@ -52,6 +55,7 @@ class PgVecStore(VectorStore):
             set_={
                 "embedding": stmt.excluded.embedding,
                 "content_hash": stmt.excluded.content_hash,
+                "embedding_checksum": stmt.excluded.embedding_checksum,
                 "content_preview": stmt.excluded.content_preview,
                 "category": stmt.excluded.category,
                 "importance": stmt.excluded.importance,
@@ -79,26 +83,53 @@ class PgVecStore(VectorStore):
         limit: int = 10,
         category: str | None = None,
     ) -> list[VectorSearchResult]:
+        if limit <= 0:
+            return []
+
         distance = RuntimeEmbedding.embedding.cosine_distance(query_embedding)
+        candidate_limit = max(limit * 2, limit + 5)
         stmt = (
             select(RuntimeEmbedding, (1 - distance).label("similarity"))
             .where(RuntimeEmbedding.user_id == user_id)
             .order_by(distance)
-            .limit(limit)
+            .limit(candidate_limit)
         )
         if category is not None:
             stmt = stmt.where(RuntimeEmbedding.category == category)
         rows = self._db.execute(stmt).all()
-        return [
-            VectorSearchResult(
-                item_id=row.RuntimeEmbedding.source_id,
-                content=row.RuntimeEmbedding.content_preview,
-                category=row.RuntimeEmbedding.category,
-                importance=row.RuntimeEmbedding.importance,
-                similarity=round(float(row.similarity), 4),
+
+        results: list[VectorSearchResult] = []
+        for row in rows:
+            checked = check_embedding(
+                row.RuntimeEmbedding.embedding,
+                row.RuntimeEmbedding.embedding_checksum,
             )
-            for row in rows
-        ]
+            if checked.status == "checksum_mismatch":
+                logger.warning(
+                    "Skipping runtime embedding %s for user %d due to checksum mismatch",
+                    row.RuntimeEmbedding.id,
+                    user_id,
+                )
+                continue
+            if checked.status in {"invalid", "missing_checksum"}:
+                logger.warning(
+                    "Skipping runtime embedding %s for user %d due to missing or invalid checksum state",
+                    row.RuntimeEmbedding.id,
+                    user_id,
+                )
+                continue
+            results.append(
+                VectorSearchResult(
+                    item_id=row.RuntimeEmbedding.source_id,
+                    content=row.RuntimeEmbedding.content_preview,
+                    category=row.RuntimeEmbedding.category,
+                    importance=row.RuntimeEmbedding.importance,
+                    similarity=round(float(row.similarity), 4),
+                )
+            )
+            if len(results) >= limit:
+                break
+        return results
 
     def search_by_text(
         self,
@@ -128,6 +159,7 @@ class PgVecStore(VectorStore):
                     source_type="memory_item",
                     source_id=item_id,
                     content_hash=content_hash,
+                    embedding_checksum=compute_embedding_checksum(embedding),
                     embedding=embedding,
                     content_preview=content[:200],
                     category=category,

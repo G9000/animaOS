@@ -8,9 +8,11 @@ SQL JOINs (max depth 2) for relational memory retrieval.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime
+from threading import Thread
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -18,7 +20,14 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import KGEntity, KGRelation
+from anima_server.services.agent.embedding_integrity import (
+    check_embedding,
+    compute_embedding_checksum,
+    parse_embedding_payload,
+)
+from anima_server.services.agent.embeddings import cosine_similarity, generate_embedding, generate_embeddings_batch
 from anima_server.services.agent.graph_triplets import extract_triplets as extract_rule_triplets
+from anima_server.services.agent.text_processing import prepare_embedding_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,8 @@ def normalize_entity_name(name: str) -> str:
 # ── Token-level entity similarity ────────────────────────────────────
 
 _ABBREV_MAP: dict[str, str] = {}  # extensible later if needed
+_SEMANTIC_ENTITY_LIMIT = 3
+_SEMANTIC_ENTITY_THRESHOLD = 0.5
 
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
@@ -135,6 +146,148 @@ def _find_similar_entity(
     return None
 
 
+def _entity_embedding_text(
+    *,
+    name: str,
+    entity_type: str,
+    description: str,
+) -> str:
+    parts = [name.strip()]
+    normalized_type = _normalize_graph_entity_type(entity_type)
+    if normalized_type != "unknown":
+        parts.append(normalized_type)
+    if description.strip():
+        parts.append(description.strip())
+    return prepare_embedding_text(". ".join(part for part in parts if part), limit=512)
+
+
+async def _attach_entity_embeddings(entities: list[dict[str, Any]]) -> None:
+    texts: list[str] = []
+    entity_indexes: list[int] = []
+
+    for index, entity in enumerate(entities):
+        text = _entity_embedding_text(
+            name=str(entity.get("name", "")),
+            entity_type=str(entity.get("type", "unknown")),
+            description=str(entity.get("description", "")),
+        )
+        if not text:
+            continue
+        texts.append(text)
+        entity_indexes.append(index)
+
+    if not texts:
+        return
+
+    try:
+        embeddings = await generate_embeddings_batch(texts)
+    except Exception:
+        logger.debug("Failed to generate entity embeddings for graph ingestion", exc_info=True)
+        return
+
+    for index, embedding in zip(entity_indexes, embeddings, strict=False):
+        if embedding is not None:
+            entities[index]["embedding"] = embedding
+
+
+def _run_async_blocking(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - propagated to caller
+            error["value"] = exc
+
+    thread = Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
+
+
+def _generate_query_embedding_sync(query: str) -> list[float] | None:
+    prepared_query = prepare_embedding_text(query, limit=512)
+    if not prepared_query:
+        return None
+
+    try:
+        return _run_async_blocking(generate_embedding(prepared_query))
+    except Exception:
+        logger.debug("Semantic graph query embedding generation failed", exc_info=True)
+        return None
+
+
+def _validated_entity_embedding(entity: KGEntity) -> tuple[list[float] | None, bool]:
+    checked = check_embedding(entity.embedding_json, entity.embedding_checksum)
+
+    if checked.status == "missing_checksum" and checked.actual_checksum is not None:
+        entity.embedding_checksum = checked.actual_checksum
+        return checked.embedding, True
+
+    if checked.status == "checksum_mismatch":
+        logger.warning("Skipping KG entity %s due to embedding checksum mismatch", entity.id)
+        return None, False
+
+    if checked.status == "invalid":
+        return None, False
+
+    return checked.embedding, False
+
+
+def _semantic_entity_names_from_query(
+    db: Session,
+    *,
+    user_id: int,
+    query: str,
+    limit: int = _SEMANTIC_ENTITY_LIMIT,
+    similarity_threshold: float = _SEMANTIC_ENTITY_THRESHOLD,
+) -> list[str]:
+    query_embedding = _generate_query_embedding_sync(query)
+    if query_embedding is None:
+        return []
+
+    entities = list(db.scalars(select(KGEntity).where(KGEntity.user_id == user_id)).all())
+    if not entities:
+        return []
+
+    repaired_any = False
+    scored: list[tuple[float, int, str]] = []
+    for entity in entities:
+        entity_embedding, repaired = _validated_entity_embedding(entity)
+        repaired_any = repaired_any or repaired
+        if entity_embedding is None:
+            continue
+
+        similarity = cosine_similarity(query_embedding, entity_embedding)
+        if similarity < similarity_threshold:
+            continue
+        scored.append((similarity, entity.mentions or 1, entity.name))
+
+    if repaired_any:
+        db.flush()
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    matches: list[str] = []
+    seen: set[str] = set()
+    for _similarity, _mentions, name in scored:
+        if name in seen:
+            continue
+        seen.add(name)
+        matches.append(name)
+        if len(matches) >= limit:
+            break
+    return matches
+
+
 # ── Entity / Relation CRUD ───────────────────────────────────────────
 
 
@@ -145,9 +298,16 @@ def upsert_entity(
     name: str,
     entity_type: str = "unknown",
     description: str = "",
+    embedding: list[float] | None = None,
 ) -> KGEntity:
     """Create or update an entity. Increments mentions on existing match."""
     normalized = normalize_entity_name(name)
+    parsed_embedding = None
+    if embedding is not None:
+        parsed_embedding = parse_embedding_payload(embedding)
+        if parsed_embedding is None:
+            raise ValueError("KG entity embedding must be a non-empty sequence of finite numbers.")
+
     existing = db.scalar(
         select(KGEntity).where(
             KGEntity.user_id == user_id,
@@ -167,6 +327,9 @@ def upsert_entity(
             existing.description = description
         if entity_type != "unknown" and existing.entity_type == "unknown":
             existing.entity_type = entity_type
+        if parsed_embedding is not None:
+            existing.embedding_json = parsed_embedding
+            existing.embedding_checksum = compute_embedding_checksum(parsed_embedding)
         db.flush()
         return existing
 
@@ -177,6 +340,10 @@ def upsert_entity(
         entity_type=entity_type,
         description=description,
         mentions=1,
+        embedding_json=parsed_embedding,
+        embedding_checksum=(
+            compute_embedding_checksum(parsed_embedding) if parsed_embedding is not None else None
+        ),
     )
     db.add(entity)
     db.flush()
@@ -517,7 +684,10 @@ def _extract_entity_names_from_query(
         if entity.name.lower() in query_lower:
             matched.append(entity.name)
 
-    return matched
+    if matched:
+        return matched
+
+    return _semantic_entity_names_from_query(db, user_id=user_id, query=query)
 
 
 def _normalize_graph_entity_type(entity_type: str) -> str:
@@ -996,6 +1166,8 @@ async def ingest_conversation_graph(
     if not entities and not relations:
         return 0, 0, 0
 
+    await _attach_entity_embeddings(entities)
+
     # 2. Upsert entities
     entities_upserted = 0
     for entity_data in entities:
@@ -1006,6 +1178,7 @@ async def ingest_conversation_graph(
                 name=entity_data["name"],
                 entity_type=entity_data.get("type", "unknown"),
                 description=entity_data.get("description", ""),
+                embedding=entity_data.get("embedding"),
             )
             entities_upserted += 1
         except Exception:

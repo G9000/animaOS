@@ -237,7 +237,7 @@ def _deserialize_capsule_section(
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Capsule section '{section_name}' is invalid.") from exc
+        raise ValueError(f"Capsule section '{section_name}' is not valid JSON.") from exc
 
     if not isinstance(payload, dict):
         raise ValueError(f"Capsule section '{section_name}' must decode to an object.")
@@ -800,6 +800,7 @@ def restore_database_snapshot(
                     reference_count=int(record.get("reference_count", 0)),
                     last_referenced_at=parse_optional_datetime(record.get("last_referenced_at")),
                     embedding_json=record.get("embedding_json"),
+                    embedding_checksum=coerce_optional_str(record.get("embedding_checksum")),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
@@ -1118,6 +1119,7 @@ def serialize_memory_item_record(
         "reference_count": item.reference_count,
         "last_referenced_at": serialize_optional_datetime(item.last_referenced_at),
         "embedding_json": item.embedding_json,
+        "embedding_checksum": item.embedding_checksum,
         "created_at": serialize_optional_datetime(item.created_at),
         "updated_at": serialize_optional_datetime(item.updated_at),
     }

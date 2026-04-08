@@ -9,6 +9,7 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.models import KGEntity, KGRelation, User
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.knowledge_graph import (
     _map_ids_back,
     _map_ids_to_sequential,
@@ -134,6 +135,52 @@ class TestUpsertEntity:
                 description="User's older sister, lives in Munich",
             )
             assert "Munich" in e.description
+
+    def test_upsert_stores_embedding_checksum_when_embedding_provided(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            embedding = [0.1, 0.2, 0.3]
+
+            entity = upsert_entity(
+                db,
+                user_id=user.id,
+                name="Alice",
+                entity_type="person",
+                embedding=embedding,
+            )
+
+            assert entity.embedding_json == embedding
+            assert entity.embedding_checksum == compute_embedding_checksum(embedding)
+
+    def test_upsert_updates_embedding_checksum_on_existing_entity(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(db, user_id=user.id, name="Project Aurora", entity_type="project")
+            updated_embedding = [0.9, 0.1]
+
+            entity = upsert_entity(
+                db,
+                user_id=user.id,
+                name="Project Aurora",
+                entity_type="project",
+                embedding=updated_embedding,
+            )
+
+            assert entity.embedding_json == updated_embedding
+            assert entity.embedding_checksum == compute_embedding_checksum(updated_embedding)
+
+    def test_upsert_rejects_invalid_embedding_payload(self):
+        with _db_session() as db:
+            user = _create_user(db)
+
+            with pytest.raises(ValueError, match="KG entity embedding"):
+                upsert_entity(
+                    db,
+                    user_id=user.id,
+                    name="Bad Embedding",
+                    entity_type="concept",
+                    embedding=[1.0, float("nan")],
+                )
 
 
 # ── T3: upsert_relation ─────────────────────────────────────────────
@@ -402,6 +449,80 @@ class TestGraphContextForQuery:
                 query="completely unrelated topic",
             )
             assert lines == []
+
+    def test_semantic_fallback_uses_entity_embeddings(self, monkeypatch):
+        with _db_session() as db:
+            user = _create_user(db)
+            alice_embedding = [1.0, 0.0]
+            upsert_entity(
+                db,
+                user_id=user.id,
+                name="Alice",
+                entity_type="person",
+                embedding=alice_embedding,
+            )
+            upsert_entity(db, user_id=user.id, name="Google", entity_type="organization")
+            upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Alice",
+                destination_name="Google",
+                relation_type="works_at",
+            )
+            db.flush()
+
+            monkeypatch.setattr(
+                knowledge_graph_module,
+                "_generate_query_embedding_sync",
+                lambda _query: [1.0, 0.0],
+            )
+
+            lines = graph_context_for_query(
+                db,
+                user_id=user.id,
+                query="tell me about the person tied to the search company",
+            )
+
+            assert len(lines) >= 1
+            assert "Alice" in lines[0]
+            assert "Google" in lines[0]
+
+    def test_semantic_fallback_repairs_missing_embedding_checksum(self, monkeypatch):
+        with _db_session() as db:
+            user = _create_user(db)
+            bob_embedding = [0.7, 0.3]
+            bob = upsert_entity(
+                db,
+                user_id=user.id,
+                name="Bob",
+                entity_type="person",
+                embedding=bob_embedding,
+            )
+            bob.embedding_checksum = None
+            upsert_entity(db, user_id=user.id, name="Berlin", entity_type="place")
+            upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="Berlin",
+                relation_type="lives_in",
+            )
+            db.flush()
+
+            monkeypatch.setattr(
+                knowledge_graph_module,
+                "_generate_query_embedding_sync",
+                lambda _query: [0.7, 0.3],
+            )
+
+            lines = graph_context_for_query(
+                db,
+                user_id=user.id,
+                query="who lives in that city",
+            )
+
+            assert len(lines) >= 1
+            assert bob.embedding_checksum == compute_embedding_checksum(bob_embedding)
 
 
 # ── Integration: full graph scenario ─────────────────────────────────
@@ -791,3 +912,42 @@ class TestIngestConversationGraphRules:
             assert ("User", "works_at", "Anthropic") in stored_relations
             assert ("User", "sister_of", "Alice") in stored_relations
             assert ("Alice", "lives_in", "Munich") in stored_relations
+
+    @pytest.mark.asyncio()
+    async def test_scaffold_mode_populates_entity_embeddings(self, monkeypatch):
+        monkeypatch.setattr(
+            knowledge_graph_module.settings,
+            "agent_provider",
+            "scaffold",
+            raising=False,
+        )
+
+        async def _fake_generate_embeddings_batch(texts: list[str], **_kwargs):
+            return [[float(index), 0.5] for index, _text in enumerate(texts, start=1)]
+
+        monkeypatch.setattr(
+            knowledge_graph_module,
+            "generate_embeddings_batch",
+            _fake_generate_embeddings_batch,
+        )
+
+        with _db_session() as db:
+            user = _create_user(db)
+
+            entities, relations, pruned = await ingest_conversation_graph(
+                db,
+                user_id=user.id,
+                user_message="I work at Anthropic. My sister Alice lives in Munich.",
+                assistant_response="",
+            )
+
+            assert entities >= 4
+            assert relations >= 3
+            assert pruned == 0
+
+            stored_entities = list(
+                db.scalars(select(KGEntity).where(KGEntity.user_id == user.id)).all()
+            )
+            assert stored_entities
+            assert all(entity.embedding_json is not None for entity in stored_entities)
+            assert all(entity.embedding_checksum is not None for entity in stored_entities)

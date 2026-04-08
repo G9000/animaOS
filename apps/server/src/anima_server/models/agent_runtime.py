@@ -224,6 +224,10 @@ class MemoryItem(Base):
         JSON,
         nullable=True,
     )
+    embedding_checksum: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
     tags_json: Mapped[list[str] | None] = mapped_column(
         JSON,
         nullable=True,
@@ -554,6 +558,7 @@ class KGEntity(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     mentions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    embedding_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

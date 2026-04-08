@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
 from anima_server.db.runtime_base import RuntimeBase
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 
 TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
 
@@ -55,6 +56,10 @@ class RuntimeEmbedding(RuntimeBase):
         String(64),
         nullable=False,
     )  # SHA-256 of plaintext for staleness detection
+    embedding_checksum: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
     embedding: Mapped[Any] = mapped_column(
         _vector_column(),
         nullable=False,
@@ -89,3 +94,8 @@ class RuntimeEmbedding(RuntimeBase):
     def compute_content_hash(plaintext: str) -> str:
         """SHA-256 hex digest for staleness detection."""
         return hashlib.sha256(plaintext.encode()).hexdigest()
+
+    @staticmethod
+    def compute_embedding_checksum(embedding: list[float]) -> str:
+        """SHA-256 hex digest for the canonicalized embedding payload."""
+        return compute_embedding_checksum(embedding)

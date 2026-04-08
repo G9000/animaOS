@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -8,7 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryItem, MemoryItemTag
+from anima_server.services.agent.embedding_integrity import check_embedding
 from anima_server.services.data_crypto import df, ef
+
+logger = logging.getLogger(__name__)
 
 # Decay half-life in days — after this many days, recency score halves
 _DECAY_HALF_LIFE_DAYS = 14.0
@@ -331,15 +335,31 @@ def get_memory_items_scored(
     scored = [(_retrieval_score(item, ref_now), item) for item in items]
 
     if query_embedding is not None:
-        from anima_server.services.agent.embeddings import _parse_embedding, cosine_similarity
+        from anima_server.services.agent.embeddings import cosine_similarity
 
         w_retrieval, w_query = _CATEGORY_QUERY_WEIGHTS.get(
             category or "",
             _DEFAULT_QUERY_WEIGHTS,
         )
         blended: list[tuple[float, MemoryItem]] = []
+        repaired_any = False
         for base_score, item in scored:
-            item_emb = _parse_embedding(item.embedding_json)
+            checked = check_embedding(item.embedding_json, item.embedding_checksum)
+            item_emb = checked.embedding
+            if checked.status == "missing_checksum" and checked.actual_checksum is not None:
+                item.embedding_checksum = checked.actual_checksum
+                repaired_any = True
+            elif checked.status == "checksum_mismatch":
+                logger.warning(
+                    "Skipping memory item %s during fallback retrieval due to checksum mismatch",
+                    item.id,
+                )
+                item_emb = None
+            elif checked.status == "invalid":
+                logger.warning(
+                    "Skipping memory item %s during fallback retrieval due to malformed embedding payload",
+                    item.id,
+                )
             if item_emb is not None:
                 sim = cosine_similarity(query_embedding, item_emb)
                 # Normalize sim from [-1,1] to [0,1] for blending
@@ -348,6 +368,8 @@ def get_memory_items_scored(
             else:
                 final = base_score
             blended.append((final, item))
+        if repaired_any:
+            db.flush()
         blended.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in blended[:limit]]
 
