@@ -11,5 +11,4 @@ license = { text = "MIT" }
 
 [tool.maturin]
 features = ["python"]
-python-source = "python"
 module-name = "anima_core"

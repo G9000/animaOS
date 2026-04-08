@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from anima_server.services.agent.prompt_budget import PromptBudgetTrace
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall
 
-
 RETRIEVAL_CONTENT_KEY = "retrieval"
 
 
@@ -126,6 +125,132 @@ def extract_stored_retrieval(
 
     retrieval = content_json.get(RETRIEVAL_CONTENT_KEY)
     return retrieval if isinstance(retrieval, dict) else None
+
+
+def deserialize_agent_retrieval(
+    payload: dict[str, object] | None,
+) -> AgentRetrievalTrace | None:
+    if not isinstance(payload, dict):
+        return None
+
+    retriever = payload.get("retriever")
+    if not isinstance(retriever, str) or not retriever.strip():
+        return None
+
+    citations: list[AgentCitation] = []
+    raw_citations = payload.get("citations")
+    if isinstance(raw_citations, list):
+        for raw_citation in raw_citations:
+            citation = _deserialize_agent_citation(raw_citation)
+            if citation is not None:
+                citations.append(citation)
+
+    context_fragments: list[AgentContextFragment] = []
+    raw_context_fragments = payload.get("contextFragments")
+    if isinstance(raw_context_fragments, list):
+        for raw_fragment in raw_context_fragments:
+            fragment = _deserialize_agent_context_fragment(raw_fragment)
+            if fragment is not None:
+                context_fragments.append(fragment)
+
+    return AgentRetrievalTrace(
+        retriever=retriever,
+        citations=tuple(citations),
+        context_fragments=tuple(context_fragments),
+        stats=_deserialize_agent_retrieval_stats(payload.get("stats")),
+    )
+
+
+def _deserialize_agent_citation(payload: object) -> AgentCitation | None:
+    if not isinstance(payload, dict):
+        return None
+
+    index = _coerce_int(payload.get("index"))
+    memory_item_id = _coerce_int(payload.get("memoryItemId"))
+    uri = payload.get("uri")
+    if index is None or memory_item_id is None or not isinstance(uri, str) or not uri:
+        return None
+
+    return AgentCitation(
+        index=index,
+        memory_item_id=memory_item_id,
+        uri=uri,
+        score=_coerce_float(payload.get("score")),
+        category=payload.get("category") if isinstance(payload.get("category"), str) else None,
+    )
+
+
+def _deserialize_agent_context_fragment(payload: object) -> AgentContextFragment | None:
+    if not isinstance(payload, dict):
+        return None
+
+    rank = _coerce_int(payload.get("rank"))
+    memory_item_id = _coerce_int(payload.get("memoryItemId"))
+    uri = payload.get("uri")
+    text = payload.get("text")
+    if (
+        rank is None
+        or memory_item_id is None
+        or not isinstance(uri, str)
+        or not uri
+        or not isinstance(text, str)
+    ):
+        return None
+
+    return AgentContextFragment(
+        rank=rank,
+        memory_item_id=memory_item_id,
+        uri=uri,
+        text=text,
+        score=_coerce_float(payload.get("score")),
+        category=payload.get("category") if isinstance(payload.get("category"), str) else None,
+    )
+
+
+def _deserialize_agent_retrieval_stats(payload: object) -> AgentRetrievalStats | None:
+    if not isinstance(payload, dict):
+        return None
+
+    return AgentRetrievalStats(
+        retrieval_ms=_coerce_float(payload.get("retrievalMs")),
+        total_considered=_coerce_int(payload.get("totalConsidered"), default=0) or 0,
+        returned=_coerce_int(payload.get("returned"), default=0) or 0,
+        cutoff_index=_coerce_int(payload.get("cutoffIndex"), default=0) or 0,
+        cutoff_score=_coerce_float(payload.get("cutoffScore")),
+        top_score=_coerce_float(payload.get("topScore")),
+        cutoff_ratio=_coerce_float(payload.get("cutoffRatio")),
+        triggered_by=payload.get("triggeredBy")
+        if isinstance(payload.get("triggeredBy"), str)
+        else "",
+    )
+
+
+def _coerce_int(value: object, *, default: int | None = None) -> int | None:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 @dataclass(slots=True)

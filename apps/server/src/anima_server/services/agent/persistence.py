@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.services.agent.compaction import estimate_message_tokens
-from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
 from anima_server.services.agent.retrieval_feedback import record_retrieval_feedback
+from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
 from anima_server.services.agent.state import (
     AgentResult,
     StoredMessage,
@@ -187,6 +187,7 @@ def persist_agent_result(
     run: RuntimeRun,
     result: AgentResult,
     initial_sequence_id: int | None,
+    record_feedback: bool = True,
 ) -> None:
     sequence_id = initial_sequence_id
     serialized_retrieval = serialize_agent_retrieval(result.retrieval)
@@ -279,16 +280,17 @@ def persist_agent_result(
             )
             sequence_id = sequence_id + 1
 
-    try:
-        record_retrieval_feedback(
-            db,
-            user_id=thread.user_id,
-            run_id=run.id,
-            retrieval=result.retrieval,
-            response_text=result.response,
-        )
-    except Exception:
-        logger.debug("Failed to record retrieval feedback", exc_info=True)
+    if record_feedback:
+        try:
+            record_retrieval_feedback(
+                db,
+                user_id=thread.user_id,
+                run_id=run.id,
+                retrieval=result.retrieval,
+                response_text=result.response,
+            )
+        except Exception:
+            logger.debug("Failed to record retrieval feedback", exc_info=True)
 
     finalize_run(db, run=run, result=result)
 
@@ -339,6 +341,7 @@ def save_approval_checkpoint(
     tool_call: ToolCall,
     step_id: int | None,
     sequence_id: int,
+    retrieval: dict[str, object] | None = None,
 ) -> RuntimeMessage:
     """Persist an approval-pending checkpoint as an ``approval`` role message.
 
@@ -355,7 +358,10 @@ def save_approval_checkpoint(
         sequence_id=sequence_id,
         role="approval",
         content_text=f"Approval required for tool: {tool_call.name}",
-        content_json={"tool_calls": [asdict(tool_call)]},
+        content_json=attach_serialized_retrieval(
+            content_json={"tool_calls": [asdict(tool_call)]},
+            retrieval=retrieval,
+        ),
         tool_name=tool_call.name,
         tool_call_id=tool_call.id,
         tool_args_json=tool_call.arguments if isinstance(

@@ -18,6 +18,7 @@ from contextlib import contextmanager
 import pytest
 from anima_server.db.base import Base
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.services.agent import persistence as persistence_module
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.persistence import (
@@ -41,7 +42,13 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
 )
 from anima_server.services.agent.sequencing import reserve_message_sequences
-from anima_server.services.agent.state import AgentResult
+from anima_server.services.agent.state import (
+    AgentCitation,
+    AgentContextFragment,
+    AgentResult,
+    AgentRetrievalStats,
+    AgentRetrievalTrace,
+)
 from anima_server.services.agent.streaming import build_approval_pending_event
 from anima_server.services.agent.tools import send_message, tool
 from sqlalchemy import create_engine
@@ -757,3 +764,221 @@ def test_persist_approval_checkpoint_fails_gracefully_without_tool_call() -> Non
         )
         assert pending_tc is None
         assert run.status == "failed"
+
+
+def test_persist_approval_checkpoint_skips_retrieval_feedback_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _db_session() as db:
+        thread, run, _user = _setup_thread_and_run(db)
+        feedback_calls: list[dict[str, object]] = []
+
+        monkeypatch.setattr(
+            persistence_module,
+            "record_retrieval_feedback",
+            lambda *args, **kwargs: feedback_calls.append(
+                {
+                    "args": args,
+                    "kwargs": kwargs,
+                }
+            ),
+        )
+
+        result = AgentResult(
+            response="Agent runtime is waiting for approval before running a tool.",
+            model="test-model",
+            provider="test-provider",
+            stop_reason=StopReason.AWAITING_APPROVAL.value,
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                context_fragments=(
+                    AgentContextFragment(
+                        rank=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        text="Important remembered detail.",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=12.5,
+                    total_considered=4,
+                    returned=1,
+                    cutoff_index=1,
+                    cutoff_score=0.91,
+                    top_score=0.91,
+                    cutoff_ratio=1.0,
+                    triggered_by="adaptive_ratio",
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="I need approval before running that search.",
+                    tool_calls=(
+                        ToolCall(
+                            id="call-1",
+                            name="search_memory",
+                            arguments={"query": "user preferences"},
+                        ),
+                    ),
+                    tool_results=(
+                        ToolExecutionResult(
+                            call_id="call-1",
+                            name="search_memory",
+                            output="Approval required before running tool: search_memory",
+                            is_error=True,
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+        pending_tc = agent_service._persist_approval_checkpoint(
+            db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+
+        assert pending_tc is not None
+        assert feedback_calls == []
+
+
+@pytest.mark.asyncio
+async def test_approve_or_deny_turn_restores_retrieval_from_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canned_result = AgentResult(
+        response="Here is the answer from memory.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="terminal_tool",
+        tools_used=["search_memory", "send_message"],
+        step_traces=[
+            StepTrace(
+                step_index=1,
+                assistant_text="Here is the answer from memory.",
+                tool_calls=(
+                    ToolCall(
+                        id="call-send",
+                        name="send_message",
+                        arguments={"message": "Here is the answer from memory."},
+                    ),
+                ),
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-send",
+                        name="send_message",
+                        output="Here is the answer from memory.",
+                        is_terminal=True,
+                    ),
+                ),
+            ),
+        ],
+    )
+    runner = _ApproveResumeRunner(canned_result)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kw: None)
+
+    with _db_session() as db:
+        thread, run, user = _setup_thread_and_run(db)
+        checkpoint_result = AgentResult(
+            response="Agent runtime is waiting for approval before running a tool.",
+            model="test-model",
+            provider="test-provider",
+            stop_reason=StopReason.AWAITING_APPROVAL.value,
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                context_fragments=(
+                    AgentContextFragment(
+                        rank=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        text="Important remembered detail.",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=12.5,
+                    total_considered=4,
+                    returned=1,
+                    cutoff_index=1,
+                    cutoff_score=0.91,
+                    top_score=0.91,
+                    cutoff_ratio=1.0,
+                    triggered_by="adaptive_ratio",
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="I need approval before running that search.",
+                    tool_calls=(
+                        ToolCall(
+                            id="call-1",
+                            name="search_memory",
+                            arguments={"query": "user preferences"},
+                        ),
+                    ),
+                    tool_results=(
+                        ToolExecutionResult(
+                            call_id="call-1",
+                            name="search_memory",
+                            output="Approval required before running tool: search_memory",
+                            is_error=True,
+                        ),
+                    ),
+                ),
+            ],
+        )
+        pending_tc = agent_service._persist_approval_checkpoint(
+            db,
+            thread=thread,
+            run=run,
+            result=checkpoint_result,
+            initial_sequence_id=1,
+        )
+        assert pending_tc is not None
+        db.refresh(run)
+
+        result = await agent_service.approve_or_deny_turn(
+            run_id=run.id,
+            user_id=user.id,
+            approved=True,
+            db=db,
+            runtime_db=db,
+        )
+
+        send_message_row = (
+            db.query(RuntimeMessage)
+            .filter(RuntimeMessage.run_id == run.id, RuntimeMessage.tool_name == "send_message")
+            .one()
+        )
+
+    assert result.retrieval is not None
+    assert result.retrieval.retriever == "hybrid"
+    assert send_message_row.content_json is not None
+    assert send_message_row.content_json["retrieval"]["retriever"] == "hybrid"
