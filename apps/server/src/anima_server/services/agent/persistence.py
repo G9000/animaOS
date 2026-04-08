@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime
 
@@ -9,7 +10,15 @@ from sqlalchemy.orm import Session
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
-from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.agent.retrieval_feedback import record_retrieval_feedback
+from anima_server.services.agent.state import (
+    AgentResult,
+    StoredMessage,
+    attach_serialized_retrieval,
+    serialize_agent_retrieval,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
@@ -180,6 +189,7 @@ def persist_agent_result(
     initial_sequence_id: int | None,
 ) -> None:
     sequence_id = initial_sequence_id
+    serialized_retrieval = serialize_agent_retrieval(result.retrieval)
 
     for trace_index, trace in enumerate(result.step_traces):
         step = create_step(
@@ -224,6 +234,16 @@ def persist_agent_result(
                 content_text = trace.assistant_text or None
             else:
                 content_text = None
+            content_json = (
+                {"tool_calls": [asdict(tool_call) for tool_call in trace.tool_calls]}
+                if trace.tool_calls
+                else None
+            )
+            if not trace.tool_calls:
+                content_json = attach_serialized_retrieval(
+                    content_json=content_json,
+                    retrieval=serialized_retrieval,
+                )
             append_message(
                 db,
                 thread=thread,
@@ -232,10 +252,7 @@ def persist_agent_result(
                 sequence_id=sequence_id,
                 role="assistant",
                 content_text=content_text,
-                content_json={"tool_calls": [
-                    asdict(tool_call) for tool_call in trace.tool_calls]}
-                if trace.tool_calls
-                else None,
+                content_json=content_json,
             )
             sequence_id = sequence_id + 1
 
@@ -251,10 +268,27 @@ def persist_agent_result(
                 sequence_id=sequence_id,
                 role="tool",
                 content_text=tool_result.output,
+                content_json=attach_serialized_retrieval(
+                    content_json=None,
+                    retrieval=serialized_retrieval,
+                )
+                if tool_result.name == "send_message"
+                else None,
                 tool_name=tool_result.name,
                 tool_call_id=tool_result.call_id,
             )
             sequence_id = sequence_id + 1
+
+    try:
+        record_retrieval_feedback(
+            db,
+            user_id=thread.user_id,
+            run_id=run.id,
+            retrieval=result.retrieval,
+            response_text=result.response,
+        )
+    except Exception:
+        logger.debug("Failed to record retrieval feedback", exc_info=True)
 
     finalize_run(db, run=run, result=result)
 

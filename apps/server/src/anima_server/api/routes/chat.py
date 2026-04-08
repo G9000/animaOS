@@ -41,6 +41,10 @@ from anima_server.services.agent import (
 )
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
+from anima_server.services.agent.state import (
+    extract_stored_retrieval,
+    serialize_agent_retrieval,
+)
 from anima_server.services.agent.system_prompt import PromptTemplateError
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,7 @@ async def send_message(
             model=result.model,
             provider=result.provider,
             toolsUsed=result.tools_used,
+            retrieval=serialize_agent_retrieval(result.retrieval),
         )
 
     try:
@@ -133,6 +138,7 @@ async def get_chat_history(
             content=row.content_text or "",
             createdAt=row.created_at,
             source=getattr(row, "source", None),
+            retrieval=extract_stored_retrieval(row.content_json),
         )
         for row in rows
     ]
@@ -578,4 +584,5 @@ async def handle_approval(
         model=result.model,
         provider=result.provider,
         toolsUsed=list(result.tools_used),
+        retrieval=serialize_agent_retrieval(result.retrieval),
     )

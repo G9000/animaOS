@@ -60,8 +60,7 @@ def test_seed_self_model() -> None:
         )
 
         blocks = seed_self_model(db, user_id=user.id)
-        # at minimum identity is seeded
-        assert set(blocks.keys()) >= {"identity"}
+        assert set(blocks.keys()) >= {"identity", "world"}
         assert blocks["identity"].version == 1
 
 
@@ -103,7 +102,8 @@ def test_get_all_self_model_blocks() -> None:
 
         seed_self_model(db, user_id=user.id)
         blocks = get_all_self_model_blocks(db, user_id=user.id)
-        assert len(blocks) == 5
+        assert len(blocks) == 6
+        assert "world" in blocks
         assert "identity" in blocks
         assert "inner_state" in blocks
 
@@ -133,12 +133,13 @@ def test_ensure_self_model_exists() -> None:
 
         ensure_self_model_exists(db, user_id=user.id)
         blocks = get_all_self_model_blocks(db, user_id=user.id)
-        assert len(blocks) == 5
+        assert len(blocks) == 6
+        assert "world" in blocks
 
         # Second call is a no-op
         ensure_self_model_exists(db, user_id=user.id)
         blocks2 = get_all_self_model_blocks(db, user_id=user.id)
-        assert len(blocks2) == 5
+        assert len(blocks2) == 6
 
 
 def test_render_self_model_section_budget() -> None:
@@ -1115,6 +1116,75 @@ def test_complete_task_tool_fuzzy_match() -> None:
             # Fuzzy match — shares key words
             result = complete_task("buy groceries")
             assert "Completed" in result
+        finally:
+            clear_tool_context()
+
+
+def test_update_task_tool_updates_fields() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import create_task, update_task
+
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
+        try:
+            create_task("Buy groceries")
+            result = update_task(
+                "Buy groceries",
+                new_text="Buy groceries and fruit",
+                due_date="2026-06-01",
+                priority="4",
+                done="true",
+            )
+
+            from anima_server.models.task import Task
+            from sqlalchemy import select
+
+            task = db.scalars(select(Task).where(
+                Task.user_id == user.id)).first()
+            assert task is not None
+            assert task.text == "Buy groceries and fruit"
+            assert task.due_date == "2026-06-01"
+            assert task.priority == 4
+            assert task.done is True
+            assert task.completed_at is not None
+            assert "Updated task" in result
+        finally:
+            clear_tool_context()
+
+
+def test_delete_task_tool_removes_task() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import create_task, delete_task
+
+        set_tool_context(ToolContext(db=db, runtime_db=db,
+                         user_id=user.id, thread_id=thread.id))
+        try:
+            create_task("Task to remove")
+            result = delete_task("Task to remove")
+
+            from anima_server.models.task import Task
+            from sqlalchemy import select
+
+            tasks = list(db.scalars(select(Task).where(
+                Task.user_id == user.id)).all())
+            assert tasks == []
+            assert result == "Deleted task: Task to remove"
         finally:
             clear_tool_context()
 

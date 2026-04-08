@@ -40,10 +40,14 @@ function formatTraceEvent(event: TraceEvent): string[] {
       return [
         `[TIME ${event.stepIndex ?? 0}] ttft=${event.ttftMs ?? 0}ms llm=${event.llmDurationMs ?? 0}ms step=${event.stepDurationMs ?? 0}ms`,
       ];
-    case "done":
+    case "done": {
+      const retrieval = event.retrieval
+        ? ` retrieval=${formatRetrievalSummary(event.retrieval)}`
+        : "";
       return [
-        `[DONE] status=${event.status ?? ""} stop=${event.stopReason ?? ""} provider=${event.provider ?? ""} model=${event.model ?? ""} tools=${(event.toolsUsed ?? []).join(",")}`.trim(),
+        `[DONE] status=${event.status ?? ""} stop=${event.stopReason ?? ""} provider=${event.provider ?? ""} model=${event.model ?? ""} tools=${(event.toolsUsed ?? []).join(",")}${retrieval}`.trim(),
       ];
+    }
     case "approval_pending":
       return [
         `[WAIT] run=${event.runId ?? 0} tool=${event.name ?? "unknown"} ${compactJson(event.arguments)}`.trim(),
@@ -88,7 +92,9 @@ function formatMemoryState(event: TraceEvent): string[] {
   const lines = ["[MEMORY_STATE]"];
   for (const [label, content] of Object.entries(blocks)) {
     const text = typeof content === "string" ? content : String(content ?? "");
-    lines.push(`  ${label} (${text.length} chars): ${normalizePreview(text.slice(0, 160))}`);
+    lines.push(
+      `  ${label} (${text.length} chars): ${normalizePreview(text.slice(0, 160))}`,
+    );
   }
   return lines;
 }
@@ -113,4 +119,30 @@ function stringValue(value: unknown): string {
 
 function normalizePreview(value: string): string {
   return value.replace(/\n/g, "\\n");
+}
+
+function formatRetrievalSummary(
+  retrieval: NonNullable<TraceEvent["retrieval"]>,
+): string {
+  const parts = [retrieval.retriever];
+  const returned =
+    retrieval.stats?.returned ?? retrieval.contextFragments.length;
+  const total = retrieval.stats?.totalConsidered;
+
+  if (total != null && total > 0) {
+    parts.push(`${returned}/${total} hits`);
+  } else if (returned > 0) {
+    parts.push(`${returned} hits`);
+  }
+
+  if (retrieval.stats?.retrievalMs != null) {
+    const retrievalMs = retrieval.stats.retrievalMs;
+    parts.push(
+      retrievalMs >= 100
+        ? `${Math.round(retrievalMs)}ms`
+        : `${retrievalMs.toFixed(1)}ms`,
+    );
+  }
+
+  return parts.join(" ");
 }

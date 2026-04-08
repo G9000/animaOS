@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -44,10 +45,19 @@ from anima_server.services.data_crypto import ef as encrypt_field_for_user
 from anima_server.services.data_crypto import resolve_domain
 from anima_server.services.sessions import get_active_deks
 
+try:
+    from anima_core import read_capsule as _anima_core_read_capsule
+    from anima_core import write_capsule as _anima_core_write_capsule
+except Exception:
+    _anima_core_read_capsule = None
+    _anima_core_write_capsule = None
+
 vault_logger = logging.getLogger(__name__)
 
 
 VAULT_VERSION = 2
+VAULT_FORMAT_JSON = "vault_json"
+VAULT_FORMAT_CAPSULE = "anima_capsule"
 _MAX_VAULT_TIME_COST = 10
 _MAX_VAULT_MEMORY_COST_KIB = 2_097_152
 _MAX_VAULT_PARALLELISM = 8
@@ -118,6 +128,27 @@ _CONVERSATION_TABLES = frozenset(
     }
 )
 
+_CAPSULE_CARD_TABLES = frozenset(
+    {
+        "users",
+        "userKeys",
+        "memoryItems",
+        "selfModelBlocks",
+        "emotionalSignals",
+    }
+)
+
+_CAPSULE_FRAME_TABLES = frozenset(
+    {
+        "memoryEpisodes",
+        "tasks",
+        "agentThreads",
+        "agentRuns",
+        "agentSteps",
+        "agentMessages",
+    }
+)
+
 
 def _decrypt_field_value(
     value: str | None,
@@ -152,11 +183,20 @@ def _re_encrypt_field_value(
     return encrypt_field_for_user(user_id, value, table=table, field=field)
 
 
-def export_vault(
-    db: Session, passphrase: str, *, user_id: int | None = None, scope: str = "full"
+def _validate_vault_format(transfer_format: str) -> str:
+    if transfer_format not in {VAULT_FORMAT_JSON, VAULT_FORMAT_CAPSULE}:
+        raise ValueError(
+            "Unsupported vault format. Expected 'vault_json' or 'anima_capsule'."
+        )
+    return transfer_format
+
+
+def _build_vault_payload(
+    db: Session,
+    *,
+    user_id: int | None = None,
+    scope: str = "full",
 ) -> dict[str, Any]:
-    # Resolve active DEK so we can decrypt field-level encryption before export.
-    # The vault envelope is the only encryption layer in the exported file.
     deks: dict[str, bytes] | None = None
     if user_id is not None:
         deks = get_active_deks(user_id)
@@ -164,51 +204,239 @@ def export_vault(
     full_snapshot = export_database_snapshot(db, user_id=user_id, deks=deks)
 
     if scope == "memories":
-        # Only memory/identity tables — no conversation transcripts
         snapshot = {
-            k: v for k, v in full_snapshot.items() if k in _MEMORY_TABLES or k in _IDENTITY_TABLES
+            key: value
+            for key, value in full_snapshot.items()
+            if key in _MEMORY_TABLES or key in _IDENTITY_TABLES
         }
     else:
         snapshot = full_snapshot
 
-    # Include manifest so the Core's identity survives transfer
-    manifest = _read_manifest_snapshot()
-
-    payload = {
+    return {
         "version": VAULT_VERSION,
         "createdAt": datetime.now(UTC).isoformat(),
         "scope": scope,
         "database": snapshot,
-        "manifest": manifest,
+        "manifest": _read_manifest_snapshot(),
         "userFiles": read_data_snapshot(user_id=user_id) if scope == "full" else {},
     }
-    plaintext = json.dumps(payload)
-    aad = f"anima-vault:v{VAULT_VERSION}:{scope}".encode()
-    envelope = encrypt_string(plaintext, passphrase, aad=aad)
-    vault = json.dumps(envelope)
-    date_stamp = datetime.now().date().isoformat()
+
+
+def _serialize_capsule_section(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _deserialize_capsule_section(
+    sections: dict[str, bytes],
+    section_name: str,
+) -> dict[str, Any]:
+    raw = sections.get(section_name)
+    if raw is None:
+        return {}
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Capsule section '{section_name}' is invalid.") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"Capsule section '{section_name}' must decode to an object.")
+
+    return payload
+
+
+def _payload_to_capsule_sections(payload: dict[str, Any]) -> dict[str, bytes]:
+    database = payload.get("database")
+    if not isinstance(database, dict):
+        raise ValueError("Vault payload is missing the database snapshot.")
+
+    sections: dict[str, bytes] = {
+        "cards": _serialize_capsule_section(
+            {
+                "database": {
+                    table: database.get(table, [])
+                    for table in sorted(_CAPSULE_CARD_TABLES)
+                }
+            }
+        ),
+        "frames": _serialize_capsule_section(
+            {
+                "database": {
+                    table: database.get(table, [])
+                    for table in sorted(_CAPSULE_FRAME_TABLES)
+                }
+            }
+        ),
+        "metadata": _serialize_capsule_section(
+            {
+                "version": payload.get("version", VAULT_VERSION),
+                "createdAt": payload.get("createdAt"),
+                "scope": payload.get("scope", "full"),
+                "manifest": payload.get("manifest", {}),
+                "userFiles": payload.get("userFiles", {}),
+            }
+        ),
+    }
+
+    return sections
+
+
+def _capsule_sections_to_payload(sections: dict[str, bytes]) -> dict[str, Any]:
+    metadata = _deserialize_capsule_section(sections, "metadata")
+    if not metadata:
+        raise ValueError("Capsule is missing the metadata section.")
+
+    database: dict[str, Any] = {}
+    for section_name in ("cards", "frames", "graph"):
+        section_payload = _deserialize_capsule_section(sections, section_name)
+        if not section_payload:
+            continue
+
+        section_database = section_payload.get("database", section_payload)
+        if not isinstance(section_database, dict):
+            raise ValueError(
+                f"Capsule section '{section_name}' is missing a database payload."
+            )
+
+        for table_name, table_payload in section_database.items():
+            if table_name in database:
+                raise ValueError(
+                    f"Capsule contains duplicate table data for '{table_name}'."
+                )
+            database[table_name] = table_payload
+
     return {
-        "filename": f"anima-vault-{date_stamp}.vault.json",
+        "version": metadata.get("version", VAULT_VERSION),
+        "createdAt": metadata.get("createdAt"),
+        "scope": metadata.get("scope", "full"),
+        "database": database,
+        "manifest": metadata.get("manifest", {}),
+        "userFiles": metadata.get("userFiles", {}),
+    }
+
+
+def _write_capsule_bytes(sections: dict[str, bytes], passphrase: str) -> bytes:
+    if _anima_core_write_capsule is None:
+        raise ValueError(
+            "anima_core capsule export is unavailable in this environment."
+        )
+
+    try:
+        capsule = _anima_core_write_capsule(
+            sections,
+            password=passphrase.encode("utf-8"),
+        )
+    except TypeError as exc:
+        raise ValueError(
+            "Installed anima_core does not support encrypted capsule export."
+        ) from exc
+    except Exception as exc:
+        raise ValueError("Failed to build anima capsule.") from exc
+
+    if not isinstance(capsule, (bytes, bytearray)):
+        raise ValueError("anima_core returned an invalid capsule payload.")
+
+    return bytes(capsule)
+
+
+def _read_capsule_sections(data: bytes, passphrase: str) -> dict[str, bytes]:
+    if _anima_core_read_capsule is None:
+        raise ValueError(
+            "anima_core capsule import is unavailable in this environment."
+        )
+
+    try:
+        sections = _anima_core_read_capsule(
+            data,
+            password=passphrase.encode("utf-8"),
+        )
+    except TypeError as exc:
+        raise ValueError(
+            "Installed anima_core does not support encrypted capsule import."
+        ) from exc
+    except Exception as exc:
+        raise ValueError(
+            "Failed to read anima capsule. Check the passphrase and payload."
+        ) from exc
+
+    if not isinstance(sections, dict):
+        raise ValueError("anima_core returned an invalid capsule payload.")
+
+    normalized: dict[str, bytes] = {}
+    for key, value in sections.items():
+        if not isinstance(key, str) or not isinstance(value, (bytes, bytearray)):
+            raise ValueError("anima_core returned malformed capsule sections.")
+        normalized[key] = bytes(value)
+
+    return normalized
+
+
+def export_vault(
+    db: Session,
+    passphrase: str,
+    *,
+    user_id: int | None = None,
+    scope: str = "full",
+    transfer_format: str = VAULT_FORMAT_JSON,
+) -> dict[str, Any]:
+    transfer_format = _validate_vault_format(transfer_format)
+    payload = _build_vault_payload(db, user_id=user_id, scope=scope)
+    date_stamp = datetime.now().date().isoformat()
+
+    if transfer_format == VAULT_FORMAT_CAPSULE:
+        capsule = _write_capsule_bytes(
+            _payload_to_capsule_sections(payload),
+            passphrase,
+        )
+        vault = base64.b64encode(capsule).decode("ascii")
+        filename = f"anima-vault-{date_stamp}.anima"
+    else:
+        plaintext = json.dumps(payload)
+        aad = f"anima-vault:v{VAULT_VERSION}:{scope}".encode()
+        envelope = encrypt_string(plaintext, passphrase, aad=aad)
+        vault = json.dumps(envelope)
+        filename = f"anima-vault-{date_stamp}.vault.json"
+
+    return {
+        "filename": filename,
         "vault": vault,
         "size": len(vault.encode("utf-8")),
+        "format": transfer_format,
     }
 
 
 def import_vault(
-    db: Session, vault: str, passphrase: str, *, user_id: int | None = None
+    db: Session,
+    vault: str,
+    passphrase: str,
+    *,
+    user_id: int | None = None,
+    transfer_format: str = VAULT_FORMAT_JSON,
 ) -> dict[str, Any]:
     """Import an encrypted vault into the current database context."""
-    try:
-        envelope = json.loads(vault)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Vault payload is not valid JSON.") from exc
+    transfer_format = _validate_vault_format(transfer_format)
 
-    plaintext = decrypt_string(envelope, passphrase)
+    if transfer_format == VAULT_FORMAT_CAPSULE:
+        try:
+            capsule = base64.b64decode(vault, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Capsule payload is not valid base64.") from exc
 
-    try:
-        payload = json.loads(plaintext)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Vault payload is not valid JSON.") from exc
+        payload = _capsule_sections_to_payload(
+            _read_capsule_sections(capsule, passphrase)
+        )
+    else:
+        try:
+            envelope = json.loads(vault)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Vault payload is not valid JSON.") from exc
+
+        plaintext = decrypt_string(envelope, passphrase)
+
+        try:
+            payload = json.loads(plaintext)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Vault payload is not valid JSON.") from exc
 
     payload = _migrate_payload(payload)
 
@@ -250,6 +478,7 @@ def import_vault(
         "restoredUsers": restored_users,
         "restoredMemoryFiles": restored_memory_files,
         "requiresReauth": True,
+        "format": transfer_format,
     }
 
 

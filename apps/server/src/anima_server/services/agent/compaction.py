@@ -9,6 +9,7 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.services.agent.state import RETRIEVAL_CONTENT_KEY
 from anima_server.services.agent.sequencing import reserve_message_sequences
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,13 @@ def estimate_message_tokens(
     if content_text:
         text_parts.append(content_text)
     if content_json:
-        text_parts.append(json.dumps(content_json, sort_keys=True))
+        filtered_content_json = {
+            key: value
+            for key, value in content_json.items()
+            if key != RETRIEVAL_CONTENT_KEY
+        }
+        if filtered_content_json:
+            text_parts.append(json.dumps(filtered_content_json, sort_keys=True))
 
     combined_text = "\n".join(text_parts).strip()
     if not combined_text:

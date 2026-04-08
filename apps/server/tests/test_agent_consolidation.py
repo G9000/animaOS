@@ -89,6 +89,45 @@ async def test_run_background_extraction_creates_candidates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_background_extraction_normalizes_whitespace_before_regex() -> None:
+    from anima_server.models.runtime_memory import MemoryCandidate
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "scaffold"
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="I work\tat Acme Corp.\r\nI prefer   green tea.",
+                assistant_response="Noted.",
+                runtime_db_factory=rt_factory,
+            )
+
+            with rt_factory() as rt_db:
+                candidates = list(
+                    rt_db.query(MemoryCandidate)
+                    .filter(MemoryCandidate.user_id == 1)
+                    .all()
+                )
+
+        contents = [c.content for c in candidates]
+        assert "Works at Acme Corp" in contents
+        assert "Prefers green tea" in contents
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
 async def test_run_agent_schedules_background_memory_consolidation() -> None:
     original_provider = settings.agent_provider
     invalidate_agent_runtime_cache()

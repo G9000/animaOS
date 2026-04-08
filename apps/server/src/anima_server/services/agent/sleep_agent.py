@@ -386,9 +386,6 @@ async def _task_graph_ingestion(
     db_factory: Callable[..., object] | None = None,
 ) -> dict:
     """Run knowledge graph ingestion (F4)."""
-    if settings.agent_provider == "scaffold":
-        return {"entities": 0, "relations": 0, "pruned": 0}
-
     from anima_server.db.session import SessionLocal
     from anima_server.services.agent.knowledge_graph import ingest_conversation_graph
 

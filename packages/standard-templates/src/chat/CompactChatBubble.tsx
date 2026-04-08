@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ChatMessage, TraceEvent } from "./types";
 import { CopyButton } from "./CopyButton";
+import { RetrievalPanel } from "./RetrievalPanel";
 import { TracePanel } from "./TracePanel";
 import {
   ThinkIcon,
@@ -11,7 +12,12 @@ import {
   LightbulbIcon,
   XIcon,
 } from "./icons";
-import { formatTimestamp, formatFullTimestamp } from "./utils";
+import {
+  formatFullTimestamp,
+  getMessageRetrieval,
+  formatRetrievalSummary,
+  formatTimestamp,
+} from "./utils";
 import { cn } from "../utils/cn";
 
 export interface CompactChatBubbleProps {
@@ -38,10 +44,13 @@ export function CompactChatBubble({
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
   const [showReasoning, setShowReasoning] = useState(false);
+  const [showRetrieval, setShowRetrieval] = useState(false);
   const [showMsgTrace, setShowMsgTrace] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const hasTrace = message.traceEvents && message.traceEvents.length > 0;
   const hasReasoning = !!message.reasoning;
+  const retrieval = getMessageRetrieval(message);
+  const hasRetrieval = retrieval != null;
 
   const handleTranslate = async () => {
     if (translating) return;
@@ -68,22 +77,28 @@ export function CompactChatBubble({
   const fullTimestamp = formatFullTimestamp(message.createdAt);
   const displayName = isUser ? "You" : isSystem ? "System" : "Anima";
 
-  const bubbleContent = renderContent
-    ? renderContent(message.content, message.role)
-    : (
-      <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
-        {message.content}
-      </p>
-    );
+  const bubbleContent = renderContent ? (
+    renderContent(message.content, message.role)
+  ) : (
+    <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+      {message.content}
+    </p>
+  );
 
   // Show panels if hovered AND toggled on
   const showReasoningPanel = isHovered && showReasoning && message.reasoning;
+  const showRetrievalPanel = isHovered && showRetrieval && retrieval;
   const showTracePanel = isHovered && (showTrace || showMsgTrace) && hasTrace;
   const showTranslationPanel = isHovered && translation && !translating;
   const showTranslatingIndicator = isHovered && translating;
 
   // Any panel is showing
-  const hasPanelOpen = showReasoningPanel || showTracePanel || showTranslationPanel || showTranslatingIndicator;
+  const hasPanelOpen =
+    showReasoningPanel ||
+    showRetrievalPanel ||
+    showTracePanel ||
+    showTranslationPanel ||
+    showTranslatingIndicator;
 
   return (
     <div
@@ -96,10 +111,10 @@ export function CompactChatBubble({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div 
+      <div
         className={cn(
           "flex flex-col max-w-[90%] md:max-w-[80%] lg:max-w-[70%]",
-          isUser ? "items-end" : "items-start"
+          isUser ? "items-end" : "items-start",
         )}
       >
         {/* Main Bubble */}
@@ -167,7 +182,9 @@ export function CompactChatBubble({
                 className={cn(
                   "font-mono text-[9px]",
                   isUser ? "mr-auto" : "ml-auto",
-                  isUser ? "text-primary-foreground/50" : "text-muted-foreground/40",
+                  isUser
+                    ? "text-primary-foreground/50"
+                    : "text-muted-foreground/40",
                 )}
                 title={fullTimestamp}
               >
@@ -201,10 +218,12 @@ export function CompactChatBubble({
           )}
         >
           {/* Action buttons */}
-          <div className={cn(
-            "flex items-center gap-1",
-            isUser ? "flex-row-reverse" : "flex-row"
-          )}>
+          <div
+            className={cn(
+              "flex items-center gap-1",
+              isUser ? "flex-row-reverse" : "flex-row",
+            )}
+          >
             {hasReasoning && (
               <FloatyButton
                 active={showReasoning}
@@ -223,6 +242,15 @@ export function CompactChatBubble({
               />
             )}
 
+            {hasRetrieval && (
+              <FloatyButton
+                active={showRetrieval}
+                onClick={() => setShowRetrieval((value) => !value)}
+                icon={<LightbulbIcon className="w-3.5 h-3.5" />}
+                label="CITE"
+              />
+            )}
+
             <FloatyButton
               active={!!translation}
               onClick={handleTranslate}
@@ -233,24 +261,31 @@ export function CompactChatBubble({
           </div>
 
           {/* Token usage (assistant only) */}
-          {!isUser && (
-            <CompactTokenUsage events={message.traceEvents} />
-          )}
+          {!isUser && <CompactTokenUsage events={message.traceEvents} />}
         </div>
+
+        {!isUser && retrieval && (
+          <div className="mt-1 px-1 font-mono text-[9px] tracking-wider text-muted-foreground/30">
+            <span className="text-emerald-400/55">MEMORY</span>{" "}
+            <span>{formatRetrievalSummary(retrieval)}</span>
+          </div>
+        )}
 
         {/* EXTERNAL PANELS - Aligned same as bubble, same width as bubble */}
         {hasPanelOpen && (
-          <div className={cn(
-            "w-full mt-1 space-y-1",
-            isUser ? "text-right" : "text-left"
-          )}>
+          <div
+            className={cn(
+              "w-full mt-1 space-y-1",
+              isUser ? "text-right" : "text-left",
+            )}
+          >
             {/* Reasoning Panel */}
             {showReasoningPanel && (
               <div
                 className={cn(
                   "inline-block text-left px-3 py-2 border",
                   "bg-primary/[0.04] border-primary/20",
-                  "min-w-[200px] max-w-full"
+                  "min-w-[200px] max-w-full",
                 )}
               >
                 <div className="flex items-center justify-between mb-1">
@@ -271,13 +306,38 @@ export function CompactChatBubble({
               </div>
             )}
 
+            {/* Retrieval Panel */}
+            {showRetrievalPanel && retrieval && (
+              <div
+                className={cn(
+                  "inline-block text-left px-3 py-2 border",
+                  "bg-card/50 border-emerald-400/25",
+                  "min-w-[200px] max-w-full",
+                )}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono text-[9px] text-emerald-400/60 tracking-wider flex items-center gap-1">
+                    <LightbulbIcon className="w-3 h-3" />
+                    MEMORY HITS
+                  </span>
+                  <button
+                    onClick={() => setShowRetrieval(false)}
+                    className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                  >
+                    <XIcon className="w-3 h-3" />
+                  </button>
+                </div>
+                <RetrievalPanel retrieval={retrieval} />
+              </div>
+            )}
+
             {/* Trace Panel */}
             {showTracePanel && (
               <div
                 className={cn(
                   "inline-block text-left px-3 py-2 border max-h-64 overflow-y-auto",
                   "bg-card/50 border-yellow-400/30",
-                  "min-w-[200px] max-w-full"
+                  "min-w-[200px] max-w-full",
                 )}
               >
                 <TracePanel events={message.traceEvents!} />
@@ -290,7 +350,7 @@ export function CompactChatBubble({
                 className={cn(
                   "inline-block text-left px-3 py-2 border",
                   "bg-card/50 border-border/60",
-                  "min-w-[200px] max-w-full"
+                  "min-w-[200px] max-w-full",
                 )}
               >
                 <div className="flex items-center gap-2 mb-1">
@@ -378,7 +438,7 @@ function CompactTokenUsage({ events }: CompactTokenUsageProps) {
       <span>{(usage.totalTokens ?? 0).toLocaleString()}</span>
       {(usage.cachedInputTokens ?? 0) > 0 && (
         <span className="text-emerald-500/50">
-          · {(usage.cachedInputTokens)}cached
+          · {usage.cachedInputTokens}cached
         </span>
       )}
       {totalMs > 0 && (

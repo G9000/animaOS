@@ -3,12 +3,13 @@
 MemoryCandidate: extracted observations awaiting promotion to soul.
 PromotionJournal: audit trail for Soul Writer decisions.
 MemoryAccessLog: access tracking (replaces per-turn touch_memory_items writes to SQLCipher).
+MemoryRetrievalFeedback: per-run retrieval outcome log for deferred ranking updates.
 """
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
@@ -116,6 +117,27 @@ class MemoryAccessLog(RuntimeBase):
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     memory_item_id: Mapped[int] = mapped_column(Integer, nullable=False)
     accessed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class MemoryRetrievalFeedback(RuntimeBase):
+    """PG-side retrieval outcome log for deferred importance and heat updates."""
+
+    __tablename__ = "memory_retrieval_feedback"
+    __table_args__ = (
+        Index("ix_memory_retrieval_feedback_user_item", "user_id", "memory_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    memory_item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    was_used: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    was_corrected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    evidence_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

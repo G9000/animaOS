@@ -18,7 +18,14 @@ from anima_server.services.agent.streaming import (
     build_usage_event,
     summarize_usage,
 )
-from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.agent.state import (
+    AgentCitation,
+    AgentContextFragment,
+    AgentResult,
+    AgentRetrievalStats,
+    AgentRetrievalTrace,
+    StoredMessage,
+)
 from anima_server.services.agent.sequencing import (
     count_persisted_result_messages,
     reserve_message_sequences,
@@ -67,6 +74,7 @@ import contextlib
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from threading import Lock
@@ -487,6 +495,8 @@ async def _execute_agent_turn_locked(
     finally:
         companion.clear_cancel_event(run.id)
 
+    result.retrieval = turn_ctx.retrieval
+
     # Handle cancellation: persist cancel status and emit event
     if result.stop_reason == StopReason.CANCELLED.value:
         cancel_run(runtime_db, run.id)
@@ -559,6 +569,7 @@ class _TurnContext:
     history: list[StoredMessage]
     conversation_turn_count: int
     memory_blocks: tuple[MemoryBlock, ...]
+    retrieval: AgentRetrievalTrace | None = None
 
 
 async def _prepare_turn_context(
@@ -653,10 +664,16 @@ async def _prepare_turn_context(
 
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
+    retrieval_trace: AgentRetrievalTrace | None = None
     query_embedding: list[float] | None = None
     try:
-        from anima_server.services.agent.embeddings import adaptive_filter, hybrid_search
+        from anima_server.services.agent.embeddings import (
+            AdaptiveRetrievalConfig,
+            adaptive_filter_with_stats,
+            hybrid_search,
+        )
 
+        retrieval_started = time.monotonic()
         search_result = await hybrid_search(
             db,
             user_id=user_id,
@@ -664,14 +681,68 @@ async def _prepare_turn_context(
             limit=15,
             similarity_threshold=0.25,
         )
+        retrieval_ms = (time.monotonic() - retrieval_started) * 1000.0
         query_embedding = search_result.query_embedding
         if search_result.items:
-            filtered = adaptive_filter(search_result.items)
-            semantic_results = [
-                (item.id, df(user_id, item.content,
-                 table="memory_items", field="content"), score)
-                for item, score in filtered
-            ]
+            adaptive_result = adaptive_filter_with_stats(
+                search_result.items,
+                config=AdaptiveRetrievalConfig.combined(
+                    max_results=12,
+                    min_results=3,
+                    relative_threshold=0.5,
+                    max_drop_ratio=0.35,
+                    absolute_min=0.2,
+                ),
+            )
+            filtered = adaptive_result.results
+            logger.debug(
+                "Adaptive retrieval kept %s/%s memory hits for user %s (%s)",
+                adaptive_result.stats.returned,
+                adaptive_result.stats.total_considered,
+                user_id,
+                adaptive_result.stats.triggered_by,
+            )
+            semantic_results = []
+            citations: list[AgentCitation] = []
+            context_fragments: list[AgentContextFragment] = []
+            for index, (item, score) in enumerate(filtered, start=1):
+                content = df(user_id, item.content, table="memory_items", field="content")
+                semantic_results.append((item.id, content, score))
+                citations.append(
+                    AgentCitation(
+                        index=index,
+                        memory_item_id=item.id,
+                        uri=_memory_item_uri(item.id),
+                        score=score,
+                        category=item.category,
+                    )
+                )
+                context_fragments.append(
+                    AgentContextFragment(
+                        rank=index,
+                        memory_item_id=item.id,
+                        uri=_memory_item_uri(item.id),
+                        text=content,
+                        score=score,
+                        category=item.category,
+                    )
+                )
+
+            retrieval_trace = AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=tuple(citations),
+                context_fragments=tuple(context_fragments),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=round(retrieval_ms, 3),
+                    total_considered=adaptive_result.stats.total_considered,
+                    returned=adaptive_result.stats.returned,
+                    cutoff_index=adaptive_result.stats.cutoff_index,
+                    cutoff_score=adaptive_result.stats.cutoff_score,
+                    top_score=adaptive_result.stats.top_score,
+                    cutoff_ratio=adaptive_result.stats.cutoff_ratio,
+                    triggered_by=adaptive_result.stats.triggered_by,
+                ),
+            )
     except Exception:
         pass
 
@@ -742,6 +813,7 @@ async def _prepare_turn_context(
         history=history,
         conversation_turn_count=conversation_turn_count,
         memory_blocks=memory_blocks,
+        retrieval=retrieval_trace,
     )
     return thread, run, user_msg, initial_sequence_id, turn_ctx
 
@@ -1048,7 +1120,12 @@ def _rebuild_turn_context_after_compaction(
         history=history,
         conversation_turn_count=conversation_turn_count,
         memory_blocks=turn_ctx.memory_blocks,
+        retrieval=turn_ctx.retrieval,
     )
+
+
+def _memory_item_uri(memory_item_id: int) -> str:
+    return f"memory://items/{memory_item_id}"
 
 
 def _refresh_companion_history(*, user_id: int, runtime_db: Session) -> None:

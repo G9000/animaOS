@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from anima_server.services.agent.state import extract_stored_retrieval
 from anima_server.services.crypto import decrypt_blob, encrypt_blob
 
 if TYPE_CHECKING:
@@ -38,6 +39,9 @@ def messages_to_transcript_dicts(messages: list[RuntimeMessage]) -> list[dict[st
             "ts": _isoformat_utc(message.created_at),
             "seq": message.sequence_id,
         }
+        retrieval = extract_stored_retrieval(message.content_json)
+        if role == "assistant" and retrieval is not None:
+            payload["retrieval"] = retrieval
         if message.role == "assistant":
             tool_calls = message.content_json.get("tool_calls") if isinstance(message.content_json, dict) else None
             if isinstance(tool_calls, list):

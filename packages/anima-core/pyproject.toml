@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "anima-core"
+version = "0.1.0"
+description = "High-performance memory infrastructure for animaOS"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.maturin]
+features = ["python"]
+python-source = "python"
+module-name = "anima_core"

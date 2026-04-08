@@ -1,0 +1,87 @@
+[package]
+name = "anima-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "High-performance memory infrastructure for animaOS — SIMD vector search, versioned memory cards, knowledge graph, portable soul capsules."
+keywords = ["ai", "memory", "vector-search", "knowledge-graph"]
+
+[lib]
+name = "anima_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+# SIMD
+wide = { version = "1.1", optional = true }
+
+# HNSW vector index
+instant-distance = { version = "0.6", optional = true }
+
+# Full-text search
+tantivy = { version = "0.22", optional = true, default-features = false, features = ["mmap"] }
+
+# Compression
+zstd = { version = "0.13" }
+
+# Encryption
+aes-gcm = { version = "0.10", optional = true }
+argon2 = { version = "0.5", optional = true }
+rand = { version = "0.8", optional = true }
+zeroize = { version = "1.7", optional = true }
+
+# Temporal parsing
+chrono-english = { version = "0.1", optional = true }
+
+# Python bindings
+pyo3 = { version = "0.22", optional = true, features = ["extension-module"] }
+
+# Regex (chunker + enrich)
+regex = "1.10"
+unicode-normalization = "0.1"
+unicode-segmentation = "1.11"
+
+# Logging
+log = "0.4"
+
+# Hex encoding (for Python bindings)
+hex = { version = "0.4", optional = true }
+
+[features]
+default = ["simd", "hnsw", "lex"]
+
+# SIMD-accelerated vector distance
+simd = ["dep:wide"]
+
+# HNSW approximate nearest neighbor index
+hnsw = ["dep:instant-distance"]
+
+# Tantivy full-text search
+lex = ["dep:tantivy"]
+
+# Temporal date parsing
+temporal = ["dep:chrono-english"]
+
+# Decision replay traces
+replay = []
+
+# AES-256-GCM encrypted capsules
+encryption = ["dep:aes-gcm", "dep:argon2", "dep:rand", "dep:zeroize"]
+
+# PyO3 Python bindings (enabled by maturin)
+python = ["dep:pyo3", "dep:hex", "temporal", "replay", "encryption"]
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[package.metadata.maturin]
+features = ["python"]

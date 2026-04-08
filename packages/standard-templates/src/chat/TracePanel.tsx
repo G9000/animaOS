@@ -1,8 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { RetrievalPanel } from "./RetrievalPanel";
 import type { TraceEvent } from "./types";
-import { formatJson, serializeTraceAsJson, serializeTraceAsText } from "./utils";
+import {
+  formatJson,
+  formatRetrievalSummary,
+  serializeTraceAsJson,
+  serializeTraceAsText,
+} from "./utils";
 
 export interface TracePanelProps {
   events: TraceEvent[];
@@ -199,22 +205,48 @@ function TraceEntry({ event }: { event: TraceEvent }) {
   }
 
   if (event.type === "done") {
+    const retrievalSummary = event.retrieval
+      ? formatRetrievalSummary(event.retrieval)
+      : null;
+
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
-        <span className="text-emerald-500/60 text-[9px]">DONE</span>
-        {event.provider && <span>{event.provider}</span>}
-        {event.model && (
-          <span className="text-muted-foreground/25">{event.model}</span>
-        )}
-        {event.toolsUsed && event.toolsUsed.length > 0 && (
-          <span className="text-yellow-500/40">
-            tools:[{event.toolsUsed.join(",")}]
-          </span>
-        )}
-        {event.stopReason && (
-          <span className="text-muted-foreground/25">
-            stop:{event.stopReason}
-          </span>
+      <div className="font-mono text-[11px]">
+        <button
+          onClick={() => setExpanded((value) => !value)}
+          className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
+        >
+          <span className="text-emerald-500/60 text-[9px]">DONE</span>
+          {event.provider && (
+            <span className="text-muted-foreground/60">{event.provider}</span>
+          )}
+          {event.model && (
+            <span className="text-muted-foreground/25">{event.model}</span>
+          )}
+          {event.toolsUsed && event.toolsUsed.length > 0 && (
+            <span className="text-yellow-500/40">
+              tools:[{event.toolsUsed.join(",")}]
+            </span>
+          )}
+          {event.stopReason && (
+            <span className="text-muted-foreground/25">
+              stop:{event.stopReason}
+            </span>
+          )}
+          {retrievalSummary && (
+            <span className="text-emerald-400/40">
+              retrieval:{retrievalSummary}
+            </span>
+          )}
+          {event.retrieval && (
+            <span className="text-muted-foreground/30 text-[9px] ml-auto">
+              {expanded ? "▼" : "▶"}
+            </span>
+          )}
+        </button>
+        {expanded && event.retrieval && (
+          <div className="mt-1 bg-input/20 px-2 py-2 border border-border/50">
+            <RetrievalPanel retrieval={event.retrieval} maxFragments={2} />
+          </div>
         )}
       </div>
     );

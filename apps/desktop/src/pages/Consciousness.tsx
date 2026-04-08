@@ -11,6 +11,7 @@ import { api } from "../lib/api";
 type Tab =
   | "persona"
   | "human"
+  | "world"
   | "identity"
   | "inner_state"
   | "working_memory"
@@ -21,6 +22,7 @@ type Tab =
 const TABS: { key: Tab; label: string }[] = [
   { key: "persona", label: "PERSONA" },
   { key: "human", label: "HUMAN" },
+  { key: "world", label: "WORLD" },
   { key: "identity", label: "IDENTITY" },
   { key: "inner_state", label: "STATE" },
   { key: "working_memory", label: "W.MEM" },
@@ -34,6 +36,8 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
     "ANIMA's personality — how it thinks and expresses itself. Evolves through conversations.",
   human:
     "What ANIMA knows about you — your identity, preferences, and relationship.",
+  world:
+    "Stable external context about your world — timezone, locale, and environment.",
   identity: "How ANIMA understands itself and its relationship with you.",
   inner_state: "Current internal emotional and cognitive state.",
   working_memory:

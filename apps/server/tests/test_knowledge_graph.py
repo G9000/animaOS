@@ -5,20 +5,24 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 
+import pytest
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import KGEntity, KGRelation, User
+from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.knowledge_graph import (
     _map_ids_back,
     _map_ids_to_sequential,
     _mention_boost,
+    extract_entities_and_relations,
     graph_context_for_query,
+    ingest_conversation_graph,
     normalize_entity_name,
     rerank_graph_results,
     search_graph,
     upsert_entity,
     upsert_relation,
 )
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -702,3 +706,88 @@ class TestGraphContextAnnotation:
             )
             assert len(lines) >= 1
             assert "[mentioned" not in lines[0]
+
+
+# ── T13: deterministic triplet extraction ───────────────────────────
+
+
+class TestDeterministicTripletExtraction:
+    @pytest.mark.asyncio()
+    async def test_scaffold_mode_extracts_rule_triplets(self, monkeypatch):
+        monkeypatch.setattr(
+            knowledge_graph_module.settings,
+            "agent_provider",
+            "scaffold",
+            raising=False,
+        )
+
+        entities, relations = await extract_entities_and_relations(
+            text="",
+            user_id=1,
+            user_message="I work at Anthropic. My sister Alice lives in Munich.",
+            assistant_response="",
+        )
+
+        entity_map = {entity["name"]: entity["type"] for entity in entities}
+        relation_set = {
+            (relation["source"], relation["relation"], relation["destination"])
+            for relation in relations
+        }
+
+        assert entity_map["User"] == "person"
+        assert entity_map["Anthropic"] == "organization"
+        assert entity_map["Alice"] == "person"
+        assert entity_map["Munich"] == "place"
+        assert ("User", "works_at", "Anthropic") in relation_set
+        assert ("User", "sister_of", "Alice") in relation_set
+        assert ("Alice", "lives_in", "Munich") in relation_set
+
+
+class TestIngestConversationGraphRules:
+    @pytest.mark.asyncio()
+    async def test_scaffold_mode_ingests_graph_from_rules(self, monkeypatch):
+        monkeypatch.setattr(
+            knowledge_graph_module.settings,
+            "agent_provider",
+            "scaffold",
+            raising=False,
+        )
+
+        with _db_session() as db:
+            user = _create_user(db)
+
+            entities, relations, pruned = await ingest_conversation_graph(
+                db,
+                user_id=user.id,
+                user_message="I work at Anthropic. My sister Alice lives in Munich.",
+                assistant_response="",
+            )
+
+            assert entities >= 4
+            assert relations >= 3
+            assert pruned == 0
+
+            stored_entities = {
+                entity.name: entity.entity_type
+                for entity in db.scalars(
+                    select(KGEntity).where(KGEntity.user_id == user.id)
+                ).all()
+            }
+            stored_relations = {
+                (
+                    db.get(KGEntity, relation.source_id).name,
+                    relation.relation_type,
+                    db.get(KGEntity, relation.destination_id).name,
+                )
+                for relation in db.scalars(
+                    select(KGRelation).where(KGRelation.user_id == user.id)
+                ).all()
+            }
+
+            assert stored_entities["User"] == "person"
+            assert stored_entities["Anthropic"] == "organization"
+            assert stored_entities["Alice"] == "person"
+            assert stored_entities["Munich"] == "place"
+            assert ("User", "works_at", "Anthropic") in stored_relations
+            assert ("User", "sister_of", "Alice") in stored_relations
+            assert ("Alice", "lives_in", "Munich") in stored_relations

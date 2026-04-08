@@ -12,7 +12,7 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
     UsageStats,
 )
-from anima_server.services.agent.state import AgentResult
+from anima_server.services.agent.state import AgentResult, serialize_agent_retrieval
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +197,9 @@ def build_done_event(result: AgentResult, *, thread_id: int | None = None) -> Ag
     }
     if thread_id is not None:
         data["threadId"] = thread_id
+    retrieval = serialize_agent_retrieval(result.retrieval)
+    if retrieval is not None:
+        data["retrieval"] = retrieval
     return AgentStreamEvent(event="done", data=data)
 
 

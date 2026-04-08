@@ -21,9 +21,11 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
 from anima_server.services.agent.embeddings import (
+    AdaptiveRetrievalConfig,
     HybridSearchResult,
     _reciprocal_rank_fusion,
     adaptive_filter,
+    adaptive_filter_with_stats,
 )
 from anima_server.services.agent.memory_store import (
     _CATEGORY_QUERY_WEIGHTS,
@@ -287,6 +289,40 @@ class TestAdaptiveFilter:
             high_confidence_threshold=0.9,
         )
         assert len(filtered) == 3
+
+    def test_combined_strategy_returns_stats(self):
+        results = self._make_results([0.92, 0.9, 0.86, 0.47, 0.04, 0.03])
+        adaptive_result = adaptive_filter_with_stats(
+            results,
+            config=AdaptiveRetrievalConfig.combined(
+                max_results=6,
+                min_results=2,
+                relative_threshold=0.5,
+                max_drop_ratio=0.9,
+                absolute_min=0.1,
+            ),
+        )
+
+        assert len(adaptive_result.results) == 3
+        assert adaptive_result.stats.returned == 3
+        assert adaptive_result.stats.total_considered == 6
+        assert adaptive_result.stats.triggered_by == "relative_threshold"
+        assert adaptive_result.stats.cutoff_ratio is not None
+
+    def test_disabled_strategy_returns_capped_results(self):
+        results = self._make_results([0.8, 0.6, 0.4, 0.2])
+        adaptive_result = adaptive_filter_with_stats(
+            results,
+            config=AdaptiveRetrievalConfig(
+                enabled=False,
+                strategy="disabled",
+                max_results=3,
+                min_results=1,
+            ),
+        )
+
+        assert len(adaptive_result.results) == 3
+        assert adaptive_result.stats.triggered_by == "disabled"
 
 
 # ===================================================================

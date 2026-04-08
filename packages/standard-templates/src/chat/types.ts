@@ -10,6 +10,7 @@ export interface ChatMessage {
   createdAt?: string;
   reasoning?: string;
   traceEvents?: TraceEvent[];
+  retrieval?: RetrievalTrace | null;
   source?: string | null;
 }
 
@@ -24,6 +25,41 @@ export type TraceEventType =
   | "approval_pending"
   | "cancelled"
   | "memory_state";
+
+export interface RetrievalCitation {
+  index: number;
+  memoryItemId: number;
+  uri: string;
+  score?: number | null;
+  category?: string | null;
+}
+
+export interface RetrievalContextFragment {
+  rank: number;
+  memoryItemId: number;
+  uri: string;
+  text: string;
+  score?: number | null;
+  category?: string | null;
+}
+
+export interface RetrievalStats {
+  retrievalMs?: number | null;
+  totalConsidered: number;
+  returned: number;
+  cutoffIndex: number;
+  cutoffScore?: number | null;
+  topScore?: number | null;
+  cutoffRatio?: number | null;
+  triggeredBy: string;
+}
+
+export interface RetrievalTrace {
+  retriever: string;
+  citations: RetrievalCitation[];
+  contextFragments: RetrievalContextFragment[];
+  stats?: RetrievalStats | null;
+}
 
 export interface TraceEvent {
   type: TraceEventType;
@@ -59,6 +95,7 @@ export interface TraceEvent {
   runId?: number;
   callId?: string;
   threadId?: number;
+  retrieval?: RetrievalTrace | null;
 }
 
 export interface Thread {

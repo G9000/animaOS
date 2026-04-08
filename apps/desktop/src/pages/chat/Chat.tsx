@@ -32,8 +32,12 @@ const USE_COMPACT_BUBBLE = true;
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
   return [...threads].sort((left, right) => {
-    const leftTime = new Date(left.lastMessageAt ?? left.createdAt ?? 0).getTime();
-    const rightTime = new Date(right.lastMessageAt ?? right.createdAt ?? 0).getTime();
+    const leftTime = new Date(
+      left.lastMessageAt ?? left.createdAt ?? 0,
+    ).getTime();
+    const rightTime = new Date(
+      right.lastMessageAt ?? right.createdAt ?? 0,
+    ).getTime();
     return rightTime - leftTime;
   });
 }
@@ -56,7 +60,7 @@ export default function Chat() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const pendingMsgRef = useRef<string | null>(searchParams.get("msg"));
-  
+
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -95,48 +99,63 @@ export default function Chat() {
     // Load all initial data in parallel
     Promise.all([
       // Load avatar
-      api.consciousness.getAgentProfile(user.id).then(async (profile) => {
-        if (!profile.avatarUrl || revoked) return;
-        const token = getUnlockToken();
-        const headers: Record<string, string> = token ? { "x-anima-unlock": token } : {};
-        const res = await fetch(`${API_BASE}${profile.avatarUrl}`, { headers });
-        if (res.ok && !revoked) {
-          setAgentAvatarUrl(URL.createObjectURL(await res.blob()));
-        }
-      }).catch(() => {}),
+      api.consciousness
+        .getAgentProfile(user.id)
+        .then(async (profile) => {
+          if (!profile.avatarUrl || revoked) return;
+          const token = getUnlockToken();
+          const headers: Record<string, string> = token
+            ? { "x-anima-unlock": token }
+            : {};
+          const res = await fetch(`${API_BASE}${profile.avatarUrl}`, {
+            headers,
+          });
+          if (res.ok && !revoked) {
+            setAgentAvatarUrl(URL.createObjectURL(await res.blob()));
+          }
+        })
+        .catch(() => {}),
 
       // Load chat history
-      api.chat.history(user.id).then((hist) => {
-        if (revoked) return;
-        setMessages(hist);
-        const pending = pendingMsgRef.current;
-        if (pending) {
-          pendingMsgRef.current = null;
-          setSearchParams({}, { replace: true });
-          setTimeout(() => sendMessage(pending), 100);
-        }
-      }).catch(console.error),
+      api.chat
+        .history(user.id)
+        .then((hist) => {
+          if (revoked) return;
+          setMessages(hist);
+          const pending = pendingMsgRef.current;
+          if (pending) {
+            pendingMsgRef.current = null;
+            setSearchParams({}, { replace: true });
+            setTimeout(() => sendMessage(pending), 100);
+          }
+        })
+        .catch(console.error),
 
       // Load threads
-      api.threads.list().then((res) => {
-        if (revoked) return;
-        const nextThreads = dedupeThreads(res.threads);
-        setThreads(nextThreads);
-        const active = nextThreads.find((t) => t.status === "active");
-        if (active) {
-          setCurrentThreadId(active.id);
-          currentThreadIdRef.current = active.id;
-        }
-      }).catch(() => {}),
+      api.threads
+        .list()
+        .then((res) => {
+          if (revoked) return;
+          const nextThreads = dedupeThreads(res.threads);
+          setThreads(nextThreads);
+          const active = nextThreads.find((t) => t.status === "active");
+          if (active) {
+            setCurrentThreadId(active.id);
+            currentThreadIdRef.current = active.id;
+          }
+        })
+        .catch(() => {}),
     ]);
 
-    return () => { revoked = true; };
+    return () => {
+      revoked = true;
+    };
   }, [user?.id]);
 
   // ===== CONSOLIDATED: Polling for updates =====
   useEffect(() => {
     if (user?.id == null) return;
-    
+
     const interval = setInterval(async () => {
       if (streaming || currentThreadIdRef.current != null) return;
       try {
@@ -144,7 +163,7 @@ export default function Chat() {
         setMessages((prev) => (hist.length > prev.length ? hist : prev));
       } catch {}
     }, 10_000);
-    
+
     return () => clearInterval(interval);
   }, [user?.id, streaming]);
 
@@ -172,15 +191,16 @@ export default function Chat() {
   // ===== CONSOLIDATED: Visibility change =====
   useEffect(() => {
     if (user?.id == null) return;
-    
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden" && currentThreadIdRef.current) {
         api.threads.close(currentThreadIdRef.current).catch(() => {});
       }
     };
-    
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [user?.id]);
 
   // Thread actions
@@ -198,6 +218,7 @@ export default function Chat() {
           role: m.role as "user" | "assistant",
           content: m.content,
           createdAt: m.ts ?? undefined,
+          retrieval: m.retrieval ?? undefined,
         }));
       setMessages(mapped);
     } catch {
@@ -256,8 +277,12 @@ export default function Chat() {
       let fullResponse = "";
       let fullReasoning = "";
       const collectedTraces: TraceEvent[] = [];
-      
-      for await (const chunk of api.chat.stream(userMsg, user.id, currentThreadId ?? undefined)) {
+
+      for await (const chunk of api.chat.stream(
+        userMsg,
+        user.id,
+        currentThreadId ?? undefined,
+      )) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
           setReasoningBuffer(fullReasoning);
@@ -265,13 +290,18 @@ export default function Chat() {
         }
         if (chunk.startsWith(TRACE_PREFIX)) {
           try {
-            const evt = JSON.parse(chunk.slice(TRACE_PREFIX.length)) as TraceEvent;
+            const evt = JSON.parse(
+              chunk.slice(TRACE_PREFIX.length),
+            ) as TraceEvent;
             collectedTraces.push(evt);
             setTraceEvents([...collectedTraces]);
             if (evt.type === "done" && evt.threadId != null) {
               currentThreadIdRef.current = evt.threadId;
               setCurrentThreadId(evt.threadId);
-              api.threads.list().then((res) => setThreads(dedupeThreads(res.threads))).catch(() => {});
+              api.threads
+                .list()
+                .then((res) => setThreads(dedupeThreads(res.threads)))
+                .catch(() => {});
             }
           } catch {}
           continue;
@@ -286,14 +316,17 @@ export default function Chat() {
       }
 
       const emptyStepWarning = collectedTraces.find(
-        (event) => event.type === "warning" && event.code === "empty_step_result"
+        (event) =>
+          event.type === "warning" && event.code === "empty_step_result",
       );
-      
+
       const assistantMsg: ChatMessage = {
         id: Date.now() + 1,
         userId: user.id,
         role: "assistant",
-        content: fullResponse || (emptyStepWarning ? "[empty model output]" : "[no response]"),
+        content:
+          fullResponse ||
+          (emptyStepWarning ? "[empty model output]" : "[no response]"),
         reasoning: fullReasoning || undefined,
         traceEvents: collectedTraces.length > 0 ? collectedTraces : undefined,
       };
@@ -335,7 +368,9 @@ export default function Chat() {
           rehypePlugins={[rehypeHighlight]}
           components={{
             pre: ({ children }) => (
-              <pre className="bg-black/30 p-3 overflow-x-auto my-2">{children}</pre>
+              <pre className="bg-black/30 p-3 overflow-x-auto my-2">
+                {children}
+              </pre>
             ),
             code: ({ children, className }) => {
               const isInline = !className;

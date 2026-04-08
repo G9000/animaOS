@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import KGEntity, KGRelation
+from anima_server.services.agent.graph_triplets import extract_triplets as extract_rule_triplets
 
 logger = logging.getLogger(__name__)
 
@@ -519,6 +520,145 @@ def _extract_entity_names_from_query(
     return matched
 
 
+def _normalize_graph_entity_type(entity_type: str) -> str:
+    normalized = entity_type.strip().lower()
+    if normalized in {"", "unknown"}:
+        return "unknown"
+    if normalized in {"location", "loc", "gpe"}:
+        return "place"
+    if normalized in {"organization", "org", "company"}:
+        return "organization"
+    if normalized in {"person", "place", "project", "concept"}:
+        return normalized
+    if normalized == "other":
+        return "concept"
+    return normalized
+
+
+def _select_rule_extraction_text(
+    *,
+    text: str,
+    user_message: str,
+    assistant_response: str,
+) -> str:
+    # Deterministic extraction is intentionally user-first so assistant
+    # phrasing does not create graph edges on its own in scaffold mode.
+    for candidate in (user_message, text, assistant_response):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return ""
+
+
+def _triplets_to_entities_and_relations(
+    triplets: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    entities_by_key: dict[str, dict[str, str]] = {}
+    relations_by_key: dict[tuple[str, str, str], dict[str, str]] = {}
+
+    for triplet in triplets:
+        source = str(triplet.get("subject", "")).strip()
+        destination = str(triplet.get("object", "")).strip()
+        relation = str(triplet.get("predicate", "")).strip().lower()
+        if not source or not destination or not relation:
+            continue
+
+        source_type = _normalize_graph_entity_type(str(triplet.get("subject_type", "unknown")))
+        destination_type = _normalize_graph_entity_type(
+            str(triplet.get("object_type", "unknown"))
+        )
+
+        for name, entity_type in ((source, source_type), (destination, destination_type)):
+            key = normalize_entity_name(name)
+            existing = entities_by_key.get(key)
+            if existing is None:
+                entities_by_key[key] = {
+                    "name": name,
+                    "type": entity_type,
+                    "description": "",
+                }
+            elif existing["type"] == "unknown" and entity_type != "unknown":
+                existing["type"] = entity_type
+
+        relation_key = (
+            normalize_entity_name(source),
+            relation,
+            normalize_entity_name(destination),
+        )
+        relations_by_key.setdefault(
+            relation_key,
+            {
+                "source": source,
+                "relation": relation,
+                "destination": destination,
+            },
+        )
+
+    return list(entities_by_key.values()), list(relations_by_key.values())
+
+
+def _merge_graph_extractions(
+    *groups: tuple[list[dict[str, str]], list[dict[str, str]]],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    entities_by_key: dict[str, dict[str, str]] = {}
+    relations_by_key: dict[tuple[str, str, str], dict[str, str]] = {}
+
+    for entities, relations in groups:
+        for entity in entities:
+            name = str(entity.get("name", "")).strip()
+            if not name:
+                continue
+            key = normalize_entity_name(name)
+            entity_type = _normalize_graph_entity_type(str(entity.get("type", "unknown")))
+            description = str(entity.get("description", "")).strip()
+            existing = entities_by_key.get(key)
+            if existing is None:
+                entities_by_key[key] = {
+                    "name": name,
+                    "type": entity_type,
+                    "description": description,
+                }
+                continue
+
+            if existing["type"] == "unknown" and entity_type != "unknown":
+                existing["type"] = entity_type
+            if description and len(description) > len(existing.get("description", "")):
+                existing["description"] = description
+
+        for relation in relations:
+            source = str(relation.get("source", "")).strip()
+            destination = str(relation.get("destination", "")).strip()
+            predicate = str(relation.get("relation", "")).strip().lower()
+            if not source or not destination or not predicate:
+                continue
+            key = (
+                normalize_entity_name(source),
+                predicate,
+                normalize_entity_name(destination),
+            )
+            relations_by_key.setdefault(
+                key,
+                {
+                    "source": source,
+                    "relation": predicate,
+                    "destination": destination,
+                },
+            )
+
+    for relation in relations_by_key.values():
+        for name in (relation["source"], relation["destination"]):
+            key = normalize_entity_name(name)
+            entities_by_key.setdefault(
+                key,
+                {
+                    "name": name,
+                    "type": "unknown",
+                    "description": "",
+                },
+            )
+
+    return list(entities_by_key.values()), list(relations_by_key.values())
+
+
 # ── LLM extraction ──────────────────────────────────────────────────
 
 EXTRACT_ENTITIES_PROMPT = """You are a knowledge graph extraction system for a personal AI companion.
@@ -614,19 +754,27 @@ async def extract_entities_and_relations(
     user_message: str = "",
     assistant_response: str = "",
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Extract entities and relations from text using LLM.
+    """Extract entities and relations from text using rules plus LLM.
 
-    Uses JSON prompt with response parsing (consistent with consolidation.py pattern).
-    Cap: max 5 entities per call.
+    Rules-based triplets provide a deterministic fast path and scaffold-mode
+    fallback. The LLM path supplements those results when configured.
 
     Returns (entities, relations).
     """
-    if settings.agent_provider == "scaffold":
-        return [], []
-
     # Use user_message/assistant_response if provided, else use text
     msg = user_message or text
     resp = assistant_response or ""
+    rule_text = _select_rule_extraction_text(
+        text=text,
+        user_message=user_message,
+        assistant_response=assistant_response,
+    )
+    rule_entities, rule_relations = _triplets_to_entities_and_relations(
+        extract_rule_triplets(rule_text)
+    )
+
+    if settings.agent_provider == "scaffold":
+        return rule_entities, rule_relations
 
     try:
         from anima_server.services.agent.llm import create_llm
@@ -654,7 +802,7 @@ async def extract_entities_and_relations(
 
         parsed = _parse_json_object(content)
         if parsed is None:
-            return [], []
+            return rule_entities, rule_relations
 
         entities = parsed.get("entities", [])
         relations = parsed.get("relations", [])
@@ -664,14 +812,14 @@ async def extract_entities_and_relations(
         if not isinstance(relations, list):
             relations = []
 
-        # Validate and cap entities at 5
+        # Validate and cap LLM entities at 5 before merging with rule results.
         valid_entities: list[dict[str, str]] = []
         for e in entities[:5]:
             if isinstance(e, dict) and e.get("name") and e.get("type"):
                 valid_entities.append(
                     {
                         "name": str(e["name"]),
-                        "type": str(e["type"]),
+                        "type": _normalize_graph_entity_type(str(e["type"])),
                         "description": str(e.get("description", "")),
                     }
                 )
@@ -689,16 +837,19 @@ async def extract_entities_and_relations(
                 valid_relations.append(
                     {
                         "source": str(r["source"]),
-                        "relation": str(r["relation"]),
+                        "relation": str(r["relation"]).lower(),
                         "destination": str(r["destination"]),
                     }
                 )
 
-        return valid_entities, valid_relations
+        return _merge_graph_extractions(
+            (rule_entities, rule_relations),
+            (valid_entities, valid_relations),
+        )
 
     except Exception:
         logger.exception("LLM entity extraction failed")
-        return [], []
+        return rule_entities, rule_relations
 
 
 # ── ID hallucination protection ──────────────────────────────────────

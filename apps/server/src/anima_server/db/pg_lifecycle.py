@@ -282,6 +282,59 @@ class EmbeddedPG:
                     exc_info=True,
                 )
 
+    @staticmethod
+    def _probe_pid(pid: int) -> tuple[bool, bool]:
+        """Return ``(exists, permission_denied)`` for ``pid``.
+
+        ``os.kill(pid, 0)`` is a safe liveness probe on POSIX, but on Windows it
+        can leave the current process in an interrupted state. Use the Win32 API
+        there instead so stale-lock recovery does not destabilize pytest or app
+        startup.
+        """
+        if pid <= 0:
+            return False, False
+
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                ERROR_ACCESS_DENIED = 5
+                ERROR_INVALID_PARAMETER = 87
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                open_process = kernel32.OpenProcess
+                open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+                open_process.restype = ctypes.c_void_p
+                close_handle = kernel32.CloseHandle
+                close_handle.argtypes = [ctypes.c_void_p]
+                close_handle.restype = ctypes.c_int
+
+                handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+                if handle:
+                    close_handle(handle)
+                    return True, False
+
+                error = ctypes.get_last_error()
+                if error == ERROR_ACCESS_DENIED:
+                    return True, True
+                if error == ERROR_INVALID_PARAMETER:
+                    return False, False
+
+                logger.debug("OpenProcess failed while probing PID %s with Win32 error %s", pid, error)
+                return False, False
+            except Exception:
+                logger.debug("Falling back to os.kill(pid, 0) while probing PID %s", pid, exc_info=True)
+
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            return True, True
+        except (ProcessLookupError, OSError):
+            return False, False
+
+        return True, False
+
     def _recover_stale_lockfile(self) -> bool:
         """Remove a stale postmaster.pid whose process no longer exists."""
         pid_file = self._data_dir / "postmaster.pid"
@@ -296,9 +349,8 @@ class EmbeddedPG:
             pid_file.unlink(missing_ok=True)
             return True
 
-        try:
-            os.kill(pid, 0)
-        except PermissionError:
+        exists, permission_denied = self._probe_pid(pid)
+        if permission_denied:
             # Process exists but is owned by another user — leave the
             # lockfile in place.  (Must come before the generic OSError
             # handler because PermissionError is a subclass of OSError.)
@@ -308,7 +360,7 @@ class EmbeddedPG:
                 pid,
             )
             return False
-        except (ProcessLookupError, OSError):
+        if not exists:
             # ProcessLookupError: PID does not exist (Unix).
             # OSError: PID does not exist or is invalid (Windows raises
             #          OSError / WinError instead of ProcessLookupError).

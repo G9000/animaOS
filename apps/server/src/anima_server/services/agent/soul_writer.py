@@ -44,6 +44,7 @@ class SoulWriterResult:
     candidates_superseded: int = 0
     candidates_failed: int = 0
     access_sync: dict = field(default_factory=dict)
+    retrieval_feedback_sync: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
 
@@ -133,7 +134,7 @@ async def run_soul_writer(
     )
     if total_work > 0 or result.errors:
         logger.info(
-            "Soul Writer user=%s: ops=%d/%d/%d cands=%d/%d/%d/%d access=%s errors=%d",
+            "Soul Writer user=%s: ops=%d/%d/%d cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d",
             user_id,
             result.ops_processed,
             result.ops_skipped,
@@ -143,6 +144,7 @@ async def run_soul_writer(
             result.candidates_superseded,
             result.candidates_failed,
             result.access_sync.get("items_synced", 0),
+            result.retrieval_feedback_sync.get("items_synced", 0),
             len(result.errors),
         )
 
@@ -299,8 +301,14 @@ def _run_soul_writer_inner(
     # Phase 3: Access sync (always runs)
     with rt_factory() as runtime_db, soul_factory() as soul_db:
         from anima_server.services.agent.access_sync import sync_access_metadata
+        from anima_server.services.agent.retrieval_feedback import sync_retrieval_feedback
 
         result.access_sync = sync_access_metadata(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+        )
+        result.retrieval_feedback_sync = sync_retrieval_feedback(
             user_id=user_id,
             runtime_db=runtime_db,
             soul_db=soul_db,

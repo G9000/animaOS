@@ -255,6 +255,7 @@ def test_display_messages_deduplicates_send_message(db: Session) -> None:
     db.add(RuntimeMessage(
         thread_id=thread.id, user_id=uid, sequence_id=3,
         role="tool", content_text="Hi there!",
+        content_json={"retrieval": {"retriever": "hybrid", "citations": [], "contextFragments": [], "stats": None}},
         tool_name="send_message", tool_call_id="synthetic-send_message-0-0",
     ))
     # Internal tool result (should be filtered out)
@@ -274,6 +275,12 @@ def test_display_messages_deduplicates_send_message(db: Session) -> None:
     assert messages[0]["content"] == "hello"
     assert messages[1]["role"] == "assistant"
     assert messages[1]["content"] == "Hi there!"
+    assert messages[1]["retrieval"] == {
+        "retriever": "hybrid",
+        "citations": [],
+        "contextFragments": [],
+        "stats": None,
+    }
 
 
 def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
@@ -296,7 +303,25 @@ def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
 
     messages = [
         {"role": "user", "content": "old user message", "ts": "2026-01-01T00:00:00Z", "seq": 1},
-        {"role": "assistant", "content": "old reply", "ts": "2026-01-01T00:01:00Z", "seq": 2},
+        {
+            "role": "assistant",
+            "content": "old reply",
+            "ts": "2026-01-01T00:01:00Z",
+            "seq": 2,
+            "retrieval": {
+                "retriever": "hybrid",
+                "citations": [],
+                "contextFragments": [
+                    {
+                        "rank": 1,
+                        "memoryItemId": 7,
+                        "uri": "memory://items/7",
+                        "text": "old detail",
+                    }
+                ],
+                "stats": None,
+            },
+        },
     ]
     jsonl_path.write_text(
         "\n".join(json.dumps(m) for m in messages), encoding="utf-8"
@@ -327,3 +352,83 @@ def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
     assert len(summary_msg) == 1
     assert summary_msg[0].role == "system"
     assert "Talked about old stuff" in (summary_msg[0].content_text or "")
+    archived_assistant = next(message for message in archived if message.role == "assistant")
+    assert archived_assistant.content_json == {
+        "retrieval": {
+            "retriever": "hybrid",
+            "citations": [],
+            "contextFragments": [
+                {
+                    "rank": 1,
+                    "memoryItemId": 7,
+                    "uri": "memory://items/7",
+                    "text": "old detail",
+                }
+            ],
+            "stats": None,
+        }
+    }
+
+
+def test_display_messages_include_retrieval_from_archive(db: Session, tmp_path) -> None:
+    import json
+
+    from anima_server.services.agent.thread_manager import get_thread_messages_for_display
+
+    uid = _uid()
+    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
+    db.add(thread)
+    db.flush()
+
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir()
+    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
+    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
+
+    messages = [
+        {"role": "user", "content": "old user message", "ts": "2026-01-01T00:00:00Z", "seq": 1},
+        {
+            "role": "assistant",
+            "content": "old reply",
+            "ts": "2026-01-01T00:01:00Z",
+            "seq": 2,
+            "retrieval": {
+                "retriever": "hybrid",
+                "citations": [],
+                "contextFragments": [
+                    {
+                        "rank": 1,
+                        "memoryItemId": 7,
+                        "uri": "memory://items/7",
+                        "text": "old detail",
+                    }
+                ],
+                "stats": None,
+            },
+        },
+    ]
+    jsonl_path.write_text(
+        "\n".join(json.dumps(message) for message in messages), encoding="utf-8"
+    )
+    meta_path.write_text(
+        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Talked about old stuff"}),
+        encoding="utf-8",
+    )
+
+    result = get_thread_messages_for_display(
+        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None,
+    )
+
+    assert result[1]["retrieval"] == {
+        "retriever": "hybrid",
+        "citations": [],
+        "contextFragments": [
+            {
+                "rank": 1,
+                "memoryItemId": 7,
+                "uri": "memory://items/7",
+                "text": "old detail",
+            }
+        ],
+        "stats": None,
+    }

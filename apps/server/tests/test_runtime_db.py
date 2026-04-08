@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -22,7 +23,6 @@ from anima_server.db.runtime import (
     init_runtime_engine,
 )
 from anima_server.db.session import get_db
-from fastapi.testclient import TestClient
 from sqlalchemy import text
 from starlette.requests import Request
 
@@ -102,6 +102,24 @@ def _execute_runtime_sql(sql: str) -> None:
         connection.execute(text(sql))
 
 
+def _stub_create_app_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    main_module,
+) -> None:
+    monkeypatch.setattr(main_module, "ensure_core_manifest", lambda: None)
+    monkeypatch.setattr(main_module, "acquire_core_lock", lambda: True)
+    monkeypatch.setattr(main_module, "load_persisted_runtime_settings", lambda: None)
+    monkeypatch.setattr(main_module, "ensure_per_user_databases_ready", lambda: None)
+
+
+def _run_app_lifespan(app) -> None:
+    async def _run() -> None:
+        async with app.router.lifespan_context(app):
+            return None
+
+    asyncio.run(_run())
+
+
 @requires_embedded_pg
 def test_embedded_pg_start_creates_data_directory(managed_tmp_path: Path) -> None:
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
@@ -175,10 +193,11 @@ def test_embedded_pg_keeps_lockfile_on_permission_error(
     pid_file = pg.data_dir / "postmaster.pid"
     pid_file.write_text("42\n", encoding="utf-8")
 
-    def _deny_signal(_pid: int, _sig: int) -> None:
-        raise PermissionError
-
-    monkeypatch.setattr(os, "kill", _deny_signal)
+    monkeypatch.setattr(
+        EmbeddedPG,
+        "_probe_pid",
+        staticmethod(lambda _pid: (True, True)),
+    )
 
     pg._recover_stale_lockfile()
 
@@ -447,17 +466,18 @@ def test_ensure_pgvector_enables_vector_extension(
 
 def test_ensure_pgvector_logs_warning_when_extension_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     engine = MagicMock()
     engine.begin.side_effect = RuntimeError("pgvector unavailable")
+    warning = MagicMock()
 
     monkeypatch.setattr(runtime_module, "get_runtime_engine", lambda: engine)
+    monkeypatch.setattr(runtime_module.logger, "warning", warning)
 
-    with caplog.at_level(logging.WARNING, logger="anima_server.db.runtime"):
-        runtime_module.ensure_pgvector()
+    runtime_module.ensure_pgvector()
 
-    assert "pgvector extension not available" in caplog.text
+    warning.assert_called_once()
+    assert "pgvector extension not available" in warning.call_args.args[0]
 
 
 @requires_runtime_backend
@@ -545,12 +565,13 @@ def test_config_auto_derives_url_from_embedded_pg(
             "anima_server.services.agent.consolidation.drain_background_memory_tasks",
             drain_background_memory_tasks,
         )
+        _stub_create_app_bootstrap(monkeypatch, main_module)
 
         app = main_module.create_app()
 
-        with TestClient(app):
-            assert init_calls == [
-                (fake_pg.database_url, settings.database_echo)]
+        _run_app_lifespan(app)
+        assert init_calls == [
+            (fake_pg.database_url, settings.database_echo)]
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
@@ -605,11 +626,12 @@ def test_explicit_runtime_url_skips_embedded_pg(
             "anima_server.services.agent.consolidation.drain_background_memory_tasks",
             drain_background_memory_tasks,
         )
+        _stub_create_app_bootstrap(monkeypatch, main_module)
 
         app = main_module.create_app()
 
-        with TestClient(app):
-            assert init_calls == [(explicit_url, settings.database_echo)]
+        _run_app_lifespan(app)
+        assert init_calls == [(explicit_url, settings.database_echo)]
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
@@ -671,15 +693,19 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
             "anima_server.services.agent.consolidation.drain_background_memory_tasks",
             drain_background_memory_tasks,
         )
+        _stub_create_app_bootstrap(monkeypatch, main_module)
 
         app = main_module.create_app()
 
-        with TestClient(app):
-            assert startup_calls == [
-                f"init:{explicit_url}",
-                "pgvector",
-                "migrate",
-            ]
+        _run_app_lifespan(app)
+        assert startup_calls == [
+            f"init:{explicit_url}",
+            "pgvector",
+            "migrate",
+        ]
+        cancel_pending_reflection.assert_awaited_once_with()
+        drain_background_memory_tasks.assert_awaited_once_with()
+        dispose_runtime_engine_mock.assert_called_once_with()
     finally:
         settings.data_dir = original_data_dir
         settings.runtime_database_url = original_runtime_database_url
