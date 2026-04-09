@@ -53,6 +53,9 @@ unicode-segmentation = "1.11"
 # Logging
 log = "0.4"
 
+# Filesystem locking
+fs4 = "0.8"
+
 # Hex encoding (for Python bindings)
 hex = { version = "0.4", optional = true }
 

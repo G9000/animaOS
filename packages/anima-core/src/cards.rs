@@ -178,6 +178,21 @@ pub struct MemoryCard {
     pub superseded_by: Option<CardId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct VersionKey {
+    entity: String,
+    slot: String,
+}
+
+impl VersionKey {
+    fn new(entity: &str, slot: &str) -> Self {
+        Self {
+            entity: entity.to_lowercase(),
+            slot: slot.to_lowercase(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -185,12 +200,8 @@ fn default_true() -> bool {
 impl MemoryCard {
     /// Canonical version key for grouping related cards.
     #[must_use]
-    pub fn version_key(&self) -> String {
-        format!(
-            "{}:{}",
-            self.entity.to_lowercase(),
-            self.slot.to_lowercase()
-        )
+    fn version_key(&self) -> VersionKey {
+        VersionKey::new(&self.entity, &self.slot)
     }
 }
 
@@ -214,11 +225,18 @@ impl Default for Cardinality {
 /// Registry of cardinality rules per (entity_pattern, slot).
 ///
 /// Replaces animaOS's 12 hardcoded slot patterns with a dynamic registry.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct SchemaRegistry {
     /// (entity_pattern, slot) → Cardinality
     /// entity_pattern "*" matches any entity.
     rules: HashMap<(String, String), Cardinality>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SchemaRuleWire {
+    entity_pattern: String,
+    slot: String,
+    cardinality: Cardinality,
 }
 
 impl SchemaRegistry {
@@ -277,9 +295,61 @@ pub struct CardStore {
     cards: Vec<MemoryCard>,
     next_id: CardId,
     /// Index: version_key → card indices (newest last).
-    version_index: HashMap<String, Vec<usize>>,
+    version_index: HashMap<VersionKey, Vec<usize>>,
     /// Schema for cardinality rules.
     pub schema: SchemaRegistry,
+}
+
+impl Serialize for SchemaRegistry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut rules: Vec<SchemaRuleWire> = self
+            .rules
+            .iter()
+            .map(|((entity_pattern, slot), &cardinality)| SchemaRuleWire {
+                entity_pattern: entity_pattern.clone(),
+                slot: slot.clone(),
+                cardinality,
+            })
+            .collect();
+        rules.sort_by(|left, right| {
+            left.entity_pattern
+                .cmp(&right.entity_pattern)
+                .then(left.slot.cmp(&right.slot))
+        });
+        rules.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaRegistry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let rules = Vec::<SchemaRuleWire>::deserialize(deserializer)?;
+        let mut registry = Self::default();
+        for rule in rules {
+            registry
+                .rules
+                .insert((rule.entity_pattern, rule.slot), rule.cardinality);
+        }
+        Ok(registry)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CardStoreSnapshot {
+    cards: Vec<MemoryCard>,
+    schema: SchemaRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum CardStoreWire {
+    Legacy(Vec<MemoryCard>),
+    Snapshot(CardStoreSnapshot),
 }
 
 impl CardStore {
@@ -299,12 +369,20 @@ impl CardStore {
     /// For Multiple cardinality with Extends: appends.
     /// For Multiple cardinality with Retracts: deactivates a specific value match.
     pub fn put(&mut self, mut card: MemoryCard) -> CardId {
-        card.id = self.next_id;
-        self.next_id += 1;
+        card.superseded_by = None;
         card.active = true;
 
         let vk = card.version_key();
         let cardinality = self.schema.cardinality(&card.entity, &card.slot);
+
+        if !matches!(card.version, VersionRelation::Retracts) {
+            if let Some(existing_id) = self.find_active_duplicate(&card) {
+                return existing_id;
+            }
+        }
+
+        card.id = self.next_id;
+        self.next_id += 1;
 
         match (cardinality, card.version) {
             (Cardinality::Single, VersionRelation::Sets | VersionRelation::Updates) => {
@@ -334,7 +412,9 @@ impl CardStore {
                 // Deactivate only the specific value match
                 if let Some(indices) = self.version_index.get(&vk) {
                     for &idx in indices {
-                        if self.cards[idx].active && self.cards[idx].value == card.value {
+                        if self.cards[idx].active
+                            && cards_share_active_state(&self.cards[idx], &card)
+                        {
                             self.cards[idx].active = false;
                             self.cards[idx].superseded_by = Some(card.id);
                         }
@@ -366,7 +446,7 @@ impl CardStore {
 
     /// Get the current active value(s) for a given entity and slot.
     pub fn get_current(&self, entity: &str, slot: &str) -> Vec<&MemoryCard> {
-        let vk = format!("{}:{}", entity.to_lowercase(), slot.to_lowercase());
+        let vk = VersionKey::new(entity, slot);
         self.version_index
             .get(&vk)
             .map(|indices| {
@@ -387,7 +467,7 @@ impl CardStore {
 
     /// Get the full version history for a given entity and slot (oldest first).
     pub fn get_history(&self, entity: &str, slot: &str) -> Vec<&MemoryCard> {
-        let vk = format!("{}:{}", entity.to_lowercase(), slot.to_lowercase());
+        let vk = VersionKey::new(entity, slot);
         self.version_index
             .get(&vk)
             .map(|indices| indices.iter().map(|&idx| &self.cards[idx]).collect())
@@ -396,10 +476,10 @@ impl CardStore {
 
     /// Get all active cards for a given entity.
     pub fn get_by_entity(&self, entity: &str) -> Vec<&MemoryCard> {
-        let prefix = format!("{}:", entity.to_lowercase());
+        let entity_key = entity.to_lowercase();
         self.version_index
             .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
+            .filter(|(k, _)| k.entity == entity_key)
             .flat_map(|(_, indices)| {
                 indices.iter().filter_map(|&idx| {
                     let c = &self.cards[idx];
@@ -431,6 +511,11 @@ impl CardStore {
         self.cards.iter().filter(|c| c.active).count()
     }
 
+    /// Iterate over all cards in insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = &MemoryCard> {
+        self.cards.iter()
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cards.is_empty()
@@ -438,13 +523,21 @@ impl CardStore {
 
     /// Serialize all cards to JSON bytes.
     pub fn serialize(&self) -> crate::Result<Vec<u8>> {
-        serde_json::to_vec(&self.cards).map_err(|e| crate::Error::Serialization(e.to_string()))
+        serde_json::to_vec(&CardStoreSnapshot {
+            cards: self.cards.clone(),
+            schema: self.schema.clone(),
+        })
+        .map_err(|e| crate::Error::Serialization(e.to_string()))
     }
 
     /// Deserialize cards from JSON bytes and rebuild indices.
     pub fn deserialize(bytes: &[u8], schema: SchemaRegistry) -> crate::Result<Self> {
-        let cards: Vec<MemoryCard> = serde_json::from_slice(bytes)
-            .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+        let (cards, schema) = match serde_json::from_slice(bytes)
+            .map_err(|e| crate::Error::Serialization(e.to_string()))?
+        {
+            CardStoreWire::Legacy(cards) => (cards, schema),
+            CardStoreWire::Snapshot(snapshot) => (snapshot.cards, snapshot.schema),
+        };
 
         let mut store = Self {
             next_id: cards.iter().map(|c| c.id).max().unwrap_or(0) + 1,
@@ -462,6 +555,25 @@ impl CardStore {
 
         Ok(store)
     }
+
+    fn find_active_duplicate(&self, card: &MemoryCard) -> Option<CardId> {
+        self.version_index.get(&card.version_key()).and_then(|indices| {
+            indices.iter().find_map(|&idx| {
+                let existing = &self.cards[idx];
+                if existing.active && cards_share_active_state(existing, card) {
+                    Some(existing.id)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+}
+
+fn cards_share_active_state(existing: &MemoryCard, incoming: &MemoryCard) -> bool {
+    existing.kind == incoming.kind
+        && existing.value == incoming.value
+        && existing.polarity == incoming.polarity
 }
 
 #[cfg(test)]
@@ -571,6 +683,30 @@ mod tests {
     }
 
     #[test]
+    fn test_retract_multiple_matches_active_state_not_value_only() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+
+        let mut positive = make_card("user", "likes", "coffee", VersionRelation::Sets);
+        positive.polarity = Polarity::Positive;
+        let positive_id = store.put(positive);
+
+        let mut negative = make_card("user", "likes", "coffee", VersionRelation::Extends);
+        negative.polarity = Polarity::Negative;
+        let negative_id = store.put(negative);
+
+        let mut retract_negative = make_card("user", "likes", "coffee", VersionRelation::Retracts);
+        retract_negative.polarity = Polarity::Negative;
+        store.put(retract_negative);
+
+        assert!(store.get(positive_id).unwrap().active);
+        assert!(!store.get(negative_id).unwrap().active);
+        let current = store.get_current("user", "likes");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].id, positive_id);
+        assert_eq!(current[0].polarity, Polarity::Positive);
+    }
+
+    #[test]
     fn test_version_history() {
         let mut store = CardStore::new(SchemaRegistry::new());
 
@@ -667,5 +803,131 @@ mod tests {
         let current = restored.get_current("user", "employer");
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].value, "Meta");
+    }
+
+    #[test]
+    fn test_single_cardinality_dedups_repeated_active_insert() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+        let card = make_card("user", "employer", "Meta", VersionRelation::Sets);
+
+        let first_id = store.put(card.clone());
+        let second_id = store.put(card);
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.get_current("user", "employer").len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_cardinality_dedups_same_active_state() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+        let card = make_card("user", "likes", "coffee", VersionRelation::Extends);
+
+        let first_id = store.put(card.clone());
+        let second_id = store.put(card);
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.get_current("user", "likes").len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_cardinality_dedups_same_active_state_across_version_relations() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+
+        let first_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Sets));
+        let second_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Extends));
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.get_current("user", "likes")[0].value, "coffee");
+    }
+
+    #[test]
+    fn test_single_cardinality_dedups_same_active_value_across_version_relations() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+
+        let first_id = store.put(make_card("user", "employer", "Meta", VersionRelation::Sets));
+        let second_id =
+            store.put(make_card("user", "employer", "Meta", VersionRelation::Updates));
+        let third_id =
+            store.put(make_card("user", "employer", "Meta", VersionRelation::Extends));
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(second_id, third_id);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.get_current("user", "employer")[0].value, "Meta");
+    }
+
+    #[test]
+    fn test_put_allows_reinsert_after_retraction() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+
+        let first_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Sets));
+        let retraction_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Retracts));
+        let second_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Extends));
+
+        assert_eq!(first_id, 0);
+        assert_eq!(retraction_id, 1);
+        assert_eq!(second_id, 2);
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.get_current("user", "likes")[0].id, second_id);
+    }
+
+    #[test]
+    fn test_version_key_handles_delimiter_bearing_entity_and_slot() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+
+        store.put(make_card("foo:bar", "baz", "left", VersionRelation::Sets));
+        store.put(make_card("foo", "bar:baz", "right", VersionRelation::Sets));
+
+        let left = store.get_current("foo:bar", "baz");
+        let right = store.get_current("foo", "bar:baz");
+
+        assert_eq!(left.len(), 1);
+        assert_eq!(right.len(), 1);
+        assert_eq!(left[0].value, "left");
+        assert_eq!(right[0].value, "right");
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_preserves_schema() {
+        let mut schema = SchemaRegistry::new();
+        schema.set("user", "emails", Cardinality::Multiple);
+
+        let mut store = CardStore::new(schema);
+        store.put(make_card(
+            "user",
+            "emails",
+            "a@example.com",
+            VersionRelation::Sets,
+        ));
+
+        let bytes = store.serialize().unwrap();
+        let restored = CardStore::deserialize(&bytes, SchemaRegistry::new()).unwrap();
+
+        assert_eq!(
+            restored.schema.cardinality("user", "emails"),
+            Cardinality::Multiple
+        );
+    }
+
+    #[test]
+    fn test_put_clears_caller_supplied_superseded_by_on_new_active_card() {
+        let mut store = CardStore::new(SchemaRegistry::new());
+        let mut card = make_card("user", "employer", "Meta", VersionRelation::Sets);
+        card.superseded_by = Some(999);
+
+        let id = store.put(card);
+
+        let stored = store.get(id).unwrap();
+        assert!(stored.active);
+        assert_eq!(stored.superseded_by, None);
     }
 }

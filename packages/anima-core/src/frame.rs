@@ -319,7 +319,7 @@ impl Frame {
 }
 
 /// An in-memory frame store with fast lookups by ID and kind.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FrameStore {
     frames: Vec<Frame>,
     next_id: FrameId,
@@ -327,6 +327,17 @@ pub struct FrameStore {
     kind_index: std::collections::HashMap<FrameKind, Vec<usize>>,
     /// Index: user_id → frame indices.
     user_index: std::collections::HashMap<String, Vec<usize>>,
+    id_index: std::collections::HashMap<FrameId, usize>,
+}
+
+#[derive(Serialize)]
+struct ActiveFrameIdentity<'a> {
+    kind: FrameKind,
+    content: &'a str,
+    checksum: [u8; 32],
+    metadata: &'a FrameMetadata,
+    source: FrameSource,
+    user_id: &'a str,
 }
 
 impl FrameStore {
@@ -336,6 +347,12 @@ impl FrameStore {
 
     /// Insert a frame, assigning the next available ID.
     pub fn insert(&mut self, mut frame: Frame) -> FrameId {
+        if frame.is_active() {
+            if let Some(existing_id) = self.find_active_duplicate(&frame) {
+                return existing_id;
+            }
+        }
+
         frame.id = self.next_id;
         self.next_id += 1;
 
@@ -345,21 +362,39 @@ impl FrameStore {
             .entry(frame.user_id.clone())
             .or_default()
             .push(idx);
+        self.id_index.insert(frame.id, idx);
 
         let id = frame.id;
         self.frames.push(frame);
         id
     }
 
+    fn find_active_duplicate(&self, frame: &Frame) -> Option<FrameId> {
+        self.user_index.get(&frame.user_id).and_then(|indices| {
+            let identity = frame_identity_key(frame);
+            indices.iter().find_map(|&idx| {
+                let existing = &self.frames[idx];
+                if existing.is_active() && frame_identity_key(existing) == identity {
+                    Some(existing.id)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     /// Get a frame by ID.
     #[must_use]
     pub fn get(&self, id: FrameId) -> Option<&Frame> {
-        self.frames.get(id as usize)
+        self.id_index.get(&id).map(|&idx| &self.frames[idx])
     }
 
     /// Get a mutable frame by ID.
     pub fn get_mut(&mut self, id: FrameId) -> Option<&mut Frame> {
-        self.frames.get_mut(id as usize)
+        self.id_index
+            .get(&id)
+            .copied()
+            .map(|idx| &mut self.frames[idx])
     }
 
     /// Get all active frames of a given kind.
@@ -435,7 +470,11 @@ impl FrameStore {
             .map_err(|e| crate::Error::Serialization(e.to_string()))?;
 
         let mut store = Self {
-            next_id: frames.len() as FrameId,
+            next_id: frames
+                .iter()
+                .map(|frame| frame.id)
+                .max()
+                .map_or(0, |id| id + 1),
             ..Default::default()
         };
 
@@ -447,11 +486,24 @@ impl FrameStore {
                 .entry(frame.user_id.clone())
                 .or_default()
                 .push(idx);
+            store.id_index.insert(frame.id, idx);
             store.frames.push(frame);
         }
 
         Ok(store)
     }
+}
+
+fn frame_identity_key(frame: &Frame) -> String {
+    serde_json::to_string(&ActiveFrameIdentity {
+        kind: frame.kind,
+        content: &frame.content,
+        checksum: frame.checksum,
+        metadata: &frame.metadata,
+        source: frame.source,
+        user_id: &frame.user_id,
+    })
+    .expect("frame identity must serialize")
 }
 
 #[cfg(test)]
@@ -566,6 +618,94 @@ mod tests {
         assert_eq!(restored.len(), 2);
         assert_eq!(restored.get(0).unwrap().content, "hello");
         assert_eq!(restored.get(1).unwrap().content, "learn rust");
+    }
+
+    #[test]
+    fn test_frame_store_dedups_repeated_active_insert() {
+        let mut store = FrameStore::new();
+        let frame = Frame::new(
+            0,
+            FrameKind::Fact,
+            "Works remotely".into(),
+            "user1".into(),
+            FrameSource::Extraction,
+        )
+        .with_metadata(FrameMetadata {
+            importance: Some(4),
+            category: Some("fact".into()),
+            ..FrameMetadata::default()
+        })
+        .with_timestamp(123);
+
+        let first_id = store.insert(frame.clone());
+        let second_id = store.insert(frame);
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.active_count(), 1);
+    }
+
+    #[test]
+    fn test_frame_store_allows_insert_after_superseded_or_deleted() {
+        let mut store = FrameStore::new();
+        let frame = Frame::new(
+            0,
+            FrameKind::Fact,
+            "Lives in KL".into(),
+            "user1".into(),
+            FrameSource::Extraction,
+        );
+
+        let first_id = store.insert(frame.clone());
+        store.get_mut(first_id).unwrap().supersede(99);
+        let second_id = store.insert(frame.clone());
+        store.get_mut(second_id).unwrap().delete();
+        let third_id = store.insert(frame);
+
+        assert_eq!(first_id, 0);
+        assert_eq!(second_id, 1);
+        assert_eq!(third_id, 2);
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.active_count(), 1);
+    }
+
+    #[test]
+    fn test_frame_store_deserialize_handles_sparse_and_reordered_ids() {
+        let frames = vec![
+            Frame::new(
+                7,
+                FrameKind::Fact,
+                "later".into(),
+                "user1".into(),
+                FrameSource::Extraction,
+            ),
+            Frame::new(
+                3,
+                FrameKind::Preference,
+                "earlier".into(),
+                "user2".into(),
+                FrameSource::UserMessage,
+            ),
+        ];
+
+        let bytes = serde_json::to_vec(&frames).unwrap();
+        let mut store = FrameStore::deserialize(&bytes).unwrap();
+
+        assert_eq!(store.get(7).unwrap().content, "later");
+        assert_eq!(store.get(3).unwrap().content, "earlier");
+
+        store.get_mut(3).unwrap().delete();
+        assert_eq!(store.get(3).unwrap().status, FrameStatus::Deleted);
+
+        let inserted_id = store.insert(Frame::new(
+            0,
+            FrameKind::Goal,
+            "new".into(),
+            "user3".into(),
+            FrameSource::Extraction,
+        ));
+        assert_eq!(inserted_id, 8);
+        assert_eq!(store.get(8).unwrap().content, "new");
     }
 
     #[test]

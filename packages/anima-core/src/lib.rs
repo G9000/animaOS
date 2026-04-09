@@ -21,8 +21,11 @@ pub mod capsule;
 pub mod cards;
 pub mod chunker;
 pub mod enrich;
+pub mod engine;
+pub mod integrity;
 pub mod frame;
 pub mod graph;
+pub mod projection;
 pub mod search;
 pub mod simd;
 #[cfg(feature = "temporal")]
@@ -38,6 +41,8 @@ pub mod lex;
 
 #[cfg(feature = "replay")]
 pub mod replay;
+
+pub mod path_engine;
 
 #[cfg(feature = "python")]
 mod ffi;
@@ -65,6 +70,12 @@ pub enum Error {
 
     #[error("encryption error: {0}")]
     Encryption(String),
+
+    #[error("storage error: {0}")]
+    Storage(String),
+
+    #[error("lock conflict: {0}")]
+    LockConflict(String),
 
     #[error("io error: {0}")]
     Io(String),

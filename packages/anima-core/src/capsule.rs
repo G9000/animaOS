@@ -9,11 +9,12 @@
 //!
 //! This replaces PG dump / SQLCipher file copy with a clean, portable format.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Cursor, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use crate::integrity::IntegritySeverity;
 use crate::Result;
 
 /// Magic bytes identifying an `.anima` capsule.
@@ -21,6 +22,7 @@ pub const MAGIC: &[u8; 4] = b"ANMA";
 
 /// Current format version.
 pub const FORMAT_VERSION: u8 = 1;
+const MAX_DECOMPRESSED_SECTION_SIZE: usize = 16 * 1024 * 1024;
 
 /// Section type identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -30,6 +32,89 @@ pub enum SectionKind {
     Cards = 1,
     Graph = 2,
     Metadata = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionStorageClass {
+    Canonical,
+    Derived,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SectionManifestEntry {
+    pub kind: SectionKind,
+    pub storage_class: SectionStorageClass,
+}
+
+#[must_use]
+pub fn section_storage_class(kind: SectionKind) -> SectionStorageClass {
+    match kind {
+        SectionKind::Frames => SectionStorageClass::Canonical,
+        SectionKind::Cards | SectionKind::Graph | SectionKind::Metadata => {
+            SectionStorageClass::Derived
+        }
+    }
+}
+
+#[must_use]
+pub fn section_manifest(sections: &[SectionKind]) -> Vec<SectionManifestEntry> {
+    sections
+        .iter()
+        .copied()
+        .map(|kind| SectionManifestEntry {
+            kind,
+            storage_class: section_storage_class(kind),
+        })
+        .collect()
+}
+
+/// Public section metadata exposed by capsule verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapsuleSectionInfo {
+    pub kind: SectionKind,
+    pub offset: u32,
+    pub size: u32,
+    pub encrypted: bool,
+}
+
+/// Explicit capsule verification issue kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapsuleVerificationIssueKind {
+    CapsuleTooSmall,
+    SectionTooLarge,
+    SectionOffsetOverflow,
+    DuplicateSectionKind,
+    InvalidMagic,
+    HeaderReadFailed,
+    UnsupportedVersion,
+    MissingPassword,
+    DirectoryReadFailed,
+    FooterChecksumMismatch,
+    SectionChecksumMismatch,
+    SectionOutOfBounds,
+    SectionDecryptionFailed,
+    SectionDecompressionFailed,
+}
+
+/// Explicit verification issue surfaced to hosts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapsuleVerificationIssue {
+    pub kind: CapsuleVerificationIssueKind,
+    pub severity: IntegritySeverity,
+    pub message: String,
+    pub section: Option<SectionKind>,
+}
+
+/// Structured report for capsule verification.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapsuleVerificationReport {
+    pub ok: bool,
+    pub version: u8,
+    pub encrypted: bool,
+    pub sections: Vec<CapsuleSectionInfo>,
+    pub issues: Vec<CapsuleVerificationIssue>,
 }
 
 impl SectionKind {
@@ -182,7 +267,20 @@ fn compress(data: &[u8]) -> crate::Result<Vec<u8>> {
 
 /// Decompress Zstd data.
 fn decompress(data: &[u8]) -> crate::Result<Vec<u8>> {
-    zstd::decode_all(Cursor::new(data)).map_err(|e| crate::Error::Io(e.to_string()))
+    let decoder =
+        zstd::stream::read::Decoder::new(Cursor::new(data)).map_err(|e| crate::Error::Io(e.to_string()))?;
+    let mut limited = decoder.take((MAX_DECOMPRESSED_SECTION_SIZE + 1) as u64);
+    let mut output = Vec::new();
+    limited
+        .read_to_end(&mut output)
+        .map_err(|e| crate::Error::Io(e.to_string()))?;
+    if output.len() > MAX_DECOMPRESSED_SECTION_SIZE {
+        return Err(crate::Error::Capsule(format!(
+            "decompressed section exceeds {} bytes",
+            MAX_DECOMPRESSED_SECTION_SIZE
+        )));
+    }
+    Ok(output)
 }
 
 /// BLAKE3 hash of data.
@@ -306,16 +404,19 @@ impl CapsuleWriter {
 
         for kind in section_keys {
             let data = &self.sections[&kind];
-            let mut compressed = compress(data)?;
+            let compressed = compress(data)?;
 
             // Encrypt if password set
             #[cfg(feature = "encryption")]
-            if let Some(ref password) = self.password {
-                compressed = crypto::encrypt(&compressed, password)?;
-            }
+            let compressed = if let Some(ref password) = self.password {
+                crypto::encrypt(&compressed, password)?
+            } else {
+                compressed
+            };
 
             let hash = checksum(&compressed);
-            let size = compressed.len() as u32;
+            let size = u32::try_from(compressed.len())
+                .map_err(|_| crate::Error::Capsule(format!("section {:?} exceeds 4 GiB", kind)))?;
 
             entries.push(SectionEntry {
                 kind,
@@ -324,7 +425,9 @@ impl CapsuleWriter {
                 checksum: hash,
             });
 
-            current_offset += size;
+            current_offset = current_offset.checked_add(size).ok_or_else(|| {
+                crate::Error::Capsule("capsule section offsets exceed 4 GiB".into())
+            })?;
             compressed_sections.push(compressed);
         }
 
@@ -364,6 +467,7 @@ pub struct CapsuleReader {
     entries: Vec<SectionEntry>,
     data_start: usize,
     raw: Vec<u8>,
+    #[cfg(feature = "encryption")]
     password: Option<Vec<u8>>,
 }
 
@@ -401,8 +505,16 @@ impl CapsuleReader {
         }
 
         let mut entries = Vec::new();
+        let mut seen_kinds = HashSet::new();
         for _ in 0..header.section_count {
-            entries.push(SectionEntry::read_from(&mut cursor)?);
+            let entry = SectionEntry::read_from(&mut cursor)?;
+            if !seen_kinds.insert(entry.kind) {
+                return Err(crate::Error::Capsule(format!(
+                    "duplicate section kind: {:?}",
+                    entry.kind
+                )));
+            }
+            entries.push(entry);
         }
 
         let data_start = cursor.position() as usize;
@@ -412,6 +524,7 @@ impl CapsuleReader {
             entries,
             data_start,
             raw,
+            #[cfg(feature = "encryption")]
             password: password.map(|p| p.to_vec()),
         })
     }
@@ -424,8 +537,13 @@ impl CapsuleReader {
             .find(|e| e.kind == kind)
             .ok_or_else(|| crate::Error::Capsule(format!("section {:?} not found", kind)))?;
 
-        let start = self.data_start + entry.offset as usize;
-        let end = start + entry.size as usize;
+        let start = self
+            .data_start
+            .checked_add(entry.offset as usize)
+            .ok_or_else(|| crate::Error::Capsule("section offset overflow".into()))?;
+        let end = start
+            .checked_add(entry.size as usize)
+            .ok_or_else(|| crate::Error::Capsule("section size overflow".into()))?;
 
         if end > self.raw.len() - 32 {
             return Err(crate::Error::Capsule(
@@ -444,15 +562,20 @@ impl CapsuleReader {
             )));
         }
 
-        let mut data = section_data.to_vec();
+        let data = section_data.to_vec();
 
         // Decrypt if needed
         #[cfg(feature = "encryption")]
-        if self.header.is_encrypted() {
+        let data = if self.header.is_encrypted() {
             if let Some(ref password) = self.password {
-                data = crypto::decrypt(&data, password)?;
+                crypto::decrypt(&data, password)
+                    .map_err(|e| crate::Error::Capsule(format!("section {:?} decrypt failed: {e}", kind)))?
+            } else {
+                data
             }
-        }
+        } else {
+            data
+        };
 
         #[cfg(not(feature = "encryption"))]
         if self.header.is_encrypted() {
@@ -462,6 +585,7 @@ impl CapsuleReader {
         }
 
         decompress(&data)
+            .map_err(|e| crate::Error::Capsule(format!("section {:?} decompress failed: {e}", kind)))
     }
 
     /// List available section kinds.
@@ -478,6 +602,227 @@ impl CapsuleReader {
     pub fn version(&self) -> u8 {
         self.header.version
     }
+}
+
+#[must_use]
+pub fn verify_capsule(raw: &[u8], password: Option<&[u8]>) -> CapsuleVerificationReport {
+    let mut report = CapsuleVerificationReport::default();
+
+    if raw.len() < 16 + 32 {
+        report.issues.push(CapsuleVerificationIssue {
+            kind: CapsuleVerificationIssueKind::CapsuleTooSmall,
+            severity: IntegritySeverity::Error,
+            message: "capsule too small".into(),
+            section: None,
+        });
+        report.ok = false;
+        return report;
+    }
+
+    let footer_start = raw.len() - 32;
+    let expected_hash: [u8; 32] = match raw[footer_start..].try_into() {
+        Ok(hash) => hash,
+        Err(_) => {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::FooterChecksumMismatch,
+                severity: IntegritySeverity::Error,
+                message: "invalid footer checksum".into(),
+                section: None,
+            });
+            report.ok = false;
+            return report;
+        }
+    };
+
+    let actual_hash = checksum(&raw[..footer_start]);
+    if expected_hash != actual_hash {
+        report.issues.push(CapsuleVerificationIssue {
+            kind: CapsuleVerificationIssueKind::FooterChecksumMismatch,
+            severity: IntegritySeverity::Error,
+            message: "footer checksum mismatch".into(),
+            section: None,
+        });
+    }
+
+    let mut cursor = Cursor::new(raw);
+    let header = match CapsuleHeader::read_from(&mut cursor) {
+        Ok(header) => header,
+        Err(crate::Error::Capsule(message)) if message == "invalid magic bytes" => {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::InvalidMagic,
+                severity: IntegritySeverity::Error,
+                message,
+                section: None,
+            });
+            report.ok = false;
+            return report;
+        }
+        Err(err) => {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::HeaderReadFailed,
+                severity: IntegritySeverity::Error,
+                message: err.to_string(),
+                section: None,
+            });
+            report.ok = false;
+            return report;
+        }
+    };
+
+    report.version = header.version;
+    report.encrypted = header.is_encrypted();
+
+    if header.version > FORMAT_VERSION {
+        report.issues.push(CapsuleVerificationIssue {
+            kind: CapsuleVerificationIssueKind::UnsupportedVersion,
+            severity: IntegritySeverity::Error,
+            message: format!(
+                "unsupported version: {} (max: {})",
+                header.version, FORMAT_VERSION
+            ),
+            section: None,
+        });
+    }
+
+    if header.is_encrypted() && password.is_none() {
+        report.issues.push(CapsuleVerificationIssue {
+            kind: CapsuleVerificationIssueKind::MissingPassword,
+            severity: IntegritySeverity::Error,
+            message: "capsule is encrypted but no password provided".into(),
+            section: None,
+        });
+    }
+
+    let mut entries = Vec::new();
+    let mut seen_kinds = HashSet::new();
+    for _ in 0..header.section_count {
+        match SectionEntry::read_from(&mut cursor) {
+            Ok(entry) => {
+                if !seen_kinds.insert(entry.kind) {
+                    report.issues.push(CapsuleVerificationIssue {
+                        kind: CapsuleVerificationIssueKind::DuplicateSectionKind,
+                        severity: IntegritySeverity::Error,
+                        message: format!("duplicate section kind: {:?}", entry.kind),
+                        section: Some(entry.kind),
+                    });
+                    continue;
+                }
+                report.sections.push(CapsuleSectionInfo {
+                    kind: entry.kind,
+                    offset: entry.offset,
+                    size: entry.size,
+                    encrypted: header.is_encrypted(),
+                });
+                entries.push(entry);
+            }
+            Err(err) => {
+                report.issues.push(CapsuleVerificationIssue {
+                    kind: CapsuleVerificationIssueKind::DirectoryReadFailed,
+                    severity: IntegritySeverity::Error,
+                    message: err.to_string(),
+                    section: None,
+                });
+                report.ok = false;
+                return report;
+            }
+        }
+    }
+
+    let data_start = cursor.position() as usize;
+    for entry in entries {
+        let start = match data_start.checked_add(entry.offset as usize) {
+            Some(start) => start,
+            None => {
+                report.issues.push(CapsuleVerificationIssue {
+                    kind: CapsuleVerificationIssueKind::SectionOffsetOverflow,
+                    severity: IntegritySeverity::Error,
+                    message: format!("section {:?} offset overflow", entry.kind),
+                    section: Some(entry.kind),
+                });
+                continue;
+            }
+        };
+        let end = match start.checked_add(entry.size as usize) {
+            Some(end) => end,
+            None => {
+                report.issues.push(CapsuleVerificationIssue {
+                    kind: CapsuleVerificationIssueKind::SectionTooLarge,
+                    severity: IntegritySeverity::Error,
+                    message: format!("section {:?} size overflow", entry.kind),
+                    section: Some(entry.kind),
+                });
+                continue;
+            }
+        };
+
+        if end > footer_start {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::SectionOutOfBounds,
+                severity: IntegritySeverity::Error,
+                message: format!("section {:?} extends past data area", entry.kind),
+                section: Some(entry.kind),
+            });
+            continue;
+        }
+
+        let section_data = &raw[start..end];
+        if checksum(section_data) != entry.checksum {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::SectionChecksumMismatch,
+                severity: IntegritySeverity::Error,
+                message: format!("section {:?} checksum mismatch", entry.kind),
+                section: Some(entry.kind),
+            });
+            continue;
+        }
+
+        let data = section_data.to_vec();
+
+        #[cfg(feature = "encryption")]
+        let data = if header.is_encrypted() {
+            if let Some(password) = password {
+                match crypto::decrypt(&data, password) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        report.issues.push(CapsuleVerificationIssue {
+                            kind: CapsuleVerificationIssueKind::SectionDecryptionFailed,
+                            severity: IntegritySeverity::Error,
+                            message: format!("section {:?} decrypt failed: {err}", entry.kind),
+                            section: Some(entry.kind),
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                data
+            }
+        } else {
+            data
+        };
+
+        #[cfg(not(feature = "encryption"))]
+        if header.is_encrypted() {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::MissingPassword,
+                severity: IntegritySeverity::Error,
+                message: "capsule is encrypted but encryption feature not enabled".into(),
+                section: Some(entry.kind),
+            });
+            continue;
+        }
+
+        if let Err(err) = decompress(&data) {
+            report.issues.push(CapsuleVerificationIssue {
+                kind: CapsuleVerificationIssueKind::SectionDecompressionFailed,
+                severity: IntegritySeverity::Error,
+                message: format!("section {:?} decompress failed: {err}", entry.kind),
+                section: Some(entry.kind),
+            });
+        }
+    }
+
+    report.ok = report.issues.is_empty();
+    report
 }
 
 #[cfg(test)]
@@ -551,6 +896,138 @@ mod tests {
             let reader = CapsuleReader::open(capsule, None).unwrap();
             assert!(reader.read_section(SectionKind::Frames).is_err());
         }
+    }
+
+    #[test]
+    fn verification_report_lists_available_sections() {
+        let mut writer = CapsuleWriter::new();
+        writer.add_section(SectionKind::Frames, b"frame-data".to_vec());
+        writer.add_section(SectionKind::Metadata, b"meta-data".to_vec());
+
+        let capsule = writer.write().unwrap();
+        let report = verify_capsule(&capsule, None);
+
+        assert!(report.ok);
+        assert_eq!(report.version, FORMAT_VERSION);
+        assert!(!report.encrypted);
+        assert_eq!(report.sections.len(), 2);
+        assert_eq!(report.sections[0].kind, SectionKind::Frames);
+        assert_eq!(report.sections[1].kind, SectionKind::Metadata);
+        assert!(report.sections.iter().all(|section| section.size > 0));
+        assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn verification_report_surfaces_footer_mismatch_issue() {
+        let mut writer = CapsuleWriter::new();
+        writer.add_section(SectionKind::Frames, b"frame-data".to_vec());
+        let mut capsule = writer.write().unwrap();
+
+        let footer_index = capsule.len() - 1;
+        capsule[footer_index] ^= 0xFF;
+
+        let report = verify_capsule(&capsule, None);
+
+        assert!(!report.ok);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == CapsuleVerificationIssueKind::FooterChecksumMismatch
+        }));
+    }
+
+    #[test]
+    fn verification_report_flags_unreadable_compressed_section() {
+        let mut writer = CapsuleWriter::new();
+        writer.add_section(SectionKind::Frames, b"frame-data".to_vec());
+        let mut capsule = writer.write().unwrap();
+
+        let data_start = 16 + 44;
+        capsule[data_start] ^= 0xFF;
+        let footer_start = capsule.len() - 32;
+        let section_checksum = checksum(&capsule[data_start..footer_start]);
+        let checksum_start = 16 + 12;
+        capsule[checksum_start..checksum_start + 32].copy_from_slice(&section_checksum);
+
+        let new_hash = checksum(&capsule[..footer_start]);
+        capsule[footer_start..].copy_from_slice(&new_hash);
+
+        let report = verify_capsule(&capsule, None);
+
+        assert!(!report.ok);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == CapsuleVerificationIssueKind::SectionDecompressionFailed
+        }));
+    }
+
+    #[test]
+    fn verification_report_flags_oversized_decompressed_section() {
+        let mut writer = CapsuleWriter::new();
+        writer.add_section(
+            SectionKind::Frames,
+            vec![42u8; MAX_DECOMPRESSED_SECTION_SIZE + 1],
+        );
+        let capsule = writer.write().unwrap();
+
+        let report = verify_capsule(&capsule, None);
+
+        assert!(!report.ok);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == CapsuleVerificationIssueKind::SectionDecompressionFailed
+        }));
+    }
+
+    #[test]
+    fn duplicate_section_kinds_are_rejected() {
+        let mut writer = CapsuleWriter::new();
+        writer.add_section(SectionKind::Frames, b"frame-data".to_vec());
+        writer.add_section(SectionKind::Metadata, b"meta-data".to_vec());
+        let mut capsule = writer.write().unwrap();
+
+        let second_entry_kind_offset = 16 + 44;
+        capsule[second_entry_kind_offset] = SectionKind::Frames as u8;
+
+        let footer_start = capsule.len() - 32;
+        let new_hash = checksum(&capsule[..footer_start]);
+        capsule[footer_start..].copy_from_slice(&new_hash);
+
+        let report = verify_capsule(&capsule, None);
+        assert!(!report.ok);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == CapsuleVerificationIssueKind::DuplicateSectionKind
+        }));
+
+        assert!(CapsuleReader::open(capsule, None).is_err());
+    }
+
+    #[test]
+    fn section_manifest_marks_frames_canonical_and_cards_graph_derived() {
+        let manifest = section_manifest(&[
+            SectionKind::Frames,
+            SectionKind::Cards,
+            SectionKind::Graph,
+            SectionKind::Metadata,
+        ]);
+
+        assert_eq!(
+            manifest,
+            vec![
+                SectionManifestEntry {
+                    kind: SectionKind::Frames,
+                    storage_class: SectionStorageClass::Canonical,
+                },
+                SectionManifestEntry {
+                    kind: SectionKind::Cards,
+                    storage_class: SectionStorageClass::Derived,
+                },
+                SectionManifestEntry {
+                    kind: SectionKind::Graph,
+                    storage_class: SectionStorageClass::Derived,
+                },
+                SectionManifestEntry {
+                    kind: SectionKind::Metadata,
+                    storage_class: SectionStorageClass::Derived,
+                },
+            ]
+        );
     }
 
     #[test]

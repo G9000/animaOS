@@ -3,10 +3,12 @@
 //! Converts natural-language time references ("last Tuesday", "2 days ago")
 //! into UTC timestamps for frame filtering and timeline queries.
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::frame::{Frame, FrameId};
+use crate::frame::{Frame, FrameId, FrameStore};
+#[cfg(feature = "replay")]
+use crate::replay::SerializedSession;
 
 /// A parsed temporal mention with resolved timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +21,117 @@ pub struct TemporalMention {
     pub confidence: f32,
 }
 
+/// A single entry in the temporal index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemporalIndexEntry {
+    /// Indexed frame identifier.
+    pub frame_id: FrameId,
+    /// Frame timestamp in Unix seconds.
+    pub timestamp: i64,
+}
+
+/// Sorted timestamp index over frames for efficient range and as-of queries.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TemporalIndex {
+    entries: Vec<TemporalIndexEntry>,
+}
+
+impl TemporalIndex {
+    /// Build an index from an arbitrary frame slice.
+    pub fn build(frames: &[Frame]) -> Self {
+        Self {
+            entries: build_temporal_entries(frames.iter()),
+        }
+    }
+
+    /// Build an index from a frame store.
+    pub fn from_store(store: &FrameStore) -> Self {
+        Self {
+            entries: build_temporal_entries(store.iter()),
+        }
+    }
+
+    /// Number of indexed frames.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Return frames within the inclusive timestamp range, newest first.
+    pub fn range<'a>(
+        &self,
+        store: &'a FrameStore,
+        start: Option<i64>,
+        end: Option<i64>,
+        limit: Option<usize>,
+    ) -> Vec<&'a Frame> {
+        if matches!((start, end), (Some(start), Some(end)) if start > end) {
+            return Vec::new();
+        }
+
+        let start_idx = start.map_or(0, |ts| self.entries.partition_point(|entry| entry.timestamp < ts));
+        let end_idx =
+            end.map_or(self.entries.len(), |ts| self.entries.partition_point(|entry| entry.timestamp <= ts));
+
+        self.entries[start_idx..end_idx]
+            .iter()
+            .rev()
+            .filter_map(|entry| store.get(entry.frame_id))
+            .take(limit.unwrap_or(usize::MAX))
+            .collect()
+    }
+
+    /// Return frames that existed at or before the given timestamp, newest first.
+    pub fn as_of<'a>(
+        &self,
+        store: &'a FrameStore,
+        timestamp: i64,
+        limit: Option<usize>,
+    ) -> Vec<&'a Frame> {
+        self.range(store, None, Some(timestamp), limit)
+    }
+
+    /// Apply an existing timeline query using the index.
+    pub fn query<'a>(&self, store: &'a FrameStore, query: &TimelineQuery) -> Vec<&'a Frame> {
+        self.range(store, query.start, query.end, query.limit)
+    }
+
+    /// Return frames around a serialized replay session span, newest first.
+    #[cfg(feature = "replay")]
+    pub fn session_window<'a>(
+        &self,
+        store: &'a FrameStore,
+        session: &SerializedSession,
+        padding_before_secs: i64,
+        padding_after_secs: i64,
+        limit: Option<usize>,
+    ) -> Vec<&'a Frame> {
+        let Some((start, end)) = session.time_bounds() else {
+            return Vec::new();
+        };
+
+        let padded_start = start.saturating_sub(padding_before_secs.max(0));
+        let padded_end = end.saturating_add(padding_after_secs.max(0));
+        self.range(store, Some(padded_start), Some(padded_end), limit)
+    }
+}
+
+fn build_temporal_entries<'a>(frames: impl Iterator<Item = &'a Frame>) -> Vec<TemporalIndexEntry> {
+    let mut entries: Vec<TemporalIndexEntry> = frames
+        .map(|frame| TemporalIndexEntry {
+            frame_id: frame.id,
+            timestamp: frame.timestamp,
+        })
+        .collect();
+    entries.sort_by_key(|entry| (entry.timestamp, entry.frame_id));
+    entries
+}
+
 /// Parse a temporal expression relative to `now`.
 ///
 /// Supports:
@@ -26,21 +139,12 @@ pub struct TemporalMention {
 /// - ISO 8601: "2024-01-15T10:30:00Z"
 /// - Date-only: "2024-01-15"
 ///
-/// Uses `chrono-english` for natural language parsing, with fallbacks
-/// for common patterns.
+/// Uses exact/manual parsers for deterministic formats first, then
+/// falls back to `chrono-english` for natural language phrases.
 pub fn parse_temporal(input: &str, now: DateTime<Utc>) -> Option<TemporalMention> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
-    }
-
-    // Try chrono-english first
-    if let Ok(dt) = chrono_english::parse_date_string(trimmed, now, chrono_english::Dialect::Us) {
-        return Some(TemporalMention {
-            raw: trimmed.to_string(),
-            timestamp: dt.timestamp(),
-            confidence: 0.9,
-        });
     }
 
     // Try ISO 8601
@@ -69,6 +173,15 @@ pub fn parse_temporal(input: &str, now: DateTime<Utc>) -> Option<TemporalMention
     // Try "N unit(s) ago" pattern
     if let Some(ts) = parse_relative_ago(trimmed, now) {
         return Some(ts);
+    }
+
+    // Fall back to chrono-english for broader natural-language phrases.
+    if let Ok(dt) = chrono_english::parse_date_string(trimmed, now, chrono_english::Dialect::Us) {
+        return Some(TemporalMention {
+            raw: trimmed.to_string(),
+            timestamp: dt.timestamp(),
+            confidence: 0.9,
+        });
     }
 
     None
@@ -189,6 +302,11 @@ impl TimelineQuery {
 
         results
     }
+
+    /// Apply this query through a pre-built temporal index.
+    pub fn apply_indexed<'a>(&self, index: &TemporalIndex, store: &'a FrameStore) -> Vec<&'a Frame> {
+        index.query(store, self)
+    }
 }
 
 impl Default for TimelineQuery {
@@ -227,6 +345,7 @@ pub fn assemble_timeline(frames: &[Frame]) -> Vec<(String, Vec<&Frame>)> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use crate::frame::FrameStore;
 
     fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
@@ -281,11 +400,17 @@ mod tests {
 
     #[test]
     fn test_timeline_query() {
-        use crate::frame::{Frame, FrameKind};
+        use crate::frame::{Frame, FrameKind, FrameSource};
 
         let frames: Vec<Frame> = (0..5)
             .map(|i| {
-                let mut f = Frame::new(FrameKind::Fact, format!("fact {i}"), "user1".into());
+                let mut f = Frame::new(
+                    0,
+                    FrameKind::Fact,
+                    format!("fact {i}"),
+                    "user1".into(),
+                    FrameSource::Extraction,
+                );
                 f.timestamp = 1000 + i * 100;
                 f
             })
@@ -301,17 +426,148 @@ mod tests {
 
     #[test]
     fn test_assemble_timeline() {
-        use crate::frame::{Frame, FrameKind};
+        use crate::frame::{Frame, FrameKind, FrameSource};
 
         // Two frames on different days
-        let mut f1 = Frame::new(FrameKind::Fact, "day1".into(), "user1".into());
+        let mut f1 = Frame::new(
+            0,
+            FrameKind::Fact,
+            "day1".into(),
+            "user1".into(),
+            FrameSource::Extraction,
+        );
         f1.timestamp = 1718400000; // 2024-06-15 00:00:00 UTC approximately
-        let mut f2 = Frame::new(FrameKind::Fact, "day2".into(), "user1".into());
+        let mut f2 = Frame::new(
+            0,
+            FrameKind::Fact,
+            "day2".into(),
+            "user1".into(),
+            FrameSource::Extraction,
+        );
         f2.timestamp = 1718400000 + 86400;
 
-        let timeline = assemble_timeline(&[f1, f2]);
+        let frames = [f1, f2];
+        let timeline = assemble_timeline(&frames);
         assert_eq!(timeline.len(), 2);
         // Newest day first
         assert!(timeline[0].0 > timeline[1].0);
+    }
+
+    #[test]
+    fn test_temporal_index_range_returns_newest_first_within_bounds() {
+        use crate::frame::{Frame, FrameKind, FrameSource};
+
+        let mut store = FrameStore::new();
+        for (idx, ts) in [1000_i64, 1100, 1200, 1300, 1400].into_iter().enumerate() {
+            let frame = Frame::new(
+                idx as u64,
+                FrameKind::Fact,
+                format!("fact {idx}"),
+                "user1".into(),
+                FrameSource::Extraction,
+            )
+            .with_timestamp(ts);
+            store.insert(frame);
+        }
+
+        let index = TemporalIndex::from_store(&store);
+        let results = index.range(&store, Some(1100), Some(1300), None);
+
+        let timestamps: Vec<i64> = results.iter().map(|frame| frame.timestamp).collect();
+        assert_eq!(timestamps, vec![1300, 1200, 1100]);
+    }
+
+    #[test]
+    fn test_temporal_index_as_of_applies_limit_and_excludes_future_frames() {
+        use crate::frame::{Frame, FrameKind, FrameSource};
+
+        let mut store = FrameStore::new();
+        for (idx, ts) in [1000_i64, 1100, 1200, 1300, 1400].into_iter().enumerate() {
+            let frame = Frame::new(
+                idx as u64,
+                FrameKind::Fact,
+                format!("fact {idx}"),
+                "user1".into(),
+                FrameSource::Extraction,
+            )
+            .with_timestamp(ts);
+            store.insert(frame);
+        }
+
+        let index = TemporalIndex::from_store(&store);
+        let results = index.as_of(&store, 1250, Some(2));
+
+        let timestamps: Vec<i64> = results.iter().map(|frame| frame.timestamp).collect();
+        assert_eq!(timestamps, vec![1200, 1100]);
+    }
+
+    #[cfg(feature = "replay")]
+    #[test]
+    fn test_temporal_index_session_window_applies_padding_and_returns_newest_first() {
+        use crate::frame::{Frame, FrameKind, FrameSource};
+        use crate::replay::{ActionKind, ReplayAction, SerializedSession};
+
+        let mut store = FrameStore::new();
+        for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104].into_iter().enumerate() {
+            let frame = Frame::new(
+                idx as u64,
+                FrameKind::Fact,
+                format!("fact {idx}"),
+                "user1".into(),
+                FrameSource::Extraction,
+            )
+            .with_timestamp(ts);
+            store.insert(frame);
+        }
+
+        let session = SerializedSession {
+            session_id: "turn-1".into(),
+            user_id: "user-1".into(),
+            started_at: Some(1100),
+            actions: vec![ReplayAction {
+                seq: 0,
+                kind: ActionKind::Decision,
+                description: "respond".into(),
+                offset_us: 1_250_000,
+                duration_us: 500_000,
+                frame_ids: vec![],
+                metadata: std::collections::HashMap::new(),
+            }],
+        };
+
+        let index = TemporalIndex::from_store(&store);
+        let results = index.session_window(&store, &session, 1, 1, None);
+        let timestamps: Vec<i64> = results.iter().map(|frame| frame.timestamp).collect();
+
+        assert_eq!(timestamps, vec![1103, 1102, 1101, 1100, 1099]);
+    }
+
+    #[cfg(feature = "replay")]
+    #[test]
+    fn test_temporal_index_session_window_returns_empty_for_legacy_session_without_start() {
+        use crate::frame::{Frame, FrameKind, FrameSource};
+        use crate::replay::SerializedSession;
+
+        let mut store = FrameStore::new();
+        store.insert(
+            Frame::new(
+                0,
+                FrameKind::Fact,
+                "fact".into(),
+                "user1".into(),
+                FrameSource::Extraction,
+            )
+            .with_timestamp(1100),
+        );
+
+        let session = SerializedSession {
+            session_id: "turn-legacy".into(),
+            user_id: "user-1".into(),
+            started_at: None,
+            actions: vec![],
+        };
+
+        let index = TemporalIndex::from_store(&store);
+        assert!(index.session_window(&store, &session, 1, 1, None).is_empty());
     }
 }
