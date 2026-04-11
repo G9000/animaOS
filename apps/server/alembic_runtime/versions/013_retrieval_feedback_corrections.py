@@ -15,11 +15,26 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.alter_column(
+        "alembic_version",
+        "version_num",
+        existing_type=sa.String(length=32),
+        type_=sa.String(length=255),
+        existing_nullable=False,
+    )
     op.add_column(
         "memory_retrieval_feedback",
-        sa.Column("was_corrected", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column("was_corrected", sa.Boolean(), nullable=False,
+                  server_default=sa.text("false")),
     )
 
 
 def downgrade() -> None:
     op.drop_column("memory_retrieval_feedback", "was_corrected")
+    op.alter_column(
+        "alembic_version",
+        "version_num",
+        existing_type=sa.String(length=255),
+        type_=sa.String(length=32),
+        existing_nullable=False,
+    )
