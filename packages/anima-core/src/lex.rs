@@ -60,6 +60,10 @@ impl SimpleBm25Index {
 
     /// Add a document to the index.
     pub fn add_document(&mut self, frame_id: FrameId, content: &str) {
+        if self.documents.contains_key(&frame_id) {
+            self.remove_document(frame_id);
+        }
+
         let tokens = Self::tokenize(content);
 
         // Update inverted index (once per unique token per document)
@@ -365,6 +369,22 @@ mod tests {
         assert_eq!(index.len(), 3);
         let results = index.search("alpha", 10);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_simple_bm25_replace_existing_document_removes_stale_matches() {
+        let mut index = SimpleBm25Index::new();
+        index.add_document(1, "alpha beta");
+        index.add_document(1, "gamma delta");
+
+        assert!(
+            index.search("alpha", 10).is_empty(),
+            "replaced document should not match stale tokens"
+        );
+
+        let results = index.search("gamma", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].frame_id, 1);
     }
 
     #[test]
