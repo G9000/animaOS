@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 from types import SimpleNamespace
 
@@ -265,6 +266,39 @@ def test_export_and_import_anima_capsule_restores_auth_and_files(
             assert users[0].display_name == "Alice"
 
         assert (user_dir / "memory" / "entry.md").read_text(encoding="utf-8") == "hello from capsule"
+
+
+def test_load_capsule_bindings_logs_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str, package: str | None = None):
+        if name == "anima_core":
+            raise ModuleNotFoundError("no module named 'anima_core'")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+    read_capsule, write_capsule = vault_module._load_capsule_bindings()
+
+    assert read_capsule is None
+    assert write_capsule is None
+
+
+def test_load_capsule_bindings_raises_unexpected_import_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str, package: str | None = None):
+        if name == "anima_core":
+            raise RuntimeError("boom")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        vault_module._load_capsule_bindings()
 
 
 @pytest.mark.parametrize(

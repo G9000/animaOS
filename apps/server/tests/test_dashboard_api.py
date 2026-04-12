@@ -134,6 +134,43 @@ def test_config_ollama_models(monkeypatch) -> None:
         ]
 
 
+async def test_list_ollama_models_reads_payload_before_client_close(monkeypatch) -> None:
+    from anima_server.api.routes import config as config_route
+
+    class _FakeResponse:
+        def __init__(self, *, client) -> None:
+            self._client = client
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            if self._client.closed:
+                raise RuntimeError("response closed")
+            return {"models": [{"name": "gemma4:31b"}]}
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+            self.closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            self.closed = True
+
+        async def get(self, url: str) -> _FakeResponse:
+            assert url == "http://localhost:11434/api/tags"
+            return _FakeResponse(client=self)
+
+    monkeypatch.setattr(config_route.httpx, "AsyncClient", _FakeAsyncClient)
+
+    models = await config_route._list_ollama_models("http://localhost:11434")
+
+    assert [model.name for model in models] == ["gemma4:31b"]
+
+
 def test_config_get_update() -> None:
     original_provider = settings.agent_provider
     original_model = settings.agent_model

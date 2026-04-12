@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -45,14 +46,23 @@ from anima_server.services.data_crypto import ef as encrypt_field_for_user
 from anima_server.services.data_crypto import resolve_domain
 from anima_server.services.sessions import get_active_deks
 
-try:
-    from anima_core import read_capsule as _anima_core_read_capsule
-    from anima_core import write_capsule as _anima_core_write_capsule
-except Exception:
-    _anima_core_read_capsule = None
-    _anima_core_write_capsule = None
-
 vault_logger = logging.getLogger(__name__)
+
+
+def _load_capsule_bindings():
+    try:
+        anima_core = importlib.import_module("anima_core")
+    except (ImportError, ModuleNotFoundError) as exc:
+        vault_logger.warning(
+            "Capsule bindings are unavailable; anima_core import failed: %s",
+            exc,
+        )
+        return None, None
+
+    return anima_core.read_capsule, anima_core.write_capsule
+
+
+_anima_core_read_capsule, _anima_core_write_capsule = _load_capsule_bindings()
 
 
 VAULT_VERSION = 2

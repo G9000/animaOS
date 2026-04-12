@@ -342,13 +342,14 @@ def get_memory_items_scored(
             _DEFAULT_QUERY_WEIGHTS,
         )
         blended: list[tuple[float, MemoryItem]] = []
-        repaired_any = False
         for base_score, item in scored:
             checked = check_embedding(item.embedding_json, item.embedding_checksum)
             item_emb = checked.embedding
-            if checked.status == "missing_checksum" and checked.actual_checksum is not None:
-                item.embedding_checksum = checked.actual_checksum
-                repaired_any = True
+            if checked.status == "missing_checksum":
+                logger.debug(
+                    "Memory item %s is missing an embedding checksum during fallback retrieval",
+                    item.id,
+                )
             elif checked.status == "checksum_mismatch":
                 logger.warning(
                     "Skipping memory item %s during fallback retrieval due to checksum mismatch",
@@ -368,8 +369,6 @@ def get_memory_items_scored(
             else:
                 final = base_score
             blended.append((final, item))
-        if repaired_any:
-            db.flush()
         blended.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in blended[:limit]]
 

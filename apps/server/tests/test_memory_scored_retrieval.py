@@ -236,6 +236,37 @@ def test_scored_retrieval_skips_corrupted_embedding_boost() -> None:
         assert [item.id for item in scored] == [good.id, corrupt.id]
 
 
+def test_scored_retrieval_does_not_backfill_missing_checksums() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        now = datetime.now(UTC)
+        item = MemoryItem(
+            user_id=user.id,
+            content="missing checksum",
+            category="fact",
+            importance=3,
+            source="user",
+            reference_count=0,
+            embedding_json=[1.0, 0.0],
+            embedding_checksum=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(item)
+        db.flush()
+
+        scored = get_memory_items_scored(
+            db,
+            user_id=user.id,
+            category="fact",
+            limit=1,
+            query_embedding=[1.0, 0.0],
+        )
+
+        assert [result.id for result in scored] == [item.id]
+        assert item.embedding_checksum is None
+
+
 def test_cosine_similarity() -> None:
     from anima_server.services.agent.embeddings import cosine_similarity
 

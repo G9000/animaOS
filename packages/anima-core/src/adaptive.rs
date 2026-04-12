@@ -112,7 +112,12 @@ pub fn find_adaptive_cutoff(scores: &[f32], config: &AdaptiveConfig) -> (usize, 
         }
         CutoffStrategy::RelativeThreshold { min_ratio } => {
             let threshold = normalized[0] * min_ratio;
-            find_absolute_cutoff(&normalized, threshold, config.min_results)
+            find_threshold_cutoff(
+                &normalized,
+                threshold,
+                config.min_results,
+                "relative_threshold",
+            )
         }
         CutoffStrategy::ScoreCliff { max_drop_ratio } => {
             find_cliff_cutoff(&normalized, *max_drop_ratio, config.min_results)
@@ -138,9 +143,18 @@ pub fn find_adaptive_cutoff(scores: &[f32], config: &AdaptiveConfig) -> (usize, 
 }
 
 fn find_absolute_cutoff(scores: &[f32], min_score: f32, min_results: usize) -> (usize, String) {
+    find_threshold_cutoff(scores, min_score, min_results, "absolute_threshold")
+}
+
+fn find_threshold_cutoff(
+    scores: &[f32],
+    min_score: f32,
+    min_results: usize,
+    trigger: &str,
+) -> (usize, String) {
     for (index, score) in scores.iter().enumerate() {
         if index >= min_results && *score < min_score {
-            return (index, "absolute_threshold".to_string());
+            return (index, trigger.to_string());
         }
     }
     (scores.len(), "no_cutoff".to_string())
@@ -288,6 +302,21 @@ mod tests {
 
         assert_eq!(cutoff, 3);
         assert!(trigger.starts_with("score_cliff"));
+    }
+
+    #[test]
+    fn relative_threshold_reports_its_own_trigger() {
+        let config = AdaptiveConfig {
+            min_results: 2,
+            strategy: CutoffStrategy::RelativeThreshold { min_ratio: 0.8 },
+            ..AdaptiveConfig::default()
+        };
+
+        let (cutoff, trigger, _normalized) =
+            find_adaptive_cutoff(&[1.0, 0.95, 0.7, 0.65], &config);
+
+        assert_eq!(cutoff, 2);
+        assert_eq!(trigger, "relative_threshold");
     }
 
     #[test]

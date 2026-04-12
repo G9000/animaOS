@@ -138,8 +138,7 @@ async def _list_ollama_models(base_url: str) -> list[OllamaModelInfo]:
     async with httpx.AsyncClient(timeout=5.0) as client:
         response = await client.get(f"{base_url}/api/tags")
         response.raise_for_status()
-
-    payload = response.json()
+        payload = response.json()
     if not isinstance(payload, dict):
         raise ValueError("Ollama returned an invalid model list.")
 
