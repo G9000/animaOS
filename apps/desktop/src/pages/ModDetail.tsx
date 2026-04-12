@@ -39,15 +39,15 @@ export default function ModDetail() {
 
   const handleSaveConfig = async (values: Record<string, unknown>) => {
     const client = getModClient();
-    await client.api.mods({ id: id! }).config.put(values);
+    await client.updateModConfig(id!, values);
     refresh();
   };
 
   const handleHealthCheck = async (): Promise<boolean> => {
     try {
       const client = getModClient();
-      const { data } = await client.api.mods({ id: id! }).health.get();
-      return data?.status === "running";
+      const data = await client.getModHealth(id!);
+      return data.status === "running";
     } catch {
       return false;
     }
@@ -55,9 +55,9 @@ export default function ModDetail() {
 
   const handleAction = async (action: "enable" | "disable" | "restart") => {
     const client = getModClient();
-    if (action === "enable") await client.api.mods({ id: id! }).enable.post();
-    else if (action === "disable") await client.api.mods({ id: id! }).disable.post();
-    else await client.api.mods({ id: id! }).restart.post();
+    if (action === "enable") await client.enableMod(id!);
+    else if (action === "disable") await client.disableMod(id!);
+    else await client.restartMod(id!);
     refresh();
   };
 
@@ -86,7 +86,6 @@ export default function ModDetail() {
           <SetupWizard
             steps={mod.setupGuide}
             schema={mod.configSchema}
-            modId={id!}
             onComplete={handleSaveConfig}
             onHealthCheck={handleHealthCheck}
           />

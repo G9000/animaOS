@@ -6,11 +6,10 @@ interface ModCardProps {
   version: string;
   status: string;
   enabled: boolean;
-  hasConfigSchema: boolean;
   onToggle: (id: string, enable: boolean) => void;
 }
 
-export default function ModCard({ id, version, status, enabled, hasConfigSchema, onToggle }: ModCardProps) {
+export default function ModCard({ id, version, status, enabled, onToggle }: ModCardProps) {
   const navigate = useNavigate();
 
   return (
