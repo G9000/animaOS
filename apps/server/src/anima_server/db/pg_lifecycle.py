@@ -297,6 +297,7 @@ class EmbeddedPG:
         if os.name == "nt":
             try:
                 import ctypes
+                from ctypes import wintypes
 
                 ERROR_ACCESS_DENIED = 5
                 ERROR_INVALID_PARAMETER = 87
@@ -304,13 +305,17 @@ class EmbeddedPG:
 
                 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
                 open_process = kernel32.OpenProcess
-                open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-                open_process.restype = ctypes.c_void_p
+                open_process.argtypes = [
+                    wintypes.DWORD,
+                    wintypes.BOOL,
+                    wintypes.DWORD,
+                ]
+                open_process.restype = wintypes.HANDLE
                 close_handle = kernel32.CloseHandle
-                close_handle.argtypes = [ctypes.c_void_p]
-                close_handle.restype = ctypes.c_int
+                close_handle.argtypes = [wintypes.HANDLE]
+                close_handle.restype = wintypes.BOOL
 
-                handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+                handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
                 if handle:
                     close_handle(handle)
                     return True, False
@@ -321,7 +326,11 @@ class EmbeddedPG:
                 if error == ERROR_INVALID_PARAMETER:
                     return False, False
 
-                logger.debug("OpenProcess failed while probing PID %s with Win32 error %s", pid, error)
+                logger.debug(
+                    "OpenProcess failed while probing PID %s: %s",
+                    pid,
+                    ctypes.WinError(error),
+                )
                 return False, False
             except Exception:
                 logger.debug("Falling back to os.kill(pid, 0) while probing PID %s", pid, exc_info=True)

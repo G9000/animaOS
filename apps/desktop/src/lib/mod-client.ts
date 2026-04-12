@@ -71,7 +71,14 @@ async function requestJson<T>(
   });
 
   const raw = await response.text();
-  const payload = raw ? JSON.parse(raw) as unknown : null;
+  let payload: unknown = null;
+  if (raw) {
+    try {
+      payload = JSON.parse(raw) as unknown;
+    } catch {
+      payload = raw;
+    }
+  }
 
   if (!response.ok) {
     throw new Error(extractErrorMessage(payload, response.status));

@@ -219,8 +219,8 @@ def _python_cutoff(
 
     if config.strategy == "relative_threshold":
         threshold = normalized[0] * config.relative_threshold
-        cutoff, trigger = _find_absolute_cutoff(normalized, threshold, config.min_results)
-        return cutoff, trigger, normalized
+        cutoff, _trigger = _find_absolute_cutoff(normalized, threshold, config.min_results)
+        return cutoff, "relative_threshold", normalized
 
     if config.strategy == "score_cliff":
         cutoff, trigger = _find_cliff_cutoff(

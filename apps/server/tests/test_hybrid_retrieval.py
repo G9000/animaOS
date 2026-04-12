@@ -20,6 +20,7 @@ import anima_server.services.agent.vector_store as vs
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
+from anima_server.services.agent import adaptive_retrieval as adaptive_retrieval_module
 from anima_server.services.agent.embeddings import (
     AdaptiveRetrievalConfig,
     HybridSearchResult,
@@ -323,6 +324,22 @@ class TestAdaptiveFilter:
 
         assert len(adaptive_result.results) == 3
         assert adaptive_result.stats.triggered_by == "disabled"
+
+    def test_python_relative_threshold_reports_relative_trigger(self, monkeypatch):
+        monkeypatch.setattr(adaptive_retrieval_module, "_rust_find_adaptive_cutoff", None)
+
+        cutoff, trigger, _normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [1.0, 0.95, 0.7, 0.65],
+            config=AdaptiveRetrievalConfig(
+                strategy="relative_threshold",
+                min_results=2,
+                max_results=10,
+                relative_threshold=0.8,
+            ),
+        )
+
+        assert cutoff == 2
+        assert trigger == "relative_threshold"
 
 
 # ===================================================================

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from anima_server.services.agent.text_processing import prepare_memory_text
 
+logger = logging.getLogger(__name__)
+
 try:
     from anima_core import extract_triplets as _rust_extract_triplets
+except (ImportError, ModuleNotFoundError):
+    _rust_extract_triplets = None
 except Exception:
+    logger.warning(
+        "anima_core triplet extraction is unavailable due to an unexpected import failure",
+        exc_info=True,
+    )
     _rust_extract_triplets = None
 
 

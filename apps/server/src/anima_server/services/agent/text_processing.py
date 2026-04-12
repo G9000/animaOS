@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import logging
 import unicodedata
+
+logger = logging.getLogger(__name__)
 
 try:
     from anima_core import fix_pdf_spacing as _rust_fix_pdf_spacing
     from anima_core import normalize_text as _rust_normalize_text
+except (ImportError, ModuleNotFoundError):
+    _rust_fix_pdf_spacing = None
+    _rust_normalize_text = None
 except Exception:
+    logger.warning(
+        "anima_core text-processing helpers are unavailable due to an unexpected import failure",
+        exc_info=True,
+    )
     _rust_fix_pdf_spacing = None
     _rust_normalize_text = None
 
