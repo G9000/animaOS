@@ -7,6 +7,7 @@ that require PG are marked with @pytest.mark.integration.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -230,3 +231,77 @@ def test_pg_vec_store_search_skips_checksum_mismatch() -> None:
 
     assert len(results) == 1
     assert results[0].item_id == 12
+
+
+def test_pg_vec_store_search_aggregates_invalid_embedding_warnings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from anima_server.services.agent.pgvec_store import PgVecStore
+
+    mismatch_row_a = SimpleNamespace(
+        RuntimeEmbedding=SimpleNamespace(
+            id=1,
+            source_id=11,
+            content_preview="corrupt-a",
+            category="fact",
+            importance=5,
+            embedding=[1.0, 0.0],
+            embedding_checksum="bad-checksum-a",
+        ),
+        similarity=0.99,
+    )
+    mismatch_row_b = SimpleNamespace(
+        RuntimeEmbedding=SimpleNamespace(
+            id=2,
+            source_id=12,
+            content_preview="corrupt-b",
+            category="fact",
+            importance=5,
+            embedding=[0.8, 0.2],
+            embedding_checksum="bad-checksum-b",
+        ),
+        similarity=0.97,
+    )
+    invalid_row = SimpleNamespace(
+        RuntimeEmbedding=SimpleNamespace(
+            id=3,
+            source_id=13,
+            content_preview="missing-checksum",
+            category="fact",
+            importance=4,
+            embedding=[0.7, 0.3],
+            embedding_checksum=None,
+        ),
+        similarity=0.96,
+    )
+    good_row = SimpleNamespace(
+        RuntimeEmbedding=SimpleNamespace(
+            id=4,
+            source_id=14,
+            content_preview="valid",
+            category="fact",
+            importance=4,
+            embedding=[0.9, 0.1],
+            embedding_checksum=compute_embedding_checksum([0.9, 0.1]),
+        ),
+        similarity=0.95,
+    )
+
+    fake_db = SimpleNamespace(
+        execute=lambda _stmt: SimpleNamespace(
+            all=lambda: [mismatch_row_a, mismatch_row_b, invalid_row, good_row]
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = PgVecStore(fake_db).search_by_vector(1, query_embedding=[1.0, 0.0], limit=1)
+
+    assert len(results) == 1
+    assert results[0].item_id == 14
+    warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert any("Skipped 2 runtime embeddings for user 1 due to checksum mismatch" in message for message in warnings)
+    assert any(
+        "Skipped 1 runtime embeddings for user 1 due to missing or invalid checksum state" in message
+        for message in warnings
+    )

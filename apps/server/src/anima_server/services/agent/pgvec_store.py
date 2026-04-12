@@ -99,24 +99,18 @@ class PgVecStore(VectorStore):
         rows = self._db.execute(stmt).all()
 
         results: list[VectorSearchResult] = []
+        checksum_mismatch_count = 0
+        invalid_checksum_count = 0
         for row in rows:
             checked = check_embedding(
                 row.RuntimeEmbedding.embedding,
                 row.RuntimeEmbedding.embedding_checksum,
             )
             if checked.status == "checksum_mismatch":
-                logger.warning(
-                    "Skipping runtime embedding %s for user %d due to checksum mismatch",
-                    row.RuntimeEmbedding.id,
-                    user_id,
-                )
+                checksum_mismatch_count += 1
                 continue
             if checked.status in {"invalid", "missing_checksum"}:
-                logger.warning(
-                    "Skipping runtime embedding %s for user %d due to missing or invalid checksum state",
-                    row.RuntimeEmbedding.id,
-                    user_id,
-                )
+                invalid_checksum_count += 1
                 continue
             results.append(
                 VectorSearchResult(
@@ -129,6 +123,18 @@ class PgVecStore(VectorStore):
             )
             if len(results) >= limit:
                 break
+        if checksum_mismatch_count:
+            logger.warning(
+                "Skipped %d runtime embeddings for user %d due to checksum mismatch",
+                checksum_mismatch_count,
+                user_id,
+            )
+        if invalid_checksum_count:
+            logger.warning(
+                "Skipped %d runtime embeddings for user %d due to missing or invalid checksum state",
+                invalid_checksum_count,
+                user_id,
+            )
         return results
 
     def search_by_text(

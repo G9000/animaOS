@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, Sequence, TypeVar
+
+logger = logging.getLogger(__name__)
 
 try:
     from anima_core import find_adaptive_cutoff as _rust_find_adaptive_cutoff
     from anima_core import normalize_scores as _rust_normalize_scores
+except (ImportError, ModuleNotFoundError):
+    _rust_find_adaptive_cutoff = None
+    _rust_normalize_scores = None
 except Exception:
+    logger.warning(
+        "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
+        exc_info=True,
+    )
     _rust_find_adaptive_cutoff = None
     _rust_normalize_scores = None
 
@@ -117,6 +127,9 @@ def find_adaptive_cutoff(
 
     if not capped_scores:
         return 0, "no_results", []
+
+    if not active_config.enabled or active_config.strategy == "disabled":
+        return len(capped_scores), "disabled", normalize_scores(capped_scores)
 
     if active_config.strategy == "legacy":
         return _legacy_cutoff(capped_scores, active_config)

@@ -90,3 +90,35 @@ def test_graph_triplets_falls_back_on_non_import_errors() -> None:
     assert module._rust_extract_triplets is None
 
     _import_fresh("anima_server.services.agent.graph_triplets")
+
+
+def test_adaptive_retrieval_falls_back_on_import_error() -> None:
+    with _patched_anima_core_import(ImportError("mocked")):
+        module = _import_fresh("anima_server.services.agent.adaptive_retrieval")
+
+    assert module._rust_find_adaptive_cutoff is None
+    assert module._rust_normalize_scores is None
+
+    _import_fresh("anima_server.services.agent.adaptive_retrieval")
+
+
+def test_adaptive_retrieval_logs_and_falls_back_on_non_import_errors(caplog: pytest.LogCaptureFixture) -> None:
+    broken_module = ModuleType("anima_core")
+
+    def _broken_getattr(name: str):
+        raise RuntimeError("boom")
+
+    broken_module.__getattr__ = _broken_getattr  # type: ignore[attr-defined]
+
+    with caplog.at_level("WARNING"):
+        with patch.dict(sys.modules, {"anima_core": broken_module}):
+            module = _import_fresh_preserving_anima_core("anima_server.services.agent.adaptive_retrieval")
+
+    assert module._rust_find_adaptive_cutoff is None
+    assert module._rust_normalize_scores is None
+    assert any(
+        "adaptive retrieval acceleration" in record.message
+        for record in caplog.records
+    )
+
+    _import_fresh("anima_server.services.agent.adaptive_retrieval")

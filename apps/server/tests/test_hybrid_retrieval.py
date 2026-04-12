@@ -325,6 +325,45 @@ class TestAdaptiveFilter:
         assert len(adaptive_result.results) == 3
         assert adaptive_result.stats.triggered_by == "disabled"
 
+    def test_disabled_flag_short_circuits_legacy_strategy(self):
+        cutoff, trigger, normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [0.95, 0.8, 0.4, 0.1],
+            config=AdaptiveRetrievalConfig(
+                enabled=False,
+                strategy="legacy",
+                min_results=2,
+                max_results=4,
+            ),
+        )
+
+        assert cutoff == 4
+        assert trigger == "disabled"
+        assert normalized == adaptive_retrieval_module.normalize_scores([0.95, 0.8, 0.4, 0.1])
+
+    def test_disabled_flag_short_circuits_rust_strategy(self, monkeypatch):
+        def _unexpected_rust_cutoff(*args, **kwargs):
+            raise AssertionError("rust cutoff should not run when adaptive retrieval is disabled")
+
+        monkeypatch.setattr(
+            adaptive_retrieval_module,
+            "_rust_find_adaptive_cutoff",
+            _unexpected_rust_cutoff,
+        )
+
+        cutoff, trigger, normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [0.95, 0.8, 0.4, 0.1],
+            config=AdaptiveRetrievalConfig(
+                enabled=False,
+                strategy="combined",
+                min_results=2,
+                max_results=4,
+            ),
+        )
+
+        assert cutoff == 4
+        assert trigger == "disabled"
+        assert normalized == adaptive_retrieval_module.normalize_scores([0.95, 0.8, 0.4, 0.1])
+
     def test_python_relative_threshold_reports_relative_trigger(self, monkeypatch):
         monkeypatch.setattr(adaptive_retrieval_module, "_rust_find_adaptive_cutoff", None)
 
