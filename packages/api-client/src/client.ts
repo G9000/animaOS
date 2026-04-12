@@ -25,6 +25,7 @@ import type {
   MemoryOverviewData,
   MemorySearchResult,
   Nudge,
+  OllamaModelInfo,
   PendingMemoryConsolidationResponse,
   PendingMemoryOpsResponse,
   PersonaTemplate,
@@ -38,7 +39,9 @@ import type {
   TraceEvent,
   TraceMessagePreview,
   User,
+  VaultExportResponse,
   VaultImportResponse,
+  VaultTransferFormat,
 } from "./types";
 
 interface ApiRequestOptions {
@@ -86,6 +89,7 @@ type StreamEventPayload = {
   toolName?: string;
   toolCallId?: string;
   threadId?: number;
+  retrieval?: AgentResponse["retrieval"];
 };
 
 function trimBaseUrl(baseUrl: string): string {
@@ -379,6 +383,7 @@ export function createApiClient(options: ApiClientOptions) {
             model: payload.model,
             toolsUsed: payload.toolsUsed,
             threadId: payload.threadId,
+            retrieval: payload.retrieval,
           };
           yield `\x00TRACE\x00${JSON.stringify(traceEvent)}`;
 
@@ -531,6 +536,12 @@ export function createApiClient(options: ApiClientOptions) {
     },
     config: {
       providers: () => request<ProviderInfo[]>("/config/providers"),
+      ollamaModels: (baseUrl?: string) =>
+        request<OllamaModelInfo[]>(
+          `/config/ollama-models${
+            baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : ""
+          }`,
+        ),
       personaTemplates: () =>
         request<PersonaTemplateInfo[]>("/config/persona-templates"),
       get: (userId: number) => request<AgentConfig>(`/config/${userId}`),
@@ -539,6 +550,7 @@ export function createApiClient(options: ApiClientOptions) {
         data: {
           provider: string;
           model: string;
+          extractionModel?: string;
           apiKey?: string;
           ollamaUrl?: string;
           systemPrompt?: string;
@@ -732,18 +744,35 @@ export function createApiClient(options: ApiClientOptions) {
         `${normalizedBaseUrl}/api/consciousness/${userId}/agent-profile/avatar`,
     },
     vault: {
-      export: (passphrase: string) =>
-        request<{ filename: string; vault: string; size: number }>(
-          "/vault/export",
-          {
-            method: "POST",
-            body: { passphrase },
+      export: (
+        passphrase: string,
+        options?: {
+          scope?: "full" | "memories";
+          format?: VaultTransferFormat;
+        },
+      ) =>
+        request<VaultExportResponse>("/vault/export", {
+          method: "POST",
+          body: {
+            passphrase,
+            scope: options?.scope,
+            format: options?.format,
           },
-        ),
-      import: (passphrase: string, vault: string) =>
+        }),
+      import: (
+        passphrase: string,
+        vault: string,
+        options?: {
+          format?: VaultTransferFormat;
+        },
+      ) =>
         request<VaultImportResponse>("/vault/import", {
           method: "POST",
-          body: { passphrase, vault },
+          body: {
+            passphrase,
+            vault,
+            format: options?.format,
+          },
         }),
     },
     threads: {

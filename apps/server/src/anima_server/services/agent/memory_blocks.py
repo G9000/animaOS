@@ -103,6 +103,11 @@ def build_runtime_memory_blocks(
     if human_core_block is not None:
         blocks.append(human_core_block)
 
+    world_context_block = build_world_context_block(
+        db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
+    if world_context_block is not None:
+        blocks.append(world_context_block)
+
     # User directive (Priority 0 — user-authored customisation)
     user_directive_block = build_user_directive_memory_block(
         db, user_id=user_id, agent_type=agent_type)
@@ -677,6 +682,37 @@ def build_human_core_block(
         ),
         value="\n".join(parts),
         read_only=False,
+    )
+
+
+def build_world_context_block(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_db: Session | None = None,
+    agent_type: str = "companion",
+) -> MemoryBlock | None:
+    """Build the stable world-context block for the user."""
+    plaintext, exists = _read_soul_block_content(
+        db, user_id=user_id, section="world")
+    if runtime_db is not None and exists:
+        plaintext = build_merged_block_content(
+            db,
+            runtime_db,
+            user_id=user_id,
+            section="world",
+        )
+    if not plaintext:
+        return None
+
+    return MemoryBlock(
+        label="world",
+        description=_desc(
+            "world",
+            "Stable external context about the user's world, such as timezone, locale, and environment.",
+            agent_type,
+        ),
+        value=plaintext,
     )
 
 

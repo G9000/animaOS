@@ -1,36 +1,33 @@
 from __future__ import annotations
-from anima_server.services.health.event_logger import emit as health_emit
-from anima_server.services.data_crypto import df, get_active_dek
-from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
-from anima_server.services.agent.tools import get_tools
-from anima_server.services.agent.tool_context import (
-    ToolContext,
-    clear_tool_context,
-    set_tool_context,
+
+import asyncio
+import contextlib
+import logging
+import time
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass
+from threading import Lock
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from anima_server.config import settings
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.services.agent.compaction import (
+    CompactionResult,
+    compact_thread_context,
 )
-from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
-from anima_server.services.agent.streaming import (
-    AgentStreamEvent,
-    build_approval_pending_event,
-    build_cancelled_event,
-    build_done_event,
-    build_error_event,
-    build_usage_event,
-    summarize_usage,
+from anima_server.services.agent.companion import (
+    AnimaCompanion,
+    get_companion,
+    get_or_build_companion,
+    invalidate_companion,
 )
-from anima_server.services.agent.state import AgentResult, StoredMessage
-from anima_server.services.agent.sequencing import (
-    count_persisted_result_messages,
-    reserve_message_sequences,
-)
-from anima_server.services.agent.runtime_types import (
-    DryRunResult,
-    StepFailedError,
-    StopReason,
-    ToolCall,
-)
-from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
-from anima_server.services.agent.reflection import schedule_reflection
+from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
+from anima_server.services.agent.executor import ToolExecutor
+from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
+from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
 from anima_server.services.agent.persistence import (
     append_user_message,
     cancel_run,
@@ -45,32 +42,48 @@ from anima_server.services.agent.persistence import (
     persist_agent_result,
     save_approval_checkpoint,
 )
-from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
-from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
-from anima_server.services.agent.executor import ToolExecutor
-from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
-from anima_server.services.agent.companion import (
-    AnimaCompanion,
-    get_companion,
-    get_or_build_companion,
-    invalidate_companion,
+from anima_server.services.agent.reflection import schedule_reflection
+from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
+from anima_server.services.agent.runtime_types import (
+    DryRunResult,
+    StepFailedError,
+    StopReason,
+    ToolCall,
 )
-from anima_server.services.agent.compaction import (
-    CompactionResult,
-    compact_thread_context,
+from anima_server.services.agent.sequencing import (
+    count_persisted_result_messages,
+    reserve_message_sequences,
 )
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
-from anima_server.config import settings
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import select
-import contextlib
-
-import asyncio
-import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass
-from threading import Lock
-from typing import Any
+from anima_server.services.agent.state import (
+    AgentCitation,
+    AgentContextFragment,
+    AgentResult,
+    AgentRetrievalStats,
+    AgentRetrievalTrace,
+    StoredMessage,
+    deserialize_agent_retrieval,
+    extract_stored_retrieval,
+    serialize_agent_retrieval,
+)
+from anima_server.services.agent.streaming import (
+    AgentStreamEvent,
+    build_approval_pending_event,
+    build_cancelled_event,
+    build_done_event,
+    build_error_event,
+    build_usage_event,
+    summarize_usage,
+)
+from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
+from anima_server.services.agent.tool_context import (
+    ToolContext,
+    clear_tool_context,
+    set_tool_context,
+)
+from anima_server.services.agent.tools import get_tools
+from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
+from anima_server.services.data_crypto import df, get_active_dek
+from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +270,11 @@ async def approve_or_deny_turn(
         companion.clear_cancel_event(run.id)
         clear_tool_context()
 
+    if result.retrieval is None:
+        result.retrieval = deserialize_agent_retrieval(
+            extract_stored_retrieval(approval_msg.content_json)
+        )
+
     # Handle cancellation during resume
     if result.stop_reason == StopReason.CANCELLED.value:
         cancel_run(runtime_db, run.id)
@@ -281,6 +299,7 @@ async def approve_or_deny_turn(
             if result_message_count > 0
             else None
         ),
+        record_feedback=False,
     )
     compact_thread_context(
         runtime_db,
@@ -487,6 +506,8 @@ async def _execute_agent_turn_locked(
     finally:
         companion.clear_cancel_event(run.id)
 
+    result.retrieval = turn_ctx.retrieval
+
     # Handle cancellation: persist cancel status and emit event
     if result.stop_reason == StopReason.CANCELLED.value:
         cancel_run(runtime_db, run.id)
@@ -559,6 +580,7 @@ class _TurnContext:
     history: list[StoredMessage]
     conversation_turn_count: int
     memory_blocks: tuple[MemoryBlock, ...]
+    retrieval: AgentRetrievalTrace | None = None
 
 
 async def _prepare_turn_context(
@@ -653,10 +675,16 @@ async def _prepare_turn_context(
 
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
+    retrieval_trace: AgentRetrievalTrace | None = None
     query_embedding: list[float] | None = None
     try:
-        from anima_server.services.agent.embeddings import adaptive_filter, hybrid_search
+        from anima_server.services.agent.embeddings import (
+            AdaptiveRetrievalConfig,
+            adaptive_filter_with_stats,
+            hybrid_search,
+        )
 
+        retrieval_started = time.monotonic()
         search_result = await hybrid_search(
             db,
             user_id=user_id,
@@ -664,16 +692,75 @@ async def _prepare_turn_context(
             limit=15,
             similarity_threshold=0.25,
         )
+        retrieval_ms = (time.monotonic() - retrieval_started) * 1000.0
         query_embedding = search_result.query_embedding
         if search_result.items:
-            filtered = adaptive_filter(search_result.items)
-            semantic_results = [
-                (item.id, df(user_id, item.content,
-                 table="memory_items", field="content"), score)
-                for item, score in filtered
-            ]
+            adaptive_result = adaptive_filter_with_stats(
+                search_result.items,
+                config=AdaptiveRetrievalConfig.combined(
+                    max_results=12,
+                    min_results=3,
+                    relative_threshold=0.5,
+                    max_drop_ratio=0.35,
+                    absolute_min=0.2,
+                ),
+            )
+            filtered = adaptive_result.results
+            logger.debug(
+                "Adaptive retrieval kept %s/%s memory hits for user %s (%s)",
+                adaptive_result.stats.returned,
+                adaptive_result.stats.total_considered,
+                user_id,
+                adaptive_result.stats.triggered_by,
+            )
+            semantic_results = []
+            citations: list[AgentCitation] = []
+            context_fragments: list[AgentContextFragment] = []
+            for index, (item, score) in enumerate(filtered, start=1):
+                content = df(user_id, item.content, table="memory_items", field="content")
+                semantic_results.append((item.id, content, score))
+                citations.append(
+                    AgentCitation(
+                        index=index,
+                        memory_item_id=item.id,
+                        uri=_memory_item_uri(item.id),
+                        score=score,
+                        category=item.category,
+                    )
+                )
+                context_fragments.append(
+                    AgentContextFragment(
+                        rank=index,
+                        memory_item_id=item.id,
+                        uri=_memory_item_uri(item.id),
+                        text=content,
+                        score=score,
+                        category=item.category,
+                    )
+                )
+
+            retrieval_trace = AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=tuple(citations),
+                context_fragments=tuple(context_fragments),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=round(retrieval_ms, 3),
+                    total_considered=adaptive_result.stats.total_considered,
+                    returned=adaptive_result.stats.returned,
+                    cutoff_index=adaptive_result.stats.cutoff_index,
+                    cutoff_score=adaptive_result.stats.cutoff_score,
+                    top_score=adaptive_result.stats.top_score,
+                    cutoff_ratio=adaptive_result.stats.cutoff_ratio,
+                    triggered_by=adaptive_result.stats.triggered_by,
+                ),
+            )
     except Exception:
-        pass
+        logger.debug(
+            "Hybrid retrieval failed for user %s thread %s",
+            user_id,
+            thread.id,
+            exc_info=True,
+        )
 
     # Use companion-cached static blocks, reload from DB only if stale.
     static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
@@ -742,6 +829,7 @@ async def _prepare_turn_context(
         history=history,
         conversation_turn_count=conversation_turn_count,
         memory_blocks=memory_blocks,
+        retrieval=retrieval_trace,
     )
     return thread, run, user_msg, initial_sequence_id, turn_ctx
 
@@ -1048,7 +1136,12 @@ def _rebuild_turn_context_after_compaction(
         history=history,
         conversation_turn_count=conversation_turn_count,
         memory_blocks=turn_ctx.memory_blocks,
+        retrieval=turn_ctx.retrieval,
     )
+
+
+def _memory_item_uri(memory_item_id: int) -> str:
+    return f"memory://items/{memory_item_id}"
 
 
 def _refresh_companion_history(*, user_id: int, runtime_db: Session) -> None:
@@ -1121,6 +1214,7 @@ def _persist_approval_checkpoint(
             if result_message_count > 0
             else None
         ),
+        record_feedback=False,
     )
 
     # Find the pending tool call from the last step trace.
@@ -1157,6 +1251,7 @@ def _persist_approval_checkpoint(
         tool_call=pending_tool_call,
         step_id=None,
         sequence_id=seq_id,
+        retrieval=serialize_agent_retrieval(result.retrieval),
     )
 
     runtime_db.commit()

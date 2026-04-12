@@ -24,9 +24,9 @@ export default function Profile() {
     try {
       const updated = await api.users.update(user!.id, {
         name,
-        gender: gender || undefined,
-        age: age ? parseInt(age) : undefined,
-        birthday: birthday || undefined,
+        gender: gender || null,
+        age: age ? parseInt(age, 10) : null,
+        birthday: birthday || null,
       });
       setUser(updated);
       setEditing(false);
@@ -170,7 +170,13 @@ export default function Profile() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <label className="block text-[11px] text-muted-foreground mb-1.5 uppercase tracking-wider">
@@ -181,10 +187,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function InfoRow({ label, value, last }: { label: string; value: string; last?: boolean }) {
+function InfoRow({
+  label,
+  value,
+  last,
+}: {
+  label: string;
+  value: string;
+  last?: boolean;
+}) {
   return (
-    <div className={`flex justify-between py-2.5 text-xs ${last ? "" : "border-b border-border"}`}>
-      <span className="text-muted-foreground uppercase tracking-wider">{label}</span>
+    <div
+      className={`flex justify-between py-2.5 text-xs ${last ? "" : "border-b border-border"}`}
+    >
+      <span className="text-muted-foreground uppercase tracking-wider">
+        {label}
+      </span>
       <span>{value}</span>
     </div>
   );

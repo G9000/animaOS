@@ -26,7 +26,8 @@ def get_user(
     require_unlocked_user(request, user_id)
     user = get_user_by_id(db, user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return serialize_user(user)
 
 
@@ -40,7 +41,8 @@ def update_user(
     require_unlocked_user(request, user_id)
     user = get_user_by_id(db, user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     updates = payload.model_dump(exclude_unset=True)
     if "username" in updates:
@@ -48,7 +50,8 @@ def update_user(
         if not username:
             raise HTTPException(status_code=422, detail="Username is required")
         if username_exists(username, exclude_user_id=user_id):
-            raise HTTPException(status_code=409, detail="Username already taken")
+            raise HTTPException(
+                status_code=409, detail="Username already taken")
         user.username = username
     if "name" in updates:
         display_name = str(updates["name"]).strip()
@@ -68,7 +71,8 @@ def update_user(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Username already taken") from None
+        raise HTTPException(
+            status_code=409, detail="Username already taken") from None
 
     db.refresh(user)
     return serialize_user(user)
@@ -83,7 +87,8 @@ def delete_user(
     require_unlocked_user(request, user_id)
     user = get_user_by_id(db, user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     unlock_session_store.revoke_user(user_id)
     db.close()

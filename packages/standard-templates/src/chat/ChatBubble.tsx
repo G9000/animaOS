@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { ChatMessage, TraceEvent } from "./types";
 import { ChatAvatar } from "./ChatAvatar";
 import { CopyButton } from "./CopyButton";
+import { RetrievalPanel } from "./RetrievalPanel";
 import { TracePanel } from "./TracePanel";
 import {
   ThinkIcon,
@@ -13,7 +14,13 @@ import {
   ChevronDownIcon,
   XIcon,
 } from "./icons";
-import { formatTimestamp, formatFullTimestamp, shouldGroupMessages } from "./utils";
+import {
+  formatFullTimestamp,
+  getMessageRetrieval,
+  formatRetrievalSummary,
+  formatTimestamp,
+  shouldGroupMessages,
+} from "./utils";
 import { cn } from "../utils/cn";
 
 export interface ChatBubbleProps {
@@ -41,10 +48,13 @@ export function ChatBubble({
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
   const [showReasoning, setShowReasoning] = useState(false);
+  const [showRetrieval, setShowRetrieval] = useState(false);
   const [showMsgTrace, setShowMsgTrace] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const hasTrace = message.traceEvents && message.traceEvents.length > 0;
   const hasReasoning = !!message.reasoning;
+  const retrieval = getMessageRetrieval(message);
+  const hasRetrieval = retrieval != null;
 
   const handleTranslate = async () => {
     if (translating) return;
@@ -70,19 +80,17 @@ export function ChatBubble({
   const timestamp = formatTimestamp(message.createdAt);
   const fullTimestamp = formatFullTimestamp(message.createdAt);
 
-  const bubbleContent = renderContent
-    ? renderContent(message.content, message.role)
-    : isUser
-      ? (
-        <p className="text-sm whitespace-pre-wrap break-words leading-relaxed pr-6">
-          {message.content}
-        </p>
-      )
-      : (
-        <div className="prose prose-invert prose-sm md:prose-base max-w-none">
-          {message.content}
-        </div>
-      );
+  const bubbleContent = renderContent ? (
+    renderContent(message.content, message.role)
+  ) : isUser ? (
+    <p className="text-sm whitespace-pre-wrap break-words leading-relaxed pr-6">
+      {message.content}
+    </p>
+  ) : (
+    <div className="prose prose-invert prose-sm md:prose-base max-w-none">
+      {message.content}
+    </div>
+  );
 
   return (
     <div
@@ -210,6 +218,13 @@ export function ChatBubble({
           </div>
         )}
 
+        {/* Retrieval */}
+        {showRetrieval && retrieval && (
+          <div className="mt-2 w-full bg-card/50 border border-emerald-400/20 px-3 py-2.5">
+            <RetrievalPanel retrieval={retrieval} />
+          </div>
+        )}
+
         {/* Trace */}
         {(showTrace || showMsgTrace) && hasTrace && (
           <div className="mt-2 w-full bg-card/50 border border-yellow-400/30 px-3 py-2.5 max-h-80 overflow-y-auto">
@@ -248,6 +263,17 @@ export function ChatBubble({
             />
           )}
 
+          {!isUser && hasRetrieval && (
+            <ActionButton
+              active={showRetrieval}
+              onClick={() => setShowRetrieval((value) => !value)}
+              icon={<LightbulbIcon className="w-3 h-3" />}
+              label={showRetrieval ? "HIDE" : "CITE"}
+              activeClass="bg-emerald-400/10 text-emerald-400"
+              inactiveClass="text-muted-foreground/50 hover:text-emerald-400/70 hover:bg-emerald-400/5"
+            />
+          )}
+
           <ActionButton
             active={!!translation}
             onClick={handleTranslate}
@@ -267,6 +293,11 @@ export function ChatBubble({
 
         {/* Token usage - always visible for assistant messages */}
         {!isUser && <TokenUsage events={message.traceEvents} />}
+        {!isUser && retrieval && (
+          <RetrievalUsage
+            retrievalSummary={formatRetrievalSummary(retrieval)}
+          />
+        )}
       </div>
     </div>
   );
@@ -310,6 +341,15 @@ function ActionButton({
 // Token usage display component
 interface TokenUsageProps {
   events?: TraceEvent[];
+}
+
+function RetrievalUsage({ retrievalSummary }: { retrievalSummary: string }) {
+  return (
+    <div className="flex items-center gap-2 mt-1 px-1 font-mono text-[9px] text-muted-foreground/30 tracking-wider">
+      <span className="text-emerald-400/55">MEMORY</span>
+      <span>{retrievalSummary}</span>
+    </div>
+  );
 }
 
 function TokenUsage({ events }: TokenUsageProps) {

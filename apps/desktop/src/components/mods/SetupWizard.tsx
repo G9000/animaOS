@@ -5,12 +5,11 @@ import StatusBadge from "./StatusBadge";
 interface SetupWizardProps {
   steps: SetupStep[];
   schema: ModConfigSchema;
-  modId: string;
   onComplete: (config: Record<string, unknown>) => Promise<void>;
   onHealthCheck: () => Promise<boolean>;
 }
 
-export default function SetupWizard({ steps, schema, modId, onComplete, onHealthCheck }: SetupWizardProps) {
+export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }: SetupWizardProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [healthStatus, setHealthStatus] = useState<"idle" | "checking" | "ok" | "fail">("idle");

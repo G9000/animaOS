@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from anima_server.models.runtime import RuntimeMessage
+from anima_server.models.runtime_memory import MemoryRetrievalFeedback
 from anima_server.services.agent.persistence import (
     _deserialize_tool_calls,
     append_message,
@@ -24,6 +25,12 @@ from anima_server.services.agent.runtime_types import (
     UsageStats,
 )
 from anima_server.services.agent.state import AgentResult
+from anima_server.services.agent.state import (
+    AgentCitation,
+    AgentContextFragment,
+    AgentRetrievalStats,
+    AgentRetrievalTrace,
+)
 from conftest_runtime import runtime_db_session
 from sqlalchemy.orm import Session
 
@@ -586,6 +593,81 @@ def test_persist_agent_result_simple() -> None:
         assert messages[0].content_text == "Hello!"
 
 
+def test_persist_agent_result_simple_stores_retrieval_metadata() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+
+        result = AgentResult(
+            response="Hello!",
+            model="test-model",
+            provider="test-provider",
+            stop_reason="end_turn",
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                context_fragments=(
+                    AgentContextFragment(
+                        rank=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        text="Remembered detail",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=12.5,
+                    total_considered=4,
+                    returned=1,
+                    cutoff_index=1,
+                    cutoff_score=0.91,
+                    top_score=0.91,
+                    cutoff_ratio=1.0,
+                    triggered_by="adaptive_ratio",
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="Hello!",
+                    tool_calls=(),
+                    tool_results=(),
+                ),
+            ],
+        )
+
+        persist_agent_result(
+            db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+        db.commit()
+
+        message = db.query(RuntimeMessage).filter_by(thread_id=thread.id).one()
+        assert message.content_json is not None
+        assert message.content_json["retrieval"]["retriever"] == "hybrid"
+        assert message.content_json["retrieval"]["contextFragments"][0]["text"] == "Remembered detail"
+
+
 def test_persist_agent_result_with_tool_calls() -> None:
     with _db_session() as db:
         user = _make_user(db)
@@ -642,3 +724,236 @@ def test_persist_agent_result_with_tool_calls() -> None:
         assert messages[1].role == "tool"
         assert messages[1].tool_name == "search"
         assert messages[1].content_text == "Found cats"
+
+
+def test_persist_agent_result_stores_retrieval_on_send_message_output() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+
+        tc = ToolCall(id="c1", name="send_message", arguments={"message": "Found it!"})
+        tool_result = ToolExecutionResult(
+            call_id="c1",
+            name="send_message",
+            output="Found it!",
+            is_terminal=True,
+        )
+
+        result = AgentResult(
+            response="Found it!",
+            model="test",
+            provider="test",
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=9,
+                        uri="memory://items/9",
+                    ),
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="Let me answer that.",
+                    tool_calls=(tc,),
+                    tool_results=(tool_result,),
+                ),
+            ],
+        )
+
+        persist_agent_result(
+            db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+        db.commit()
+
+        messages = (
+            db.query(RuntimeMessage)
+            .filter_by(thread_id=thread.id)
+            .order_by(RuntimeMessage.sequence_id)
+            .all()
+        )
+
+        assert messages[0].role == "assistant"
+        assert messages[0].content_json == {
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "name": "send_message",
+                    "arguments": {"message": "Found it!"},
+                    "parse_error": None,
+                    "raw_arguments": None,
+                }
+            ]
+        }
+        assert messages[1].role == "tool"
+        assert messages[1].tool_name == "send_message"
+        assert messages[1].content_json is not None
+        assert messages[1].content_json["retrieval"]["citations"] == [
+            {
+                "index": 1,
+                "memoryItemId": 9,
+                "uri": "memory://items/9",
+                "score": None,
+                "category": None,
+            }
+        ]
+
+
+def test_persist_agent_result_logs_retrieval_feedback_rows() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+
+        response = "You like cats."
+        result = AgentResult(
+            response=response,
+            model="test-model",
+            provider="test-provider",
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                    ),
+                    AgentCitation(
+                        index=2,
+                        memory_item_id=8,
+                        uri="memory://items/8",
+                    ),
+                ),
+                context_fragments=(
+                    AgentContextFragment(
+                        rank=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        text="Likes cats",
+                    ),
+                    AgentContextFragment(
+                        rank=2,
+                        memory_item_id=8,
+                        uri="memory://items/8",
+                        text="Runs marathons on weekends",
+                    ),
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text=response,
+                    tool_calls=(),
+                    tool_results=(),
+                ),
+            ],
+        )
+
+        persist_agent_result(
+            db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+        db.commit()
+
+        feedback_rows = (
+            db.query(MemoryRetrievalFeedback)
+            .filter_by(user_id=user.id)
+            .order_by(MemoryRetrievalFeedback.memory_item_id)
+            .all()
+        )
+
+        assert len(feedback_rows) == 2
+        assert feedback_rows[0].run_id == run.id
+        assert feedback_rows[0].memory_item_id == 7
+        assert feedback_rows[0].was_used is True
+        assert feedback_rows[0].was_corrected is False
+        assert feedback_rows[1].run_id == run.id
+        assert feedback_rows[1].memory_item_id == 8
+        assert feedback_rows[1].was_used is False
+        assert feedback_rows[1].was_corrected is False
+
+
+def test_persist_agent_result_logs_corrected_retrieval_feedback_rows() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test-model",
+            mode="blocking",
+        )
+
+        result = AgentResult(
+            response="To clarify, it's Berlin, not Paris.",
+            model="test-model",
+            provider="test-provider",
+            stop_reason="end_turn",
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                    ),
+                ),
+                context_fragments=(
+                    AgentContextFragment(
+                        rank=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        text="Lives in Paris",
+                    ),
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="To clarify, it's Berlin, not Paris.",
+                    tool_calls=(),
+                    tool_results=(),
+                ),
+            ],
+        )
+
+        persist_agent_result(
+            db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+        db.commit()
+
+        feedback_row = db.query(MemoryRetrievalFeedback).filter_by(user_id=user.id).one()
+        assert feedback_row.run_id == run.id
+        assert feedback_row.memory_item_id == 7
+        assert feedback_row.was_used is False
+        assert feedback_row.was_corrected is True

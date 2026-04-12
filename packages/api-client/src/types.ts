@@ -10,11 +10,11 @@ export interface User {
   id: number;
   username: string;
   name: string;
-  gender?: string;
-  age?: number;
-  birthday?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  gender?: string | null;
+  age?: number | null;
+  birthday?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface LoginResponse extends User {
@@ -32,11 +32,21 @@ export interface ChangePasswordResponse {
   unlockToken: string;
 }
 
+export type VaultTransferFormat = "vault_json" | "anima_capsule";
+
+export interface VaultExportResponse {
+  filename: string;
+  vault: string;
+  size: number;
+  format?: VaultTransferFormat;
+}
+
 export interface VaultImportResponse {
   status: string;
   restoredUsers: number;
   restoredMemoryFiles: number;
   requiresReauth?: boolean;
+  format?: VaultTransferFormat;
 }
 
 export interface PersonaTemplateInfo {
@@ -64,6 +74,41 @@ export interface TraceMessagePreview {
   toolName?: string;
   toolCallId?: string;
   toolCallCount?: number;
+}
+
+export interface RetrievalCitation {
+  index: number;
+  memoryItemId: number;
+  uri: string;
+  score?: number | null;
+  category?: string | null;
+}
+
+export interface RetrievalContextFragment {
+  rank: number;
+  memoryItemId: number;
+  uri: string;
+  text: string;
+  score?: number | null;
+  category?: string | null;
+}
+
+export interface RetrievalStats {
+  retrievalMs?: number | null;
+  totalConsidered: number;
+  returned: number;
+  cutoffIndex: number;
+  cutoffScore?: number | null;
+  topScore?: number | null;
+  cutoffRatio?: number | null;
+  triggeredBy: string;
+}
+
+export interface RetrievalTrace {
+  retriever: string;
+  citations: RetrievalCitation[];
+  contextFragments: RetrievalContextFragment[];
+  stats?: RetrievalStats | null;
 }
 
 export interface TraceEvent {
@@ -114,6 +159,7 @@ export interface TraceEvent {
   runId?: number;
   threadId?: number;
   blocks?: Record<string, string>;
+  retrieval?: RetrievalTrace | null;
 }
 
 export interface ChatMessage {
@@ -126,6 +172,7 @@ export interface ChatMessage {
   createdAt?: string;
   reasoning?: string;
   traceEvents?: TraceEvent[];
+  retrieval?: RetrievalTrace | null;
   source?: string | null;
 }
 
@@ -134,6 +181,7 @@ export interface AgentResponse {
   model: string;
   provider: string;
   toolsUsed: string[];
+  retrieval?: RetrievalTrace | null;
 }
 
 export interface ProviderInfo {
@@ -142,9 +190,26 @@ export interface ProviderInfo {
   requiresApiKey: boolean;
 }
 
+export interface OllamaModelDetails {
+  format?: string | null;
+  family?: string | null;
+  families?: string[] | null;
+  parameterSize?: string | null;
+  quantizationLevel?: string | null;
+}
+
+export interface OllamaModelInfo {
+  name: string;
+  modifiedAt?: string | null;
+  size?: number | null;
+  digest?: string | null;
+  details?: OllamaModelDetails | null;
+}
+
 export interface AgentConfig {
   provider: string;
   model: string;
+  extractionModel?: string | null;
   ollamaUrl?: string;
   hasApiKey: boolean;
   systemPrompt?: string | null;
@@ -395,6 +460,7 @@ export interface ThreadMessage {
   content: string;
   ts: string | null;
   isArchivedHistory: boolean;
+  retrieval?: RetrievalTrace | null;
 }
 
 export interface ThreadMessagesResponse {

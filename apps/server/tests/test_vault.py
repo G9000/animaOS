@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 from types import SimpleNamespace
 
@@ -81,6 +82,7 @@ def test_export_and_import_vault_restores_auth_and_files() -> None:
             "restoredUsers": 1,
             "restoredMemoryFiles": 1,
             "requiresReauth": True,
+            "format": "vault_json",
         }
 
         with get_user_session_factory(user_id)() as db:
@@ -188,6 +190,115 @@ def test_import_vault_preserves_original_password_hash() -> None:
             json={"username": "vault-user", "password": "tampered-password"},
         )
         assert bad_login_response.status_code == 401
+
+
+def test_export_and_import_anima_capsule_restores_auth_and_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_write_capsule(sections: dict[str, bytes], passphrase: str) -> bytes:
+        assert passphrase == "vault-pass"
+        encoded = {
+            key: base64.b64encode(value).decode("ascii") for key, value in sections.items()
+        }
+        return json.dumps(encoded, sort_keys=True).encode("utf-8")
+
+    def _fake_read_capsule(data: bytes, passphrase: str) -> dict[str, bytes]:
+        assert passphrase == "vault-pass"
+        encoded = json.loads(data.decode("utf-8"))
+        return {
+            key: base64.b64decode(value.encode("ascii")) for key, value in encoded.items()
+        }
+
+    monkeypatch.setattr(vault_module, "_write_capsule_bytes", _fake_write_capsule)
+    monkeypatch.setattr(vault_module, "_read_capsule_sections", _fake_read_capsule)
+
+    with managed_test_client("anima-vault-test-") as client:
+        alice = _register_user(client)
+
+        user_id = int(alice["id"])
+        headers = {"x-anima-unlock": alice["unlockToken"]}
+        user_dir = get_user_data_dir(user_id)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        (user_dir / "memory" / "entry.md").parent.mkdir(parents=True, exist_ok=True)
+        (user_dir / "memory" / "entry.md").write_text("hello from capsule", encoding="utf-8")
+
+        export_response = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass", "format": "anima_capsule"},
+        )
+
+        assert export_response.status_code == 200
+        export_payload = export_response.json()
+        assert export_payload["format"] == "anima_capsule"
+        assert export_payload["filename"].endswith(".anima")
+
+        with get_user_session_factory(user_id)() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            user.display_name = "Changed"
+            db.commit()
+
+        (user_dir / "memory" / "entry.md").write_text("changed", encoding="utf-8")
+
+        import_response = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={
+                "passphrase": "vault-pass",
+                "vault": export_payload["vault"],
+                "format": "anima_capsule",
+            },
+        )
+
+        assert import_response.status_code == 200
+        assert import_response.json() == {
+            "status": "ok",
+            "restoredUsers": 1,
+            "restoredMemoryFiles": 1,
+            "requiresReauth": True,
+            "format": "anima_capsule",
+        }
+
+        with get_user_session_factory(user_id)() as db:
+            users = db.query(User).all()
+            assert [record.username for record in users] == ["alice"]
+            assert users[0].display_name == "Alice"
+
+        assert (user_dir / "memory" / "entry.md").read_text(encoding="utf-8") == "hello from capsule"
+
+
+def test_load_capsule_bindings_logs_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str, package: str | None = None):
+        if name == "anima_core":
+            raise ModuleNotFoundError("no module named 'anima_core'")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+    read_capsule, write_capsule = vault_module._load_capsule_bindings()
+
+    assert read_capsule is None
+    assert write_capsule is None
+
+
+def test_load_capsule_bindings_raises_unexpected_import_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str, package: str | None = None):
+        if name == "anima_core":
+            raise RuntimeError("boom")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        vault_module._load_capsule_bindings()
 
 
 @pytest.mark.parametrize(

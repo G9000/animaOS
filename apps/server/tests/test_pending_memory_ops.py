@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from anima_server.db.base import Base
@@ -294,6 +295,339 @@ def test_core_memory_replace_guides_when_old_text_is_missing() -> None:
     assert "Could not find the exact text to replace in human memory." in result
     assert "core_memory_append" in result
     assert "update_human_memory" in result
+
+
+def test_read_core_memory_returns_merged_block_content() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.pending_ops import create_pending_op
+        from anima_server.services.agent.tools import read_core_memory
+
+        user = User(username="read-core-memory", password_hash="x",
+                    display_name="Read Core Memory")
+        soul_db.add(user)
+        soul_db.flush()
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="human",
+                content="Name: Alice",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.flush()
+
+        create_pending_op(
+            runtime_db,
+            user_id=user.id,
+            op_type="append",
+            target_block="human",
+            content="Has a dog named Biscuit.",
+            old_content=None,
+            source_run_id=51,
+            source_tool_call_id="read-core-memory-1",
+        )
+        runtime_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=52,
+            current_tool_call_id="read-core-memory-2",
+        )
+        set_tool_context(ctx)
+        try:
+            result = read_core_memory("human")
+        finally:
+            clear_tool_context()
+
+    assert result == "Name: Alice\nHas a dog named Biscuit."
+
+
+def test_list_pending_memory_ops_formats_core_queue() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.pending_ops import create_pending_op
+        from anima_server.services.agent.tools import list_pending_memory_ops
+
+        user = User(username="list-pending-memory", password_hash="x",
+                    display_name="List Pending Memory")
+        soul_db.add(user)
+        soul_db.flush()
+
+        create_pending_op(
+            runtime_db,
+            user_id=user.id,
+            op_type="append",
+            target_block="human",
+            content="Has a dog named Biscuit.",
+            old_content=None,
+            source_run_id=60,
+            source_tool_call_id="pending-1",
+        )
+        create_pending_op(
+            runtime_db,
+            user_id=user.id,
+            op_type="replace",
+            target_block="persona",
+            content="Speak more directly.",
+            old_content="Speak softly.",
+            source_run_id=61,
+            source_tool_call_id="pending-2",
+        )
+        runtime_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=62,
+            current_tool_call_id="pending-3",
+        )
+        set_tool_context(ctx)
+        try:
+            result = list_pending_memory_ops()
+        finally:
+            clear_tool_context()
+
+    assert "Pending core-memory ops (2):" in result
+    assert "[human] append: Has a dog named Biscuit." in result
+    assert "[persona] replace: Speak softly. -> Speak more directly." in result
+
+
+def test_set_user_timezone_updates_world_section() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.models import PendingMemoryOp
+        from anima_server.services.agent.memory_blocks import build_world_context_block
+        from anima_server.services.agent.tools import set_user_timezone
+
+        user = User(username="set-user-timezone", password_hash="x",
+                    display_name="Set User Timezone")
+        soul_db.add(user)
+        soul_db.flush()
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="human",
+                content="Name: Alice",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=70,
+            current_tool_call_id="timezone-1",
+        )
+        set_tool_context(ctx)
+        try:
+            result = set_user_timezone("Asia/Kuala_Lumpur")
+            runtime_db.flush()
+        finally:
+            clear_tool_context()
+
+        pending = runtime_db.scalars(select(PendingMemoryOp)).all()
+        world_block = build_world_context_block(soul_db, user_id=user.id)
+
+    assert "Saved user timezone as Asia/Kuala_Lumpur." in result
+    assert "+08:00" in result
+    assert world_block is not None
+    assert world_block.value == "Timezone: Asia/Kuala_Lumpur"
+    assert pending == []
+
+
+def test_get_user_timezone_and_current_datetime_use_saved_timezone() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.tools import current_datetime, get_user_timezone
+
+        user = User(username="get-user-timezone", password_hash="x",
+                    display_name="Get User Timezone")
+        soul_db.add(user)
+        soul_db.flush()
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="world",
+                content="Timezone: Asia/Kuala_Lumpur",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=71,
+            current_tool_call_id="timezone-2",
+        )
+        set_tool_context(ctx)
+        try:
+            timezone_result = get_user_timezone()
+            datetime_result = current_datetime()
+        finally:
+            clear_tool_context()
+
+    assert "Saved user timezone (Asia/Kuala_Lumpur):" in timezone_result
+    assert "+08:00" in timezone_result
+    assert "Saved user timezone (Asia/Kuala_Lumpur):" in datetime_result
+    assert "+08:00" in datetime_result
+    assert "UTC:" in datetime_result
+
+
+def test_set_user_timezone_rejects_invalid_values() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.tools import set_user_timezone
+
+        user = User(username="invalid-user-timezone", password_hash="x",
+                    display_name="Invalid User Timezone")
+        soul_db.add(user)
+        soul_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=72,
+            current_tool_call_id="timezone-3",
+        )
+        set_tool_context(ctx)
+        try:
+            with pytest.raises(ValueError, match="Invalid timezone"):
+                set_user_timezone("Mars/Olympus_Mons")
+        finally:
+            clear_tool_context()
+
+
+def test_current_datetime_falls_back_when_saved_timezone_is_invalid() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.tools import current_datetime
+
+        user = User(username="invalid-stored-timezone", password_hash="x",
+                    display_name="Invalid Stored Timezone")
+        soul_db.add(user)
+        soul_db.flush()
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="world",
+                content="Timezone: Mars/Olympus_Mons",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=73,
+            current_tool_call_id="timezone-4",
+        )
+        set_tool_context(ctx)
+        try:
+            result = current_datetime()
+        finally:
+            clear_tool_context()
+
+    assert "Local time:" in result
+    assert "UTC:" in result
+
+
+def test_world_context_block_is_separate_from_human_block() -> None:
+    with _soul_db_session() as soul_db:
+        from anima_server.services.agent.memory_blocks import (
+            build_human_core_block,
+            build_world_context_block,
+        )
+
+        user = User(
+            username="timezone-human-block",
+            password_hash="x",
+            display_name="Alice",
+        )
+        soul_db.add(user)
+        soul_db.flush()
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="world",
+                content="Timezone: Asia/Kuala_Lumpur\nLocale: en-MY",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.add(
+            SelfModelBlock(
+                user_id=user.id,
+                section="human",
+                content="Likes tea.",
+                version=1,
+                updated_by="seed",
+            )
+        )
+        soul_db.flush()
+
+        world_block = build_world_context_block(soul_db, user_id=user.id)
+        block = build_human_core_block(soul_db, user_id=user.id)
+
+    assert world_block is not None
+    assert "Timezone: Asia/Kuala_Lumpur" in world_block.value
+    assert block is not None
+    assert "Timezone:" not in block.value
+    assert "Likes tea." in block.value
+    assert "Name: Alice" in block.value
+
+
+def test_consolidate_pending_memory_runs_soul_writer() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.tools import consolidate_pending_memory
+        from anima_server.services.agent.soul_writer import SoulWriterResult
+
+        user = User(username="consolidate-pending", password_hash="x",
+                    display_name="Consolidate Pending")
+        soul_db.add(user)
+        soul_db.flush()
+
+        ctx = ToolContext(
+            db=soul_db,
+            runtime_db=runtime_db,
+            user_id=user.id,
+            thread_id=1,
+            run_id=74,
+            current_tool_call_id="consolidate-1",
+        )
+        set_tool_context(ctx)
+        try:
+            with patch(
+                "anima_server.services.agent.soul_writer.run_soul_writer",
+                new=AsyncMock(
+                    return_value=SoulWriterResult(
+                        ops_processed=2,
+                        candidates_promoted=1,
+                    )
+                ),
+                create=True,
+            ):
+                result = consolidate_pending_memory()
+        finally:
+            clear_tool_context()
+
+    assert "Soul Writer finished." in result
+    assert "Ops processed=2" in result
+    assert "candidates promoted=1" in result
 
 
 def test_update_human_memory_creates_full_replace_pending_op() -> None:

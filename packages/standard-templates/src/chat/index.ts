@@ -2,6 +2,10 @@
 export type {
   ChatMessage,
   MessageRole,
+  RetrievalCitation,
+  RetrievalContextFragment,
+  RetrievalStats,
+  RetrievalTrace,
   Thread,
   TraceEvent,
   TraceEventType,
@@ -9,9 +13,13 @@ export type {
 
 // ── Components ───────────────────────────────────────────────────────────────
 export { ChatBubble, type ChatBubbleProps } from "./ChatBubble";
-export { CompactChatBubble, type CompactChatBubbleProps } from "./CompactChatBubble";
+export {
+  CompactChatBubble,
+  type CompactChatBubbleProps,
+} from "./CompactChatBubble";
 export { ChatAvatar, type ChatAvatarProps } from "./ChatAvatar";
 export { CopyButton, type CopyButtonProps } from "./CopyButton";
+export { RetrievalPanel, type RetrievalPanelProps } from "./RetrievalPanel";
 export { TracePanel, type TracePanelProps } from "./TracePanel";
 export { ChatInput, type ChatInputProps } from "./ChatInput";
 
@@ -35,6 +43,9 @@ export {
   formatTimestamp,
   formatFullTimestamp,
   formatJson,
+  getMessageRetrieval,
+  getRetrievalTrace,
+  formatRetrievalSummary,
   serializeTraceAsJson,
   serializeTraceAsText,
 } from "./utils";

@@ -184,6 +184,16 @@ def create_user(
         )
     )
 
+    db.add(
+        SelfModelBlock(
+            user_id=user.id,
+            section="world",
+            content="",
+            version=1,
+            updated_by="system",
+        )
+    )
+
     # Seed user directive if provided
     if user_directive.strip():
         db.add(

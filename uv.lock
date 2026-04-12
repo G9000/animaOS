@@ -9,6 +9,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "anima-core",
     "anima-server",
 ]
 
@@ -27,11 +28,17 @@ wheels = [
 ]
 
 [[package]]
+name = "anima-core"
+version = "0.1.0"
+source = { editable = "packages/anima-core" }
+
+[[package]]
 name = "anima-server"
 version = "0.1.0"
 source = { editable = "apps/server" }
 dependencies = [
     { name = "alembic" },
+    { name = "anima-core" },
     { name = "argon2-cffi" },
     { name = "asyncpg" },
     { name = "chromadb" },
@@ -66,6 +73,7 @@ postgres = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.16.5" },
+    { name = "anima-core", editable = "packages/anima-core" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "chromadb", specifier = ">=1.0.0" },

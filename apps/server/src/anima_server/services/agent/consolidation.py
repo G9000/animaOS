@@ -21,6 +21,7 @@ from anima_server.services.agent.json_utils import (
 from anima_server.services.agent.json_utils import (
     parse_json_object as _parse_json_object,
 )
+from anima_server.services.agent.text_processing import prepare_memory_text
 from anima_server.services.data_crypto import df
 from anima_server.services.health.event_logger import emit as health_emit
 
@@ -236,6 +237,9 @@ async def extract_memories_via_llm(
     if settings.agent_provider == "scaffold":
         return LLMExtractionResult()
 
+    prepared_user_message = prepare_memory_text(user_message)
+    prepared_assistant_response = prepare_memory_text(assistant_response)
+
     try:
         from anima_server.services.agent.llm import create_llm
         from anima_server.services.agent.messages import HumanMessage, SystemMessage
@@ -244,8 +248,8 @@ async def extract_memories_via_llm(
         llm = create_llm()
         prompt_loader = PromptLoader(agent_name="Anima")
         prompt = prompt_loader.memory_extraction(
-            user_message=user_message,
-            assistant_response=assistant_response,
+            user_message=prepared_user_message or user_message,
+            assistant_response=prepared_assistant_response or assistant_response,
         )
         response = await llm.ainvoke(
             [
@@ -418,10 +422,11 @@ async def resolve_conflict_batch(
 
 
 def extract_turn_memory(user_message: str) -> ExtractedTurnMemory:
-    facts = tuple(extract_pattern_items(user_message, _FACT_EXTRACTORS))
+    prepared_message = prepare_memory_text(user_message)
+    facts = tuple(extract_pattern_items(prepared_message, _FACT_EXTRACTORS))
     preferences = tuple(extract_pattern_items(
-        user_message, _PREFERENCE_EXTRACTORS))
-    current_focus = extract_current_focus(user_message)
+        prepared_message, _PREFERENCE_EXTRACTORS))
+    current_focus = extract_current_focus(prepared_message)
     return ExtractedTurnMemory(
         facts=facts,
         preferences=preferences,

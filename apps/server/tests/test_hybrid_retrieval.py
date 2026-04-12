@@ -20,10 +20,13 @@ import anima_server.services.agent.vector_store as vs
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
+from anima_server.services.agent import adaptive_retrieval as adaptive_retrieval_module
 from anima_server.services.agent.embeddings import (
+    AdaptiveRetrievalConfig,
     HybridSearchResult,
     _reciprocal_rank_fusion,
     adaptive_filter,
+    adaptive_filter_with_stats,
 )
 from anima_server.services.agent.memory_store import (
     _CATEGORY_QUERY_WEIGHTS,
@@ -287,6 +290,95 @@ class TestAdaptiveFilter:
             high_confidence_threshold=0.9,
         )
         assert len(filtered) == 3
+
+    def test_combined_strategy_returns_stats(self):
+        results = self._make_results([0.92, 0.9, 0.86, 0.47, 0.04, 0.03])
+        adaptive_result = adaptive_filter_with_stats(
+            results,
+            config=AdaptiveRetrievalConfig.combined(
+                max_results=6,
+                min_results=2,
+                relative_threshold=0.5,
+                max_drop_ratio=0.9,
+                absolute_min=0.1,
+            ),
+        )
+
+        assert len(adaptive_result.results) == 3
+        assert adaptive_result.stats.returned == 3
+        assert adaptive_result.stats.total_considered == 6
+        assert adaptive_result.stats.triggered_by == "relative_threshold"
+        assert adaptive_result.stats.cutoff_ratio is not None
+
+    def test_disabled_strategy_returns_capped_results(self):
+        results = self._make_results([0.8, 0.6, 0.4, 0.2])
+        adaptive_result = adaptive_filter_with_stats(
+            results,
+            config=AdaptiveRetrievalConfig(
+                enabled=False,
+                strategy="disabled",
+                max_results=3,
+                min_results=1,
+            ),
+        )
+
+        assert len(adaptive_result.results) == 3
+        assert adaptive_result.stats.triggered_by == "disabled"
+
+    def test_disabled_flag_short_circuits_legacy_strategy(self):
+        cutoff, trigger, normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [0.95, 0.8, 0.4, 0.1],
+            config=AdaptiveRetrievalConfig(
+                enabled=False,
+                strategy="legacy",
+                min_results=2,
+                max_results=4,
+            ),
+        )
+
+        assert cutoff == 4
+        assert trigger == "disabled"
+        assert normalized == adaptive_retrieval_module.normalize_scores([0.95, 0.8, 0.4, 0.1])
+
+    def test_disabled_flag_short_circuits_rust_strategy(self, monkeypatch):
+        def _unexpected_rust_cutoff(*args, **kwargs):
+            raise AssertionError("rust cutoff should not run when adaptive retrieval is disabled")
+
+        monkeypatch.setattr(
+            adaptive_retrieval_module,
+            "_rust_find_adaptive_cutoff",
+            _unexpected_rust_cutoff,
+        )
+
+        cutoff, trigger, normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [0.95, 0.8, 0.4, 0.1],
+            config=AdaptiveRetrievalConfig(
+                enabled=False,
+                strategy="combined",
+                min_results=2,
+                max_results=4,
+            ),
+        )
+
+        assert cutoff == 4
+        assert trigger == "disabled"
+        assert normalized == adaptive_retrieval_module.normalize_scores([0.95, 0.8, 0.4, 0.1])
+
+    def test_python_relative_threshold_reports_relative_trigger(self, monkeypatch):
+        monkeypatch.setattr(adaptive_retrieval_module, "_rust_find_adaptive_cutoff", None)
+
+        cutoff, trigger, _normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [1.0, 0.95, 0.7, 0.65],
+            config=AdaptiveRetrievalConfig(
+                strategy="relative_threshold",
+                min_results=2,
+                max_results=10,
+                relative_threshold=0.8,
+            ),
+        )
+
+        assert cutoff == 2
+        assert trigger == "relative_threshold"
 
 
 # ===================================================================

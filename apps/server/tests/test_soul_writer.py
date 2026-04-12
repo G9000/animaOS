@@ -16,6 +16,7 @@ from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
+    MemoryRetrievalFeedback,
     PromotionJournal,
 )
 from anima_server.services.agent.soul_writer import (
@@ -23,6 +24,7 @@ from anima_server.services.agent.soul_writer import (
     plan_candidate_promotion,
     run_soul_writer,
 )
+from anima_server.services.agent.retrieval_feedback import sync_retrieval_feedback
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -142,6 +144,7 @@ async def test_run_soul_writer_no_work() -> None:
     assert result.errors == []
     # Access sync always runs (returns dict)
     assert isinstance(result.access_sync, dict)
+    assert isinstance(result.retrieval_feedback_sync, dict)
 
     soul_engine.dispose()
     runtime_engine.dispose()
@@ -730,6 +733,577 @@ async def test_access_sync_runs_with_no_candidates() -> None:
             select(MemoryAccessLog).where(MemoryAccessLog.user_id == user_id)
         ).all()
         assert len(remaining) == 0
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_sync_updates_used_items_without_penalizing_mixed_run() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-feedback", password_hash="x", display_name="Feedback")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        used_item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            source="extraction",
+        )
+        unused_item = MemoryItem(
+            user_id=user_id,
+            content="Runs marathons on weekends",
+            category="fact",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(used_item)
+        soul_db.add(unused_item)
+        soul_db.commit()
+        used_item_id = used_item.id
+        unused_item_id = unused_item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=101,
+                memory_item_id=used_item_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=101,
+                memory_item_id=unused_item_id,
+                was_used=False,
+                evidence_score=0.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.retrieval_feedback_sync.get("items_synced", 0) == 2
+    assert result.retrieval_feedback_sync.get("used_counts", {}).get(used_item_id) == 1
+    assert result.retrieval_feedback_sync.get("used_evidence_totals", {}).get(used_item_id) == 1.0
+    assert result.retrieval_feedback_sync.get("corrected_counts", {}) == {}
+    assert result.retrieval_feedback_sync.get("unused_counts", {}).get(unused_item_id) == 1
+    assert result.retrieval_feedback_sync.get("zero_reference_runs", 0) == 0
+    assert result.retrieval_feedback_sync.get("importance_deltas", {}).get(used_item_id) == 1
+    assert result.retrieval_feedback_sync.get("evidence_heat_factors", {}).get(used_item_id) == 1.2
+    assert unused_item_id not in result.retrieval_feedback_sync.get("importance_deltas", {})
+
+    with soul_factory() as soul_db:
+        refreshed_used = soul_db.get(MemoryItem, used_item_id)
+        refreshed_unused = soul_db.get(MemoryItem, unused_item_id)
+        assert refreshed_used is not None
+        assert refreshed_unused is not None
+        assert refreshed_used.importance == 4
+        assert refreshed_unused.importance == 3
+
+    with runtime_factory() as runtime_db:
+        remaining = runtime_db.scalars(
+            select(MemoryRetrievalFeedback).where(MemoryRetrievalFeedback.user_id == user_id)
+        ).all()
+        assert remaining == []
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_retrieval_feedback_sync_dry_run_keeps_rows_unsynced() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-dry-run", password_hash="x", display_name="Dry Run")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db, soul_factory() as soul_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=707,
+                memory_item_id=item_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+        result = sync_retrieval_feedback(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=True,
+        )
+
+        runtime_db.expire_all()
+        remaining = runtime_db.scalars(
+            select(MemoryRetrievalFeedback).where(MemoryRetrievalFeedback.user_id == user_id)
+        ).all()
+        assert len(remaining) == 1
+        assert remaining[0].synced is False
+        assert result["items_synced"] == 1
+
+        refreshed = soul_db.get(MemoryItem, item_id)
+        assert refreshed is not None
+        assert refreshed.importance == 3
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_retrieval_feedback_sync_only_marks_selected_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-selected-rows", password_hash="x", display_name="Selected Rows")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db, soul_factory() as soul_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=808,
+                memory_item_id=item_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+        original_execute = runtime_db.execute
+        injected_row_id: int | None = None
+        execute_calls = 0
+
+        def execute_with_injected_row(statement, *args, **kwargs):
+            nonlocal execute_calls, injected_row_id
+            execute_calls += 1
+            if execute_calls == 2:
+                runtime_db.add(
+                    MemoryRetrievalFeedback(
+                        user_id=user_id,
+                        run_id=809,
+                        memory_item_id=item_id,
+                        was_used=True,
+                        evidence_score=0.6,
+                        synced=False,
+                    )
+                )
+                runtime_db.flush()
+                injected_row_id = runtime_db.scalar(
+                    select(MemoryRetrievalFeedback.id)
+                    .where(MemoryRetrievalFeedback.user_id == user_id)
+                    .order_by(MemoryRetrievalFeedback.id.desc())
+                    .limit(1)
+                )
+            return original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(runtime_db, "execute", execute_with_injected_row)
+
+        result = sync_retrieval_feedback(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=False,
+        )
+
+        runtime_db.expire_all()
+        remaining = runtime_db.scalars(
+            select(MemoryRetrievalFeedback)
+            .where(MemoryRetrievalFeedback.user_id == user_id)
+            .order_by(MemoryRetrievalFeedback.id)
+        ).all()
+
+        assert result["items_synced"] == 1
+        assert injected_row_id is not None
+        assert len(remaining) == 1
+        assert remaining[0].id == injected_row_id
+        assert remaining[0].synced is False
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_sync_decays_heat_for_zero_reference_run() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-zero-ref", password_hash="x", display_name="Zero Ref")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Runs marathons on weekends",
+            category="fact",
+            importance=3,
+            heat=20.0,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=202,
+                memory_item_id=item_id,
+                was_used=False,
+                evidence_score=0.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.retrieval_feedback_sync.get("items_synced", 0) == 1
+    assert result.retrieval_feedback_sync.get("zero_reference_runs", 0) == 1
+    assert result.retrieval_feedback_sync.get("corrected_counts", {}) == {}
+    assert result.retrieval_feedback_sync.get("unused_counts", {}).get(item_id) == 1
+    assert result.retrieval_feedback_sync.get("zero_reference_counts", {}).get(item_id) == 1
+    assert result.retrieval_feedback_sync.get("heat_decay_factors", {}).get(item_id) == 0.95
+    assert item_id not in result.retrieval_feedback_sync.get("importance_deltas", {})
+
+    with soul_factory() as soul_db:
+        refreshed = soul_db.get(MemoryItem, item_id)
+        assert refreshed is not None
+        assert refreshed.importance == 3
+        assert refreshed.heat == pytest.approx(19.0)
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_sync_penalizes_corrected_items() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-corrected", password_hash="x", display_name="Corrected")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Lives in Paris",
+            category="fact",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=303,
+                memory_item_id=item_id,
+                was_used=False,
+                was_corrected=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.retrieval_feedback_sync.get("items_synced", 0) == 1
+    assert result.retrieval_feedback_sync.get("zero_reference_runs", 0) == 0
+    assert result.retrieval_feedback_sync.get("corrected_counts", {}).get(item_id) == 1
+    assert result.retrieval_feedback_sync.get("importance_deltas", {}).get(item_id) == -1
+    assert result.retrieval_feedback_sync.get("evidence_heat_factors", {}).get(item_id) == 0.8
+
+    with soul_factory() as soul_db:
+        refreshed = soul_db.get(MemoryItem, item_id)
+        assert refreshed is not None
+        assert refreshed.importance == 2
+        assert refreshed.heat is not None
+        assert refreshed.heat < 2.0
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_sync_warms_heat_without_importance_boost_on_weak_used_evidence() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-weak-evidence", password_hash="x", display_name="Weak Evidence")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            heat=10.0,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+        item_id = item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=404,
+                memory_item_id=item_id,
+                was_used=True,
+                was_corrected=False,
+                evidence_score=0.6,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.retrieval_feedback_sync.get("items_synced", 0) == 1
+    assert result.retrieval_feedback_sync.get("zero_reference_runs", 0) == 0
+    assert result.retrieval_feedback_sync.get("used_counts", {}).get(item_id) == 1
+    assert result.retrieval_feedback_sync.get("used_evidence_totals", {}).get(item_id) == 0.6
+    assert result.retrieval_feedback_sync.get("evidence_heat_factors", {}).get(item_id) == 1.12
+    assert item_id not in result.retrieval_feedback_sync.get("importance_deltas", {})
+
+    with soul_factory() as soul_db:
+        refreshed = soul_db.get(MemoryItem, item_id)
+        assert refreshed is not None
+        assert refreshed.importance == 3
+        assert refreshed.heat == pytest.approx(11.2)
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_heat_warming_changes_scored_retrieval_order() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-order", password_hash="x", display_name="Retrieval Order")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        warmed_item = MemoryItem(
+            user_id=user_id,
+            content="Likes cats",
+            category="preference",
+            importance=3,
+            heat=10.0,
+            source="extraction",
+        )
+        baseline_item = MemoryItem(
+            user_id=user_id,
+            content="Likes dogs",
+            category="preference",
+            importance=3,
+            heat=10.0,
+            source="extraction",
+        )
+        soul_db.add(warmed_item)
+        soul_db.add(baseline_item)
+        soul_db.commit()
+        warmed_item_id = warmed_item.id
+        baseline_item_id = baseline_item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=505,
+                memory_item_id=warmed_item_id,
+                was_used=True,
+                was_corrected=False,
+                evidence_score=0.6,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+    await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    with soul_factory() as soul_db:
+        from anima_server.services.agent.memory_store import get_memory_items_scored
+
+        ranked = get_memory_items_scored(
+            soul_db,
+            user_id=user_id,
+            category="preference",
+            limit=10,
+        )
+        assert ranked[0].id == warmed_item_id
+        assert ranked[1].id == baseline_item_id
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_heat_cooling_changes_scored_retrieval_order() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="retrieval-cooling-order", password_hash="x", display_name="Retrieval Cooling")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        cooled_item = MemoryItem(
+            user_id=user_id,
+            content="Lives in Paris",
+            category="fact",
+            importance=3,
+            heat=10.0,
+            source="extraction",
+        )
+        baseline_item = MemoryItem(
+            user_id=user_id,
+            content="Lives in Berlin",
+            category="fact",
+            importance=3,
+            heat=10.0,
+            source="extraction",
+        )
+        soul_db.add(cooled_item)
+        soul_db.add(baseline_item)
+        soul_db.commit()
+        cooled_item_id = cooled_item.id
+        baseline_item_id = baseline_item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=606,
+                memory_item_id=cooled_item_id,
+                was_used=False,
+                was_corrected=True,
+                evidence_score=0.4,
+                synced=False,
+            )
+        )
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.retrieval_feedback_sync.get("corrected_counts", {}).get(cooled_item_id) == 1
+    assert result.retrieval_feedback_sync.get("evidence_heat_factors", {}).get(cooled_item_id) == 0.92
+    assert cooled_item_id not in result.retrieval_feedback_sync.get("importance_deltas", {})
+
+    with soul_factory() as soul_db:
+        from anima_server.services.agent.memory_store import get_memory_items_scored
+
+        ranked = get_memory_items_scored(
+            soul_db,
+            user_id=user_id,
+            category="fact",
+            limit=10,
+        )
+        assert ranked[0].id == baseline_item_id
+        assert ranked[1].id == cooled_item_id
 
     soul_engine.dispose()
     runtime_engine.dispose()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import sync_embeddings_to_runtime
 
 
@@ -11,6 +12,7 @@ def _memory_item(
     item_id: int,
     user_id: int,
     embedding_json: object,
+    embedding_checksum: str | None = None,
     content: str = "encrypted",
     category: str = "fact",
     importance: int = 3,
@@ -19,6 +21,7 @@ def _memory_item(
         id=item_id,
         user_id=user_id,
         embedding_json=embedding_json,
+        embedding_checksum=embedding_checksum,
         content=content,
         category=category,
         importance=importance,
@@ -84,6 +87,7 @@ def test_sync_upserts_valid_embeddings_and_skips_invalid(monkeypatch) -> None:
             item_id=11,
             user_id=5,
             embedding_json=[0.1, 0.2, 0.3],
+            embedding_checksum=compute_embedding_checksum([0.1, 0.2, 0.3]),
             content="ciphertext-1",
             category="fact",
             importance=4,
@@ -95,6 +99,15 @@ def test_sync_upserts_valid_embeddings_and_skips_invalid(monkeypatch) -> None:
             content="ciphertext-2",
             category="preference",
             importance=2,
+        ),
+        _memory_item(
+            item_id=13,
+            user_id=5,
+            embedding_json=[0.3, 0.2, 0.1],
+            embedding_checksum="not-the-right-checksum",
+            content="ciphertext-3",
+            category="fact",
+            importance=1,
         ),
     ]
     soul_db = SimpleNamespace(
@@ -158,3 +171,99 @@ def test_sync_upserts_valid_embeddings_and_skips_invalid(monkeypatch) -> None:
     assert runtime_session.committed is True
     assert runtime_session.rolled_back is False
     assert runtime_session.closed is True
+
+
+def test_sync_backfills_missing_embedding_checksum(monkeypatch) -> None:
+    runtime_session = SimpleNamespace(
+        committed=False,
+        rolled_back=False,
+        closed=False,
+    )
+
+    def _commit() -> None:
+        runtime_session.committed = True
+
+    def _rollback() -> None:
+        runtime_session.rolled_back = True
+
+    def _close() -> None:
+        runtime_session.closed = True
+
+    runtime_session.commit = _commit
+    runtime_session.rollback = _rollback
+    runtime_session.close = _close
+
+    item = _memory_item(
+        item_id=21,
+        user_id=9,
+        embedding_json=[0.9, 0.1],
+        content="ciphertext-9",
+        category="fact",
+        importance=5,
+    )
+    soul_db = SimpleNamespace(
+        flushed=False,
+        scalars=lambda _stmt: SimpleNamespace(all=lambda: [item]),
+    )
+
+    def _flush() -> None:
+        soul_db.flushed = True
+
+    soul_db.flush = _flush
+
+    import anima_server.db.runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "get_runtime_session_factory", lambda: lambda: runtime_session)
+    monkeypatch.setattr(
+        "anima_server.services.agent.embeddings.df",
+        lambda user_id, content, *, table, field: f"plain:{user_id}:{content}:{table}:{field}",
+    )
+
+    upsert_calls: list[dict[str, object]] = []
+
+    class FakePgVecStore:
+        def __init__(self, db) -> None:
+            assert db is runtime_session
+
+        def upsert(
+            self,
+            user_id: int,
+            *,
+            item_id: int,
+            content: str,
+            embedding: list[float],
+            category: str = "fact",
+            importance: int = 3,
+        ) -> None:
+            upsert_calls.append(
+                {
+                    "user_id": user_id,
+                    "item_id": item_id,
+                    "content": content,
+                    "embedding": embedding,
+                    "category": category,
+                    "importance": importance,
+                }
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "anima_server.services.agent.pgvec_store",
+        SimpleNamespace(PgVecStore=FakePgVecStore),
+    )
+
+    count = sync_embeddings_to_runtime(soul_db, user_id=9)
+
+    assert count == 1
+    assert item.embedding_checksum == compute_embedding_checksum([0.9, 0.1])
+    assert soul_db.flushed is True
+    assert upsert_calls == [
+        {
+            "user_id": 9,
+            "item_id": 21,
+            "content": "plain:9:ciphertext-9:memory_items:content",
+            "embedding": [0.9, 0.1],
+            "category": "fact",
+            "importance": 5,
+        }
+    ]

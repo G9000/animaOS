@@ -73,6 +73,10 @@ export function LayoutSidebar() {
   const [theme, setTheme] = useState<Theme>(getTheme);
   const { agentName, avatarUrl } = useAgentProfile(user?.id);
 
+  const handleAgentClick = useCallback(() => {
+    navigate("/agent");
+  }, [navigate]);
+
   const toggleCollapsed = useCallback(() => {
     setCollapsed((current) => {
       const next = !current;
@@ -118,13 +122,11 @@ export function LayoutSidebar() {
         collapsed ? "w-14" : "w-[13.5rem]"
       }`}
     >
-      {/* Agent card — click to collapse/expand */}
+      {/* Agent card — click to go to agent profile settings */}
       <button
-        onClick={toggleCollapsed}
-        title={
-          collapsed ? `Expand (Ctrl+/)` : `${agentLabel} — click to collapse`
-        }
-        className="relative z-10 border-b border-border flex-shrink-0 cursor-pointer w-full text-left"
+        onClick={handleAgentClick}
+        title={collapsed ? agentLabel : `${agentLabel} — click to edit`}
+        className="relative z-20 border-b border-border flex-shrink-0 cursor-pointer w-full text-left hover:opacity-90 transition-opacity"
       >
         <div
           className={`relative overflow-hidden bg-card/60 ${
@@ -186,11 +188,29 @@ export function LayoutSidebar() {
 
       {/* Footer */}
       <div className="relative z-10 border-t border-border flex-shrink-0 px-1.5 py-2">
+        {/* Collapse toggle */}
+        <button
+          onClick={toggleCollapsed}
+          title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
+          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground ${
+            collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
+          }`}
+        >
+          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border bg-card/50 font-mono text-[9px] transition-all duration-150 group-hover:bg-card">
+            {collapsed ? "\u2192" : "\u2190"}
+          </span>
+          {!collapsed && (
+            <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current">
+              COLLAPSE
+            </span>
+          )}
+        </button>
+
         {/* Theme toggle */}
         <button
           onClick={() => setTheme(toggleTheme())}
           title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground ${
+          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground mt-0.5 ${
             collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
           }`}
         >

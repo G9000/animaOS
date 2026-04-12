@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import type { AgentConfig, ProviderInfo } from "@anima/api-client";
+import type {
+  AgentConfig,
+  OllamaModelInfo,
+  ProviderInfo,
+} from "@anima/api-client";
 import { api } from "../../lib/api";
+
+const OLLAMA_DEFAULT_URL = "http://localhost:11434";
 
 const SUGGESTED_MODELS: Record<string, string[]> = {
   ollama: [
+    "gemma4:31b",
     "vaultbox/qwen3.5-uncensored:35b",
     "qwen3:14b",
     "gemma3:12b",
@@ -29,7 +36,11 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
 };
 
 const FALLBACK_PROVIDERS: ProviderInfo[] = [
-  { name: "ollama", defaultModel: "vaultbox/qwen3.5-uncensored:35b", requiresApiKey: false },
+  {
+    name: "ollama",
+    defaultModel: "vaultbox/qwen3.5-uncensored:35b",
+    requiresApiKey: false,
+  },
   { name: "vllm", defaultModel: "default", requiresApiKey: false },
   { name: "openrouter", defaultModel: "openrouter/free", requiresApiKey: true },
   { name: "openai", defaultModel: "gpt-4o", requiresApiKey: true },
@@ -41,14 +52,34 @@ const CLOUD_STORAGE_KEY = "anima:cloud-providers-enabled";
 const INPUT_CLASS =
   "w-full bg-input border border-border rounded-sm px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors";
 
+function dedupeModelNames(models: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const model of models) {
+    const normalized = model.trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+
+  return result;
+}
+
 export default function AiSettings() {
   const { user } = useAuth();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [provider, setProvider] = useState("ollama");
   const [model, setModel] = useState("vaultbox/qwen3.5-uncensored:35b");
+  const [extractionModel, setExtractionModel] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
+  const [ollamaUrl, setOllamaUrl] = useState(OLLAMA_DEFAULT_URL);
+  const [ollamaModels, setOllamaModels] = useState<OllamaModelInfo[]>([]);
+  const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
+  const [ollamaModelsError, setOllamaModelsError] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -56,6 +87,23 @@ export default function AiSettings() {
   const [cloudEnabled, setCloudEnabled] = useState(
     () => localStorage.getItem(CLOUD_STORAGE_KEY) === "true",
   );
+
+  const loadOllamaModels = async (baseUrl: string) => {
+    setOllamaModelsLoading(true);
+    setOllamaModelsError("");
+
+    try {
+      const installedModels = await api.config.ollamaModels(baseUrl);
+      setOllamaModels(installedModels);
+    } catch (err) {
+      setOllamaModels([]);
+      setOllamaModelsError(
+        err instanceof Error ? err.message : "Failed to load Ollama models.",
+      );
+    } finally {
+      setOllamaModelsLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (user?.id == null) return;
@@ -74,12 +122,15 @@ export default function AiSettings() {
           localStorage.setItem(CLOUD_STORAGE_KEY, "true");
         }
         setModel(loadedConfig.model);
-        setOllamaUrl(loadedConfig.ollamaUrl || "http://localhost:11434");
+        setExtractionModel(loadedConfig.extractionModel || "");
+        setOllamaUrl(loadedConfig.ollamaUrl || OLLAMA_DEFAULT_URL);
         setSystemPrompt(loadedConfig.systemPrompt || "");
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load AI settings.");
+        setError(
+          err instanceof Error ? err.message : "Failed to load AI settings.",
+        );
       });
 
     return () => {
@@ -87,15 +138,33 @@ export default function AiSettings() {
     };
   }, [user?.id]);
 
+  useEffect(() => {
+    if (provider !== "ollama") return;
+    const baseUrl = config?.ollamaUrl || OLLAMA_DEFAULT_URL;
+    void loadOllamaModels(baseUrl);
+  }, [provider, config?.ollamaUrl]);
+
   if (user?.id == null) {
     return null;
   }
 
   const providerOptions = providers.length > 0 ? providers : FALLBACK_PROVIDERS;
-  const localProviders = providerOptions.filter((p) => LOCAL_PROVIDERS.has(p.name));
-  const cloudProviders = providerOptions.filter((p) => !LOCAL_PROVIDERS.has(p.name));
-  const selectedProvider = providerOptions.find((item) => item.name === provider);
-  const suggestions = SUGGESTED_MODELS[provider] || [];
+  const localProviders = providerOptions.filter((p) =>
+    LOCAL_PROVIDERS.has(p.name),
+  );
+  const cloudProviders = providerOptions.filter(
+    (p) => !LOCAL_PROVIDERS.has(p.name),
+  );
+  const selectedProvider = providerOptions.find(
+    (item) => item.name === provider,
+  );
+  const suggestions =
+    provider === "ollama"
+      ? dedupeModelNames([
+          ...ollamaModels.map((item) => item.name),
+          ...(SUGGESTED_MODELS[provider] || []),
+        ])
+      : SUGGESTED_MODELS[provider] || [];
   const requiresKey = selectedProvider?.requiresApiKey ?? provider !== "ollama";
   const isCloudProvider = !LOCAL_PROVIDERS.has(provider);
 
@@ -118,12 +187,17 @@ export default function AiSettings() {
     if (defaults?.length) {
       setModel(defaults[0]);
     } else {
-      const providerInfo = providerOptions.find((item) => item.name === nextProvider);
+      const providerInfo = providerOptions.find(
+        (item) => item.name === nextProvider,
+      );
       if (providerInfo?.defaultModel) {
         setModel(providerInfo.defaultModel);
       }
     }
     setApiKey("");
+    if (nextProvider === "ollama") {
+      void loadOllamaModels(ollamaUrl || OLLAMA_DEFAULT_URL);
+    }
   };
 
   const handleSave = async () => {
@@ -137,6 +211,7 @@ export default function AiSettings() {
       await api.config.update(user.id, {
         provider,
         model,
+        extractionModel: extractionModel || undefined,
         apiKey: apiKey || undefined,
         ollamaUrl,
         systemPrompt: systemPrompt || undefined,
@@ -144,6 +219,7 @@ export default function AiSettings() {
       setConfig({
         provider,
         model,
+        extractionModel: extractionModel || null,
         ollamaUrl,
         systemPrompt: systemPrompt || null,
         hasApiKey: config?.hasApiKey || Boolean(apiKey),
@@ -152,7 +228,9 @@ export default function AiSettings() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save AI settings.");
+      setError(
+        err instanceof Error ? err.message : "Failed to save AI settings.",
+      );
     } finally {
       setSaving(false);
     }
@@ -166,12 +244,15 @@ export default function AiSettings() {
             Inference Provider
           </h2>
           <p className="text-xs text-muted-foreground">
-            Choose the runtime that powers chat, summarization, and agent orchestration.
+            Choose the runtime that powers chat, summarization, and agent
+            orchestration.
           </p>
         </header>
 
         <div className="space-y-1">
-          <h3 className="text-[10px] text-muted-foreground uppercase tracking-wider">Local</h3>
+          <h3 className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            Local
+          </h3>
           <div className="grid grid-cols-2 gap-2">
             {localProviders.map((item) => (
               <ProviderButton
@@ -187,12 +268,14 @@ export default function AiSettings() {
         {!cloudEnabled ? (
           <div className="rounded-sm border border-border bg-input/30 p-4 space-y-3">
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Running large models locally requires significant hardware.
-              Cloud providers offer access to powerful models without local resource constraints.
+              Running large models locally requires significant hardware. Cloud
+              providers offer access to powerful models without local resource
+              constraints.
             </p>
             <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
-              Your memories, identity, and all stored data stay encrypted on this machine.
-              Only conversation messages are sent to the provider for inference.
+              Your memories, identity, and all stored data stay encrypted on
+              this machine. Only conversation messages are sent to the provider
+              for inference.
             </p>
             <button
               onClick={handleEnableCloud}
@@ -204,7 +287,9 @@ export default function AiSettings() {
         ) : (
           <div className="space-y-1">
             <div className="flex items-center justify-between">
-              <h3 className="text-[10px] text-muted-foreground uppercase tracking-wider">Cloud</h3>
+              <h3 className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                Cloud
+              </h3>
               <button
                 onClick={handleDisableCloud}
                 className="text-[9px] text-muted-foreground/50 uppercase tracking-wider hover:text-muted-foreground transition-colors"
@@ -213,7 +298,8 @@ export default function AiSettings() {
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground/60 mb-2">
-              Messages are sent externally for inference. All memory and data remain local.
+              Messages are sent externally for inference. All memory and data
+              remain local.
             </p>
             <div className="grid grid-cols-2 gap-2">
               {cloudProviders.map((item) => (
@@ -236,6 +322,28 @@ export default function AiSettings() {
             className={INPUT_CLASS}
             placeholder="Model identifier..."
           />
+          {provider === "ollama" && (
+            <div className="mt-2 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                  Installed Ollama Models
+                </p>
+                <button
+                  onClick={() =>
+                    void loadOllamaModels(ollamaUrl || OLLAMA_DEFAULT_URL)
+                  }
+                  className="text-[9px] text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
+                >
+                  {ollamaModelsLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+              {ollamaModelsError && (
+                <p className="text-[10px] text-destructive">
+                  {ollamaModelsError}
+                </p>
+              )}
+            </div>
+          )}
           {suggestions.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">
               {suggestions.map((suggestion) => (
@@ -255,6 +363,38 @@ export default function AiSettings() {
           )}
         </Field>
 
+        <Field label="Extraction Model">
+          <input
+            type="text"
+            value={extractionModel}
+            onChange={(e) => setExtractionModel(e.target.value)}
+            className={INPUT_CLASS}
+            placeholder="Optional override for segmentation, compaction, and extraction tasks..."
+          />
+          <p className="text-[10px] text-muted-foreground/70">
+            Leave empty to use the main model. Set this to a more reliable
+            structured-output model if chat works but batch segmentation logs
+            empty responses.
+          </p>
+          {suggestions.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {suggestions.map((suggestion) => (
+                <button
+                  key={`extraction-${suggestion}`}
+                  onClick={() => setExtractionModel(suggestion)}
+                  className={`text-[10px] px-2 py-0.5 rounded-sm border transition-colors ${
+                    extractionModel === suggestion
+                      ? "border-primary text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          )}
+        </Field>
+
         {requiresKey && (
           <Field label="API Key">
             <input
@@ -263,11 +403,15 @@ export default function AiSettings() {
               onChange={(e) => setApiKey(e.target.value)}
               className={INPUT_CLASS}
               placeholder={
-                config?.hasApiKey ? "Key saved - enter new value to replace" : "Enter API key..."
+                config?.hasApiKey
+                  ? "Key saved - enter new value to replace"
+                  : "Enter API key..."
               }
             />
             {config?.hasApiKey && !apiKey && (
-              <p className="mt-1 text-[10px] text-muted-foreground">Key stored</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Key stored
+              </p>
             )}
           </Field>
         )}
@@ -280,6 +424,10 @@ export default function AiSettings() {
               onChange={(e) => setOllamaUrl(e.target.value)}
               className={INPUT_CLASS}
             />
+            <p className="text-[10px] text-muted-foreground/70">
+              Local models detected here appear above. Current install includes
+              gemma4:31b.
+            </p>
           </Field>
         )}
 
@@ -301,8 +449,14 @@ export default function AiSettings() {
           >
             {saving ? "Saving..." : "Save AI Settings"}
           </button>
-          {saved && <span className="text-xs text-primary tracking-wider">Saved</span>}
-          {error && <span className="text-xs text-destructive tracking-wider">{error}</span>}
+          {saved && (
+            <span className="text-xs text-primary tracking-wider">Saved</span>
+          )}
+          {error && (
+            <span className="text-xs text-destructive tracking-wider">
+              {error}
+            </span>
+          )}
         </div>
       </section>
     </div>
@@ -332,7 +486,13 @@ function ProviderButton({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="space-y-2">
       <h3 className="text-[11px] text-muted-foreground uppercase tracking-wider">

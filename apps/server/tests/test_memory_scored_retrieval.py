@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.memory_store import (
     _retrieval_score,
     get_memory_items_scored,
@@ -189,6 +190,81 @@ def test_touch_memory_items_updates_tracking() -> None:
 
         touch_memory_items(db, [item])
         assert item.reference_count == 2
+
+
+def test_scored_retrieval_skips_corrupted_embedding_boost() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        now = datetime.now(UTC)
+        aligned_embedding = [1.0, 0.0]
+
+        good = MemoryItem(
+            user_id=user.id,
+            content="validated semantic match",
+            category="fact",
+            importance=3,
+            source="user",
+            reference_count=0,
+            embedding_json=aligned_embedding,
+            embedding_checksum=compute_embedding_checksum(aligned_embedding),
+            created_at=now,
+            updated_at=now,
+        )
+        corrupt = MemoryItem(
+            user_id=user.id,
+            content="corrupted semantic match",
+            category="fact",
+            importance=3,
+            source="user",
+            reference_count=0,
+            embedding_json=aligned_embedding,
+            embedding_checksum="corrupt-checksum",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add_all([good, corrupt])
+        db.flush()
+
+        scored = get_memory_items_scored(
+            db,
+            user_id=user.id,
+            category="fact",
+            limit=2,
+            query_embedding=[1.0, 0.0],
+        )
+
+        assert [item.id for item in scored] == [good.id, corrupt.id]
+
+
+def test_scored_retrieval_does_not_backfill_missing_checksums() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        now = datetime.now(UTC)
+        item = MemoryItem(
+            user_id=user.id,
+            content="missing checksum",
+            category="fact",
+            importance=3,
+            source="user",
+            reference_count=0,
+            embedding_json=[1.0, 0.0],
+            embedding_checksum=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(item)
+        db.flush()
+
+        scored = get_memory_items_scored(
+            db,
+            user_id=user.id,
+            category="fact",
+            limit=1,
+            query_embedding=[1.0, 0.0],
+        )
+
+        assert [result.id for result in scored] == [item.id]
+        assert item.embedding_checksum is None
 
 
 def test_cosine_similarity() -> None:

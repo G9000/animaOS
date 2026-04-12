@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { TraceEvent } from "@anima/api-client";
 
-import { serializeTraceAsJson, serializeTraceAsText } from "../src/pages/chat-trace";
+import {
+  serializeTraceAsJson,
+  serializeTraceAsText,
+} from "../src/pages/chat/chat-trace";
 
 describe("chat trace serializers", () => {
   const events: TraceEvent[] = [
@@ -31,7 +34,8 @@ describe("chat trace serializers", () => {
       type: "warning",
       stepIndex: 0,
       code: "empty_step_result",
-      message: "LLM returned no assistant text and no tool calls for this step.",
+      message:
+        "LLM returned no assistant text and no tool calls for this step.",
     },
     {
       type: "tool_call",
@@ -54,6 +58,38 @@ describe("chat trace serializers", () => {
       provider: "ollama",
       model: "qwen",
       toolsUsed: ["send_message"],
+      retrieval: {
+        retriever: "hybrid",
+        citations: [
+          {
+            index: 1,
+            memoryItemId: 7,
+            uri: "memory://items/7",
+            score: 0.91,
+            category: "fact",
+          },
+        ],
+        contextFragments: [
+          {
+            rank: 1,
+            memoryItemId: 7,
+            uri: "memory://items/7",
+            text: "Important remembered detail.",
+            score: 0.91,
+            category: "fact",
+          },
+        ],
+        stats: {
+          retrievalMs: 12.5,
+          totalConsidered: 4,
+          returned: 1,
+          cutoffIndex: 1,
+          cutoffScore: 0.91,
+          topScore: 0.91,
+          cutoffRatio: 1,
+          triggeredBy: "adaptive_ratio",
+        },
+      },
     },
   ];
 
@@ -73,7 +109,7 @@ describe("chat trace serializers", () => {
         "[WARN 0 empty_step_result] LLM returned no assistant text and no tool calls for this step.",
         '[CALL 1] send_message {"message":"hello world"}',
         "[TIME 1] ttft=120ms llm=850ms step=910ms",
-        "[DONE] status=complete stop=terminal_tool provider=ollama model=qwen tools=send_message",
+        "[DONE] status=complete stop=terminal_tool provider=ollama model=qwen tools=send_message retrieval=hybrid 1/4 hits 12.5ms",
       ].join("\n"),
     );
   });

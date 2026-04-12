@@ -4,7 +4,10 @@ from logging.config import fileConfig
 
 # Import models so that RuntimeBase.metadata is fully populated.
 import anima_server.models.runtime
+import anima_server.models.runtime_consciousness  # noqa: F401
 import anima_server.models.runtime_embedding  # noqa: F401
+import anima_server.models.runtime_memory  # noqa: F401
+import anima_server.models.pending_memory_op  # noqa: F401
 from alembic import context
 from anima_server.db.runtime_base import RuntimeBase
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import SimpleNamespace
 
+from anima_server.api.routes import chat as chat_routes
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
@@ -11,8 +13,18 @@ from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleResponse,
     OpenAICompatibleStreamChunk,
 )
+from anima_server.services.agent.state import (
+    AgentCitation,
+    AgentContextFragment,
+    AgentResult,
+    AgentRetrievalStats,
+    AgentRetrievalTrace,
+)
+from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+import pytest
+from starlette.requests import Request
 
 
 def _register_user(client: TestClient, username: str = "alice") -> dict[str, object]:
@@ -258,6 +270,216 @@ def test_chat_stream_returns_sse_events() -> None:
     assert "stream this" in body
 
 
+@pytest.mark.asyncio
+async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None:
+    async def _fake_run_agent(*args, **kwargs) -> AgentResult:
+        del args, kwargs
+        return AgentResult(
+            response="retrieval-aware reply",
+            model="test-model",
+            provider="test-provider",
+            stop_reason="end_turn",
+            tools_used=["send_message"],
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(
+                    AgentCitation(
+                        index=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                context_fragments=(
+                    AgentContextFragment(
+                        rank=1,
+                        memory_item_id=7,
+                        uri="memory://items/7",
+                        text="Important remembered detail.",
+                        score=0.91,
+                        category="fact",
+                    ),
+                ),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=12.5,
+                    total_considered=4,
+                    returned=1,
+                    cutoff_index=1,
+                    cutoff_score=0.91,
+                    top_score=0.91,
+                    cutoff_ratio=1.0,
+                    triggered_by="adaptive_ratio",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(chat_routes, "run_agent", _fake_run_agent)
+    token = unlock_session_store.create(42, {"memories": b"unit-test-dek"})
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-anima-unlock", token.encode("utf-8"))],
+        }
+    )
+
+    try:
+        response = await chat_routes.send_message(
+            chat_routes.ChatRequest(message="hello", userId=42),
+            request,
+            db=None,
+            runtime_db=None,
+        )
+    finally:
+        unlock_session_store.revoke(token)
+
+    payload = response.model_dump(mode="json")
+    assert payload["retrieval"]["retriever"] == "hybrid"
+    assert payload["retrieval"]["citations"] == [
+        {
+            "index": 1,
+            "memoryItemId": 7,
+            "uri": "memory://items/7",
+            "score": 0.91,
+            "category": "fact",
+        }
+    ]
+    assert payload["retrieval"]["contextFragments"] == [
+        {
+            "rank": 1,
+            "memoryItemId": 7,
+            "uri": "memory://items/7",
+            "text": "Important remembered detail.",
+            "score": 0.91,
+            "category": "fact",
+        }
+    ]
+    assert payload["retrieval"]["stats"] == {
+        "retrievalMs": 12.5,
+        "totalConsidered": 4,
+        "returned": 1,
+        "cutoffIndex": 1,
+        "cutoffScore": 0.91,
+        "topScore": 0.91,
+        "cutoffRatio": 1.0,
+        "triggeredBy": "adaptive_ratio",
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_history_returns_persisted_retrieval_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        chat_routes,
+        "list_agent_history",
+        lambda *args, **kwargs: [
+            SimpleNamespace(
+                id=101,
+                role="tool",
+                content_text="retrieval-aware reply",
+                created_at=None,
+                source="chat",
+                content_json={
+                    "retrieval": {
+                        "retriever": "hybrid",
+                        "citations": [
+                            {
+                                "index": 1,
+                                "memoryItemId": 7,
+                                "uri": "memory://items/7",
+                                "score": 0.91,
+                                "category": "fact",
+                            }
+                        ],
+                        "contextFragments": [
+                            {
+                                "rank": 1,
+                                "memoryItemId": 7,
+                                "uri": "memory://items/7",
+                                "text": "Important remembered detail.",
+                                "score": 0.91,
+                                "category": "fact",
+                            }
+                        ],
+                        "stats": {
+                            "retrievalMs": 12.5,
+                            "totalConsidered": 4,
+                            "returned": 1,
+                            "cutoffIndex": 1,
+                            "cutoffScore": 0.91,
+                            "topScore": 0.91,
+                            "cutoffRatio": 1.0,
+                            "triggeredBy": "adaptive_ratio",
+                        },
+                    }
+                },
+            )
+        ],
+    )
+    token = unlock_session_store.create(42, {"memories": b"unit-test-dek"})
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-anima-unlock", token.encode("utf-8"))],
+        }
+    )
+
+    try:
+        history = await chat_routes.get_chat_history(
+            request,
+            userId=42,
+            limit=10,
+            runtime_db=None,
+        )
+    finally:
+        unlock_session_store.revoke(token)
+
+    payload = [message.model_dump(mode="json") for message in history]
+    assert payload == [
+        {
+            "id": 101,
+            "userId": 42,
+            "role": "assistant",
+            "content": "retrieval-aware reply",
+            "model": None,
+            "provider": None,
+            "createdAt": None,
+            "source": "chat",
+            "retrieval": {
+                "retriever": "hybrid",
+                "citations": [
+                    {
+                        "index": 1,
+                        "memoryItemId": 7,
+                        "uri": "memory://items/7",
+                        "score": 0.91,
+                        "category": "fact",
+                    }
+                ],
+                "contextFragments": [
+                    {
+                        "rank": 1,
+                        "memoryItemId": 7,
+                        "uri": "memory://items/7",
+                        "text": "Important remembered detail.",
+                        "score": 0.91,
+                        "category": "fact",
+                    }
+                ],
+                "stats": {
+                    "retrievalMs": 12.5,
+                    "totalConsidered": 4,
+                    "returned": 1,
+                    "cutoffIndex": 1,
+                    "cutoffScore": 0.91,
+                    "topScore": 0.91,
+                    "cutoffRatio": 1.0,
+                    "triggeredBy": "adaptive_ratio",
+                },
+            },
+        }
+    ]
+
+
 def test_chat_stream_ollama_emits_live_chunks(monkeypatch) -> None:
     original_provider = settings.agent_provider
     original_model = settings.agent_model
@@ -419,7 +641,7 @@ def test_chat_ollama_provider_uses_live_adapter_surface(monkeypatch) -> None:
     assert response.json()["model"] == "llama3.2"
     assert response.json()["response"] == "hello from ollama adapter"
     assert "private reasoning" not in response.json()["response"]
-    assert fake_client.tool_choice == "required"
+    assert fake_client.tool_choice == "auto"
     tool_names = [getattr(tool, "name", "") for tool in fake_client.bound_tools]
     # send_message is always available (terminal tool)
     assert "send_message" in tool_names

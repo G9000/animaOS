@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -22,6 +25,7 @@ class ProviderInfo(BaseModel):
 class AgentConfigResponse(BaseModel):
     provider: str
     model: str
+    extractionModel: str | None = None
     ollamaUrl: str | None = None
     hasApiKey: bool = False
     systemPrompt: str | None = None
@@ -30,9 +34,26 @@ class AgentConfigResponse(BaseModel):
 class AgentConfigUpdateRequest(BaseModel):
     provider: str
     model: str
+    extractionModel: str | None = None
     apiKey: str | None = None
     ollamaUrl: str | None = None
     systemPrompt: str | None = None
+
+
+class OllamaModelDetails(BaseModel):
+    format: str | None = None
+    family: str | None = None
+    families: list[str] | None = None
+    parameterSize: str | None = None
+    quantizationLevel: str | None = None
+
+
+class OllamaModelInfo(BaseModel):
+    name: str
+    modifiedAt: str | None = None
+    size: int | None = None
+    digest: str | None = None
+    details: OllamaModelDetails | None = None
 
 
 class PersonaTemplateInfo(BaseModel):
@@ -59,9 +80,97 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
 VALID_PROVIDERS = {"scaffold"} | set(SUPPORTED_PROVIDERS)
 
 
+def _normalize_ollama_base_url(base_url: str | None) -> str:
+    configured = (base_url or "").strip()
+    if not configured and settings.agent_provider == "ollama":
+        configured = settings.agent_base_url.strip()
+    if not configured:
+        configured = "http://127.0.0.1:11434"
+    normalized = configured.rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3]
+    return normalized
+
+
+def _parse_ollama_model(raw: Any) -> OllamaModelInfo | None:
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    details_raw = raw.get("details")
+    details = None
+    if isinstance(details_raw, dict):
+        families = details_raw.get("families")
+        details = OllamaModelDetails(
+            format=details_raw.get("format") if isinstance(
+                details_raw.get("format"), str) else None,
+            family=details_raw.get("family") if isinstance(
+                details_raw.get("family"), str) else None,
+            families=[item for item in families if isinstance(
+                item, str)] if isinstance(families, list) else None,
+            parameterSize=(
+                details_raw.get("parameter_size")
+                if isinstance(details_raw.get("parameter_size"), str)
+                else None
+            ),
+            quantizationLevel=(
+                details_raw.get("quantization_level")
+                if isinstance(details_raw.get("quantization_level"), str)
+                else None
+            ),
+        )
+
+    size = raw.get("size")
+    return OllamaModelInfo(
+        name=name,
+        modifiedAt=raw.get("modified_at") if isinstance(
+            raw.get("modified_at"), str) else None,
+        size=size if isinstance(size, int) else None,
+        digest=raw.get("digest") if isinstance(
+            raw.get("digest"), str) else None,
+        details=details,
+    )
+
+
+async def _list_ollama_models(base_url: str) -> list[OllamaModelInfo]:
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.get(f"{base_url}/api/tags")
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Ollama returned an invalid model list.")
+
+    models_raw = payload.get("models")
+    if not isinstance(models_raw, list):
+        raise ValueError("Ollama returned an invalid model list.")
+
+    models = [model for item in models_raw if (
+        model := _parse_ollama_model(item)) is not None]
+    return sorted(models, key=lambda item: item.name.lower())
+
+
 @router.get("/providers", response_model=list[ProviderInfo])
 async def get_providers() -> list[ProviderInfo]:
     return AVAILABLE_PROVIDERS
+
+
+@router.get("/ollama-models", response_model=list[OllamaModelInfo])
+async def get_ollama_models(baseUrl: str | None = None) -> list[OllamaModelInfo]:
+    normalized_base_url = _normalize_ollama_base_url(baseUrl)
+    try:
+        return await _list_ollama_models(normalized_base_url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to reach Ollama at {normalized_base_url}.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/persona-templates", response_model=list[PersonaTemplateInfo])
@@ -107,6 +216,7 @@ async def get_config(
     return AgentConfigResponse(
         provider=settings.agent_provider,
         model=settings.agent_model,
+        extractionModel=settings.agent_extraction_model or None,
         ollamaUrl=settings.agent_base_url or None,
         hasApiKey=bool(settings.agent_api_key),
     )
@@ -131,6 +241,7 @@ async def update_config(
 
     settings.agent_provider = payload.provider
     settings.agent_model = payload.model
+    settings.agent_extraction_model = (payload.extractionModel or "").strip()
     if payload.apiKey is not None:
         settings.agent_api_key = payload.apiKey
     # Only set base_url for ollama/vllm; clear for providers with fixed endpoints

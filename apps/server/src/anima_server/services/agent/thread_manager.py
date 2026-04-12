@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.services.agent.state import attach_serialized_retrieval, extract_stored_retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +241,7 @@ def _bulk_insert_archived_history(
     for msg in messages:
         role = str(msg.get("role", "user"))
         content = str(msg.get("content", ""))
+        retrieval = msg.get("retrieval")
         if not content and role in ("user", "assistant"):
             continue
         db.add(
@@ -249,6 +251,10 @@ def _bulk_insert_archived_history(
                 sequence_id=max_seq + inserted_count,
                 role=role,
                 content_text=content,
+                content_json=attach_serialized_retrieval(
+                    content_json=None,
+                    retrieval=retrieval if isinstance(retrieval, dict) else None,
+                ),
                 is_in_context=False,
                 is_archived_history=True,
             )
@@ -311,6 +317,7 @@ def get_thread_messages_for_display(
                 "content": m.content_text or "",
                 "ts": m.created_at.isoformat() if m.created_at else None,
                 "isArchivedHistory": m.is_archived_history,
+                "retrieval": extract_stored_retrieval(m.content_json),
             }
             for m in pg_messages
             if not m.is_internal
@@ -326,6 +333,7 @@ def get_thread_messages_for_display(
             "content": str(m.get("content", "")),
             "ts": m.get("ts"),
             "isArchivedHistory": True,
+            "retrieval": m.get("retrieval") if isinstance(m.get("retrieval"), dict) else None,
         }
         for m in messages
         if m.get("role") in ("user", "assistant")

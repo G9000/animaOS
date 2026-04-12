@@ -20,7 +20,8 @@ def test_get_user_requires_matching_unlock_session() -> None:
 
         unauthorized = client.get(f"/api/users/{user['id']}")
         assert unauthorized.status_code == 401
-        assert unauthorized.json() == {"error": "Session locked. Please sign in again."}
+        assert unauthorized.json() == {
+            "error": "Session locked. Please sign in again."}
 
         response = client.get(
             f"/api/users/{user['id']}",

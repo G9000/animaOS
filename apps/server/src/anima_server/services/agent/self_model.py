@@ -21,7 +21,7 @@ from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
 
-SOUL_SECTIONS = ("soul", "persona", "human", "user_directive")
+SOUL_SECTIONS = ("soul", "persona", "human", "world", "user_directive")
 IDENTITY_SECTIONS = ("identity", "growth_log")
 RUNTIME_SECTIONS = (
     "inner_state",
@@ -63,6 +63,8 @@ None yet."""
 
 _SEED_WORKING_MEMORY = """# Things I'm Holding in Mind
 No items yet."""
+
+_SEED_WORLD = ""
 
 _SEED_GROWTH_LOG = ""
 
@@ -736,6 +738,18 @@ def seed_self_model(
     """Seed the split self-model stores for a new user."""
     created: dict[str, SelfModelBlock | LegacySelfModelBlockView] = {}
 
+    world = get_self_model_block(db, user_id=user_id, section="world")
+    if world is None:
+        created["world"] = set_self_model_block(
+            db,
+            user_id=user_id,
+            section="world",
+            content=_SEED_WORLD,
+            updated_by="system",
+        )
+    else:
+        created["world"] = world
+
     if get_identity_block(db, user_id=user_id) is None:
         created["identity"] = _make_legacy_view_from_identity(
             user_id=user_id,
@@ -815,6 +829,9 @@ def ensure_self_model_exists(
     user_id: int,
 ) -> None:
     """Ensure the split self-model exists for the user."""
+    world_missing = get_self_model_block(
+        db, user_id=user_id, section="world"
+    ) is None
     missing = False
     if get_identity_block(db, user_id=user_id) is None and get_self_model_block(
         db, user_id=user_id, section="identity"
@@ -832,7 +849,7 @@ def ensure_self_model_exists(
                 or get_active_intentions(pg_db, user_id=user_id) is None
             )
 
-    if missing or runtime_missing:
+    if world_missing or missing or runtime_missing:
         seed_self_model(db, user_id=user_id)
 
 

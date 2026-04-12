@@ -286,3 +286,40 @@ async def test_batch_embed_ollama_skips_remainder_when_provider_is_cooling_down(
 
     assert result == [None, None, None]
     assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_normalizes_cache_key_for_equivalent_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    call_args: list[str] = []
+
+    async def mock_embed(text: str) -> list[float] | None:
+        call_args.append(text)
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="ollama",
+            agent_base_url="http://127.0.0.1:11434",
+            agent_api_key="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+    monkeypatch.setattr(embeddings_module, "_embed_ollama", mock_embed)
+    embeddings_module.clear_embedding_cache()
+
+    first = await embeddings_module.generate_embedding("hello\tworld")
+    second = await embeddings_module.generate_embedding("hello world")
+
+    assert first == [0.1, 0.2, 0.3]
+    assert second == [0.1, 0.2, 0.3]
+    assert call_args == ["hello world"]

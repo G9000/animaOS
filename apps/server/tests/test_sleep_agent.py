@@ -9,11 +9,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models import KGRelation, User
 from anima_server.models.runtime import RuntimeBackgroundTaskRun
+from anima_server.services.agent import sleep_agent as sleep_agent_module
 from anima_server.services.agent.sleep_agent import (
     _issue_background_task,
     _should_run_expensive,
     _task_episode_gen,
+    _task_graph_ingestion,
     get_last_processed_message_id,
     run_sleeptime_agents,
     should_run_sleeptime,
@@ -497,6 +500,43 @@ class TestRunSleeptimeAgents:
             runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
             assert len(runs) == 5
             assert all(r.status == "completed" for r in runs)
+
+
+class TestGraphIngestionTask:
+    @pytest.mark.asyncio()
+    async def test_scaffold_mode_uses_rule_ingestion(self, db_factory, monkeypatch):
+        monkeypatch.setattr(
+            sleep_agent_module.settings,
+            "agent_provider",
+            "scaffold",
+            raising=False,
+        )
+
+        with db_factory() as db:
+            user = User(
+                username="sleep-kg",
+                password_hash="not-used",
+                display_name="Sleep KG",
+            )
+            db.add(user)
+            db.commit()
+            user_id = user.id
+
+        result = await _task_graph_ingestion(
+            user_id=user_id,
+            user_message="I work at Anthropic.",
+            assistant_response="",
+            db_factory=db_factory,
+        )
+
+        assert result["entities"] >= 2
+        assert result["relations"] >= 1
+        assert result["pruned"] == 0
+
+        with db_factory() as db:
+            relations = list(db.scalars(select(KGRelation)).all())
+            assert len(relations) == 1
+            assert relations[0].relation_type == "works_at"
 
 
 # ── RuntimeBackgroundTaskRun model ───────────────────────────────────

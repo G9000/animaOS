@@ -15,6 +15,7 @@ import pytest
 
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -137,9 +138,17 @@ def managed_test_client(
 
     # Import lazily so pytest collection does not initialize the app
     # against the developer data directory.
-    import anima_server.main as main_module
+    sys.modules.pop("anima_server.main", None)
 
-    app = main_module.create_app()
+    with (
+        patch("anima_server.services.core.ensure_core_manifest", lambda: None),
+        patch("anima_server.services.core.acquire_core_lock", lambda: True),
+        patch("anima_server.config.load_persisted_runtime_settings", lambda: None),
+        patch("anima_server.db.user_store.ensure_per_user_databases_ready", lambda: None),
+    ):
+        import anima_server.main as main_module
+
+        app = main_module.create_app()
 
     try:
         with patch.object(main_module, "_start_embedded_pg", return_value=None), TestClient(app) as client:
@@ -152,4 +161,5 @@ def managed_test_client(
         settings.data_dir = original_data_dir
         if invalidate_agent:
             invalidate_agent_runtime_cache()
+        sys.modules.pop("anima_server.main", None)
         shutil.rmtree(temp_root, ignore_errors=True)

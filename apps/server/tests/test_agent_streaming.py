@@ -6,7 +6,13 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
     UsageStats,
 )
-from anima_server.services.agent.state import AgentResult
+from anima_server.services.agent.state import (
+    AgentCitation,
+    AgentContextFragment,
+    AgentResult,
+    AgentRetrievalStats,
+    AgentRetrievalTrace,
+)
 from anima_server.services.agent.streaming import build_stream_events
 
 
@@ -65,6 +71,7 @@ def test_build_stream_events_emits_tool_events_chunks_usage_and_done() -> None:
         "name": "send_message",
         "output": "hello world",
         "isError": False,
+        "toolSucceeded": True,
         "isTerminal": True,
     }
     assert [event.data["content"] for event in events if event.event == "chunk"] == [
@@ -125,4 +132,102 @@ def test_build_stream_events_include_tool_parse_error_metadata() -> None:
         "arguments": {},
         "parseError": "Malformed tool-call arguments (invalid JSON).",
         "rawArguments": "{broken json",
+    }
+
+
+def test_build_stream_events_include_retrieval_metadata_on_done() -> None:
+    result = AgentResult(
+        response="hello world",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="terminal_tool",
+        tools_used=["send_message"],
+        retrieval=AgentRetrievalTrace(
+            retriever="hybrid",
+            citations=(
+                AgentCitation(
+                    index=1,
+                    memory_item_id=11,
+                    uri="memory://items/11",
+                    score=0.88,
+                    category="preference",
+                ),
+            ),
+            context_fragments=(
+                AgentContextFragment(
+                    rank=1,
+                    memory_item_id=11,
+                    uri="memory://items/11",
+                    text="The user prefers concise replies.",
+                    score=0.88,
+                    category="preference",
+                ),
+            ),
+            stats=AgentRetrievalStats(
+                retrieval_ms=9.25,
+                total_considered=5,
+                returned=1,
+                cutoff_index=1,
+                cutoff_score=0.88,
+                top_score=0.88,
+                cutoff_ratio=1.0,
+                triggered_by="adaptive_ratio",
+            ),
+        ),
+        step_traces=[
+            StepTrace(
+                step_index=0,
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={"message": "hello world"},
+                    ),
+                ),
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-1",
+                        name="send_message",
+                        output="hello world",
+                        is_terminal=True,
+                    ),
+                ),
+                usage=UsageStats(prompt_tokens=4, completion_tokens=6, total_tokens=10),
+            )
+        ],
+    )
+
+    events = list(build_stream_events(result, chunk_size=5))
+
+    assert events[-1].data["retrieval"] == {
+        "retriever": "hybrid",
+        "citations": [
+            {
+                "index": 1,
+                "memoryItemId": 11,
+                "uri": "memory://items/11",
+                "score": 0.88,
+                "category": "preference",
+            }
+        ],
+        "contextFragments": [
+            {
+                "rank": 1,
+                "memoryItemId": 11,
+                "uri": "memory://items/11",
+                "text": "The user prefers concise replies.",
+                "score": 0.88,
+                "category": "preference",
+            }
+        ],
+        "stats": {
+            "retrievalMs": 9.25,
+            "totalConsidered": 5,
+            "returned": 1,
+            "cutoffIndex": 1,
+            "cutoffScore": 0.88,
+            "topScore": 0.88,
+            "cutoffRatio": 1.0,
+            "triggeredBy": "adaptive_ratio",
+        },
     }

@@ -17,6 +17,11 @@ from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from anima_server.services.agent.rules import ToolRule, build_default_tool_rules
 from anima_server.services.data_crypto import df
+from anima_server.services.user_timezone import (
+    extract_timezone_value,
+    normalize_timezone_spec,
+    store_timezone_in_world_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +129,72 @@ def _core_memory_label_error(label: str) -> str:
     return f"Invalid label '{label}'. {guidance}"
 
 
-@tool
-def current_datetime() -> str:
-    """Return the current date and time in local machine time with timezone information, plus UTC."""
-    local_now = datetime.now().astimezone()
+def _read_self_model_block(*, ctx: Any, section: str) -> str:
+    from anima_server.services.agent.memory_blocks import build_merged_block_content
+    from anima_server.services.agent.self_model import (
+        get_self_model_block,
+        render_self_model_section,
+    )
+
+    if ctx.runtime_db is None:
+        block = get_self_model_block(
+            ctx.db, user_id=ctx.user_id, section=section)
+        if block is None:
+            return ""
+        return render_self_model_section(block, user_id=ctx.user_id)
+
+    return build_merged_block_content(
+        ctx.db,
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        section=section,
+    )
+
+
+def _read_merged_core_memory_block(*, ctx: Any, label: CoreMemoryLabel) -> str:
+    return _read_self_model_block(ctx=ctx, section=label)
+
+
+def _resolve_saved_user_timezone() -> tuple[str | None, Any | None]:
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    with contextlib.suppress(RuntimeError, ValueError):
+        ctx = get_tool_context()
+        content = _read_self_model_block(ctx=ctx, section="world")
+        timezone_value = extract_timezone_value(content)
+        if timezone_value:
+            normalized, tzinfo = normalize_timezone_spec(timezone_value)
+            return normalized, tzinfo
+    return None, None
+
+
+def _format_time_snapshot(*, label: str, tzinfo: Any) -> str:
+    local_now = datetime.now(UTC).astimezone(tzinfo)
     utc_now = local_now.astimezone(UTC)
-    timezone_name = local_now.tzname() or "local"
+    timezone_name = local_now.tzname() or label
     return (
-        f"Local time: {local_now.isoformat()} ({timezone_name}). "
+        f"{label}: {local_now.isoformat()} ({timezone_name}). "
         f"UTC: {utc_now.isoformat()}"
     )
+
+
+def _invalidate_memory_cache(user_id: int) -> None:
+    from anima_server.services.agent.companion import get_companion
+
+    companion = get_companion(user_id)
+    if companion is not None:
+        companion.invalidate_memory()
+
+
+@tool
+def current_datetime() -> str:
+    """Return the current date and time in the saved user timezone when available; otherwise local machine time. Always includes UTC."""
+    saved_label, saved_tz = _resolve_saved_user_timezone()
+    if saved_tz is not None:
+        return _format_time_snapshot(label=f"Saved user timezone ({saved_label})", tzinfo=saved_tz)
+
+    local_tz = datetime.now().astimezone().tzinfo or UTC
+    return _format_time_snapshot(label="Local time", tzinfo=local_tz)
 
 
 @tool
@@ -374,26 +435,8 @@ def complete_task(text: str) -> str:
     if not tasks:
         return "No open tasks found."
 
-    # Find best match
-    text_lower = text.lower().strip()
-    best_task = None
-    best_score = 0.0
-    for t in tasks:
-        task_lower = t.text.lower()
-        if text_lower == task_lower:
-            best_task = t
-            break
-        # Simple word overlap score
-        text_words = set(text_lower.split())
-        task_words = set(task_lower.split())
-        if text_words and task_words:
-            overlap = len(text_words & task_words) / \
-                max(len(text_words), len(task_words))
-            if overlap > best_score:
-                best_score = overlap
-                best_task = t
-
-    if best_task is None or (best_score < 0.3 and text_lower != best_task.text.lower()):
+    best_task = _find_matching_task(tasks, text)
+    if best_task is None:
         return f"Could not find a matching task for: {text}"
 
     best_task.done = True
@@ -408,6 +451,156 @@ def complete_task(text: str) -> str:
         companion.invalidate_memory()
 
     return f"Completed: {best_task.text}"
+
+
+def _find_matching_task(tasks: Sequence[Any], text: str) -> Any | None:
+    text_lower = text.lower().strip()
+    if not text_lower:
+        return None
+
+    best_task = None
+    best_score = 0.0
+    for t in tasks:
+        task_lower = t.text.lower()
+        if text_lower == task_lower:
+            return t
+        text_words = set(text_lower.split())
+        task_words = set(task_lower.split())
+        if text_words and task_words:
+            overlap = len(text_words & task_words) / \
+                max(len(text_words), len(task_words))
+            if overlap > best_score:
+                best_score = overlap
+                best_task = t
+
+    if best_task is None or (best_score < 0.3 and text_lower != best_task.text.lower()):
+        return None
+    return best_task
+
+
+def _parse_task_done_value(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in ("true", "yes", "1", "done", "complete", "completed"):
+        return True
+    if normalized in ("false", "no", "0", "open", "todo", "pending"):
+        return False
+    raise ValueError(
+        "done must be one of true/false, yes/no, done/open, or 1/0.")
+
+
+@tool
+def update_task(
+    text: str,
+    new_text: str = "",
+    due_date: str = "",
+    priority: str = "",
+    done: str = "",
+) -> str:
+    """Update an existing task by text (or close match). Leave fields empty to keep them unchanged. due_date accepts YYYY-MM-DD to set, or none/clear/remove to clear. done accepts true/false, yes/no, or done/open."""
+    from sqlalchemy import select
+
+    from anima_server.models.task import Task
+    from anima_server.schemas.task import normalize_due_date, normalize_task_text
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    ctx = get_tool_context()
+    tasks = list(
+        ctx.db.scalars(
+            select(Task).where(Task.user_id == ctx.user_id).order_by(
+                Task.done, Task.created_at.desc())
+        ).all()
+    )
+    if not tasks:
+        return "No tasks found."
+
+    task = _find_matching_task(tasks, text)
+    if task is None:
+        return f"Could not find a matching task for: {text}"
+
+    updates: list[str] = []
+    if new_text.strip():
+        normalized_text = normalize_task_text(new_text)
+        if normalized_text != task.text:
+            task.text = normalized_text
+            updates.append(f"text='{normalized_text}'")
+
+    if priority.strip():
+        try:
+            parsed_priority = max(1, min(5, int(priority)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "priority must be an integer between 1 and 5.") from exc
+        if parsed_priority != task.priority:
+            task.priority = parsed_priority
+            updates.append(f"priority={parsed_priority}")
+
+    if due_date.strip():
+        normalized_due_date_input = due_date.strip().lower()
+        if normalized_due_date_input in ("none", "clear", "remove"):
+            if task.due_date is not None:
+                task.due_date = None
+                updates.append("due date cleared")
+        else:
+            normalized_due_date = normalize_due_date(due_date)
+            if normalized_due_date != task.due_date:
+                task.due_date = normalized_due_date
+                updates.append(f"due={normalized_due_date}")
+
+    if done.strip():
+        parsed_done = _parse_task_done_value(done)
+        if parsed_done != task.done:
+            task.done = parsed_done
+            task.completed_at = datetime.now(UTC) if parsed_done else None
+            updates.append("marked done" if parsed_done else "reopened")
+
+    if not updates:
+        return f"No changes applied to task: {task.text}"
+
+    task.updated_at = datetime.now(UTC)
+    ctx.db.flush()
+
+    from anima_server.services.agent.companion import get_companion
+
+    companion = get_companion(ctx.user_id)
+    if companion is not None:
+        companion.invalidate_memory()
+
+    return f"Updated task '{task.text}': " + ", ".join(updates)
+
+
+@tool
+def delete_task(text: str) -> str:
+    """Delete a task by text (or close match). Use this when the user wants a task removed entirely."""
+    from sqlalchemy import select
+
+    from anima_server.models.task import Task
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    ctx = get_tool_context()
+    tasks = list(
+        ctx.db.scalars(
+            select(Task).where(Task.user_id == ctx.user_id).order_by(
+                Task.done, Task.created_at.desc())
+        ).all()
+    )
+    if not tasks:
+        return "No tasks found."
+
+    task = _find_matching_task(tasks, text)
+    if task is None:
+        return f"Could not find a matching task for: {text}"
+
+    deleted_text = task.text
+    ctx.db.delete(task)
+    ctx.db.flush()
+
+    from anima_server.services.agent.companion import get_companion
+
+    companion = get_companion(ctx.user_id)
+    if companion is not None:
+        companion.invalidate_memory()
+
+    return f"Deleted task: {deleted_text}"
 
 
 def _search_candidates(
@@ -727,6 +920,149 @@ def recall_transcript(query: str, days_back: int = 30) -> str:
 
 
 @tool
+def get_user_timezone() -> str:
+    """Return the saved user timezone if one has been set. Use this before answering local-time questions if you are unsure."""
+    saved_label, saved_tz = _resolve_saved_user_timezone()
+    if saved_tz is not None:
+        return _format_time_snapshot(label=f"Saved user timezone ({saved_label})", tzinfo=saved_tz)
+
+    local_tz = datetime.now().astimezone().tzinfo or UTC
+    return (
+        "No saved user timezone. "
+        + _format_time_snapshot(label="Local time", tzinfo=local_tz)
+    )
+
+
+@tool
+def set_user_timezone(timezone_name: str) -> str:
+    """Save the user's timezone for future local-time answers. Prefer IANA names like Asia/Kuala_Lumpur or America/New_York. UTC offsets like UTC+08:00 also work."""
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    normalized, tzinfo = normalize_timezone_spec(timezone_name)
+    ctx = get_tool_context()
+    existing_content = _read_self_model_block(ctx=ctx, section="world")
+    existing_timezone = extract_timezone_value(existing_content)
+    if existing_timezone:
+        with contextlib.suppress(ValueError):
+            existing_normalized, _existing_tz = normalize_timezone_spec(
+                existing_timezone)
+            if existing_normalized == normalized:
+                return (
+                    f"User timezone already set to {normalized}. "
+                    + _format_time_snapshot(label=f"Saved user timezone ({normalized})", tzinfo=tzinfo)
+                )
+
+    store_timezone_in_world_context(
+        ctx.db,
+        user_id=ctx.user_id,
+        existing_content=existing_content,
+        timezone_value=normalized,
+        updated_by="tool",
+    )
+
+    ctx.memory_modified = True
+    _invalidate_memory_cache(ctx.user_id)
+    return (
+        f"Saved user timezone as {normalized}. "
+        + _format_time_snapshot(label=f"Saved user timezone ({normalized})", tzinfo=tzinfo)
+    )
+
+
+@tool
+def consolidate_pending_memory() -> str:
+    """Force a Soul Writer pass now so pending core-memory writes and queued memory candidates are consolidated immediately."""
+    import asyncio
+
+    from anima_server.services.agent.pending_ops import count_pending_ops
+    from anima_server.services.agent.soul_writer import run_soul_writer
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    ctx = get_tool_context()
+    ctx.db.commit()
+    ctx.runtime_db.commit()
+    pending_before = count_pending_ops(ctx.runtime_db, user_id=ctx.user_id)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None:
+        result = asyncio.run_coroutine_threadsafe(
+            run_soul_writer(ctx.user_id), loop
+        ).result(timeout=60)
+    else:
+        result = asyncio.run(run_soul_writer(ctx.user_id))
+
+    ctx.db.expire_all()
+    ctx.runtime_db.expire_all()
+    remaining_pending = count_pending_ops(ctx.runtime_db, user_id=ctx.user_id)
+    ctx.memory_modified = True
+    _invalidate_memory_cache(ctx.user_id)
+
+    total_candidate_work = (
+        result.candidates_promoted
+        + result.candidates_rejected
+        + result.candidates_superseded
+        + result.candidates_failed
+    )
+    if pending_before == 0 and result.ops_processed == 0 and result.ops_skipped == 0 and result.ops_failed == 0 and total_candidate_work == 0:
+        return "No pending memory ops or queued memory candidates required consolidation."
+
+    return (
+        "Soul Writer finished. "
+        f"Ops processed={result.ops_processed}, skipped={result.ops_skipped}, failed={result.ops_failed}; "
+        f"candidates promoted={result.candidates_promoted}, rejected={result.candidates_rejected}, "
+        f"superseded={result.candidates_superseded}, failed={result.candidates_failed}; "
+        f"remaining pending ops={remaining_pending}."
+    )
+
+
+@tool
+def read_core_memory(label: CoreMemoryLabel) -> str:
+    """Read the exact merged contents of the editable human or persona core-memory block, including unconsolidated pending ops. Use this before core_memory_replace when exact text matters."""
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    ctx = get_tool_context()
+    content = _read_merged_core_memory_block(ctx=ctx, label=label)
+    if not content:
+        return f"No {label} memory block exists yet."
+    return content
+
+
+@tool
+def list_pending_memory_ops(label: CoreMemoryLabel | None = None) -> str:
+    """List unconsolidated pending core-memory writes for human and persona. Use this to verify whether a memory update is queued but not yet consolidated."""
+    from anima_server.services.agent.pending_ops import get_pending_ops
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    ctx = get_tool_context()
+    pending_ops = get_pending_ops(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        target_block=label,
+    )
+    core_ops = [
+        op for op in pending_ops if op.target_block in _CORE_MEMORY_LABELS]
+    if not core_ops:
+        return (
+            f"No pending {label} memory ops."
+            if label is not None
+            else "No pending core-memory ops."
+        )
+
+    lines: list[str] = []
+    for op in core_ops:
+        if op.op_type == "replace" and op.old_content is not None:
+            lines.append(
+                f"- [{op.target_block}] replace: {op.old_content} -> {op.content}"
+            )
+        else:
+            lines.append(f"- [{op.target_block}] {op.op_type}: {op.content}")
+    return f"Pending core-memory ops ({len(core_ops)}):\n" + "\n".join(lines)
+
+
+@tool
 def update_human_memory(content: str) -> str:
     """Replace the full human block in one shot. Use only when you already know the complete desired user model. For one-off facts or preferences, prefer save_to_memory or core_memory_append."""
     from anima_server.services.agent.pending_ops import create_pending_op
@@ -745,11 +1081,7 @@ def update_human_memory(content: str) -> str:
     )
     ctx.memory_modified = True
 
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
+    _invalidate_memory_cache(ctx.user_id)
 
     return "Human memory updated."
 
@@ -776,11 +1108,7 @@ def core_memory_append(label: CoreMemoryLabel, content: str) -> str:
     )
 
     ctx.memory_modified = True
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
+    _invalidate_memory_cache(ctx.user_id)
 
     return f"Appended to {label} memory. It will be visible in your next step."
 
@@ -824,11 +1152,7 @@ def core_memory_replace(label: CoreMemoryLabel, old_text: str, new_text: str) ->
     )
 
     ctx.memory_modified = True
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
+    _invalidate_memory_cache(ctx.user_id)
 
     return f"Replaced text in {label} memory. It will be visible in your next step."
 
@@ -873,11 +1197,18 @@ def get_extension_tools() -> list[Any]:
         create_task,
         list_tasks,
         complete_task,
+        update_task,
+        delete_task,
         set_intention,
         complete_goal,
         note_to_self,
         dismiss_note,
         update_human_memory,
+        read_core_memory,
+        list_pending_memory_ops,
+        consolidate_pending_memory,
+        get_user_timezone,
+        set_user_timezone,
         current_datetime,
         recall_transcript,
         check_system_health,

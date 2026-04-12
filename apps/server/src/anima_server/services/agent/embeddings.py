@@ -27,10 +27,21 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryItem
+from anima_server.services.agent.adaptive_retrieval import (
+    AdaptiveFilterResult,
+    AdaptiveRetrievalConfig,
+    apply_adaptive_filter,
+)
+from anima_server.services.agent.embedding_integrity import (
+    check_embedding,
+    compute_embedding_checksum,
+    parse_embedding_payload,
+)
 from anima_server.services.agent.llm import (
     LLMConfigError,
     validate_provider,
 )
+from anima_server.services.agent.text_processing import prepare_embedding_text
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -54,26 +65,30 @@ _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
 }
 
 
+def _setting_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _resolve_embedding_provider() -> str:
-    configured = settings.agent_embedding_provider.strip()
+    configured = _setting_text(getattr(settings, "agent_embedding_provider", ""))
     if configured:
         return configured
-    return settings.agent_provider
+    return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
 
 
 def _resolve_embedding_api_key() -> str:
-    configured = settings.agent_embedding_api_key.strip()
+    configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
         return configured
-    return settings.agent_api_key.strip()
+    return _setting_text(getattr(settings, "agent_api_key", ""))
 
 
 def _resolve_embedding_model() -> str:
     """Return the embedding model to use, preferring the user-configured one."""
-    configured = settings.agent_embedding_model.strip()
+    configured = _setting_text(getattr(settings, "agent_embedding_model", ""))
     if configured:
         return configured
-    configured = settings.agent_extraction_model.strip()
+    configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
     if configured:
         return configured
     return _DEFAULT_EMBEDDING_MODELS.get(_resolve_embedding_provider(), "nomic-embed-text")
@@ -82,12 +97,12 @@ def _resolve_embedding_model() -> str:
 def _resolve_embedding_base_url() -> str:
     """Resolve the base URL for the active embedding provider."""
     provider = _resolve_embedding_provider()
-    configured = settings.agent_embedding_base_url.strip()
+    configured = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
     if configured:
         return configured.removesuffix("/v1") if provider == "ollama" else configured
 
-    configured_agent = settings.agent_base_url.strip()
-    if configured_agent and not settings.agent_embedding_provider.strip():
+    configured_agent = _setting_text(getattr(settings, "agent_base_url", ""))
+    if configured_agent and not _setting_text(getattr(settings, "agent_embedding_provider", "")):
         if provider == "openrouter":
             return _DEFAULT_EMBEDDING_BASE_URLS[provider]
         return configured_agent.removesuffix("/v1") if provider == "ollama" else configured_agent
@@ -102,6 +117,10 @@ def _validate_embedding_provider_configuration(provider: str) -> None:
             f"ANIMA_AGENT_EMBEDDING_API_KEY (or ANIMA_AGENT_API_KEY) is required "
             f"when embedding_provider='{provider}'"
         )
+
+
+def validate_provider_configuration(provider: str) -> None:
+    _validate_embedding_provider_configuration(provider)
 
 
 def _build_embedding_headers(provider: str) -> dict[str, str]:
@@ -127,6 +146,14 @@ def _build_embedding_headers(provider: str) -> dict[str, str]:
         headers["Authorization"] = f"Bearer {api_key}"
 
     return headers
+
+
+def build_provider_headers(provider: str) -> dict[str, str]:
+    return _build_embedding_headers(provider)
+
+
+def resolve_base_url() -> str:
+    return _resolve_embedding_base_url()
 
 
 def _embedding_skip_reason(provider: str) -> str | None:
@@ -263,8 +290,12 @@ def get_embedding_cache_stats() -> dict[str, int]:
 
 async def generate_embedding(text: str) -> list[float] | None:
     """Generate an embedding vector for the given text using the configured provider."""
+    prepared_text = prepare_embedding_text(text)
+    if not prepared_text:
+        return None
+
     provider = _resolve_embedding_provider()
-    base_url = _resolve_embedding_base_url()
+    base_url = resolve_base_url()
     model = _resolve_embedding_model()
     provider_key = _provider_failure_key(
         provider,
@@ -282,7 +313,7 @@ async def generate_embedding(text: str) -> list[float] | None:
         return None
 
     # Check cache first
-    key = _cache_key(text)
+    key = _cache_key(prepared_text)
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -291,7 +322,7 @@ async def generate_embedding(text: str) -> list[float] | None:
         return None
 
     try:
-        _validate_embedding_provider_configuration(provider)
+        validate_provider_configuration(provider)
     except LLMConfigError as exc:
         logger.debug(
             "Skipping embedding generation for provider %s: %s", provider, exc)
@@ -299,10 +330,10 @@ async def generate_embedding(text: str) -> list[float] | None:
 
     try:
         if provider == "ollama":
-            result = await _embed_ollama(text)
+            result = await _embed_ollama(prepared_text)
         else:
             # openrouter, vllm — all OpenAI-compatible
-            result = await _embed_openai_compatible(text)
+            result = await _embed_openai_compatible(prepared_text)
     except LLMConfigError as exc:
         logger.debug(
             "Skipping embedding generation for provider %s: %s", provider, exc)
@@ -338,9 +369,9 @@ async def generate_embedding(text: str) -> list[float] | None:
 async def _embed_openai_compatible(text: str) -> list[float] | None:
     """Generate embeddings via any OpenAI-compatible /v1/embeddings endpoint."""
     provider = _resolve_embedding_provider()
-    base_url = _resolve_embedding_base_url()
+    base_url = resolve_base_url()
     model = _resolve_embedding_model()
-    headers = _build_embedding_headers(provider)
+    headers = build_provider_headers(provider)
     headers["Content-Type"] = "application/json"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -361,7 +392,7 @@ async def _embed_openai_compatible(text: str) -> list[float] | None:
 
 async def _embed_ollama(text: str) -> list[float] | None:
     """Generate embeddings via Ollama's native /api/embed endpoint."""
-    base_url = _resolve_embedding_base_url()
+    base_url = resolve_base_url()
     model = _resolve_embedding_model()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -389,6 +420,40 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _set_embedding_checksum(target: Any, checksum: str) -> bool:
+    try:
+        setattr(target, "embedding_checksum", checksum)
+        return True
+    except Exception:
+        return False
+
+
+def _validated_cached_embedding(item: Any) -> tuple[list[float] | None, bool]:
+    checked = check_embedding(
+        getattr(item, "embedding_json", None),
+        getattr(item, "embedding_checksum", None),
+    )
+    item_id = getattr(item, "id", "unknown")
+
+    if checked.status == "missing_checksum" and checked.embedding is not None:
+        repaired = checked.actual_checksum is not None and _set_embedding_checksum(
+            item, checked.actual_checksum
+        )
+        if repaired:
+            logger.info("Backfilled missing embedding checksum for memory item %s", item_id)
+        return checked.embedding, repaired
+
+    if checked.status == "checksum_mismatch":
+        logger.warning("Skipping memory item %s due to embedding checksum mismatch", item_id)
+        return None, False
+
+    if checked.status == "invalid":
+        logger.warning("Skipping memory item %s due to malformed embedding payload", item_id)
+        return None, False
+
+    return checked.embedding, False
+
+
 async def semantic_search(
     db: Session,
     *,
@@ -398,7 +463,11 @@ async def semantic_search(
     similarity_threshold: float = 0.3,
 ) -> list[tuple[MemoryItem, float]]:
     """Search memory items by semantic similarity via pgvector."""
-    query_embedding = await generate_embedding(query)
+    prepared_query = prepare_embedding_text(query, limit=4096)
+    if not prepared_query:
+        return []
+
+    query_embedding = await generate_embedding(prepared_query)
     if query_embedding is None:
         return []
 
@@ -449,11 +518,13 @@ async def embed_memory_item(
     """
     plaintext = df(item.user_id, item.content,
                    table="memory_items", field="content")
-    embedding = await generate_embedding(plaintext)
+    prepared_text = prepare_embedding_text(plaintext)
+    embedding = await generate_embedding(prepared_text)
     if embedding is None:
         return False
 
     item.embedding_json = embedding
+    item.embedding_checksum = compute_embedding_checksum(embedding)
     db.flush()
 
     try:
@@ -462,7 +533,7 @@ async def embed_memory_item(
         upsert_memory(
             item.user_id,
             item_id=item.id,
-            content=plaintext,
+            content=prepared_text or plaintext,
             embedding=embedding,
             category=item.category,
             importance=item.importance,
@@ -505,14 +576,16 @@ async def backfill_embeddings(
     for item, plaintext, embedding in zip(items, plaintexts, embeddings, strict=False):
         if embedding is None:
             continue
+        prepared_text = prepare_embedding_text(plaintext)
         item.embedding_json = embedding
+        item.embedding_checksum = compute_embedding_checksum(embedding)
         try:
             from anima_server.services.agent.vector_store import upsert_memory
 
             upsert_memory(
                 item.user_id,
                 item_id=item.id,
-                content=plaintext,
+                content=prepared_text or plaintext,
                 embedding=embedding,
                 category=item.category,
                 importance=item.importance,
@@ -546,20 +619,32 @@ def sync_to_vector_store(
     if not items:
         return 0
 
-    try:
-        from anima_server.services.agent.vector_store import rebuild_user_index
-
-        index_data = [
+    repaired_any = False
+    index_data: list[tuple[int, str, list[float], str, int]] = []
+    for item in items:
+        embedding, repaired = _validated_cached_embedding(item)
+        if embedding is None:
+            continue
+        plaintext = df(user_id, item.content, table="memory_items", field="content")
+        index_data.append(
             (
                 item.id,
-                df(user_id, item.content, table="memory_items", field="content"),
-                item.embedding_json,
+                prepare_embedding_text(plaintext) or plaintext,
+                embedding,
                 item.category,
                 item.importance,
             )
-            for item in items
-            if isinstance(item.embedding_json, list) and item.embedding_json
-        ]
+        )
+        repaired_any = repaired_any or repaired
+
+    if repaired_any:
+        db.flush()
+    if not index_data:
+        return 0
+
+    try:
+        from anima_server.services.agent.vector_store import rebuild_user_index
+
         return rebuild_user_index(user_id, index_data, db=db)
     except Exception:
         logger.exception(
@@ -604,9 +689,10 @@ def sync_embeddings_to_runtime(
 
         store = PgVecStore(runtime_db)
         count = 0
+        repaired_any = False
 
         for item in items:
-            embedding = _parse_embedding(item.embedding_json)
+            embedding, repaired = _validated_cached_embedding(item)
             if embedding is None:
                 continue
 
@@ -621,7 +707,10 @@ def sync_embeddings_to_runtime(
                 importance=item.importance,
             )
             count += 1
+            repaired_any = repaired_any or repaired
 
+        if repaired_any:
+            soul_db.flush()
         if count > 0:
             runtime_db.commit()
         return count
@@ -636,18 +725,7 @@ def sync_embeddings_to_runtime(
 
 def _parse_embedding(raw: Any) -> list[float] | None:
     """Parse an embedding from the JSON column value."""
-    if raw is None:
-        return None
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return None
+    return parse_embedding_payload(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +745,8 @@ class HybridSearchResult:
 
 def _tokenize(text: str) -> list[str]:
     """Simple whitespace tokenizer with lowercasing and minimum length filter."""
-    return [w for w in text.lower().split() if len(w) > 1]
+    normalized = prepare_embedding_text(text, limit=4096)
+    return [w for w in normalized.lower().split() if len(w) > 1]
 
 
 def _bm25_rerank(
@@ -811,7 +890,11 @@ async def hybrid_search(
         if not allowed_ids:
             return HybridSearchResult(items=[], query_embedding=None)
 
-    query_embedding = await generate_embedding(query)
+    prepared_query = prepare_embedding_text(query, limit=4096)
+    if not prepared_query:
+        return HybridSearchResult(items=[], query_embedding=None)
+
+    query_embedding = await generate_embedding(prepared_query)
 
     from anima_server.services.agent.vector_store import search_similar
 
@@ -838,7 +921,7 @@ async def hybrid_search(
     try:
         from anima_server.services.agent.bm25_index import bm25_search
 
-        keyword_ranked = bm25_search(user_id, query=query, limit=limit, db=db)
+        keyword_ranked = bm25_search(user_id, query=prepared_query, limit=limit, db=db)
     except Exception:
         logger.debug("BM25 keyword search failed in hybrid_search")
 
@@ -880,14 +963,31 @@ async def hybrid_search(
 
     # --- BM25 rerank stage ---
     if results:
-        results = _bm25_rerank(results, query, user_id)
+        results = _bm25_rerank(results, prepared_query, user_id)
 
     return HybridSearchResult(items=results, query_embedding=query_embedding)
 
 
 # ---------------------------------------------------------------------------
-# 1.2 — Adaptive result filtering with score gap detection
+# 1.2 — Adaptive result filtering with configurable cutoff strategies
 # ---------------------------------------------------------------------------
+
+
+def adaptive_filter_with_stats(
+    results: list[tuple[MemoryItem, float]],
+    *,
+    config: AdaptiveRetrievalConfig | None = None,
+) -> AdaptiveFilterResult[MemoryItem]:
+    """Apply adaptive retrieval cutoffs and return results plus cutoff stats.
+
+    The default config uses a memvid-style combined strategy. For existing call
+    sites that still expect the older precision/gap heuristic, use
+    ``adaptive_filter`` below.
+    """
+    return apply_adaptive_filter(
+        results,
+        config=config or AdaptiveRetrievalConfig.combined(),
+    )
 
 
 def adaptive_filter(
@@ -898,35 +998,21 @@ def adaptive_filter(
     min_results: int = 3,
     gap_threshold: float = 0.15,
 ) -> list[tuple[MemoryItem, float]]:
-    """Trim results based on score density and gap detection.
+    """Backward-compatible legacy adaptive filter wrapper.
 
-    - If the top min_results all score above high_confidence_threshold,
-      return only results above that threshold (precision mode).
-    - Otherwise, scan for a score gap > gap_threshold between consecutive
-      results and cut there (but never below min_results).
-    - Falls back to returning up to max_results (recall mode).
+    This preserves the original precision-mode plus gap-detection behavior for
+    existing callers and tests while ``adaptive_filter_with_stats`` drives the
+    upgraded combined strategy on the live retrieval path.
     """
-    if not results:
-        return []
-
-    capped = results[:max_results]
-
-    if len(capped) <= min_results:
-        return capped
-
-    # Precision mode: if top-N are all very strong, trim to high-confidence only
-    top_scores = [score for _, score in capped[:min_results]]
-    if all(s >= high_confidence_threshold for s in top_scores):
-        return [(item, score) for item, score in capped if score >= high_confidence_threshold]
-
-    # Gap detection: find the largest drop after min_results
-    for i in range(min_results, len(capped)):
-        prev_score = capped[i - 1][1]
-        curr_score = capped[i][1]
-        if prev_score - curr_score > gap_threshold:
-            return capped[:i]
-
-    return capped
+    return apply_adaptive_filter(
+        results,
+        config=AdaptiveRetrievalConfig.legacy(
+            max_results=max_results,
+            min_results=min_results,
+            high_confidence_threshold=high_confidence_threshold,
+            gap_threshold=gap_threshold,
+        ),
+    ).results
 
 
 # ---------------------------------------------------------------------------
@@ -960,14 +1046,30 @@ async def generate_embeddings_batch(
         return [None] * len(texts)
 
     try:
-        _validate_embedding_provider_configuration(provider)
+        validate_provider_configuration(provider)
     except LLMConfigError:
         return [None] * len(texts)
 
     if provider == "ollama":
         return await _batch_embed_ollama(texts)
 
-    return await _batch_embed_openai_compatible(texts, max_batch_size=max_batch_size)
+    prepared_items = [
+        (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
+    ]
+    non_empty_items = [item for item in prepared_items if item[1]]
+    if not non_empty_items:
+        return [None] * len(texts)
+
+    prepared_results = await _batch_embed_openai_compatible(
+        [text for _, text in non_empty_items],
+        max_batch_size=max_batch_size,
+    )
+
+    results: list[list[float] | None] = [None] * len(texts)
+    for (index, _text), embedding in zip(non_empty_items, prepared_results, strict=False):
+        results[index] = embedding
+
+    return results
 
 
 async def _batch_embed_openai_compatible(
@@ -977,9 +1079,9 @@ async def _batch_embed_openai_compatible(
 ) -> list[list[float] | None]:
     """Batch embedding via OpenAI-compatible /v1/embeddings with adaptive retry."""
     provider = _resolve_embedding_provider()
-    base_url = _resolve_embedding_base_url()
+    base_url = resolve_base_url()
     model = _resolve_embedding_model()
-    headers = _build_embedding_headers(provider)
+    headers = build_provider_headers(provider)
     headers["Content-Type"] = "application/json"
 
     results: list[list[float] | None] = [None] * len(texts)

@@ -19,9 +19,9 @@ export default function Mods() {
   const handleToggle = async (id: string, enable: boolean) => {
     const client = getModClient();
     if (enable) {
-      await client.api.mods({ id }).enable.post();
+      await client.enableMod(id);
     } else {
-      await client.api.mods({ id }).disable.post();
+      await client.disableMod(id);
     }
     refresh();
   };
@@ -32,8 +32,7 @@ export default function Mods() {
     setInstallError(null);
     try {
       const client = getModClient();
-      const { data, error: err } = await client.api.mods.install.post({ source: installSource.trim() });
-      if (err) throw new Error(String(err));
+      const data = await client.installMod(installSource.trim());
       setShowInstall(false);
       setInstallSource("");
       refresh();
@@ -89,7 +88,6 @@ export default function Mods() {
               version={mod.version}
               status={mod.status}
               enabled={mod.enabled}
-              hasConfigSchema={mod.hasConfigSchema}
               onToggle={handleToggle}
             />
           ))}

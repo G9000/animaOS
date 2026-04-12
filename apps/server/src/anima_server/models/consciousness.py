@@ -26,7 +26,8 @@ from anima_server.db.base import Base
 class SelfModelBlock(Base):
     """Per-user self-model section.
 
-    P3 keeps only soul-tier sections here: soul, persona, human, user_directive.
+    P3 keeps only soul-tier sections here: soul, persona, human, world,
+    user_directive.
     Moved sections remain for backward compatibility during migration reads.
     """
 
@@ -44,7 +45,7 @@ class SelfModelBlock(Base):
     section: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-    )  # soul, persona, human, user_directive, plus legacy compatibility sections
+    )  # soul, persona, human, world, user_directive, plus legacy compatibility sections
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[str] = mapped_column(
