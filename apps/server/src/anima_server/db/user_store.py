@@ -102,15 +102,24 @@ def find_account_by_username(
         if exclude_user_id is not None and user_id == exclude_user_id:
             continue
 
-        with get_user_session_factory(user_id)() as db:
-            user = db.scalar(select(User).where(User.username == normalized))
-            if user is None:
-                continue
-            return AccountRecord(
-                user_id=user.id,
-                username=user.username,
-                name=user.display_name,
+        try:
+            with get_user_session_factory(user_id)() as db:
+                user = db.scalar(select(User).where(
+                    User.username == normalized))
+                if user is None:
+                    continue
+                return AccountRecord(
+                    user_id=user.id,
+                    username=user.username,
+                    name=user.display_name,
+                )
+        except SQLAlchemyError:
+            logger.warning(
+                "Skipping unreadable user database for user %s during username scan.",
+                user_id,
+                exc_info=True,
             )
+            continue
 
     return None
 
@@ -164,7 +173,8 @@ def register_account(
         )
 
         # Store recovery-wrapped DEKs alongside password-wrapped DEKs
-        recovery_records = wrap_keys_for_recovery(recovery_phrase, deks, user_id)
+        recovery_records = wrap_keys_for_recovery(
+            recovery_phrase, deks, user_id)
         for domain, wrapped_dek in recovery_records:
             db.add(build_user_key(user_id, domain, wrapped_dek))
         db.commit()
@@ -229,7 +239,8 @@ def _migrate_legacy_shared_database_locked() -> None:
             if bind is None or not inspect(bind).has_table("users"):
                 return
 
-            users = list(legacy_db.scalars(select(User).order_by(User.id)).all())
+            users = list(legacy_db.scalars(
+                select(User).order_by(User.id)).all())
             if not users:
                 return
 
@@ -284,7 +295,7 @@ def make_legacy_database_path() -> Path | None:
     prefix = "sqlite:///"
     if not settings.database_url.startswith(prefix):
         return None
-    return Path(settings.database_url[len(prefix) :]).expanduser().resolve()
+    return Path(settings.database_url[len(prefix):]).expanduser().resolve()
 
 
 def _legacy_backup_path(shared_db_path: Path) -> Path:
@@ -450,7 +461,8 @@ def _maybe_unwrap_sqlcipher_key(password: str) -> None:
         wrapped_dek=str(wrapped_data["wrapped_key"]),
     )
     try:
-        raw_key = unwrap_dek(password, record, int(wrapped_data.get("user_id", 0)), "sqlcipher")
+        raw_key = unwrap_dek(password, record, int(
+            wrapped_data.get("user_id", 0)), "sqlcipher")
     except InvalidTag as exc:
         raise InvalidCredentialsError("Invalid credentials") from exc
     set_sqlcipher_key(raw_key)

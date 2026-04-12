@@ -190,9 +190,26 @@ export interface ProviderInfo {
   requiresApiKey: boolean;
 }
 
+export interface OllamaModelDetails {
+  format?: string | null;
+  family?: string | null;
+  families?: string[] | null;
+  parameterSize?: string | null;
+  quantizationLevel?: string | null;
+}
+
+export interface OllamaModelInfo {
+  name: string;
+  modifiedAt?: string | null;
+  size?: number | null;
+  digest?: string | null;
+  details?: OllamaModelDetails | null;
+}
+
 export interface AgentConfig {
   provider: string;
   model: string;
+  extractionModel?: string | null;
   ollamaUrl?: string;
   hasApiKey: boolean;
   systemPrompt?: string | null;

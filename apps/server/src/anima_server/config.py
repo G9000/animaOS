@@ -5,7 +5,9 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_DATA_DIR = Path(__file__).resolve().parents[4] / ".anima" / "dev"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+SERVER_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_DIR = REPO_ROOT / ".anima" / "dev"
 DEFAULT_DATABASE_URL = "sqlite:///" + str(DEFAULT_DATA_DIR / "anima.db")
 RUNTIME_SETTINGS_FILENAME = "runtime-config.json"
 
@@ -76,7 +78,12 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",
-        env_file=(".env", ".env.local"),
+        env_file=(
+            REPO_ROOT / ".env",
+            REPO_ROOT / ".env.local",
+            SERVER_ROOT / ".env",
+            SERVER_ROOT / ".env.local",
+        ),
         extra="ignore",
     )
 

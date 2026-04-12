@@ -25,6 +25,7 @@ import type {
   MemoryOverviewData,
   MemorySearchResult,
   Nudge,
+  OllamaModelInfo,
   PendingMemoryConsolidationResponse,
   PendingMemoryOpsResponse,
   PersonaTemplate,
@@ -535,6 +536,12 @@ export function createApiClient(options: ApiClientOptions) {
     },
     config: {
       providers: () => request<ProviderInfo[]>("/config/providers"),
+      ollamaModels: (baseUrl?: string) =>
+        request<OllamaModelInfo[]>(
+          `/config/ollama-models${
+            baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : ""
+          }`,
+        ),
       personaTemplates: () =>
         request<PersonaTemplateInfo[]>("/config/persona-templates"),
       get: (userId: number) => request<AgentConfig>(`/config/${userId}`),
@@ -543,6 +550,7 @@ export function createApiClient(options: ApiClientOptions) {
         data: {
           provider: string;
           model: string;
+          extractionModel?: string;
           apiKey?: string;
           ollamaUrl?: string;
           systemPrompt?: string;

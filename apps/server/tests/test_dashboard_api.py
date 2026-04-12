@@ -93,6 +93,47 @@ def test_config_providers() -> None:
         assert "ollama" in names
 
 
+def test_config_ollama_models(monkeypatch) -> None:
+    from anima_server.api.routes import config as config_route
+
+    async def fake_list_ollama_models(base_url: str) -> list[config_route.OllamaModelInfo]:
+        assert base_url == "http://localhost:11434"
+        return [
+            config_route.OllamaModelInfo(
+                name="gemma4:31b",
+                size=19_000_000_000,
+                details=config_route.OllamaModelDetails(
+                    family="gemma",
+                    parameterSize="31B",
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(config_route, "_list_ollama_models",
+                        fake_list_ollama_models)
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        resp = client.get(
+            "/api/config/ollama-models?baseUrl=http://localhost:11434")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload == [
+            {
+                "name": "gemma4:31b",
+                "modifiedAt": None,
+                "size": 19_000_000_000,
+                "digest": None,
+                "details": {
+                    "format": None,
+                    "family": "gemma",
+                    "families": None,
+                    "parameterSize": "31B",
+                    "quantizationLevel": None,
+                },
+            }
+        ]
+
+
 def test_config_get_update() -> None:
     original_provider = settings.agent_provider
     original_model = settings.agent_model
@@ -110,6 +151,7 @@ def test_config_get_update() -> None:
             config = resp.json()
             assert "provider" in config
             assert "model" in config
+            assert "extractionModel" in config
 
             resp = client.put(
                 f"/api/config/{user_id}",
@@ -117,12 +159,14 @@ def test_config_get_update() -> None:
                 json={
                     "provider": "openai",
                     "model": "gpt-4o-mini",
+                    "extractionModel": "qwen3:14b",
                     "apiKey": "test-openai-key",
                 },
             )
             assert resp.status_code == 200
             assert settings.agent_provider == "openai"
             assert settings.agent_model == "gpt-4o-mini"
+            assert settings.agent_extraction_model == "qwen3:14b"
             assert settings.agent_api_key == "test-openai-key"
 
             settings.agent_provider = "ollama"
@@ -147,6 +191,7 @@ def test_runtime_settings_persist_and_reload(tmp_path) -> None:
     original_data_dir = settings.data_dir
     original_provider = settings.agent_provider
     original_model = settings.agent_model
+    original_extraction_model = settings.agent_extraction_model
     original_api_key = settings.agent_api_key
     original_base_url = settings.agent_base_url
 
@@ -154,6 +199,7 @@ def test_runtime_settings_persist_and_reload(tmp_path) -> None:
         settings.data_dir = tmp_path
         settings.agent_provider = "openai"
         settings.agent_model = "gpt-4o-mini"
+        settings.agent_extraction_model = "qwen3:14b"
         settings.agent_api_key = "persisted-openai-key"
         settings.agent_base_url = ""
 
@@ -162,6 +208,7 @@ def test_runtime_settings_persist_and_reload(tmp_path) -> None:
 
         settings.agent_provider = "ollama"
         settings.agent_model = "vaultbox/qwen3.5-uncensored:35b"
+        settings.agent_extraction_model = ""
         settings.agent_api_key = ""
         settings.agent_base_url = "http://127.0.0.1:11434"
 
@@ -169,12 +216,14 @@ def test_runtime_settings_persist_and_reload(tmp_path) -> None:
 
         assert settings.agent_provider == "openai"
         assert settings.agent_model == "gpt-4o-mini"
+        assert settings.agent_extraction_model == "qwen3:14b"
         assert settings.agent_api_key == "persisted-openai-key"
         assert settings.agent_base_url == ""
     finally:
         settings.data_dir = original_data_dir
         settings.agent_provider = original_provider
         settings.agent_model = original_model
+        settings.agent_extraction_model = original_extraction_model
         settings.agent_api_key = original_api_key
         settings.agent_base_url = original_base_url
 

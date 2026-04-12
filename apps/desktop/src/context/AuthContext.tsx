@@ -20,6 +20,8 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 const STORAGE_KEY = "anima_user";
+const HEALTH_BOOT_RETRIES = 20;
+const HEALTH_BOOT_RETRY_MS = 500;
 
 function purgeLegacyStoredUser(): void {
   try {
@@ -27,6 +29,16 @@ function purgeLegacyStoredUser(): void {
   } catch {
     // Ignore storage failures.
   }
+}
+
+function isNetworkError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (!(error instanceof Error)) return false;
+  return /failed to fetch|networkerror/i.test(error.message);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -40,14 +52,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let healthAvailable = false;
       try {
-        // Check provisioning state from health endpoint.
-        try {
-          const health = await api.system.health();
-          if (!cancelled) setIsProvisioned(health.provisioned === true);
-        } catch {
-          // Server unreachable — assume not provisioned.
+        for (let attempt = 0; attempt < HEALTH_BOOT_RETRIES; attempt += 1) {
+          try {
+            const health = await api.system.health();
+            healthAvailable = true;
+            if (!cancelled) setIsProvisioned(health.provisioned === true);
+            break;
+          } catch (error) {
+            if (!isNetworkError(error) || attempt === HEALTH_BOOT_RETRIES - 1) {
+              break;
+            }
+            await delay(HEALTH_BOOT_RETRY_MS);
+          }
         }
+
+        if (!healthAvailable && !cancelled) setIsProvisioned(false);
 
         const token = getUnlockToken();
         if (!token) {
@@ -56,8 +77,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         const me = await api.auth.me();
         if (!cancelled) setUser(me);
-      } catch {
-        clearUnlockToken();
+      } catch (error) {
+        if (!isNetworkError(error)) {
+          clearUnlockToken();
+        }
         if (!cancelled) setUser(null);
       } finally {
         if (!cancelled) setIsLoading(false);
