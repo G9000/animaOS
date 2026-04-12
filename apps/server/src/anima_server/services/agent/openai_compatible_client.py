@@ -279,15 +279,10 @@ def _normalize_request_tool_calls(raw_tool_calls: object) -> list[dict[str, obje
             continue
         call_id = str(raw_tool_call.get("id") or f"tool-call-{index}")
         arguments = raw_tool_call.get("args", {})
-        parse_error = raw_tool_call.get("parse_error")
-        raw_arguments = raw_tool_call.get("raw_arguments")
-        if isinstance(parse_error, str) and parse_error.strip() and isinstance(raw_arguments, str):
-            serialized_arguments = raw_arguments
-        else:
-            serialized_arguments = json.dumps(
-                arguments if isinstance(arguments, dict) else {},
-                ensure_ascii=True,
-            )
+        serialized_arguments = json.dumps(
+            arguments if isinstance(arguments, dict) else {},
+            ensure_ascii=True,
+        )
         normalized.append(
             {
                 "id": call_id,

@@ -319,3 +319,82 @@ async def test_openai_compatible_chat_client_preserves_malformed_tool_args() -> 
             "raw_arguments": "{broken json",
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_client_replays_malformed_history_with_safe_arguments() -> None:
+    captured_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "recovered",
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = OpenAICompatibleChatClient(
+        provider="ollama",
+        model="llama3.2",
+        base_url="http://ollama.local/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.ainvoke(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call-bad",
+                        "name": "send_message",
+                        "args": {},
+                        "parse_error": "Malformed tool-call arguments (invalid JSON).",
+                        "raw_arguments": "{broken json",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="Malformed tool-call arguments (invalid JSON).",
+                tool_call_id="call-bad",
+                name="send_message",
+            ),
+            HumanMessage(content="try again"),
+        ]
+    )
+
+    assert captured_payload["messages"] == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-bad",
+                    "type": "function",
+                    "function": {
+                        "name": "send_message",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "Malformed tool-call arguments (invalid JSON).",
+            "tool_call_id": "call-bad",
+            "name": "send_message",
+        },
+        {
+            "role": "user",
+            "content": "try again",
+        },
+    ]
