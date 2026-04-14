@@ -225,6 +225,7 @@ def note_to_self(key: str, value: str, note_type: str = "observation") -> str:
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
 
     return f"Noted: {key}"
 
@@ -244,6 +245,7 @@ def dismiss_note(key: str) -> str:
         companion = get_companion(ctx.user_id)
         if companion is not None:
             companion.invalidate_memory()
+        ctx.memory_modified = True
         return f"Dismissed note: {key}"
     return f"No active note found with key: {key}"
 
@@ -282,6 +284,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         companion = get_companion(ctx.user_id)
         if companion is not None:
             companion.invalidate_memory()
+        ctx.memory_modified = True
         return f"Saved '{key}' to permanent memory (category: {category})"
 
     # No session note found — create a memory candidate directly from the key text.
@@ -303,6 +306,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
     return f"Saved '{key}' to permanent memory (category: {category})"
 
 
@@ -331,6 +335,7 @@ def set_intention(
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
 
     return f"Tracking intention: {title}"
 
@@ -349,6 +354,7 @@ def complete_goal(title: str) -> str:
         companion = get_companion(ctx.user_id)
         if companion is not None:
             companion.invalidate_memory()
+        ctx.memory_modified = True
         return f"Marked as completed: {title}"
     return f"Could not find intention: {title}"
 
@@ -382,6 +388,7 @@ def create_task(text: str, due_date: str = "", priority: str = "2") -> str:
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
 
     result = f"Task created: {normalized_text}"
     if task.due_date:
@@ -449,6 +456,7 @@ def complete_task(text: str) -> str:
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
 
     return f"Completed: {best_task.text}"
 
@@ -564,6 +572,7 @@ def update_task(
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
 
     return f"Updated task '{task.text}': " + ", ".join(updates)
 
@@ -599,6 +608,7 @@ def delete_task(text: str) -> str:
     companion = get_companion(ctx.user_id)
     if companion is not None:
         companion.invalidate_memory()
+    ctx.memory_modified = True
 
     return f"Deleted task: {deleted_text}"
 

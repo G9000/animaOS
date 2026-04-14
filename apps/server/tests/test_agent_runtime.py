@@ -319,6 +319,81 @@ async def test_text_response_coerced_to_send_message_when_not_forced() -> None:
 
 
 @pytest.mark.asyncio
+async def test_text_tool_coercion_honors_approval_rules() -> None:
+    calls: list[str] = []
+
+    @tool
+    def delete_file(path: str) -> str:
+        """Delete a file from disk."""
+        calls.append(path)
+        return f"deleted {path}"
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                assistant_text='delete_file({"path": "C:/tmp/demo.txt"})',
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[delete_file],
+        tool_rules=[RequiresApprovalToolRule(tool_name="delete_file")],
+        max_steps=2,
+    )
+
+    result = await runtime.invoke("delete it", user_id=1, history=[])
+
+    assert calls == []
+    assert result.response == "Agent runtime is waiting for approval before running a tool."
+    assert result.stop_reason == StopReason.AWAITING_APPROVAL.value
+    assert result.tools_used == []
+    assert len(result.step_traces) == 1
+    assert result.step_traces[0].tool_calls[0].name == "delete_file"
+    assert result.step_traces[0].tool_results[0].output == (
+        "Approval required before running tool: delete_file"
+    )
+
+
+@pytest.mark.asyncio
+async def test_text_tool_coercion_honors_sequencing_rules() -> None:
+    @tool
+    def think() -> str:
+        """Record an internal planning step."""
+        return "planned"
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                assistant_text="current_datetime({})",
+            ),
+            StepExecutionResult(
+                assistant_text="Recovered after tool rule violation.",
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[think, current_datetime],
+        tool_rules=[InitToolRule(tool_name="think")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke("start", user_id=1, history=[])
+
+    assert result.response == "Recovered after tool rule violation."
+    assert result.stop_reason == StopReason.END_TURN.value
+    assert result.tools_used == []
+    assert len(result.step_traces) == 2
+    assert result.step_traces[0].tool_calls[0].name == "current_datetime"
+    assert result.step_traces[0].tool_results[0].is_error is True
+    assert (
+        "The first tool call must be one of: think."
+        in result.step_traces[0].tool_results[0].output
+    )
+
+
+@pytest.mark.asyncio
 async def test_runtime_returns_rule_violation_to_next_step() -> None:
     @tool
     def think() -> str:

@@ -389,62 +389,18 @@ class AgentRuntime:
             awaiting_approval = False
             rule_violation_hit = False
 
-            if not step_result.tool_calls:
-                coerced = await self._coerce_text_tool_calls(
+            effective_tool_calls = step_result.tool_calls
+            if not effective_tool_calls:
+                coerced = self._coerce_text_tool_calls(
                     step_result=step_result,
                     allowed_tool_names=allowed_tool_names,
                     step_index=step_index,
-                    event_callback=event_callback,
                     extra_tool_names=extra_tool_names,
-                    relationship_policy=relationship_policy,
-                    tool_executor=executor,
                 )
                 if coerced is not None:
-                    all_coerced_calls = tuple(tc for tc, _ in coerced)
-                    all_coerced_results = tuple(tr for _, tr in coerced)
-                    for tc, tr in coerced:
-                        if tc.name not in tools_used:
-                            tools_used.append(tc.name)
-                        # Feed tool results back into messages so the
-                        # loop can continue if no terminal tool was hit.
-                        messages.append(
-                            make_tool_message(
-                                tr.output,
-                                tool_call_id=tc.id,
-                                name=tc.name,
-                            )
-                        )
-                        rules_solver.update_state(tc.name, tr.output)
-                    step_ctx.progression = StepProgression.TOOLS_COMPLETED
-                    step_traces.append(
-                        _build_step_trace(
-                            step_ctx,
-                            step_result,
-                            request_messages,
-                            allowed_tool_names,
-                            force_tool_call,
-                            tool_calls=all_coerced_calls,
-                            tool_results=all_coerced_results,
-                        )
-                    )
-                    if event_callback is not None:
-                        await event_callback(
-                            build_timing_event(
-                                step_index, _compute_timing(step_ctx))
-                        )
-                    # Check if any coerced call was terminal (send_message).
-                    terminal_hit = any(tr.is_terminal for _, tr in coerced)
-                    if terminal_hit:
-                        response = next(
-                            (tr.output for _, tr in coerced if tr.is_terminal),
-                            response,
-                        )
-                        stop_reason = StopReason.TERMINAL_TOOL
-                        break
-                    # Non-terminal coerced calls — continue the loop
-                    # so the model can proceed.
-                    continue
+                    effective_tool_calls = coerced
 
+            if not effective_tool_calls:
                 response = step_result.assistant_text or response
                 if (
                     event_callback is not None
@@ -475,14 +431,20 @@ class AgentRuntime:
                 break
 
             if event_callback is not None:
-                for tool_call in step_result.tool_calls:
+                for tool_call in effective_tool_calls:
                     await event_callback(build_tool_call_event(step_index, tool_call))
 
-            for tool_call in step_result.tool_calls:
-                violation = rules_solver.validate_tool_call(
-                    tool_call.name,
-                    self._tool_names,
+            for tool_call in effective_tool_calls:
+                is_action_tool = (
+                    tool_call.name in extra_tool_names
+                    and tool_call.name not in self._tool_registry
                 )
+                violation = None
+                if not is_action_tool:
+                    violation = rules_solver.validate_tool_call(
+                        tool_call.name,
+                        self._tool_names,
+                    )
                 if violation is not None:
                     # If the blocked tool is neither terminal nor an
                     # init-only tool, defer it for execution after the
@@ -528,7 +490,7 @@ class AgentRuntime:
                     rule_violation_hit = True
                     break
 
-                if rules_solver.requires_approval(tool_call.name):
+                if not is_action_tool and rules_solver.requires_approval(tool_call.name):
                     # Execute any previously validated safe tools before
                     # stopping for approval.
                     if validated_calls:
@@ -572,11 +534,17 @@ class AgentRuntime:
                     break
 
                 # Collect validated tool calls for execution.
-                is_terminal = rules_solver.is_terminal(tool_call.name)
+                is_terminal = (
+                    False
+                    if is_action_tool
+                    else tool_call.name == "send_message"
+                    or rules_solver.is_terminal(tool_call.name)
+                )
                 validated_calls.append((tool_call, is_terminal))
                 # Register with the solver so subsequent tool calls in
                 # this batch see updated prerequisite/child state.
-                rules_solver.update_state(tool_call.name, None)
+                if not is_action_tool:
+                    rules_solver.update_state(tool_call.name, None)
 
             # --- Execute validated tool calls (parallel when possible) ---
             if validated_calls and not rule_violation_hit and not awaiting_approval:
@@ -644,6 +612,7 @@ class AgentRuntime:
                     request_messages,
                     allowed_tool_names,
                     force_tool_call,
+                    tool_calls=effective_tool_calls,
                     tool_results=tuple(tool_results),
                 )
             )
@@ -810,6 +779,10 @@ class AgentRuntime:
             memory_blocks=memory_blocks,
             conversation_turn_count=conversation_turn_count,
         )
+        relationship_policy = detect_relationship_policy(
+            memory_blocks=tuple(memory_blocks),
+            conversation_turn_count=conversation_turn_count,
+        )
         messages = build_conversation_messages(
             history,
             user_message=None,
@@ -831,8 +804,15 @@ class AgentRuntime:
         if approved:
             tool_result = await executor.execute(
                 tool_call,
-                is_terminal=rules_solver.is_terminal(tool_call.name),
+                is_terminal=tool_call.name == "send_message"
+                or rules_solver.is_terminal(tool_call.name),
             )
+            tool_result = self._apply_terminal_reply_policy(
+                tool_call=tool_call,
+                tool_result=tool_result,
+                relationship_policy=relationship_policy,
+            )
+            rules_solver.update_state(tool_call.name, tool_result.output)
         else:
             reason = denial_reason or "No reason provided"
             tool_result = ToolExecutionResult(
@@ -963,7 +943,144 @@ class AgentRuntime:
                 )
 
         response = step_result.assistant_text or response
-        if (
+        follow_tool_calls = step_result.tool_calls
+        if not follow_tool_calls:
+            coerced = self._coerce_text_tool_calls(
+                step_result=step_result,
+                allowed_tool_names=allowed_tool_names,
+                step_index=1,
+            )
+            if coerced is not None:
+                follow_tool_calls = coerced
+
+        follow_tool_results: list[ToolExecutionResult] = []
+        follow_terminal_tool_hit = False
+        follow_awaiting_approval = False
+        follow_rule_violation_hit = False
+        validated_calls: list[tuple[ToolCall, bool]] = []
+
+        async def _flush_follow_validated_calls(*, capture_terminal: bool) -> None:
+            nonlocal response, follow_terminal_tool_hit
+            if not validated_calls:
+                return
+
+            follow_ctx.progression = StepProgression.TOOLS_STARTED
+            non_terminal = [(tc, t) for tc, t in validated_calls if not t]
+            terminal = [(tc, t) for tc, t in validated_calls if t]
+
+            parallel_results = await executor.execute_parallel(non_terminal) if non_terminal else []
+            for (tc, _), tr in zip(non_terminal, parallel_results, strict=True):
+                follow_tool_results.append(tr)
+                messages.append(
+                    make_tool_message(
+                        tr.output,
+                        tool_call_id=tr.call_id,
+                        name=tr.name,
+                    )
+                )
+                if event_callback is not None:
+                    await event_callback(build_tool_return_event(1, tr))
+                if tr.inner_thinking and event_callback is not None:
+                    await event_callback(build_thought_event(1, tr.inner_thinking))
+                rules_solver.update_state(tc.name, tr.output)
+                if tc.name not in tools_used:
+                    tools_used.append(tc.name)
+
+            for tc, _ in terminal:
+                tr = await executor.execute(tc, is_terminal=True)
+                tr = self._apply_terminal_reply_policy(
+                    tool_call=tc,
+                    tool_result=tr,
+                    relationship_policy=relationship_policy,
+                )
+                follow_tool_results.append(tr)
+                messages.append(
+                    make_tool_message(
+                        tr.output,
+                        tool_call_id=tr.call_id,
+                        name=tr.name,
+                    )
+                )
+                if event_callback is not None:
+                    await event_callback(build_tool_return_event(1, tr))
+                if tr.inner_thinking and event_callback is not None:
+                    await event_callback(build_thought_event(1, tr.inner_thinking))
+                rules_solver.update_state(tc.name, tr.output)
+                if tc.name not in tools_used:
+                    tools_used.append(tc.name)
+                if capture_terminal and tr.is_terminal:
+                    response = tr.output or response
+                    follow_terminal_tool_hit = True
+
+            validated_calls.clear()
+
+        if follow_tool_calls:
+            if event_callback is not None:
+                for follow_tool_call in follow_tool_calls:
+                    await event_callback(build_tool_call_event(1, follow_tool_call))
+
+            for follow_tool_call in follow_tool_calls:
+                violation = rules_solver.validate_tool_call(
+                    follow_tool_call.name,
+                    self._tool_names,
+                )
+                if violation is not None:
+                    if validated_calls:
+                        await _flush_follow_validated_calls(capture_terminal=False)
+                    tool_result = ToolExecutionResult(
+                        call_id=follow_tool_call.id,
+                        name=follow_tool_call.name,
+                        output=f"Tool rule violation: {violation}",
+                        is_error=True,
+                    )
+                    follow_tool_results.append(tool_result)
+                    messages.append(
+                        make_tool_message(
+                            tool_result.output,
+                            tool_call_id=tool_result.call_id,
+                            name=tool_result.name,
+                        )
+                    )
+                    if event_callback is not None:
+                        await event_callback(build_tool_return_event(1, tool_result))
+                    follow_rule_violation_hit = True
+                    break
+
+                if rules_solver.requires_approval(follow_tool_call.name):
+                    if validated_calls:
+                        await _flush_follow_validated_calls(capture_terminal=False)
+                    tool_result = ToolExecutionResult(
+                        call_id=follow_tool_call.id,
+                        name=follow_tool_call.name,
+                        output=f"Approval required before running tool: {follow_tool_call.name}",
+                        is_error=True,
+                    )
+                    follow_tool_results.append(tool_result)
+                    messages.append(
+                        make_tool_message(
+                            tool_result.output,
+                            tool_call_id=tool_result.call_id,
+                            name=tool_result.name,
+                        )
+                    )
+                    if event_callback is not None:
+                        await event_callback(build_tool_return_event(1, tool_result))
+                    follow_awaiting_approval = True
+                    break
+
+                is_terminal = (
+                    follow_tool_call.name == "send_message"
+                    or rules_solver.is_terminal(follow_tool_call.name)
+                )
+                validated_calls.append((follow_tool_call, is_terminal))
+                rules_solver.update_state(follow_tool_call.name, None)
+
+            if validated_calls and not follow_rule_violation_hit and not follow_awaiting_approval:
+                await _flush_follow_validated_calls(capture_terminal=True)
+
+            if follow_tool_results:
+                follow_ctx.progression = StepProgression.TOOLS_COMPLETED
+        elif (
             event_callback is not None
             and step_result.assistant_text
             and not streamed_assistant_text
@@ -978,18 +1095,25 @@ class AgentRuntime:
                 follow_request_messages,
                 allowed_tool_names,
                 force_tool_call,
+                tool_calls=follow_tool_calls if follow_tool_calls else None,
+                tool_results=tuple(follow_tool_results),
             )
         )
         if event_callback is not None:
             await event_callback(build_timing_event(1, _compute_timing(follow_ctx)))
 
-        stop_reason = _resolve_empty_forced_tool_stop_reason(
-            step_index=1,
-            force_tool_call=force_tool_call,
-            step_result=step_result,
-        )
-        if stop_reason is None:
-            stop_reason = StopReason.END_TURN
+        if follow_terminal_tool_hit:
+            stop_reason = StopReason.TERMINAL_TOOL
+        elif follow_awaiting_approval:
+            stop_reason = StopReason.AWAITING_APPROVAL
+        else:
+            stop_reason = _resolve_empty_forced_tool_stop_reason(
+                step_index=1,
+                force_tool_call=force_tool_call,
+                step_result=step_result,
+            )
+            if stop_reason is None:
+                stop_reason = StopReason.END_TURN
 
         if not response:
             response = _default_response(stop_reason)
@@ -1216,30 +1340,27 @@ class AgentRuntime:
         assert last_exc is not None
         raise last_exc
 
-    async def _coerce_text_tool_calls(
+    def _coerce_text_tool_calls(
         self,
         *,
         step_result: StepExecutionResult,
         allowed_tool_names: Sequence[str],
         step_index: int,
-        event_callback: StreamEventCallback | None,
         extra_tool_names: frozenset[str] = frozenset(),
-        relationship_policy: RelationshipPolicy | None = None,
-        tool_executor: ToolExecutor | None = None,
-    ) -> list[tuple[ToolCall, ToolExecutionResult]] | None:
-        """Detect and execute tool calls that the model output as plain text.
+    ) -> tuple[ToolCall, ...] | None:
+        """Detect and synthesize tool calls that the model output as plain text.
 
         Some models (especially smaller ones) emit tool calls like
         ``send_message("hello")`` or ``note_to_self("observation")`` as
         plain text instead of structured tool calls.  This method parses
-        those patterns and executes them as if they were real tool calls,
-        keeping the cognitive loop intact.
+        those patterns into synthetic ``ToolCall`` objects so they flow
+        through the same validation, approval, and sequencing path as
+        structured tool calls.
 
         *extra_tool_names* contains names of delegated action tools that
         are not in the server-side registry but can be executed via the
         tool executor's delegation mechanism.
         """
-        executor = tool_executor or self._tool_executor
         if not step_result.assistant_text.strip():
             return None
 
@@ -1253,8 +1374,9 @@ class AgentRuntime:
         )
         if not parsed:
             # No recognizable tool calls in the text.  Fall back to
-            # coercing the entire text as a send_message if available.
-            if "send_message" not in self._tool_registry:
+            # coercing the entire text as a send_message when that tool
+            # is available in the current step.
+            if "send_message" not in allowed_tool_names:
                 return None
             parsed = [
                 _ParsedTextToolCall(
@@ -1263,39 +1385,21 @@ class AgentRuntime:
                 )
             ]
 
-        results: list[tuple[ToolCall, ToolExecutionResult]] = []
+        tool_calls: list[ToolCall] = []
         for i, ptc in enumerate(parsed):
             # Allow tools that are either in the server registry or in
-            # the delegated action tool set (executor handles routing).
+            # the delegated action tool set.
             if ptc.name not in self._tool_registry and ptc.name not in extra_tool_names:
                 continue
-            tool_call = ToolCall(
-                id=f"synthetic-{ptc.name}-{step_index}-{i}",
-                name=ptc.name,
-                arguments=ptc.arguments,
+            tool_calls.append(
+                ToolCall(
+                    id=f"synthetic-{ptc.name}-{step_index}-{i}",
+                    name=ptc.name,
+                    arguments=ptc.arguments,
+                )
             )
-            # send_message is the only terminal tool in the cognitive loop.
-            is_terminal = ptc.name == "send_message"
-            tool_result = await executor.execute(
-                tool_call,
-                is_terminal=is_terminal,
-            )
-            tool_result = self._apply_terminal_reply_policy(
-                tool_call=tool_call,
-                tool_result=tool_result,
-                relationship_policy=relationship_policy,
-            )
-            if event_callback is not None:
-                await event_callback(build_tool_call_event(step_index, tool_call))
-                await event_callback(build_tool_return_event(step_index, tool_result))
-                if tool_result.inner_thinking:
-                    await event_callback(
-                        build_thought_event(
-                            step_index, tool_result.inner_thinking)
-                    )
-            results.append((tool_call, tool_result))
 
-        return results if results else None
+        return tuple(tool_calls) if tool_calls else None
 
     @staticmethod
     def _apply_terminal_reply_policy(

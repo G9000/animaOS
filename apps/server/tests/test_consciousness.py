@@ -973,6 +973,27 @@ def test_create_task_tool_no_due_date() -> None:
             clear_tool_context()
 
 
+def test_create_task_sets_memory_modified() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import create_task
+
+        ctx = ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id)
+        set_tool_context(ctx)
+        try:
+            create_task("Buy groceries")
+            assert ctx.memory_modified is True
+        finally:
+            clear_tool_context()
+
+
 def test_create_task_tool_rejects_blank_text() -> None:
     with _db_session() as db:
         user, thread = _setup(db)
@@ -1120,6 +1141,29 @@ def test_complete_task_tool_fuzzy_match() -> None:
             clear_tool_context()
 
 
+def test_complete_task_sets_memory_modified() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import complete_task, create_task
+
+        ctx = ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id)
+        set_tool_context(ctx)
+        try:
+            create_task("Buy groceries")
+            ctx.memory_modified = False
+            complete_task("Buy groceries")
+            assert ctx.memory_modified is True
+        finally:
+            clear_tool_context()
+
+
 def test_update_task_tool_updates_fields() -> None:
     with _db_session() as db:
         user, thread = _setup(db)
@@ -1160,6 +1204,29 @@ def test_update_task_tool_updates_fields() -> None:
             clear_tool_context()
 
 
+def test_update_task_sets_memory_modified() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import create_task, update_task
+
+        ctx = ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id)
+        set_tool_context(ctx)
+        try:
+            create_task("Buy groceries")
+            ctx.memory_modified = False
+            update_task("Buy groceries", priority="4")
+            assert ctx.memory_modified is True
+        finally:
+            clear_tool_context()
+
+
 def test_delete_task_tool_removes_task() -> None:
     with _db_session() as db:
         user, thread = _setup(db)
@@ -1185,6 +1252,52 @@ def test_delete_task_tool_removes_task() -> None:
                 Task.user_id == user.id)).all())
             assert tasks == []
             assert result == "Deleted task: Task to remove"
+        finally:
+            clear_tool_context()
+
+
+def test_delete_task_sets_memory_modified() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import create_task, delete_task
+
+        ctx = ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id)
+        set_tool_context(ctx)
+        try:
+            create_task("Task to remove")
+            ctx.memory_modified = False
+            delete_task("Task to remove")
+            assert ctx.memory_modified is True
+        finally:
+            clear_tool_context()
+
+
+def test_complete_goal_sets_memory_modified() -> None:
+    with _db_session() as db:
+        user, thread = _setup(db)
+        db.flush()
+
+        from anima_server.services.agent.tool_context import (
+            ToolContext,
+            clear_tool_context,
+            set_tool_context,
+        )
+        from anima_server.services.agent.tools import complete_goal, set_intention
+
+        ctx = ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id)
+        set_tool_context(ctx)
+        try:
+            set_intention("Ship the runtime audit fixes")
+            ctx.memory_modified = False
+            complete_goal("Ship the runtime audit fixes")
+            assert ctx.memory_modified is True
         finally:
             clear_tool_context()
 

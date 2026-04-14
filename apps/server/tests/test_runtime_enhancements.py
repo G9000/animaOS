@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json as _json
 from collections import deque
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
@@ -230,6 +230,150 @@ async def test_memory_modified_flag_false_by_default() -> None:
     result = await executor.execute(tc)
 
     assert result.memory_modified is False
+
+
+@pytest.mark.asyncio
+async def test_note_to_self_signals_memory_modified(monkeypatch) -> None:
+    from anima_server.services.agent import companion, session_memory
+    from anima_server.services.agent.tool_context import (
+        ToolContext,
+        clear_tool_context,
+        set_tool_context,
+    )
+    from anima_server.services.agent.tools import note_to_self
+
+    monkeypatch.setattr(session_memory, "write_session_note", lambda *args, **kwargs: None)
+    monkeypatch.setattr(companion, "get_companion", lambda user_id: None)
+
+    set_tool_context(
+        ToolContext(
+            db=MagicMock(),
+            runtime_db=MagicMock(),
+            user_id=1,
+            thread_id=1,
+        )
+    )
+    try:
+        executor = ToolExecutor([note_to_self])
+        tc = ToolCall(
+            id="c1",
+            name="note_to_self",
+            arguments={"key": "mood", "value": "calm"},
+        )
+        result = await executor.execute(tc)
+
+        assert result.memory_modified is True
+        assert _msg(result.output) == "Noted: mood"
+    finally:
+        clear_tool_context()
+
+
+@pytest.mark.asyncio
+async def test_dismiss_note_signals_memory_modified(monkeypatch) -> None:
+    from anima_server.services.agent import companion, session_memory
+    from anima_server.services.agent.tool_context import (
+        ToolContext,
+        clear_tool_context,
+        set_tool_context,
+    )
+    from anima_server.services.agent.tools import dismiss_note
+
+    monkeypatch.setattr(session_memory, "remove_session_note", lambda *args, **kwargs: True)
+    monkeypatch.setattr(companion, "get_companion", lambda user_id: None)
+
+    set_tool_context(
+        ToolContext(
+            db=MagicMock(),
+            runtime_db=MagicMock(),
+            user_id=1,
+            thread_id=1,
+        )
+    )
+    try:
+        executor = ToolExecutor([dismiss_note])
+        tc = ToolCall(
+            id="c1",
+            name="dismiss_note",
+            arguments={"key": "mood"},
+        )
+        result = await executor.execute(tc)
+
+        assert result.memory_modified is True
+        assert _msg(result.output) == "Dismissed note: mood"
+    finally:
+        clear_tool_context()
+
+
+@pytest.mark.asyncio
+async def test_save_to_memory_signals_memory_modified(monkeypatch) -> None:
+    from anima_server.services.agent import companion, session_memory
+    from anima_server.services.agent.tool_context import (
+        ToolContext,
+        clear_tool_context,
+        set_tool_context,
+    )
+    from anima_server.services.agent.tools import save_to_memory
+
+    monkeypatch.setattr(session_memory, "promote_session_note", lambda *args, **kwargs: True)
+    monkeypatch.setattr(companion, "get_companion", lambda user_id: None)
+
+    set_tool_context(
+        ToolContext(
+            db=MagicMock(),
+            runtime_db=MagicMock(),
+            user_id=1,
+            thread_id=1,
+        )
+    )
+    try:
+        executor = ToolExecutor([save_to_memory])
+        tc = ToolCall(
+            id="c1",
+            name="save_to_memory",
+            arguments={"key": "likes coffee"},
+        )
+        result = await executor.execute(tc)
+
+        assert result.memory_modified is True
+        assert _msg(result.output) == "Saved 'likes coffee' to permanent memory (category: fact)"
+    finally:
+        clear_tool_context()
+
+
+@pytest.mark.asyncio
+async def test_set_intention_signals_memory_modified(monkeypatch) -> None:
+    from anima_server.services.agent import companion, intentions
+    from anima_server.services.agent.tool_context import (
+        ToolContext,
+        clear_tool_context,
+        set_tool_context,
+    )
+    from anima_server.services.agent.tools import set_intention
+
+    monkeypatch.setattr(intentions, "add_intention", lambda *args, **kwargs: None)
+    monkeypatch.setattr(companion, "get_companion", lambda user_id: None)
+
+    set_tool_context(
+        ToolContext(
+            db=MagicMock(),
+            runtime_db=MagicMock(),
+            user_id=1,
+            thread_id=1,
+        )
+    )
+    try:
+        executor = ToolExecutor([set_intention])
+        tc = ToolCall(
+            id="c1",
+            name="set_intention",
+            arguments={"title": "Ship the runtime audit fixes"},
+        )
+        result = await executor.execute(tc)
+
+        assert result.memory_modified is True
+        assert _msg(result.output) == "Tracking intention: Ship the runtime audit fixes"
+    finally:
+        clear_tool_context()
 
 
 # ---------------------------------------------------------------------------

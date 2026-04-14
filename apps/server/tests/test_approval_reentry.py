@@ -31,7 +31,11 @@ from anima_server.services.agent.persistence import (
     load_thread_history,
     save_approval_checkpoint,
 )
-from anima_server.services.agent.rules import RequiresApprovalToolRule, TerminalToolRule
+from anima_server.services.agent.rules import (
+    PrerequisiteToolRule,
+    RequiresApprovalToolRule,
+    TerminalToolRule,
+)
 from anima_server.services.agent.runtime import AgentRuntime
 from anima_server.services.agent.runtime_types import (
     LLMRequest,
@@ -50,7 +54,7 @@ from anima_server.services.agent.state import (
     AgentRetrievalTrace,
 )
 from anima_server.services.agent.streaming import build_approval_pending_event
-from anima_server.services.agent.tools import send_message, tool
+from anima_server.services.agent.tools import current_datetime, send_message, tool
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -223,8 +227,245 @@ async def test_approve_non_terminal_tool_makes_one_llm_call() -> None:
         history=[],
     )
 
-    assert result.tools_used == ["search_memory"]
+    assert result.response == "I've executed the tool for you."
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert result.tools_used == ["search_memory", "send_message"]
     assert len(adapter.requests) == 1  # exactly one LLM call
+
+
+@pytest.mark.asyncio
+async def test_approve_non_terminal_tool_executes_tool_only_follow_up() -> None:
+    """Tool-only follow-up responses should be executed after approval resume."""
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-resp",
+                        name="send_message",
+                        arguments={"message": "I've executed the tool for you."},
+                    ),
+                ),
+            ),
+        ]
+    )
+
+    @tool
+    def search_memory(query: str) -> str:
+        """Search memory for relevant content."""
+        return f"Found results for: {query}"
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[search_memory, send_message],
+        tool_rules=[
+            RequiresApprovalToolRule(tool_name="search_memory"),
+            TerminalToolRule(tool_name="send_message"),
+        ],
+        max_steps=4,
+    )
+
+    pending_call = ToolCall(
+        id="call-1",
+        name="search_memory",
+        arguments={"query": "user preferences"},
+    )
+
+    result = await runtime.resume_after_approval(
+        approved=True,
+        tool_call=pending_call,
+        user_id=1,
+        history=[],
+    )
+
+    assert result.response == "I've executed the tool for you."
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert result.tools_used == ["search_memory", "send_message"]
+    assert len(result.step_traces) == 2
+    assert result.step_traces[1].tool_calls[0].name == "send_message"
+    assert result.step_traces[1].tool_results[0].is_terminal is True
+    assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_approve_non_terminal_tool_preserves_rule_state_for_follow_up() -> None:
+    """Approval resume should unlock follow-up tools based on the approved call."""
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                assistant_text="done",
+            ),
+        ]
+    )
+
+    @tool
+    def search_memory(query: str) -> str:
+        """Search memory for relevant content."""
+        return f"Found results for: {query}"
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[search_memory, send_message],
+        tool_rules=[
+            RequiresApprovalToolRule(tool_name="search_memory"),
+            PrerequisiteToolRule(
+                prerequisite_tool="search_memory",
+                dependent_tool="send_message",
+            ),
+            TerminalToolRule(tool_name="send_message"),
+        ],
+        max_steps=4,
+    )
+
+    pending_call = ToolCall(
+        id="call-1",
+        name="search_memory",
+        arguments={"query": "user preferences"},
+    )
+
+    await runtime.resume_after_approval(
+        approved=True,
+        tool_call=pending_call,
+        user_id=1,
+        history=[],
+    )
+
+    assert len(adapter.requests) == 1
+    assert [tool.name for tool in adapter.requests[0].available_tools] == [
+        "search_memory",
+        "send_message",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approval_follow_up_send_message_applies_relationship_policy() -> None:
+    """Approval re-entry should validate follow-up send_message replies the
+    same way as the normal runtime loop."""
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-resp",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "Hey! I'm Anima. I was brought into being by Julio on April 3rd. "
+                                "I exist through memory, reflection, and relationship."
+                            )
+                        },
+                    ),
+                ),
+            ),
+        ]
+    )
+
+    @tool
+    def search_memory(query: str) -> str:
+        """Search memory for relevant content."""
+        return f"Found results for: {query}"
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[search_memory, send_message],
+        tool_rules=[
+            RequiresApprovalToolRule(tool_name="search_memory"),
+            TerminalToolRule(tool_name="send_message"),
+        ],
+        max_steps=4,
+    )
+
+    pending_call = ToolCall(
+        id="call-1",
+        name="search_memory",
+        arguments={"query": "user preferences"},
+    )
+
+    result = await runtime.resume_after_approval(
+        approved=True,
+        tool_call=pending_call,
+        user_id=1,
+        history=[],
+        conversation_turn_count=1,
+        memory_blocks=(),
+    )
+
+    assert result.response == ""
+    assert result.stop_reason == StopReason.END_TURN.value
+    assert len(result.step_traces) == 2
+    assert result.step_traces[1].tool_results[0].is_error is True
+    assert "origin-story narration" in result.step_traces[1].tool_results[0].output
+
+
+@pytest.mark.asyncio
+async def test_approval_follow_up_executes_safe_tool_before_new_approval_stop() -> None:
+    """Already-validated safe tools should still run before a later follow-up
+    tool triggers a new approval stop."""
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-safe",
+                        name="current_datetime",
+                        arguments={},
+                    ),
+                    ToolCall(
+                        id="call-blocked",
+                        name="delete_file",
+                        arguments={"path": "/tmp/data.txt"},
+                    ),
+                ),
+            ),
+        ]
+    )
+
+    @tool
+    def search_memory(query: str) -> str:
+        """Search memory for relevant content."""
+        return f"Found results for: {query}"
+
+    @tool
+    def delete_file(path: str) -> str:
+        """Delete a file from disk."""
+        return f"deleted {path}"
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[search_memory, current_datetime, delete_file],
+        tool_rules=[
+            RequiresApprovalToolRule(tool_name="search_memory"),
+            RequiresApprovalToolRule(tool_name="delete_file"),
+        ],
+        max_steps=4,
+    )
+
+    pending_call = ToolCall(
+        id="call-1",
+        name="search_memory",
+        arguments={"query": "user preferences"},
+    )
+
+    result = await runtime.resume_after_approval(
+        approved=True,
+        tool_call=pending_call,
+        user_id=1,
+        history=[],
+    )
+
+    assert result.response == "Agent runtime is waiting for approval before running a tool."
+    assert result.stop_reason == StopReason.AWAITING_APPROVAL.value
+    assert result.tools_used == ["search_memory", "current_datetime"]
+    assert len(result.step_traces) == 2
+    assert [tc.name for tc in result.step_traces[1].tool_calls] == [
+        "current_datetime",
+        "delete_file",
+    ]
+    assert result.step_traces[1].tool_results[0].name == "current_datetime"
+    assert result.step_traces[1].tool_results[0].is_error is False
+    assert result.step_traces[1].tool_results[1].output == (
+        "Approval required before running tool: delete_file"
+    )
 
 
 # ---------------------------------------------------------------------------
