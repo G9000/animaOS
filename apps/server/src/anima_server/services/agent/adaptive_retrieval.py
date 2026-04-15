@@ -13,7 +13,7 @@ except (ImportError, ModuleNotFoundError):
     _rust_find_adaptive_cutoff = None
     _rust_normalize_scores = None
 except Exception:
-    logging.getLogger().warning(
+    logger.warning(
         "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
         exc_info=True,
     )
@@ -25,7 +25,7 @@ else:
         _rust_find_adaptive_cutoff = getattr(_anima_core, "find_adaptive_cutoff")
         _rust_normalize_scores = getattr(_anima_core, "normalize_scores")
     except Exception:
-        logging.getLogger().warning(
+        logger.warning(
             "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
             exc_info=True,
         )

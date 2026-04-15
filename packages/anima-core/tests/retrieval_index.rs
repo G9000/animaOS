@@ -1,5 +1,4 @@
 use anima_core::retrieval_index::{IndexFamily, RetrievalManifest};
-use std::path::PathBuf;
 
 use anima_core::retrieval_index::{
     delete_memory_document, delete_memory_documents_for_user, delete_transcript_document,
@@ -8,6 +7,7 @@ use anima_core::retrieval_index::{
     upsert_memory_document, upsert_transcript_document, MemoryIndexDocument,
     TranscriptIndexDocument,
 };
+use tempfile::{Builder, TempDir};
 
 #[test]
 fn empty_manifest_starts_clean() {
@@ -27,13 +27,37 @@ fn manifest_tracks_dirty_flags_per_family() {
     assert!(!manifest.is_family_dirty(IndexFamily::Transcript));
 }
 
-fn temp_root(test_name: &str) -> PathBuf {
-    let base = std::env::temp_dir()
-        .join("anima-core-retrieval-index-tests")
-        .join(test_name);
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    base
+struct TempRoot(TempDir);
+
+impl std::ops::Deref for TempRoot {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.path()
+    }
+}
+
+impl AsRef<std::path::Path> for TempRoot {
+    fn as_ref(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+fn temp_root(test_name: &str) -> TempRoot {
+    TempRoot(
+        Builder::new()
+            .prefix(test_name)
+            .tempdir_in(std::env::temp_dir())
+            .unwrap(),
+    )
+}
+
+#[test]
+fn temp_root_creates_unique_isolated_directories() {
+    let first = temp_root("temp_root_creates_unique_isolated_directories");
+    let second = temp_root("temp_root_creates_unique_isolated_directories");
+
+    assert_ne!(first.as_ref(), second.as_ref());
 }
 
 #[test]

@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::lex::SimpleBm25Index;
 
@@ -120,8 +122,7 @@ pub fn save_manifest(path: &Path, manifest: &RetrievalManifest) -> crate::Result
             ))
         })?;
     }
-    fs::write(path, format!("{serialized}\n"))
-        .map_err(|e| crate::Error::Io(format!("write retrieval manifest {}: {e}", path.display())))
+    atomic_write(path, format!("{serialized}\n").as_bytes(), "retrieval manifest")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -236,9 +237,7 @@ fn save_memory_documents(root: &Path, documents: &[MemoryIndexDocument]) -> crat
             path.display()
         ))
     })?;
-    fs::write(&path, format!("{serialized}\n")).map_err(|e| {
-        crate::Error::Io(format!("write memory index documents {}: {e}", path.display()))
-    })
+    atomic_write(&path, format!("{serialized}\n").as_bytes(), "memory index documents")
 }
 
 fn load_transcript_documents(root: &Path) -> crate::Result<Vec<TranscriptIndexDocument>> {
@@ -278,11 +277,50 @@ fn save_transcript_documents(root: &Path, documents: &[TranscriptIndexDocument])
             path.display()
         ))
     })?;
-    fs::write(&path, format!("{serialized}\n")).map_err(|e| {
-        crate::Error::Io(format!(
-            "write transcript index documents {}: {e}",
-            path.display()
-        ))
+    atomic_write(
+        &path,
+        format!("{serialized}\n").as_bytes(),
+        "transcript index documents",
+    )
+}
+
+fn atomic_write(path: &Path, contents: &[u8], label: &str) -> crate::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            crate::Error::Io(format!("create {label} directory {}: {e}", parent.display()))
+        })?;
+    }
+
+    let temp_path = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+    let mut temp_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|e| {
+            crate::Error::Io(format!("create temporary {label} {}: {e}", temp_path.display()))
+        })?;
+
+    if let Err(err) = temp_file.write_all(contents) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(crate::Error::Io(format!(
+            "write temporary {label} {}: {err}",
+            temp_path.display()
+        )));
+    }
+
+    if let Err(err) = temp_file.sync_all() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(crate::Error::Io(format!(
+            "sync temporary {label} {}: {err}",
+            temp_path.display()
+        )));
+    }
+
+    drop(temp_file);
+
+    fs::rename(&temp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        crate::Error::Io(format!("replace {label} {}: {e}", path.display()))
     })
 }
 

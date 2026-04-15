@@ -120,5 +120,9 @@ def test_adaptive_retrieval_logs_and_falls_back_on_non_import_errors(caplog: pyt
         "adaptive retrieval acceleration" in record.message
         for record in caplog.records
     )
+    assert any(
+        record.name == "anima_server.services.agent.adaptive_retrieval"
+        for record in caplog.records
+    )
 
     _import_fresh("anima_server.services.agent.adaptive_retrieval")
