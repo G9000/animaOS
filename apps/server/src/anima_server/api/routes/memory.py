@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -14,14 +16,18 @@ from anima_server.schemas.memory import (
     MemoryItemUpdateRequest,
     MemoryOverview,
 )
+from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.memory_store import (
     get_current_focus,
     get_memory_items,
+    remove_memory_item_from_retrieval_index,
     supersede_memory_item,
+    sync_memory_item_to_retrieval_index,
 )
 from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+logger = logging.getLogger(__name__)
 
 
 def _item_to_response(item: MemoryItem, user_id: int = 0) -> MemoryItemResponse:
@@ -176,6 +182,7 @@ async def update_memory_item(
     if payload.category is not None:
         existing.category = payload.category
     db.commit()
+    sync_memory_item_to_retrieval_index(existing)
     return _item_to_response(existing, user_id)
 
 
@@ -200,6 +207,7 @@ async def delete_memory_item(
     db.delete(existing)
     db.commit()
     _remove_from_vector_store(user_id, item_id, db)
+    remove_memory_item_from_retrieval_index(existing)
     return {"deleted": True}
 
 
@@ -211,6 +219,69 @@ def _remove_from_vector_store(user_id: int, item_id: int, db: Session) -> None:
         delete_memory(user_id, item_id=item_id, db=db)
     except Exception:
         pass
+
+
+def _search_memory_items_via_rust_index(
+    db: Session,
+    *,
+    user_id: int,
+    query: str,
+    limit: int = 20,
+) -> list[dict[str, object]] | None:
+    try:
+        root = anima_core_retrieval.get_retrieval_root()
+        from anima_server.services.agent.memory_store import ensure_memory_retrieval_index_ready
+
+        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, root=root):
+            return None
+        hits = anima_core_retrieval.memory_index_search(
+            root=root,
+            user_id=user_id,
+            query=query,
+            limit=limit,
+        )
+    except Exception:
+        logger.debug(
+            "Falling back to Python keyword search after Rust memory index failure",
+            exc_info=True,
+        )
+        return None
+
+    if not hits:
+        return []
+
+    record_ids = [int(hit["record_id"]) for hit in hits if "record_id" in hit]
+    if not record_ids:
+        return []
+
+    items = list(
+        db.scalars(
+            select(MemoryItem).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.superseded_by.is_(None),
+                MemoryItem.id.in_(record_ids),
+            )
+        ).all()
+    )
+    by_id = {item.id: item for item in items}
+
+    results: list[dict[str, object]] = []
+    for hit in hits:
+        item = by_id.get(int(hit.get("record_id", 0)))
+        if item is None:
+            continue
+        entry: dict[str, object] = {
+            "type": "item",
+            "id": item.id,
+            "content": df(user_id, item.content, table="memory_items", field="content"),
+            "category": item.category,
+            "importance": item.importance,
+        }
+        score = hit.get("score")
+        if score is not None:
+            entry["similarity"] = round(float(score), 3)
+        results.append(entry)
+    return results
 
 
 @router.get("/{user_id}/search")
@@ -251,22 +322,40 @@ async def search_memory(
 
     # Keyword search — decrypt content in Python since encrypted fields
     # cannot be matched with SQL ILIKE.
-    q_lower = q.lower()
-    all_items = list(
-        db.scalars(
-            select(MemoryItem)
-            .where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.superseded_by.is_(None),
-            )
-            .order_by(MemoryItem.importance.desc(), MemoryItem.created_at.desc())
-        ).all()
+    keyword_results = _search_memory_items_via_rust_index(
+        db,
+        user_id=user_id,
+        query=q,
+        limit=20,
     )
-    items = [
-        item
-        for item in all_items
-        if q_lower in df(user_id, item.content, table="memory_items", field="content").lower()
-    ][:20]
+    if keyword_results is None:
+        q_lower = q.lower()
+        all_items = list(
+            db.scalars(
+                select(MemoryItem)
+                .where(
+                    MemoryItem.user_id == user_id,
+                    MemoryItem.superseded_by.is_(None),
+                )
+                .order_by(MemoryItem.importance.desc(), MemoryItem.created_at.desc())
+            ).all()
+        )
+        items = [
+            item
+            for item in all_items
+            if q_lower in df(user_id, item.content, table="memory_items", field="content").lower()
+        ][:20]
+        keyword_results = [
+            {
+                "type": "item",
+                "id": item.id,
+                "content": df(user_id, item.content, table="memory_items", field="content"),
+                "category": item.category,
+                "importance": item.importance,
+            }
+            for item in items
+        ]
+    q_lower = q.lower()
 
     all_episodes = list(
         db.scalars(
@@ -281,16 +370,7 @@ async def search_memory(
         if q_lower in df(user_id, ep.summary, table="memory_episodes", field="summary").lower()
     ][:10]
 
-    keyword_results: list[dict[str, object]] = [
-        {
-            "type": "item",
-            "id": item.id,
-            "content": df(user_id, item.content, table="memory_items", field="content"),
-            "category": item.category,
-            "importance": item.importance,
-        }
-        for item in items
-    ] + [
+    keyword_results = keyword_results + [
         {
             "type": "episode",
             "id": ep.id,

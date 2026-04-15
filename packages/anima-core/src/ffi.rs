@@ -8,8 +8,9 @@ mod python {
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyList};
     use pyo3::IntoPy;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use std::collections::HashMap;
+    use std::path::Path;
 
     use crate::cards::{
         CardStore, Cardinality, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation,
@@ -1233,6 +1234,196 @@ mod python {
 
     // ── Module Registration ──────────────────────────────────────────
 
+    #[pyfunction]
+    fn retrieval_manifest_status(py: Python<'_>, root: &str) -> PyResult<PyObject> {
+        let root = Path::new(root);
+        let manifest_path = root.join("manifest.json");
+        let exists = manifest_path.exists();
+        let manifest = if exists {
+            crate::retrieval_index::load_manifest(&manifest_path)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+        } else {
+            crate::retrieval_index::RetrievalManifest::default()
+        };
+
+        json_value_to_py(
+            py,
+            json!({
+                "exists": exists,
+                "version": manifest.version,
+                "families": manifest.families,
+            }),
+        )
+    }
+
+    #[pyfunction]
+    fn mark_retrieval_index_dirty(root: &str, family: &str) -> PyResult<()> {
+        let family = match family {
+            "memory" => crate::retrieval_index::IndexFamily::Memory,
+            "transcript" => crate::retrieval_index::IndexFamily::Transcript,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown retrieval index family: {other}"
+                )))
+            }
+        };
+        crate::retrieval_index::mark_family_dirty(Path::new(root), family)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn clear_retrieval_index_dirty(root: &str, family: &str) -> PyResult<()> {
+        let family = match family {
+            "memory" => crate::retrieval_index::IndexFamily::Memory,
+            "transcript" => crate::retrieval_index::IndexFamily::Transcript,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown retrieval index family: {other}"
+                )))
+            }
+        };
+        crate::retrieval_index::clear_family_dirty(Path::new(root), family)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn memory_index_upsert(
+        root: &str,
+        record_id: u64,
+        user_id: u64,
+        text: &str,
+        source_type: &str,
+        category: &str,
+        importance: u8,
+        created_at: i64,
+        embedding: Option<Vec<f32>>,
+    ) -> PyResult<()> {
+        crate::retrieval_index::upsert_memory_document(
+            Path::new(root),
+            crate::retrieval_index::MemoryIndexDocument {
+                record_id,
+                user_id,
+                text: text.to_owned(),
+                embedding,
+                source_type: source_type.to_owned(),
+                category: category.to_owned(),
+                importance,
+                created_at,
+            },
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn memory_index_delete(root: &str, record_id: u64, user_id: u64) -> PyResult<bool> {
+        crate::retrieval_index::delete_memory_document(Path::new(root), user_id, record_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn reset_memory_index(root: &str) -> PyResult<()> {
+        crate::retrieval_index::reset_memory_documents(Path::new(root))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn memory_index_search(
+        py: Python<'_>,
+        root: &str,
+        user_id: u64,
+        query: &str,
+        limit: usize,
+    ) -> PyResult<PyObject> {
+        let hits = crate::retrieval_index::search_memory_documents(
+            Path::new(root),
+            user_id,
+            query,
+            limit,
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let value = serde_json::to_value(hits)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        json_value_to_py(py, value)
+    }
+
+    #[pyfunction]
+    fn memory_index_vector_search(
+        py: Python<'_>,
+        root: &str,
+        user_id: u64,
+        query_embedding: Vec<f32>,
+        limit: usize,
+    ) -> PyResult<PyObject> {
+        let hits = crate::retrieval_index::search_memory_documents_by_vector(
+            Path::new(root),
+            user_id,
+            &query_embedding,
+            limit,
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let value = serde_json::to_value(hits)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        json_value_to_py(py, value)
+    }
+
+    #[pyfunction]
+    fn transcript_index_upsert(
+        root: &str,
+        thread_id: u64,
+        user_id: u64,
+        transcript_ref: &str,
+        summary: &str,
+        keywords: Vec<String>,
+        text: &str,
+        date_start: i64,
+    ) -> PyResult<()> {
+        crate::retrieval_index::upsert_transcript_document(
+            Path::new(root),
+            crate::retrieval_index::TranscriptIndexDocument {
+                thread_id,
+                user_id,
+                transcript_ref: transcript_ref.to_owned(),
+                summary: summary.to_owned(),
+                keywords,
+                text: text.to_owned(),
+                date_start,
+            },
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn transcript_index_delete(root: &str, thread_id: u64, user_id: u64) -> PyResult<bool> {
+        crate::retrieval_index::delete_transcript_document(Path::new(root), user_id, thread_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn reset_transcript_index(root: &str) -> PyResult<()> {
+        crate::retrieval_index::reset_transcript_documents(Path::new(root))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn transcript_index_search(
+        py: Python<'_>,
+        root: &str,
+        user_id: u64,
+        query: &str,
+        limit: usize,
+    ) -> PyResult<PyObject> {
+        let hits = crate::retrieval_index::search_transcript_documents(
+            Path::new(root),
+            user_id,
+            query,
+            limit,
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let value = serde_json::to_value(hits)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        json_value_to_py(py, value)
+    }
+
     #[pymodule]
     #[pyo3(name = "anima_core")]
     pub fn anima_core_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1290,6 +1481,18 @@ mod python {
         // Search
         m.add_function(wrap_pyfunction!(rrf_fuse, m)?)?;
         m.add_function(wrap_pyfunction!(compute_heat, m)?)?;
+        m.add_function(wrap_pyfunction!(retrieval_manifest_status, m)?)?;
+        m.add_function(wrap_pyfunction!(mark_retrieval_index_dirty, m)?)?;
+        m.add_function(wrap_pyfunction!(clear_retrieval_index_dirty, m)?)?;
+        m.add_function(wrap_pyfunction!(memory_index_upsert, m)?)?;
+        m.add_function(wrap_pyfunction!(memory_index_delete, m)?)?;
+        m.add_function(wrap_pyfunction!(reset_memory_index, m)?)?;
+        m.add_function(wrap_pyfunction!(memory_index_search, m)?)?;
+        m.add_function(wrap_pyfunction!(memory_index_vector_search, m)?)?;
+        m.add_function(wrap_pyfunction!(transcript_index_upsert, m)?)?;
+        m.add_function(wrap_pyfunction!(transcript_index_delete, m)?)?;
+        m.add_function(wrap_pyfunction!(reset_transcript_index, m)?)?;
+        m.add_function(wrap_pyfunction!(transcript_index_search, m)?)?;
 
         // Chunker
         m.add_class::<PyChunkOptions>()?;

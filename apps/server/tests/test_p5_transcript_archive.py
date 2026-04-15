@@ -10,6 +10,7 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import runtime as _runtime_models  # noqa: F401
+from anima_server.services import anima_core_retrieval as retrieval_module
 from cryptography.exceptions import InvalidTag
 from sqlalchemy import BigInteger, create_engine, select
 from sqlalchemy.exc import IntegrityError
@@ -498,6 +499,150 @@ class TestTranscriptExport:
         assert exported[0]["thinking"] == "private reasoning"
         assert exported[0]["content"] == ""
 
+    def test_export_updates_rust_transcript_index(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_archive import export_transcript
+
+        upserts: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "transcript_index_upsert",
+            lambda **kwargs: upserts.append(kwargs),
+        )
+
+        result = export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about project deadlines",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "The deadline is April 15",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+            thread_id=42,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            summary="Project deadline discussion",
+        )
+
+        assert len(upserts) == 1
+        assert upserts[0]["thread_id"] == 42
+        assert upserts[0]["transcript_ref"] == result.enc_path.name
+        assert upserts[0]["summary"] == "Project deadline discussion"
+
+    def test_rebuild_transcript_index_restores_searchability(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_archive import (
+            export_transcript,
+            rebuild_transcript_index,
+        )
+
+        index_root = transcripts_dir.parent / "indices"
+        monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: index_root)
+
+        result = export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about project deadlines",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "The deadline is April 15",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+            thread_id=42,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+        )
+        retrieval_module.transcript_index_delete(
+            root=index_root,
+            thread_id=42,
+            user_id=1,
+        )
+
+        rebuilt = rebuild_transcript_index(
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            root=index_root,
+        )
+        hits = retrieval_module.transcript_index_search(
+            root=index_root,
+            user_id=1,
+            query="deadline",
+            limit=5,
+        )
+
+        assert rebuilt == 1
+        assert hits[0]["transcript_ref"] == result.enc_path.name
+
+    def test_rebuild_transcript_index_clears_dirty_manifest(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_archive import (
+            export_transcript,
+            rebuild_transcript_index,
+        )
+
+        index_root = transcripts_dir.parent / "indices"
+        monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: index_root)
+
+        export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about project deadlines",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "The deadline is April 15",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+            thread_id=42,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+        )
+        retrieval_module.mark_retrieval_index_dirty(root=index_root, family="transcript")
+
+        rebuilt = rebuild_transcript_index(
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            root=index_root,
+        )
+
+        assert rebuilt == 1
+        assert retrieval_module.is_retrieval_family_dirty(root=index_root, family="transcript") is False
+
 
 class TestTranscriptSearch:
     def _create_test_transcript(
@@ -586,6 +731,169 @@ class TestTranscriptSearch:
         )
 
         assert snippets == []
+
+    def test_search_uses_rust_index_when_available(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_archive import export_transcript
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        search_calls: list[dict[str, object]] = []
+        result = export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about quantum physics",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Quantum physics is fascinating",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+            thread_id=42,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+        )
+
+        monkeypatch.setattr(
+            retrieval_module,
+            "transcript_index_search",
+            lambda **kwargs: search_calls.append(kwargs)
+            or [
+                {
+                    "thread_id": 42,
+                    "transcript_ref": result.enc_path.name,
+                    "date_start": 1_774_694_400,
+                    "score": 2.5,
+                }
+            ],
+        )
+
+        snippets = search_transcripts(
+            query="quantum physics",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert len(search_calls) == 1
+        assert len(snippets) > 0
+        assert "quantum" in snippets[0].text.lower()
+
+    def test_search_falls_back_when_rust_index_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        self._create_test_transcript(
+            transcripts_dir,
+            test_dek,
+            thread_id=42,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about quantum physics",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Quantum physics is fascinating",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+        )
+
+        search_calls: list[dict[str, object]] = []
+
+        def _failing_search(**kwargs):
+            search_calls.append(kwargs)
+            raise RuntimeError("transcript index unavailable")
+
+        monkeypatch.setattr(retrieval_module, "transcript_index_search", _failing_search)
+
+        snippets = search_transcripts(
+            query="quantum physics",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert len(search_calls) == 1
+        assert len(snippets) > 0
+        assert any("quantum" in snippet.text.lower() for snippet in snippets)
+
+    def test_search_rebuilds_dirty_transcript_index(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        self._create_test_transcript(
+            transcripts_dir,
+            test_dek,
+            thread_id=42,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about quantum physics",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Quantum physics is fascinating",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+        )
+
+        rebuild_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "retrieval_manifest_status",
+            lambda **kwargs: {
+                "exists": True,
+                "version": 1,
+                "families": {
+                    "memory": {"generation": 0, "dirty": False},
+                    "transcript": {"generation": 0, "dirty": True},
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.transcript_archive.rebuild_transcript_index",
+            lambda **kwargs: rebuild_calls.append(kwargs) or 0,
+        )
+
+        snippets = search_transcripts(
+            query="quantum physics",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert len(rebuild_calls) == 1
+        assert len(snippets) > 0
+        assert any("quantum" in snippet.text.lower() for snippet in snippets)
 
     def test_search_respects_budget(
         self,
@@ -1152,6 +1460,52 @@ class TestBackgroundSweeps:
         assert count == 1
         assert not transcript_path.exists()
         assert not meta_path.exists()
+
+    def test_transcript_retention_removes_rust_index_entry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from anima_server.services.agent.eager_consolidation import prune_expired_transcripts
+
+        transcript_path = transcripts_dir / "2025-01-01_thread-1.jsonl.enc"
+        meta_path = transcripts_dir / "2025-01-01_thread-1.meta.json"
+        transcript_path.write_bytes(b"data")
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "thread_id": 1,
+                    "user_id": 7,
+                    "archived_at": "2025-01-01T00:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: transcripts_dir.parent / "indices")
+        monkeypatch.setattr(
+            retrieval_module,
+            "transcript_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+
+        with patch("anima_server.services.agent.eager_consolidation.settings") as mock_settings:
+            mock_settings.transcript_retention_days = 1
+            mock_settings.data_dir = transcripts_dir.parent
+            count = asyncio.run(prune_expired_transcripts())
+
+        assert count == 1
+        assert deletes == [
+            {
+                "root": transcripts_dir.parent / "indices",
+                "thread_id": 1,
+                "user_id": 7,
+            }
+        ]
 
 
 class TestResetThreadLifecycle:

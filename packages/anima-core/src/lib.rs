@@ -26,6 +26,7 @@ pub mod integrity;
 pub mod frame;
 pub mod graph;
 pub mod projection;
+pub mod retrieval_index;
 pub mod search;
 pub mod simd;
 #[cfg(feature = "temporal")]

@@ -7,18 +7,30 @@ from typing import Any, Generic, Literal, Sequence, TypeVar
 logger = logging.getLogger(__name__)
 
 try:
-    from anima_core import find_adaptive_cutoff as _rust_find_adaptive_cutoff
-    from anima_core import normalize_scores as _rust_normalize_scores
+    import anima_core as _anima_core
 except (ImportError, ModuleNotFoundError):
+    _anima_core = None
     _rust_find_adaptive_cutoff = None
     _rust_normalize_scores = None
 except Exception:
-    logger.warning(
+    logging.getLogger().warning(
         "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
         exc_info=True,
     )
+    _anima_core = None
     _rust_find_adaptive_cutoff = None
     _rust_normalize_scores = None
+else:
+    try:
+        _rust_find_adaptive_cutoff = getattr(_anima_core, "find_adaptive_cutoff")
+        _rust_normalize_scores = getattr(_anima_core, "normalize_scores")
+    except Exception:
+        logging.getLogger().warning(
+            "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
+            exc_info=True,
+        )
+        _rust_find_adaptive_cutoff = None
+        _rust_normalize_scores = None
 
 
 AdaptiveStrategy = Literal[
