@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use crate::frame::FrameId;
+use serde::{Deserialize, Serialize};
 
 /// Result from a lexical search.
 #[derive(Debug, Clone)]
@@ -21,6 +22,7 @@ pub struct LexSearchResult {
 ///
 /// Matches animaOS's current `bm25_index.py` behavior:
 /// simple whitespace tokenization + lowercase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleBm25Index {
     /// frame_id → tokenized content
     documents: HashMap<FrameId, Vec<String>>,

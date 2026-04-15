@@ -60,6 +60,14 @@ fn temp_root_creates_unique_isolated_directories() {
     assert_ne!(first.as_ref(), second.as_ref());
 }
 
+fn memory_lexical_index_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("memory").join("lexical_index.json")
+}
+
+fn transcript_lexical_index_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("transcripts").join("lexical_index.json")
+}
+
 #[test]
 fn memory_index_upsert_and_search_round_trip() {
     let root = temp_root("memory_index_upsert_and_search_round_trip");
@@ -231,6 +239,33 @@ fn memory_index_delete_for_user_preserves_other_users_documents() {
 }
 
 #[test]
+fn memory_search_rebuilds_missing_persisted_lexical_index() {
+    let root = temp_root("memory_search_rebuilds_missing_persisted_lexical_index");
+    upsert_memory_document(
+        &root,
+        MemoryIndexDocument {
+            record_id: 101,
+            user_id: 7,
+            text: "user likes pour over coffee".into(),
+            embedding: None,
+            source_type: "memory_item".into(),
+            category: "preference".into(),
+            importance: 4,
+            created_at: 1_710_000_000,
+        },
+    )
+    .unwrap();
+
+    let lexical_index_path = memory_lexical_index_path(&root);
+    let _ = std::fs::remove_file(&lexical_index_path);
+
+    let hits = search_memory_documents(&root, 7, "coffee", 5).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert!(lexical_index_path.exists());
+}
+
+#[test]
 fn transcript_index_upsert_and_search_round_trip() {
     let root = temp_root("transcript_index_upsert_and_search_round_trip");
     let document = TranscriptIndexDocument {
@@ -353,4 +388,30 @@ fn transcript_index_delete_for_user_preserves_other_users_documents() {
     assert!(user_seven_hits.is_empty());
     assert_eq!(user_eight_hits.len(), 1);
     assert_eq!(user_eight_hits[0].thread_id, 77);
+}
+
+#[test]
+fn transcript_search_rebuilds_missing_persisted_lexical_index() {
+    let root = temp_root("transcript_search_rebuilds_missing_persisted_lexical_index");
+    upsert_transcript_document(
+        &root,
+        TranscriptIndexDocument {
+            thread_id: 42,
+            user_id: 7,
+            transcript_ref: "2026-03-28_thread-42.jsonl.enc".into(),
+            summary: "Conversation about deadlines".into(),
+            keywords: vec!["deadline".into()],
+            text: "User asked about deadlines.".into(),
+            date_start: 1_711_621_600,
+        },
+    )
+    .unwrap();
+
+    let lexical_index_path = transcript_lexical_index_path(&root);
+    let _ = std::fs::remove_file(&lexical_index_path);
+
+    let hits = search_transcript_documents(&root, 7, "deadline", 5).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert!(lexical_index_path.exists());
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -8,6 +9,8 @@ use uuid::Uuid;
 use crate::lex::SimpleBm25Index;
 
 const RETRIEVAL_MANIFEST_VERSION: u32 = 1;
+const MEMORY_LEXICAL_INDEX_VERSION: u32 = 1;
+const TRANSCRIPT_LEXICAL_INDEX_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,6 +169,64 @@ pub struct TranscriptSearchHit {
     pub date_start: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemoryLexicalMetadata {
+    record_id: u64,
+    source_type: String,
+    category: String,
+    importance: u8,
+    created_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct MemoryUserLexicalIndex {
+    bm25: SimpleBm25Index,
+    metadata: HashMap<u64, MemoryLexicalMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemoryLexicalIndexStore {
+    version: u32,
+    users: HashMap<u64, MemoryUserLexicalIndex>,
+}
+
+impl Default for MemoryLexicalIndexStore {
+    fn default() -> Self {
+        Self {
+            version: MEMORY_LEXICAL_INDEX_VERSION,
+            users: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TranscriptLexicalMetadata {
+    thread_id: u64,
+    transcript_ref: String,
+    date_start: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TranscriptUserLexicalIndex {
+    bm25: SimpleBm25Index,
+    metadata: HashMap<u64, TranscriptLexicalMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TranscriptLexicalIndexStore {
+    version: u32,
+    users: HashMap<u64, TranscriptUserLexicalIndex>,
+}
+
+impl Default for TranscriptLexicalIndexStore {
+    fn default() -> Self {
+        Self {
+            version: TRANSCRIPT_LEXICAL_INDEX_VERSION,
+            users: HashMap::new(),
+        }
+    }
+}
+
 fn manifest_path(root: &Path) -> std::path::PathBuf {
     root.join("manifest.json")
 }
@@ -174,8 +235,16 @@ fn memory_documents_path(root: &Path) -> std::path::PathBuf {
     root.join("memory").join("documents.json")
 }
 
+fn memory_lexical_index_path(root: &Path) -> std::path::PathBuf {
+    root.join("memory").join("lexical_index.json")
+}
+
 fn transcript_documents_path(root: &Path) -> std::path::PathBuf {
     root.join("transcripts").join("documents.json")
+}
+
+fn transcript_lexical_index_path(root: &Path) -> std::path::PathBuf {
+    root.join("transcripts").join("lexical_index.json")
 }
 
 fn load_or_default_manifest(root: &Path) -> crate::Result<RetrievalManifest> {
@@ -188,6 +257,246 @@ fn load_or_default_manifest(root: &Path) -> crate::Result<RetrievalManifest> {
 
 fn save_root_manifest(root: &Path, manifest: &RetrievalManifest) -> crate::Result<()> {
     save_manifest(&manifest_path(root), manifest)
+}
+
+fn build_memory_user_lexical_index<'a>(
+    documents: impl IntoIterator<Item = &'a MemoryIndexDocument>,
+) -> Option<MemoryUserLexicalIndex> {
+    let mut bm25 = SimpleBm25Index::new();
+    let mut metadata = HashMap::new();
+
+    for document in documents {
+        bm25.add_document(document.record_id, &document.text);
+        metadata.insert(
+            document.record_id,
+            MemoryLexicalMetadata {
+                record_id: document.record_id,
+                source_type: document.source_type.clone(),
+                category: document.category.clone(),
+                importance: document.importance,
+                created_at: document.created_at,
+            },
+        );
+    }
+
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(MemoryUserLexicalIndex { bm25, metadata })
+    }
+}
+
+fn build_memory_lexical_store(documents: &[MemoryIndexDocument]) -> MemoryLexicalIndexStore {
+    let mut grouped: HashMap<u64, Vec<&MemoryIndexDocument>> = HashMap::new();
+    for document in documents {
+        grouped.entry(document.user_id).or_default().push(document);
+    }
+
+    let mut store = MemoryLexicalIndexStore::default();
+    for (user_id, user_documents) in grouped {
+        if let Some(user_index) = build_memory_user_lexical_index(user_documents) {
+            store.users.insert(user_id, user_index);
+        }
+    }
+    store
+}
+
+fn load_memory_lexical_store(root: &Path) -> crate::Result<Option<MemoryLexicalIndexStore>> {
+    let path = memory_lexical_index_path(root);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|e| {
+        crate::Error::Io(format!("read memory lexical index {}: {e}", path.display()))
+    })?;
+    let store: MemoryLexicalIndexStore = serde_json::from_str(&raw).map_err(|e| {
+        crate::Error::Serialization(format!(
+            "deserialize memory lexical index {}: {e}",
+            path.display()
+        ))
+    })?;
+    if store.version != MEMORY_LEXICAL_INDEX_VERSION {
+        return Err(crate::Error::Serialization(format!(
+            "memory lexical index {} has unsupported version {}",
+            path.display(),
+            store.version
+        )));
+    }
+    Ok(Some(store))
+}
+
+fn save_memory_lexical_store(root: &Path, store: &MemoryLexicalIndexStore) -> crate::Result<()> {
+    let path = memory_lexical_index_path(root);
+    let serialized = serde_json::to_string_pretty(store).map_err(|e| {
+        crate::Error::Serialization(format!(
+            "serialize memory lexical index {}: {e}",
+            path.display()
+        ))
+    })?;
+    atomic_write(&path, format!("{serialized}\n").as_bytes(), "memory lexical index")
+}
+
+fn sync_memory_lexical_store(
+    root: &Path,
+    documents: &[MemoryIndexDocument],
+    user_id: u64,
+) -> crate::Result<()> {
+    let mut store = match load_memory_lexical_store(root) {
+        Ok(Some(store)) => store,
+        Ok(None) | Err(_) => build_memory_lexical_store(documents),
+    };
+
+    if let Some(user_index) =
+        build_memory_user_lexical_index(documents.iter().filter(|document| document.user_id == user_id))
+    {
+        store.users.insert(user_id, user_index);
+    } else {
+        store.users.remove(&user_id);
+    }
+
+    save_memory_lexical_store(root, &store)
+}
+
+fn load_or_rebuild_memory_lexical_store(root: &Path) -> crate::Result<MemoryLexicalIndexStore> {
+    match load_memory_lexical_store(root) {
+        Ok(Some(store)) => Ok(store),
+        Ok(None) | Err(_) => {
+            let documents = load_memory_documents(root)?;
+            let store = build_memory_lexical_store(&documents);
+            save_memory_lexical_store(root, &store)?;
+            Ok(store)
+        }
+    }
+}
+
+fn transcript_search_text(document: &TranscriptIndexDocument) -> String {
+    format!(
+        "{}\n{}\n{}",
+        document.summary,
+        document.keywords.join(" "),
+        document.text
+    )
+}
+
+fn build_transcript_user_lexical_index<'a>(
+    documents: impl IntoIterator<Item = &'a TranscriptIndexDocument>,
+) -> Option<TranscriptUserLexicalIndex> {
+    let mut bm25 = SimpleBm25Index::new();
+    let mut metadata = HashMap::new();
+
+    for document in documents {
+        bm25.add_document(document.thread_id, &transcript_search_text(document));
+        metadata.insert(
+            document.thread_id,
+            TranscriptLexicalMetadata {
+                thread_id: document.thread_id,
+                transcript_ref: document.transcript_ref.clone(),
+                date_start: document.date_start,
+            },
+        );
+    }
+
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(TranscriptUserLexicalIndex { bm25, metadata })
+    }
+}
+
+fn build_transcript_lexical_store(
+    documents: &[TranscriptIndexDocument],
+) -> TranscriptLexicalIndexStore {
+    let mut grouped: HashMap<u64, Vec<&TranscriptIndexDocument>> = HashMap::new();
+    for document in documents {
+        grouped.entry(document.user_id).or_default().push(document);
+    }
+
+    let mut store = TranscriptLexicalIndexStore::default();
+    for (user_id, user_documents) in grouped {
+        if let Some(user_index) = build_transcript_user_lexical_index(user_documents) {
+            store.users.insert(user_id, user_index);
+        }
+    }
+    store
+}
+
+fn load_transcript_lexical_store(root: &Path) -> crate::Result<Option<TranscriptLexicalIndexStore>> {
+    let path = transcript_lexical_index_path(root);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|e| {
+        crate::Error::Io(format!("read transcript lexical index {}: {e}", path.display()))
+    })?;
+    let store: TranscriptLexicalIndexStore = serde_json::from_str(&raw).map_err(|e| {
+        crate::Error::Serialization(format!(
+            "deserialize transcript lexical index {}: {e}",
+            path.display()
+        ))
+    })?;
+    if store.version != TRANSCRIPT_LEXICAL_INDEX_VERSION {
+        return Err(crate::Error::Serialization(format!(
+            "transcript lexical index {} has unsupported version {}",
+            path.display(),
+            store.version
+        )));
+    }
+    Ok(Some(store))
+}
+
+fn save_transcript_lexical_store(
+    root: &Path,
+    store: &TranscriptLexicalIndexStore,
+) -> crate::Result<()> {
+    let path = transcript_lexical_index_path(root);
+    let serialized = serde_json::to_string_pretty(store).map_err(|e| {
+        crate::Error::Serialization(format!(
+            "serialize transcript lexical index {}: {e}",
+            path.display()
+        ))
+    })?;
+    atomic_write(
+        &path,
+        format!("{serialized}\n").as_bytes(),
+        "transcript lexical index",
+    )
+}
+
+fn sync_transcript_lexical_store(
+    root: &Path,
+    documents: &[TranscriptIndexDocument],
+    user_id: u64,
+) -> crate::Result<()> {
+    let mut store = match load_transcript_lexical_store(root) {
+        Ok(Some(store)) => store,
+        Ok(None) | Err(_) => build_transcript_lexical_store(documents),
+    };
+
+    if let Some(user_index) = build_transcript_user_lexical_index(
+        documents.iter().filter(|document| document.user_id == user_id),
+    ) {
+        store.users.insert(user_id, user_index);
+    } else {
+        store.users.remove(&user_id);
+    }
+
+    save_transcript_lexical_store(root, &store)
+}
+
+fn load_or_rebuild_transcript_lexical_store(
+    root: &Path,
+) -> crate::Result<TranscriptLexicalIndexStore> {
+    match load_transcript_lexical_store(root) {
+        Ok(Some(store)) => Ok(store),
+        Ok(None) | Err(_) => {
+            let documents = load_transcript_documents(root)?;
+            let store = build_transcript_lexical_store(&documents);
+            save_transcript_lexical_store(root, &store)?;
+            Ok(store)
+        }
+    }
 }
 
 pub fn mark_family_dirty(root: &Path, family: IndexFamily) -> crate::Result<()> {
@@ -327,6 +636,7 @@ fn atomic_write(path: &Path, contents: &[u8], label: &str) -> crate::Result<()> 
 pub fn upsert_memory_document(root: &Path, document: MemoryIndexDocument) -> crate::Result<()> {
     let manifest = load_or_default_manifest(root)?;
     let mut documents = load_memory_documents(root)?;
+    let user_id = document.user_id;
 
     if let Some(existing) = documents
         .iter_mut()
@@ -338,6 +648,7 @@ pub fn upsert_memory_document(root: &Path, document: MemoryIndexDocument) -> cra
     }
 
     save_memory_documents(root, &documents)?;
+    sync_memory_lexical_store(root, &documents, user_id)?;
     save_root_manifest(root, &manifest)
 }
 
@@ -350,6 +661,7 @@ pub fn delete_memory_document(root: &Path, user_id: u64, record_id: u64) -> crat
 
     if deleted {
         save_memory_documents(root, &documents)?;
+        sync_memory_lexical_store(root, &documents, user_id)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -365,6 +677,7 @@ pub fn delete_memory_documents_for_user(root: &Path, user_id: u64) -> crate::Res
 
     if deleted > 0 {
         save_memory_documents(root, &documents)?;
+        sync_memory_lexical_store(root, &documents, user_id)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -374,6 +687,7 @@ pub fn delete_memory_documents_for_user(root: &Path, user_id: u64) -> crate::Res
 pub fn reset_memory_documents(root: &Path) -> crate::Result<()> {
     let mut manifest = load_or_default_manifest(root)?;
     save_memory_documents(root, &[])?;
+    save_memory_lexical_store(root, &MemoryLexicalIndexStore::default())?;
     manifest.mark_dirty(IndexFamily::Memory);
     save_root_manifest(root, &manifest)
 }
@@ -384,18 +698,17 @@ pub fn search_memory_documents(
     query: &str,
     limit: usize,
 ) -> crate::Result<Vec<MemorySearchHit>> {
-    let documents = load_memory_documents(root)?;
-    let filtered: Vec<MemoryIndexDocument> = documents
-        .into_iter()
-        .filter(|document| document.user_id == user_id)
-        .collect();
+    let store = load_or_rebuild_memory_lexical_store(root)?;
+    let Some(user_index) = store.users.get(&user_id) else {
+        return Ok(Vec::new());
+    };
 
-    if filtered.is_empty() || limit == 0 {
+    if user_index.metadata.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
 
     if query.trim().is_empty() {
-        let mut docs = filtered;
+        let mut docs: Vec<&MemoryLexicalMetadata> = user_index.metadata.values().collect();
         docs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         docs.truncate(limit);
         return Ok(docs
@@ -403,30 +716,24 @@ pub fn search_memory_documents(
             .map(|document| MemorySearchHit {
                 record_id: document.record_id,
                 score: 1.0,
-                source_type: document.source_type,
-                category: document.category,
+                source_type: document.source_type.clone(),
+                category: document.category.clone(),
                 importance: document.importance,
                 created_at: document.created_at,
             })
             .collect());
     }
 
-    let mut index = SimpleBm25Index::new();
-    let mut by_id = std::collections::HashMap::new();
-    for document in filtered {
-        index.add_document(document.record_id, &document.text);
-        by_id.insert(document.record_id, document);
-    }
-
-    Ok(index
+    Ok(user_index
+        .bm25
         .search(query, limit)
         .into_iter()
         .filter_map(|result| {
-            by_id.remove(&result.frame_id).map(|document| MemorySearchHit {
+            user_index.metadata.get(&result.frame_id).map(|document| MemorySearchHit {
                 record_id: document.record_id,
                 score: result.score,
-                source_type: document.source_type,
-                category: document.category,
+                source_type: document.source_type.clone(),
+                category: document.category.clone(),
                 importance: document.importance,
                 created_at: document.created_at,
             })
@@ -480,6 +787,7 @@ pub fn upsert_transcript_document(
 ) -> crate::Result<()> {
     let manifest = load_or_default_manifest(root)?;
     let mut documents = load_transcript_documents(root)?;
+    let user_id = document.user_id;
 
     if let Some(existing) = documents.iter_mut().find(|existing| {
         existing.user_id == document.user_id && existing.thread_id == document.thread_id
@@ -490,6 +798,7 @@ pub fn upsert_transcript_document(
     }
 
     save_transcript_documents(root, &documents)?;
+    sync_transcript_lexical_store(root, &documents, user_id)?;
     save_root_manifest(root, &manifest)
 }
 
@@ -502,6 +811,7 @@ pub fn delete_transcript_document(root: &Path, user_id: u64, thread_id: u64) -> 
 
     if deleted {
         save_transcript_documents(root, &documents)?;
+        sync_transcript_lexical_store(root, &documents, user_id)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -517,6 +827,7 @@ pub fn delete_transcript_documents_for_user(root: &Path, user_id: u64) -> crate:
 
     if deleted > 0 {
         save_transcript_documents(root, &documents)?;
+        sync_transcript_lexical_store(root, &documents, user_id)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -526,6 +837,7 @@ pub fn delete_transcript_documents_for_user(root: &Path, user_id: u64) -> crate:
 pub fn reset_transcript_documents(root: &Path) -> crate::Result<()> {
     let mut manifest = load_or_default_manifest(root)?;
     save_transcript_documents(root, &[])?;
+    save_transcript_lexical_store(root, &TranscriptLexicalIndexStore::default())?;
     manifest.mark_dirty(IndexFamily::Transcript);
     save_root_manifest(root, &manifest)
 }
@@ -536,51 +848,41 @@ pub fn search_transcript_documents(
     query: &str,
     limit: usize,
 ) -> crate::Result<Vec<TranscriptSearchHit>> {
-    let documents = load_transcript_documents(root)?;
-    let filtered: Vec<TranscriptIndexDocument> = documents
-        .into_iter()
-        .filter(|document| document.user_id == user_id)
-        .collect();
+    let store = load_or_rebuild_transcript_lexical_store(root)?;
+    let Some(user_index) = store.users.get(&user_id) else {
+        return Ok(Vec::new());
+    };
 
-    if filtered.is_empty() || limit == 0 {
+    if user_index.metadata.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
 
     if query.trim().is_empty() {
-        let mut docs = filtered;
+        let mut docs: Vec<&TranscriptLexicalMetadata> = user_index.metadata.values().collect();
         docs.sort_by(|a, b| b.date_start.cmp(&a.date_start));
         docs.truncate(limit);
         return Ok(docs
             .into_iter()
             .map(|document| TranscriptSearchHit {
                 thread_id: document.thread_id,
-                transcript_ref: document.transcript_ref,
+                transcript_ref: document.transcript_ref.clone(),
                 score: 1.0,
                 date_start: document.date_start,
             })
             .collect());
     }
 
-    let mut index = SimpleBm25Index::new();
-    let mut by_id = std::collections::HashMap::new();
-    for document in filtered {
-        let search_text = format!(
-            "{}\n{}\n{}",
-            document.summary,
-            document.keywords.join(" "),
-            document.text
-        );
-        index.add_document(document.thread_id, &search_text);
-        by_id.insert(document.thread_id, document);
-    }
-
-    Ok(index
+    Ok(user_index
+        .bm25
         .search(query, limit)
         .into_iter()
         .filter_map(|result| {
-            by_id.remove(&result.frame_id).map(|document| TranscriptSearchHit {
+            user_index
+                .metadata
+                .get(&result.frame_id)
+                .map(|document| TranscriptSearchHit {
                 thread_id: document.thread_id,
-                transcript_ref: document.transcript_ref,
+                transcript_ref: document.transcript_ref.clone(),
                 score: result.score,
                 date_start: document.date_start,
             })
