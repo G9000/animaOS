@@ -248,11 +248,11 @@ def _search_memory_items_via_rust_index(
         return None
 
     if not hits:
-        return []
+        return None
 
     record_ids = [int(hit["record_id"]) for hit in hits if "record_id" in hit]
     if not record_ids:
-        return []
+        return None
 
     items = list(
         db.scalars(

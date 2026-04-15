@@ -73,3 +73,64 @@ def test_memory_rebuild_clears_dirty_manifest(tmp_path: Path) -> None:
 
         assert rebuilt == 1
         assert retrieval_module.is_retrieval_family_dirty(root=root, family="memory") is False
+
+
+def test_memory_rebuild_preserves_other_users_index_entries(tmp_path: Path) -> None:
+    with _db_session() as db:
+        user_one = User(username="retrieval_tester_1", display_name="Tester 1", password_hash="x")
+        user_two = User(username="retrieval_tester_2", display_name="Tester 2", password_hash="x")
+        db.add_all([user_one, user_two])
+        db.flush()
+
+        item_one = MemoryItem(
+            user_id=user_one.id,
+            content="user one likes pour over coffee",
+            category="preference",
+            importance=4,
+            source="test",
+            created_at=datetime.now(UTC),
+        )
+        item_two = MemoryItem(
+            user_id=user_two.id,
+            content="user two likes jasmine tea",
+            category="preference",
+            importance=4,
+            source="test",
+            created_at=datetime.now(UTC),
+        )
+        db.add_all([item_one, item_two])
+        db.commit()
+
+        root = tmp_path / "indices"
+        retrieval_module.memory_index_upsert(
+            root=root,
+            record_id=item_one.id,
+            user_id=user_one.id,
+            text=item_one.content,
+            source_type="memory_item",
+            category=item_one.category,
+            importance=item_one.importance,
+            created_at=int(item_one.created_at.timestamp()),
+        )
+        retrieval_module.memory_index_upsert(
+            root=root,
+            record_id=item_two.id,
+            user_id=user_two.id,
+            text=item_two.content,
+            source_type="memory_item",
+            category=item_two.category,
+            importance=item_two.importance,
+            created_at=int(item_two.created_at.timestamp()),
+        )
+        retrieval_module.mark_retrieval_index_dirty(root=root, family="memory")
+
+        rebuilt = rebuild_memory_retrieval_index(db, user_id=user_one.id, root=root)
+        user_two_hits = retrieval_module.memory_index_search(
+            root=root,
+            user_id=user_two.id,
+            query="jasmine",
+            limit=5,
+        )
+
+        assert rebuilt == 1
+        assert [hit["record_id"] for hit in user_two_hits] == [item_two.id]

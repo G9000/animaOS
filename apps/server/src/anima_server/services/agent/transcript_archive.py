@@ -266,13 +266,16 @@ def rebuild_transcript_index(
 ) -> int:
     resolved_root = root or anima_core_retrieval.get_retrieval_root()
     try:
-        anima_core_retrieval.reset_transcript_index(root=resolved_root)
+        anima_core_retrieval.transcript_index_delete_user_documents(
+            root=resolved_root,
+            user_id=user_id,
+        )
     except RuntimeError:
-        logger.debug("Rust transcript index reset is unavailable for user %s", user_id)
+        logger.debug("Rust transcript index user purge is unavailable for user %s", user_id)
         return 0
     except Exception:
         logger.warning(
-            "Failed to reset the Rust transcript index before rebuild for user %s",
+            "Failed to purge Rust transcript index documents for user %s",
             user_id,
             exc_info=True,
         )

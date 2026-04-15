@@ -317,6 +317,40 @@ def test_memory_search_falls_back_when_memory_index_is_dirty(monkeypatch) -> Non
         assert payload["results"][0]["content"] == "Likes pour over coffee"
 
 
+def test_memory_search_falls_back_when_rust_index_returns_no_hits(monkeypatch) -> None:
+    search_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_search",
+        lambda **kwargs: search_calls.append(kwargs) or [],
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = reg["id"]
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Likes pour over coffee", "category": "preference", "importance": 4},
+        )
+        assert resp.status_code == 201
+
+        resp = client.get(
+            f"/api/memory/{user_id}/search",
+            headers=headers,
+            params={"q": "coffee", "mode": "keyword"},
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+
+        assert len(search_calls) == 1
+        assert payload["count"] == 1
+        assert payload["results"][0]["content"] == "Likes pour over coffee"
+
+
 def test_memory_search_rebuilds_missing_rust_index_from_canonical() -> None:
     with managed_test_client("anima-memory-test-") as client:
         reg = _register_user(client)

@@ -318,6 +318,21 @@ pub fn delete_memory_document(root: &Path, user_id: u64, record_id: u64) -> crat
     Ok(deleted)
 }
 
+pub fn delete_memory_documents_for_user(root: &Path, user_id: u64) -> crate::Result<u64> {
+    let manifest = load_or_default_manifest(root)?;
+    let mut documents = load_memory_documents(root)?;
+    let before = documents.len();
+    documents.retain(|document| document.user_id != user_id);
+    let deleted = (before - documents.len()) as u64;
+
+    if deleted > 0 {
+        save_memory_documents(root, &documents)?;
+    }
+
+    save_root_manifest(root, &manifest)?;
+    Ok(deleted)
+}
+
 pub fn reset_memory_documents(root: &Path) -> crate::Result<()> {
     let mut manifest = load_or_default_manifest(root)?;
     save_memory_documents(root, &[])?;
@@ -448,6 +463,21 @@ pub fn delete_transcript_document(root: &Path, user_id: u64, thread_id: u64) -> 
     let deleted = documents.len() != before;
 
     if deleted {
+        save_transcript_documents(root, &documents)?;
+    }
+
+    save_root_manifest(root, &manifest)?;
+    Ok(deleted)
+}
+
+pub fn delete_transcript_documents_for_user(root: &Path, user_id: u64) -> crate::Result<u64> {
+    let manifest = load_or_default_manifest(root)?;
+    let mut documents = load_transcript_documents(root)?;
+    let before = documents.len();
+    documents.retain(|document| document.user_id != user_id);
+    let deleted = (before - documents.len()) as u64;
+
+    if deleted > 0 {
         save_transcript_documents(root, &documents)?;
     }
 

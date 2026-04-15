@@ -1321,6 +1321,12 @@ mod python {
     }
 
     #[pyfunction]
+    fn memory_index_delete_user_documents(root: &str, user_id: u64) -> PyResult<u64> {
+        crate::retrieval_index::delete_memory_documents_for_user(Path::new(root), user_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
     fn reset_memory_index(root: &str) -> PyResult<()> {
         crate::retrieval_index::reset_memory_documents(Path::new(root))
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
@@ -1395,6 +1401,12 @@ mod python {
     #[pyfunction]
     fn transcript_index_delete(root: &str, thread_id: u64, user_id: u64) -> PyResult<bool> {
         crate::retrieval_index::delete_transcript_document(Path::new(root), user_id, thread_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn transcript_index_delete_user_documents(root: &str, user_id: u64) -> PyResult<u64> {
+        crate::retrieval_index::delete_transcript_documents_for_user(Path::new(root), user_id)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
 
@@ -1486,11 +1498,13 @@ mod python {
         m.add_function(wrap_pyfunction!(clear_retrieval_index_dirty, m)?)?;
         m.add_function(wrap_pyfunction!(memory_index_upsert, m)?)?;
         m.add_function(wrap_pyfunction!(memory_index_delete, m)?)?;
+        m.add_function(wrap_pyfunction!(memory_index_delete_user_documents, m)?)?;
         m.add_function(wrap_pyfunction!(reset_memory_index, m)?)?;
         m.add_function(wrap_pyfunction!(memory_index_search, m)?)?;
         m.add_function(wrap_pyfunction!(memory_index_vector_search, m)?)?;
         m.add_function(wrap_pyfunction!(transcript_index_upsert, m)?)?;
         m.add_function(wrap_pyfunction!(transcript_index_delete, m)?)?;
+        m.add_function(wrap_pyfunction!(transcript_index_delete_user_documents, m)?)?;
         m.add_function(wrap_pyfunction!(reset_transcript_index, m)?)?;
         m.add_function(wrap_pyfunction!(transcript_index_search, m)?)?;
 

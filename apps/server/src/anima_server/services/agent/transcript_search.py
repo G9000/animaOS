@@ -205,14 +205,16 @@ def search_transcripts(
 
     candidates = None
     if not _transcript_index_is_dirty(root):
-        candidates = _candidate_transcripts_from_rust_index(
+        rust_candidates = _candidate_transcripts_from_rust_index(
             query=query,
             user_id=user_id,
             transcripts_dir=transcripts_dir,
             max_transcripts=max_transcripts,
         )
-        used_rust_candidates = candidates is not None
-    if candidates is None:
+        if rust_candidates:
+            candidates = rust_candidates
+            used_rust_candidates = True
+    if not candidates:
         candidates = _candidate_transcripts_from_sidecars(
             query=query,
             user_id=user_id,

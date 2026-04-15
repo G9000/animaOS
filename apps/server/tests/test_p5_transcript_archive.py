@@ -643,6 +643,65 @@ class TestTranscriptExport:
         assert rebuilt == 1
         assert retrieval_module.is_retrieval_family_dirty(root=index_root, family="transcript") is False
 
+    def test_rebuild_transcript_index_preserves_other_users_entries(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+    ) -> None:
+        from anima_server.services.agent.transcript_archive import (
+            export_transcript,
+            rebuild_transcript_index,
+        )
+
+        index_root = transcripts_dir.parent / "indices"
+        monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: index_root)
+
+        export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "User one asked about deadlines",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                }
+            ],
+            thread_id=42,
+            user_id=1,
+            dek=None,
+            transcripts_dir=transcripts_dir,
+        )
+        other_result = export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "User two asked about bakery orders",
+                    "ts": "2026-03-28T11:00:00Z",
+                    "seq": 1,
+                }
+            ],
+            thread_id=77,
+            user_id=2,
+            dek=None,
+            transcripts_dir=transcripts_dir,
+        )
+        retrieval_module.mark_retrieval_index_dirty(root=index_root, family="transcript")
+
+        rebuilt = rebuild_transcript_index(
+            user_id=1,
+            dek=None,
+            transcripts_dir=transcripts_dir,
+            root=index_root,
+        )
+        other_hits = retrieval_module.transcript_index_search(
+            root=index_root,
+            user_id=2,
+            query="bakery",
+            limit=5,
+        )
+
+        assert rebuilt == 1
+        assert [hit["transcript_ref"] for hit in other_hits] == [other_result.enc_path.name]
+
 
 class TestTranscriptSearch:
     def _create_test_transcript(
@@ -824,6 +883,53 @@ class TestTranscriptSearch:
             raise RuntimeError("transcript index unavailable")
 
         monkeypatch.setattr(retrieval_module, "transcript_index_search", _failing_search)
+
+        snippets = search_transcripts(
+            query="quantum physics",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert len(search_calls) == 1
+        assert len(snippets) > 0
+        assert any("quantum" in snippet.text.lower() for snippet in snippets)
+
+    def test_search_falls_back_when_rust_index_returns_no_candidates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        self._create_test_transcript(
+            transcripts_dir,
+            test_dek,
+            thread_id=42,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about quantum physics",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Quantum physics is fascinating",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+        )
+
+        search_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "transcript_index_search",
+            lambda **kwargs: search_calls.append(kwargs) or [],
+        )
 
         snippets = search_transcripts(
             query="quantum physics",

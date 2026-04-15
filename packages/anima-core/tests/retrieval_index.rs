@@ -2,7 +2,8 @@ use anima_core::retrieval_index::{IndexFamily, RetrievalManifest};
 use std::path::PathBuf;
 
 use anima_core::retrieval_index::{
-    delete_memory_document, delete_transcript_document, load_manifest, mark_family_dirty,
+    delete_memory_document, delete_memory_documents_for_user, delete_transcript_document,
+    delete_transcript_documents_for_user, load_manifest, mark_family_dirty,
     search_memory_documents, search_memory_documents_by_vector, search_transcript_documents,
     upsert_memory_document, upsert_transcript_document, MemoryIndexDocument,
     TranscriptIndexDocument,
@@ -165,6 +166,47 @@ fn memory_index_delete_preserves_dirty_manifest() {
 }
 
 #[test]
+fn memory_index_delete_for_user_preserves_other_users_documents() {
+    let root = temp_root("memory_index_delete_for_user_preserves_other_users_documents");
+    upsert_memory_document(
+        &root,
+        MemoryIndexDocument {
+            record_id: 101,
+            user_id: 7,
+            text: "user likes pour over coffee".into(),
+            embedding: None,
+            source_type: "memory_item".into(),
+            category: "preference".into(),
+            importance: 4,
+            created_at: 1_710_000_000,
+        },
+    )
+    .unwrap();
+    upsert_memory_document(
+        &root,
+        MemoryIndexDocument {
+            record_id: 202,
+            user_id: 8,
+            text: "user likes jasmine tea".into(),
+            embedding: None,
+            source_type: "memory_item".into(),
+            category: "preference".into(),
+            importance: 4,
+            created_at: 1_710_000_100,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(delete_memory_documents_for_user(&root, 7).unwrap(), 1);
+
+    let user_seven_hits = search_memory_documents(&root, 7, "coffee", 5).unwrap();
+    let user_eight_hits = search_memory_documents(&root, 8, "jasmine", 5).unwrap();
+    assert!(user_seven_hits.is_empty());
+    assert_eq!(user_eight_hits.len(), 1);
+    assert_eq!(user_eight_hits[0].record_id, 202);
+}
+
+#[test]
 fn transcript_index_upsert_and_search_round_trip() {
     let root = temp_root("transcript_index_upsert_and_search_round_trip");
     let document = TranscriptIndexDocument {
@@ -248,4 +290,43 @@ fn transcript_index_delete_preserves_dirty_manifest() {
 
     let manifest = load_manifest(&root.join("manifest.json")).unwrap();
     assert!(manifest.is_family_dirty(IndexFamily::Transcript));
+}
+
+#[test]
+fn transcript_index_delete_for_user_preserves_other_users_documents() {
+    let root = temp_root("transcript_index_delete_for_user_preserves_other_users_documents");
+    upsert_transcript_document(
+        &root,
+        TranscriptIndexDocument {
+            thread_id: 42,
+            user_id: 7,
+            transcript_ref: "2026-03-28_thread-42.jsonl.enc".into(),
+            summary: "Conversation about deadlines".into(),
+            keywords: vec!["deadline".into()],
+            text: "User asked about deadlines.".into(),
+            date_start: 1_711_621_600,
+        },
+    )
+    .unwrap();
+    upsert_transcript_document(
+        &root,
+        TranscriptIndexDocument {
+            thread_id: 77,
+            user_id: 8,
+            transcript_ref: "2026-03-28_thread-77.jsonl.enc".into(),
+            summary: "Conversation about bakery orders".into(),
+            keywords: vec!["bakery".into()],
+            text: "User asked about bakery orders.".into(),
+            date_start: 1_711_622_000,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(delete_transcript_documents_for_user(&root, 7).unwrap(), 1);
+
+    let user_seven_hits = search_transcript_documents(&root, 7, "deadline", 5).unwrap();
+    let user_eight_hits = search_transcript_documents(&root, 8, "bakery", 5).unwrap();
+    assert!(user_seven_hits.is_empty());
+    assert_eq!(user_eight_hits.len(), 1);
+    assert_eq!(user_eight_hits[0].thread_id, 77);
 }

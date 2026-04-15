@@ -107,6 +107,11 @@ def memory_index_delete(*, root: Path | str, record_id: int, user_id: int) -> bo
     return bool(binding(str(root), int(record_id), int(user_id)))
 
 
+def memory_index_delete_user_documents(*, root: Path | str, user_id: int) -> int:
+    binding = _require_binding("memory_index_delete_user_documents")
+    return int(binding(str(root), int(user_id)))
+
+
 def reset_memory_index(*, root: Path | str) -> None:
     binding = _require_binding("reset_memory_index")
     binding(str(root))
@@ -163,6 +168,11 @@ def transcript_index_upsert(
 def transcript_index_delete(*, root: Path | str, thread_id: int, user_id: int) -> bool:
     binding = _require_binding("transcript_index_delete")
     return bool(binding(str(root), int(thread_id), int(user_id)))
+
+
+def transcript_index_delete_user_documents(*, root: Path | str, user_id: int) -> int:
+    binding = _require_binding("transcript_index_delete_user_documents")
+    return int(binding(str(root), int(user_id)))
 
 
 def reset_transcript_index(*, root: Path | str) -> None:

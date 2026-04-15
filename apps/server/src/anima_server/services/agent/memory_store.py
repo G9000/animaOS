@@ -193,13 +193,16 @@ def rebuild_memory_retrieval_index(
 ) -> int:
     resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
     try:
-        anima_core_retrieval.reset_memory_index(root=resolved_root)
+        anima_core_retrieval.memory_index_delete_user_documents(
+            root=resolved_root,
+            user_id=user_id,
+        )
     except RuntimeError:
-        logger.debug("Rust memory index reset is unavailable for user %s", user_id)
+        logger.debug("Rust memory index user purge is unavailable for user %s", user_id)
         return 0
     except Exception:
         logger.warning(
-            "Failed to reset the Rust memory retrieval index for user %s",
+            "Failed to purge Rust memory retrieval documents for user %s",
             user_id,
             exc_info=True,
         )
