@@ -7,6 +7,7 @@ use anima_core::retrieval_index::{
     upsert_memory_document, upsert_transcript_document, MemoryIndexDocument,
     TranscriptIndexDocument,
 };
+use serde_json::{from_str, to_string};
 use tempfile::{Builder, TempDir};
 
 #[test]
@@ -64,8 +65,16 @@ fn memory_lexical_index_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("memory").join("lexical_index.json")
 }
 
+fn memory_documents_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("memory").join("documents.json")
+}
+
 fn transcript_lexical_index_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("transcripts").join("lexical_index.json")
+}
+
+fn transcript_documents_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("transcripts").join("documents.json")
 }
 
 #[test]
@@ -266,6 +275,45 @@ fn memory_search_rebuilds_missing_persisted_lexical_index() {
 }
 
 #[test]
+fn memory_search_rebuilds_stale_persisted_lexical_index() {
+    let root = temp_root("memory_search_rebuilds_stale_persisted_lexical_index");
+    upsert_memory_document(
+        &root,
+        MemoryIndexDocument {
+            record_id: 101,
+            user_id: 7,
+            text: "user likes pour over coffee".into(),
+            embedding: None,
+            source_type: "memory_item".into(),
+            category: "preference".into(),
+            importance: 4,
+            created_at: 1_710_000_000,
+        },
+    )
+    .unwrap();
+
+    let documents_path = memory_documents_path(&root);
+    let mut documents: Vec<MemoryIndexDocument> =
+        from_str(&std::fs::read_to_string(&documents_path).unwrap()).unwrap();
+    documents.push(MemoryIndexDocument {
+        record_id: 202,
+        user_id: 7,
+        text: "user likes jasmine tea".into(),
+        embedding: None,
+        source_type: "memory_item".into(),
+        category: "preference".into(),
+        importance: 3,
+        created_at: 1_710_000_100,
+    });
+    std::fs::write(&documents_path, format!("{}\n", to_string(&documents).unwrap())).unwrap();
+
+    let hits = search_memory_documents(&root, 7, "jasmine", 5).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record_id, 202);
+}
+
+#[test]
 fn transcript_index_upsert_and_search_round_trip() {
     let root = temp_root("transcript_index_upsert_and_search_round_trip");
     let document = TranscriptIndexDocument {
@@ -414,4 +462,41 @@ fn transcript_search_rebuilds_missing_persisted_lexical_index() {
 
     assert_eq!(hits.len(), 1);
     assert!(lexical_index_path.exists());
+}
+
+#[test]
+fn transcript_search_rebuilds_stale_persisted_lexical_index() {
+    let root = temp_root("transcript_search_rebuilds_stale_persisted_lexical_index");
+    upsert_transcript_document(
+        &root,
+        TranscriptIndexDocument {
+            thread_id: 42,
+            user_id: 7,
+            transcript_ref: "2026-03-28_thread-42.jsonl.enc".into(),
+            summary: "Conversation about deadlines".into(),
+            keywords: vec!["deadline".into()],
+            text: "User asked about deadlines.".into(),
+            date_start: 1_711_621_600,
+        },
+    )
+    .unwrap();
+
+    let documents_path = transcript_documents_path(&root);
+    let mut documents: Vec<TranscriptIndexDocument> =
+        from_str(&std::fs::read_to_string(&documents_path).unwrap()).unwrap();
+    documents.push(TranscriptIndexDocument {
+        thread_id: 77,
+        user_id: 7,
+        transcript_ref: "2026-03-28_thread-77.jsonl.enc".into(),
+        summary: "Conversation about bakery orders".into(),
+        keywords: vec!["bakery".into()],
+        text: "User asked about bakery orders.".into(),
+        date_start: 1_711_622_000,
+    });
+    std::fs::write(&documents_path, format!("{}\n", to_string(&documents).unwrap())).unwrap();
+
+    let hits = search_transcript_documents(&root, 7, "bakery", 5).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].thread_id, 77);
 }

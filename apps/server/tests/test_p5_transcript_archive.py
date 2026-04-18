@@ -1001,6 +1001,68 @@ class TestTranscriptSearch:
         assert len(snippets) > 0
         assert any("quantum" in snippet.text.lower() for snippet in snippets)
 
+    def test_search_recovers_from_corrupt_manifest(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        index_root = transcripts_dir.parent / "indices"
+        monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: index_root)
+
+        self._create_test_transcript(
+            transcripts_dir,
+            test_dek,
+            thread_id=42,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about coffee beans",
+                    "ts": "2026-03-28T10:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Coffee beans can be roasted lightly",
+                    "ts": "2026-03-28T10:00:05Z",
+                    "seq": 2,
+                },
+            ],
+        )
+        (index_root / "manifest.json").write_text("{ invalid", encoding="utf-8")
+        self._create_test_transcript(
+            transcripts_dir,
+            test_dek,
+            thread_id=43,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Coffee from the tea shop tastes great",
+                    "ts": "2026-03-28T11:00:00Z",
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "The tea shop coffee has floral notes",
+                    "ts": "2026-03-28T11:00:05Z",
+                    "seq": 2,
+                },
+            ],
+        )
+
+        snippets = search_transcripts(
+            query="coffee",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert len(snippets) > 0
+        assert any(snippet.thread_id == 43 for snippet in snippets)
+
     def test_search_respects_budget(
         self,
         transcripts_dir: Path,

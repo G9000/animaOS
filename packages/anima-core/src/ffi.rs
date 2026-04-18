@@ -1237,19 +1237,14 @@ mod python {
     #[pyfunction]
     fn retrieval_manifest_status(py: Python<'_>, root: &str) -> PyResult<PyObject> {
         let root = Path::new(root);
-        let manifest_path = root.join("manifest.json");
-        let exists = manifest_path.exists();
-        let manifest = if exists {
-            crate::retrieval_index::load_manifest(&manifest_path)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
-        } else {
-            crate::retrieval_index::RetrievalManifest::default()
-        };
+        let (exists, corrupt, manifest) = crate::retrieval_index::manifest_status(root)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         json_value_to_py(
             py,
             json!({
                 "exists": exists,
+                "corrupt": corrupt,
                 "version": manifest.version,
                 "families": manifest.families,
             }),

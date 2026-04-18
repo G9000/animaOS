@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -9,8 +10,8 @@ use uuid::Uuid;
 use crate::lex::SimpleBm25Index;
 
 const RETRIEVAL_MANIFEST_VERSION: u32 = 1;
-const MEMORY_LEXICAL_INDEX_VERSION: u32 = 1;
-const TRANSCRIPT_LEXICAL_INDEX_VERSION: u32 = 1;
+const MEMORY_LEXICAL_INDEX_VERSION: u32 = 2;
+const TRANSCRIPT_LEXICAL_INDEX_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,6 +170,12 @@ pub struct TranscriptSearchHit {
     pub date_start: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SourceDocumentState {
+    modified_ns: Option<u64>,
+    len: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MemoryLexicalMetadata {
     record_id: u64,
@@ -187,6 +194,8 @@ struct MemoryUserLexicalIndex {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MemoryLexicalIndexStore {
     version: u32,
+    #[serde(default)]
+    documents_state: Option<SourceDocumentState>,
     users: HashMap<u64, MemoryUserLexicalIndex>,
 }
 
@@ -194,6 +203,7 @@ impl Default for MemoryLexicalIndexStore {
     fn default() -> Self {
         Self {
             version: MEMORY_LEXICAL_INDEX_VERSION,
+            documents_state: None,
             users: HashMap::new(),
         }
     }
@@ -215,6 +225,8 @@ struct TranscriptUserLexicalIndex {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TranscriptLexicalIndexStore {
     version: u32,
+    #[serde(default)]
+    documents_state: Option<SourceDocumentState>,
     users: HashMap<u64, TranscriptUserLexicalIndex>,
 }
 
@@ -222,6 +234,7 @@ impl Default for TranscriptLexicalIndexStore {
     fn default() -> Self {
         Self {
             version: TRANSCRIPT_LEXICAL_INDEX_VERSION,
+            documents_state: None,
             users: HashMap::new(),
         }
     }
@@ -247,12 +260,28 @@ fn transcript_lexical_index_path(root: &Path) -> std::path::PathBuf {
     root.join("transcripts").join("lexical_index.json")
 }
 
-fn load_or_default_manifest(root: &Path) -> crate::Result<RetrievalManifest> {
+fn dirty_manifest_default() -> RetrievalManifest {
+    let mut manifest = RetrievalManifest::default();
+    manifest.mark_dirty(IndexFamily::Memory);
+    manifest.mark_dirty(IndexFamily::Transcript);
+    manifest
+}
+
+pub fn manifest_status(root: &Path) -> crate::Result<(bool, bool, RetrievalManifest)> {
     let path = manifest_path(root);
     if !path.exists() {
-        return Ok(RetrievalManifest::default());
+        return Ok((false, false, RetrievalManifest::default()));
     }
-    load_manifest(&path)
+
+    match load_manifest(&path) {
+        Ok(manifest) => Ok((true, false, manifest)),
+        Err(_) => Ok((true, true, dirty_manifest_default())),
+    }
+}
+
+fn load_or_default_manifest(root: &Path) -> crate::Result<RetrievalManifest> {
+    let (_exists, _corrupt, manifest) = manifest_status(root)?;
+    Ok(manifest)
 }
 
 fn save_root_manifest(root: &Path, manifest: &RetrievalManifest) -> crate::Result<()> {
@@ -286,19 +315,49 @@ fn build_memory_user_lexical_index<'a>(
     }
 }
 
-fn build_memory_lexical_store(documents: &[MemoryIndexDocument]) -> MemoryLexicalIndexStore {
+fn source_document_state(path: &Path) -> crate::Result<Option<SourceDocumentState>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let metadata = fs::metadata(path)
+        .map_err(|e| crate::Error::Io(format!("stat source document {}: {e}", path.display())))?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos() as u64);
+    Ok(Some(SourceDocumentState {
+        modified_ns,
+        len: metadata.len(),
+    }))
+}
+
+fn current_memory_documents_state(root: &Path) -> crate::Result<Option<SourceDocumentState>> {
+    source_document_state(&memory_documents_path(root))
+}
+
+fn current_transcript_documents_state(root: &Path) -> crate::Result<Option<SourceDocumentState>> {
+    source_document_state(&transcript_documents_path(root))
+}
+
+fn build_memory_lexical_store(
+    root: &Path,
+    documents: &[MemoryIndexDocument],
+) -> crate::Result<MemoryLexicalIndexStore> {
     let mut grouped: HashMap<u64, Vec<&MemoryIndexDocument>> = HashMap::new();
     for document in documents {
         grouped.entry(document.user_id).or_default().push(document);
     }
 
     let mut store = MemoryLexicalIndexStore::default();
+    store.documents_state = current_memory_documents_state(root)?;
     for (user_id, user_documents) in grouped {
         if let Some(user_index) = build_memory_user_lexical_index(user_documents) {
             store.users.insert(user_id, user_index);
         }
     }
-    store
+    Ok(store)
 }
 
 fn load_memory_lexical_store(root: &Path) -> crate::Result<Option<MemoryLexicalIndexStore>> {
@@ -343,8 +402,8 @@ fn sync_memory_lexical_store(
     user_id: u64,
 ) -> crate::Result<()> {
     let mut store = match load_memory_lexical_store(root) {
-        Ok(Some(store)) => store,
-        Ok(None) | Err(_) => build_memory_lexical_store(documents),
+        Ok(Some(store)) if store.documents_state == current_memory_documents_state(root)? => store,
+        Ok(None) | Ok(Some(_)) | Err(_) => build_memory_lexical_store(root, documents)?,
     };
 
     if let Some(user_index) =
@@ -354,16 +413,23 @@ fn sync_memory_lexical_store(
     } else {
         store.users.remove(&user_id);
     }
+    store.documents_state = current_memory_documents_state(root)?;
 
     save_memory_lexical_store(root, &store)
 }
 
 fn load_or_rebuild_memory_lexical_store(root: &Path) -> crate::Result<MemoryLexicalIndexStore> {
     match load_memory_lexical_store(root) {
-        Ok(Some(store)) => Ok(store),
+        Ok(Some(store)) if store.documents_state == current_memory_documents_state(root)? => Ok(store),
         Ok(None) | Err(_) => {
             let documents = load_memory_documents(root)?;
-            let store = build_memory_lexical_store(&documents);
+            let store = build_memory_lexical_store(root, &documents)?;
+            save_memory_lexical_store(root, &store)?;
+            Ok(store)
+        }
+        Ok(Some(_)) => {
+            let documents = load_memory_documents(root)?;
+            let store = build_memory_lexical_store(root, &documents)?;
             save_memory_lexical_store(root, &store)?;
             Ok(store)
         }
@@ -405,20 +471,22 @@ fn build_transcript_user_lexical_index<'a>(
 }
 
 fn build_transcript_lexical_store(
+    root: &Path,
     documents: &[TranscriptIndexDocument],
-) -> TranscriptLexicalIndexStore {
+) -> crate::Result<TranscriptLexicalIndexStore> {
     let mut grouped: HashMap<u64, Vec<&TranscriptIndexDocument>> = HashMap::new();
     for document in documents {
         grouped.entry(document.user_id).or_default().push(document);
     }
 
     let mut store = TranscriptLexicalIndexStore::default();
+    store.documents_state = current_transcript_documents_state(root)?;
     for (user_id, user_documents) in grouped {
         if let Some(user_index) = build_transcript_user_lexical_index(user_documents) {
             store.users.insert(user_id, user_index);
         }
     }
-    store
+    Ok(store)
 }
 
 fn load_transcript_lexical_store(root: &Path) -> crate::Result<Option<TranscriptLexicalIndexStore>> {
@@ -470,8 +538,8 @@ fn sync_transcript_lexical_store(
     user_id: u64,
 ) -> crate::Result<()> {
     let mut store = match load_transcript_lexical_store(root) {
-        Ok(Some(store)) => store,
-        Ok(None) | Err(_) => build_transcript_lexical_store(documents),
+        Ok(Some(store)) if store.documents_state == current_transcript_documents_state(root)? => store,
+        Ok(None) | Ok(Some(_)) | Err(_) => build_transcript_lexical_store(root, documents)?,
     };
 
     if let Some(user_index) = build_transcript_user_lexical_index(
@@ -481,6 +549,7 @@ fn sync_transcript_lexical_store(
     } else {
         store.users.remove(&user_id);
     }
+    store.documents_state = current_transcript_documents_state(root)?;
 
     save_transcript_lexical_store(root, &store)
 }
@@ -489,10 +558,16 @@ fn load_or_rebuild_transcript_lexical_store(
     root: &Path,
 ) -> crate::Result<TranscriptLexicalIndexStore> {
     match load_transcript_lexical_store(root) {
-        Ok(Some(store)) => Ok(store),
+        Ok(Some(store)) if store.documents_state == current_transcript_documents_state(root)? => Ok(store),
         Ok(None) | Err(_) => {
             let documents = load_transcript_documents(root)?;
-            let store = build_transcript_lexical_store(&documents);
+            let store = build_transcript_lexical_store(root, &documents)?;
+            save_transcript_lexical_store(root, &store)?;
+            Ok(store)
+        }
+        Ok(Some(_)) => {
+            let documents = load_transcript_documents(root)?;
+            let store = build_transcript_lexical_store(root, &documents)?;
             save_transcript_lexical_store(root, &store)?;
             Ok(store)
         }
