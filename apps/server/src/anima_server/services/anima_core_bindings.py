@@ -23,7 +23,7 @@ def is_available() -> bool:
 
 
 def has_binding(name: str) -> bool:
-    return _anima_core is not None and hasattr(_anima_core, name)
+    return get_binding(name) is not None
 
 
 def get_binding(name: str) -> Callable[..., Any] | None:
@@ -31,6 +31,8 @@ def get_binding(name: str) -> Callable[..., Any] | None:
         return None
     try:
         binding = getattr(_anima_core, name)
+    except AttributeError:
+        return None
     except Exception:
         logger.warning("Failed to resolve anima_core.%s", name, exc_info=True)
         return None

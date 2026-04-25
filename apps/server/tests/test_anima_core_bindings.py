@@ -35,6 +35,52 @@ def test_adapter_exposes_expected_capabilities() -> None:
     assert capabilities["retrieval_index"] is True
 
 
+def test_missing_binding_is_silent_degraded_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from anima_server.services import anima_core_bindings
+
+    class PartialCore:
+        def __getattr__(self, name: str):
+            raise AttributeError(name)
+
+    monkeypatch.setattr(anima_core_bindings, "_anima_core", PartialCore())
+
+    with caplog.at_level("WARNING"):
+        assert anima_core_bindings.get_binding("newer_binding") is None
+        assert anima_core_bindings.has_binding("newer_binding") is False
+
+    assert [
+        record.message
+        for record in caplog.records
+        if record.name == "anima_server.services.anima_core_bindings"
+    ] == []
+
+
+def test_has_binding_degrades_when_getattr_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from anima_server.services import anima_core_bindings
+
+    class BrokenCore:
+        def __getattr__(self, _name: str):
+            raise ValueError("boom")
+
+    monkeypatch.setattr(anima_core_bindings, "_anima_core", BrokenCore())
+
+    with caplog.at_level("WARNING"):
+        assert anima_core_bindings.has_binding("normalize_text") is False
+        status = anima_core_bindings.get_binding_status()
+
+    assert status["capabilities"]["text_processing"] is False
+    assert any(
+        "Failed to resolve anima_core.normalize_text" in record.message
+        for record in caplog.records
+    )
+
+
 def test_cosine_similarity_uses_adapter_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     from anima_server.services import anima_core_bindings
     from anima_server.services.agent import embeddings
