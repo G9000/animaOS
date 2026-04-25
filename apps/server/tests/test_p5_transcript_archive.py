@@ -848,6 +848,67 @@ class TestTranscriptSearch:
         assert len(snippets) > 0
         assert "quantum" in snippets[0].text.lower()
 
+    def test_search_filters_stale_rust_index_hits_by_days_back(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from anima_server.services.agent.transcript_archive import export_transcript
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        old_timestamp = datetime.now(UTC) - timedelta(days=90)
+        result = export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Tell me about old quantum physics notes",
+                    "ts": old_timestamp.isoformat().replace("+00:00", "Z"),
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Old quantum physics notes should be outside the search window",
+                    "ts": (old_timestamp + timedelta(seconds=5))
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "seq": 2,
+                },
+            ],
+            thread_id=42,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+        )
+
+        search_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "transcript_index_search",
+            lambda **kwargs: search_calls.append(kwargs)
+            or [
+                {
+                    "thread_id": 42,
+                    "transcript_ref": result.enc_path.name,
+                    "date_start": int(old_timestamp.timestamp()),
+                    "score": 2.5,
+                }
+            ],
+        )
+
+        snippets = search_transcripts(
+            query="quantum physics",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert len(search_calls) == 1
+        assert snippets == []
+
     def test_search_falls_back_when_rust_index_fails(
         self,
         monkeypatch: pytest.MonkeyPatch,

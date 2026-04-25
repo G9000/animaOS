@@ -89,9 +89,11 @@ def _candidate_transcripts_from_rust_index(
     query: str,
     user_id: int,
     transcripts_dir: Path,
+    days_back: int,
     max_transcripts: int,
 ) -> list[tuple[Path, int, str]] | None:
     root = anima_core_retrieval.get_retrieval_root()
+    cutoff = datetime.now(UTC) - timedelta(days=days_back)
     try:
         hits = anima_core_retrieval.transcript_index_search(
             root=root,
@@ -120,10 +122,12 @@ def _candidate_transcripts_from_rust_index(
             return None
         thread_id = int(hit.get("thread_id", 0))
         date_start = int(hit.get("date_start", 0) or 0)
-        if date_start > 0:
-            date_str = datetime.fromtimestamp(date_start, tz=UTC).date().isoformat()
-        else:
-            date_str = "unknown"
+        if date_start <= 0:
+            continue
+        date_value = datetime.fromtimestamp(date_start, tz=UTC)
+        if date_value < cutoff:
+            continue
+        date_str = date_value.date().isoformat()
         candidates.append((enc_path, thread_id, date_str))
     return candidates
 
@@ -280,6 +284,7 @@ def search_transcripts(
             query=query,
             user_id=user_id,
             transcripts_dir=transcripts_dir,
+            days_back=days_back,
             max_transcripts=max_transcripts,
         )
         if rust_candidates:
