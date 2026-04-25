@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import importlib
 import json
 from types import SimpleNamespace
 
@@ -268,37 +267,31 @@ def test_export_and_import_anima_capsule_restores_auth_and_files(
         assert (user_dir / "memory" / "entry.md").read_text(encoding="utf-8") == "hello from capsule"
 
 
-def test_load_capsule_bindings_logs_missing_dependency(
+def test_load_capsule_bindings_returns_none_when_adapter_bindings_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_import_module = importlib.import_module
+    monkeypatch.setattr(vault_module.anima_core_bindings, "rust_read_capsule", None)
+    monkeypatch.setattr(vault_module.anima_core_bindings, "rust_write_capsule", None)
 
-    def _fake_import_module(name: str, package: str | None = None):
-        if name == "anima_core":
-            raise ModuleNotFoundError("no module named 'anima_core'")
-        return real_import_module(name, package)
-
-    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
     read_capsule, write_capsule = vault_module._load_capsule_bindings()
 
     assert read_capsule is None
     assert write_capsule is None
 
 
-def test_load_capsule_bindings_raises_unexpected_import_errors(
+def test_load_capsule_bindings_returns_available_adapter_bindings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_import_module = importlib.import_module
+    def _read_capsule(*_args, **_kwargs):
+        return {}
 
-    def _fake_import_module(name: str, package: str | None = None):
-        if name == "anima_core":
-            raise RuntimeError("boom")
-        return real_import_module(name, package)
+    def _write_capsule(*_args, **_kwargs):
+        return b"capsule"
 
-    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+    monkeypatch.setattr(vault_module.anima_core_bindings, "rust_read_capsule", _read_capsule)
+    monkeypatch.setattr(vault_module.anima_core_bindings, "rust_write_capsule", _write_capsule)
 
-    with pytest.raises(RuntimeError, match="boom"):
-        vault_module._load_capsule_bindings()
+    assert vault_module._load_capsule_bindings() == (_read_capsule, _write_capsule)
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from anima_server.services import anima_core_bindings
+
 logger = logging.getLogger(__name__)
 
 # ── Configurable weights ────────────────────────────────────────────
@@ -29,6 +31,7 @@ HEAT_BETA: float = 1.0  # interaction depth weight
 HEAT_GAMMA: float = 1.0  # recency decay weight
 HEAT_DELTA: float = 0.5  # importance weight
 RECENCY_TAU_HOURS: float = 24.0  # time-decay constant
+MAX_IMPORTANCE: int = 5
 
 
 def compute_time_decay(
@@ -68,6 +71,31 @@ def compute_heat(
     ref_now = now or datetime.now(UTC)
     recency = 0.0
     recency_ref = last_accessed_at or created_at
+    if (
+        recency_ref is not None
+        and tau_hours == RECENCY_TAU_HOURS
+        and anima_core_bindings.rust_compute_heat is not None
+        and float(importance).is_integer()
+        and 0 <= int(importance) <= MAX_IMPORTANCE
+    ):
+        if recency_ref.tzinfo is None:
+            recency_ref = recency_ref.replace(tzinfo=UTC)
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=UTC)
+        seconds_since_access = max(0.0, (ref_now - recency_ref).total_seconds())
+        try:
+            return float(
+                anima_core_bindings.rust_compute_heat(
+                    access_count=access_count,
+                    interaction_depth=interaction_depth,
+                    importance=importance,
+                    seconds_since_access=seconds_since_access,
+                    superseded=False,
+                )
+            )
+        except Exception:
+            logger.debug("Rust heat scoring failed; falling back to Python", exc_info=True)
+
     if recency_ref is not None:
         recency = compute_time_decay(recency_ref, ref_now, tau_hours=tau_hours)
     return (

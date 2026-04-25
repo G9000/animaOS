@@ -3,21 +3,9 @@ from __future__ import annotations
 import logging
 import unicodedata
 
-logger = logging.getLogger(__name__)
+from anima_server.services import anima_core_bindings
 
-try:
-    from anima_core import fix_pdf_spacing as _rust_fix_pdf_spacing
-    from anima_core import normalize_text as _rust_normalize_text
-except (ImportError, ModuleNotFoundError):
-    _rust_fix_pdf_spacing = None
-    _rust_normalize_text = None
-except Exception:
-    logger.warning(
-        "anima_core text-processing helpers are unavailable due to an unexpected import failure",
-        exc_info=True,
-    )
-    _rust_fix_pdf_spacing = None
-    _rust_normalize_text = None
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_TEXT_LIMIT = 16_384
@@ -83,9 +71,7 @@ def _should_start_merge(word: str, next_word: str) -> bool:
         return True
     if _is_valid_single_char(word) and next_len <= 3 and not next_common:
         return True
-    if word_common and word_len <= 3 and (next_fragment or next_suffix):
-        return True
-    return False
+    return word_common and word_len <= 3 and (next_fragment or next_suffix)
 
 
 def _should_continue_merge(current: str, next_word: str, had_short_fragment: bool) -> bool:
@@ -205,8 +191,8 @@ def _python_normalize_text(text: str, limit: int) -> tuple[str, bool] | None:
 
 
 def _normalize_text(text: str, *, limit: int) -> str:
-    if _rust_normalize_text is not None:
-        result = _rust_normalize_text(text, limit)
+    if anima_core_bindings.rust_normalize_text is not None:
+        result = anima_core_bindings.rust_normalize_text(text, limit)
         if result is None:
             return ""
         normalized, _truncated = result
@@ -230,8 +216,8 @@ def prepare_memory_text(
 
     prepared = text
     if apply_pdf_spacing:
-        if _rust_fix_pdf_spacing is not None:
-            prepared = _rust_fix_pdf_spacing(prepared)
+        if anima_core_bindings.rust_fix_pdf_spacing is not None:
+            prepared = anima_core_bindings.rust_fix_pdf_spacing(prepared)
         else:
             prepared = _python_fix_pdf_spacing(prepared)
 
