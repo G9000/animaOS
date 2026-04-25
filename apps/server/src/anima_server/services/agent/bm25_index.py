@@ -14,6 +14,8 @@ from rank_bm25 import BM25Okapi
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from anima_server.services import anima_core_retrieval
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,5 +152,53 @@ def bm25_search(
     db: Session,
 ) -> list[tuple[int, float]]:
     """Search using BM25. Returns (item_id, score) pairs ranked descending."""
+    rust_hits = _search_memory_index_via_rust(
+        user_id=user_id,
+        query=query,
+        limit=limit,
+        db=db,
+    )
+    if rust_hits:
+        return rust_hits
+
     index = get_or_build_index(user_id, db=db)
     return index.search(query, limit=limit)
+
+
+def _search_memory_index_via_rust(
+    *,
+    user_id: int,
+    query: str,
+    limit: int,
+    db: Session,
+) -> list[tuple[int, float]] | None:
+    try:
+        root = anima_core_retrieval.get_retrieval_root()
+        from anima_server.services.agent.memory_store import ensure_memory_retrieval_index_ready
+
+        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, root=root):
+            return None
+        hits = anima_core_retrieval.memory_index_search(
+            root=root,
+            user_id=user_id,
+            query=query,
+            limit=limit,
+        )
+    except RuntimeError:
+        logger.debug("Rust memory index search is unavailable for BM25 fallback")
+        return None
+    except Exception:
+        logger.debug("Rust memory index search failed in bm25_search", exc_info=True)
+        return None
+
+    ranked: list[tuple[int, float]] = []
+    for hit in hits:
+        record_id = hit.get("record_id")
+        score = hit.get("score", 0.0)
+        if record_id is None:
+            continue
+        try:
+            ranked.append((int(record_id), float(score)))
+        except (TypeError, ValueError):
+            continue
+    return ranked

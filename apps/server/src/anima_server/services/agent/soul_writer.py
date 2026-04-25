@@ -60,7 +60,9 @@ async def _embed_and_index_item(
     try:
         from anima_server.models import MemoryItem
         from anima_server.services.agent.bm25_index import invalidate_index
+        from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
         from anima_server.services.agent.embeddings import generate_embedding
+        from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
         from anima_server.services.agent.vector_store import upsert_memory
 
         embedding = await generate_embedding(content)
@@ -70,7 +72,9 @@ async def _embed_and_index_item(
         item = soul_db.get(MemoryItem, item_id)
         if item is not None:
             item.embedding_json = embedding
+            item.embedding_checksum = compute_embedding_checksum(embedding)
             soul_db.flush()
+            sync_memory_item_to_retrieval_index(item)
 
             upsert_memory(
                 user_id,

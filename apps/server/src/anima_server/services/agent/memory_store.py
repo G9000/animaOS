@@ -4,11 +4,13 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryItem, MemoryItemTag
+from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.embedding_integrity import check_embedding
 from anima_server.services.data_crypto import df, ef
 
@@ -94,6 +96,163 @@ class MemoryWriteResult:
     reason: str = ""
 
 
+def sync_memory_item_to_retrieval_index(
+    item: MemoryItem,
+    *,
+    root: Path | None = None,
+    mark_dirty_on_failure: bool = True,
+) -> bool:
+    created_at = item.created_at or datetime.now(UTC)
+    resolved_root = root or anima_core_retrieval.get_retrieval_root()
+    try:
+        anima_core_retrieval.memory_index_upsert(
+            root=resolved_root,
+            record_id=item.id,
+            user_id=item.user_id,
+            text=df(item.user_id, item.content, table="memory_items", field="content"),
+            embedding=_memory_embedding_for_retrieval_index(item),
+            source_type="memory_item",
+            category=item.category,
+            importance=item.importance,
+            created_at=int(created_at.timestamp()),
+        )
+        return True
+    except RuntimeError:
+        logger.debug("Rust memory index upsert is unavailable for item %s", item.id)
+        return False
+    except Exception:
+        logger.warning(
+            "Failed to upsert memory item %s into the Rust retrieval index",
+            item.id,
+            exc_info=True,
+        )
+        if mark_dirty_on_failure:
+            _mark_memory_index_dirty(root=resolved_root)
+        return False
+
+
+def remove_memory_item_from_retrieval_index(item: MemoryItem) -> None:
+    root = anima_core_retrieval.get_retrieval_root()
+    try:
+        anima_core_retrieval.memory_index_delete(
+            root=root,
+            record_id=item.id,
+            user_id=item.user_id,
+        )
+    except RuntimeError:
+        logger.debug("Rust memory index delete is unavailable for item %s", item.id)
+    except Exception:
+        logger.warning(
+            "Failed to delete memory item %s from the Rust retrieval index",
+            item.id,
+            exc_info=True,
+        )
+        _mark_memory_index_dirty(root=root)
+
+
+def _mark_memory_index_dirty(*, root) -> None:
+    try:
+        anima_core_retrieval.mark_retrieval_index_dirty(root=root, family="memory")
+    except Exception:
+        logger.debug("Failed to mark memory retrieval index dirty", exc_info=True)
+
+
+def _clear_memory_index_dirty(*, root) -> None:
+    try:
+        anima_core_retrieval.clear_retrieval_index_dirty(root=root, family="memory")
+    except Exception:
+        logger.debug("Failed to clear memory retrieval index dirty state", exc_info=True)
+
+
+def _memory_embedding_for_retrieval_index(item: MemoryItem) -> list[float] | None:
+    checked = check_embedding(item.embedding_json, item.embedding_checksum)
+    if checked.status in {"valid", "missing_checksum"}:
+        return checked.embedding
+    return None
+
+
+def memory_retrieval_index_needs_rebuild(*, root: Path | str) -> bool:
+    resolved_root = Path(root)
+    if not (resolved_root / "memory" / "documents.json").exists():
+        return True
+
+    try:
+        return anima_core_retrieval.is_retrieval_family_dirty(root=resolved_root, family="memory")
+    except RuntimeError:
+        return False
+    except Exception:
+        logger.debug("Failed to inspect memory retrieval index state", exc_info=True)
+        return False
+
+
+def rebuild_memory_retrieval_index(
+    db: Session,
+    *,
+    user_id: int,
+    root: Path | str | None = None,
+) -> int:
+    resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
+    try:
+        anima_core_retrieval.memory_index_delete_user_documents(
+            root=resolved_root,
+            user_id=user_id,
+        )
+    except RuntimeError:
+        logger.debug("Rust memory index user purge is unavailable for user %s", user_id)
+        return 0
+    except Exception:
+        logger.warning(
+            "Failed to purge Rust memory retrieval documents for user %s",
+            user_id,
+            exc_info=True,
+        )
+        _mark_memory_index_dirty(root=resolved_root)
+        return 0
+
+    items = list(
+        db.scalars(
+            select(MemoryItem)
+            .where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.superseded_by.is_(None),
+            )
+            .order_by(MemoryItem.created_at.desc())
+        ).all()
+    )
+
+    rebuilt = 0
+    had_errors = False
+    for item in items:
+        if sync_memory_item_to_retrieval_index(
+            item,
+            root=resolved_root,
+            mark_dirty_on_failure=False,
+        ):
+            rebuilt += 1
+        else:
+            had_errors = True
+
+    if had_errors:
+        _mark_memory_index_dirty(root=resolved_root)
+    else:
+        _clear_memory_index_dirty(root=resolved_root)
+    return rebuilt
+
+
+def ensure_memory_retrieval_index_ready(
+    db: Session,
+    *,
+    user_id: int,
+    root: Path | str | None = None,
+) -> bool:
+    resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
+    if not memory_retrieval_index_needs_rebuild(root=resolved_root):
+        return True
+
+    rebuild_memory_retrieval_index(db, user_id=user_id, root=resolved_root)
+    return not memory_retrieval_index_needs_rebuild(root=resolved_root)
+
+
 def add_memory_item(
     db: Session,
     *,
@@ -133,6 +292,7 @@ def add_memory_item(
     if tags:
         _sync_tags(db, item=memory_item, user_id=user_id, tags=tags)
 
+    sync_memory_item_to_retrieval_index(memory_item)
     return memory_item
 
 
@@ -267,6 +427,7 @@ def store_memory_item(
     if tags:
         _sync_tags(db, item=item, user_id=user_id, tags=tags)
 
+    sync_memory_item_to_retrieval_index(item)
     return MemoryWriteResult(
         action="added",
         item=item,
@@ -479,6 +640,9 @@ def supersede_memory_item(
     except Exception:
         pass
 
+    remove_memory_item_from_retrieval_index(old_item)
+    sync_memory_item_to_retrieval_index(new_item)
+
     return new_item
 
 
@@ -537,6 +701,7 @@ def set_current_focus(
     )
     db.add(item)
     db.flush()
+    sync_memory_item_to_retrieval_index(item)
     return item
 
 

@@ -11,6 +11,7 @@ OpenAI-compatible providers use /v1/embeddings. Ollama uses its native
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryItem
+from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.adaptive_retrieval import (
     AdaptiveFilterResult,
     AdaptiveRetrievalConfig,
@@ -454,6 +456,86 @@ def _validated_cached_embedding(item: Any) -> tuple[list[float] | None, bool]:
     return checked.embedding, False
 
 
+def _semantic_ranked_ids(
+    db: Session,
+    *,
+    user_id: int,
+    query_embedding: list[float],
+    limit: int,
+    similarity_threshold: float,
+) -> list[tuple[int, float]]:
+    rust_ranked = _semantic_ranked_ids_via_rust(
+        db=db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        limit=limit,
+    )
+    if rust_ranked:
+        return [
+            (item_id, similarity)
+            for item_id, similarity in rust_ranked
+            if similarity >= similarity_threshold
+        ]
+
+    from anima_server.services.agent.vector_store import search_similar
+
+    try:
+        vs_results = search_similar(
+            user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+            db=db,
+        )
+    except Exception:
+        logger.debug("Semantic search failed in hybrid_search")
+        return []
+
+    return [
+        (int(result["id"]), float(result["similarity"]))
+        for result in vs_results
+        if float(result["similarity"]) >= similarity_threshold
+    ]
+
+
+def _semantic_ranked_ids_via_rust(
+    *,
+    db: Session,
+    user_id: int,
+    query_embedding: list[float],
+    limit: int,
+) -> list[tuple[int, float]] | None:
+    try:
+        root = anima_core_retrieval.get_retrieval_root()
+        from anima_server.services.agent.memory_store import ensure_memory_retrieval_index_ready
+
+        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, root=root):
+            return None
+        hits = anima_core_retrieval.memory_index_vector_search(
+            root=root,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+        )
+    except RuntimeError:
+        logger.debug("Rust semantic memory index is unavailable")
+        return None
+    except Exception:
+        logger.debug("Rust semantic memory index search failed", exc_info=True)
+        return None
+
+    ranked: list[tuple[int, float]] = []
+    for hit in hits:
+        record_id = hit.get("record_id")
+        score = hit.get("score")
+        if record_id is None or score is None:
+            continue
+        try:
+            ranked.append((int(record_id), float(score)))
+        except (TypeError, ValueError):
+            continue
+    return ranked
+
+
 async def semantic_search(
     db: Session,
     *,
@@ -471,19 +553,17 @@ async def semantic_search(
     if query_embedding is None:
         return []
 
-    from anima_server.services.agent.vector_store import search_similar
-
-    vs_results = search_similar(
-        user_id,
+    ranked = _semantic_ranked_ids(
+        db,
+        user_id=user_id,
         query_embedding=query_embedding,
         limit=limit,
-        db=db,
+        similarity_threshold=similarity_threshold,
     )
-    if not vs_results:
+    if not ranked:
         return []
 
-    item_ids = [r["id"]
-                for r in vs_results if r["similarity"] >= similarity_threshold]
+    item_ids = [item_id for item_id, _similarity in ranked]
     if not item_ids:
         return []
 
@@ -497,12 +577,12 @@ async def semantic_search(
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
     results: list[tuple[MemoryItem, float]] = []
-    for r in vs_results:
-        if r["similarity"] >= similarity_threshold and r["id"] in items_by_id:
-            item = items_by_id[r["id"]]
+    for item_id, similarity in ranked:
+        if item_id in items_by_id:
+            item = items_by_id[item_id]
             if item.heat not in (None, 0.0) and item.heat < HEAT_VISIBILITY_FLOOR:
                 continue
-            results.append((item, r["similarity"]))
+            results.append((item, similarity))
     return results[:limit]
 
 
@@ -526,6 +606,11 @@ async def embed_memory_item(
     item.embedding_json = embedding
     item.embedding_checksum = compute_embedding_checksum(embedding)
     db.flush()
+
+    with contextlib.suppress(Exception):
+        from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
+
+        sync_memory_item_to_retrieval_index(item)
 
     try:
         from anima_server.services.agent.vector_store import upsert_memory
@@ -579,6 +664,10 @@ async def backfill_embeddings(
         prepared_text = prepare_embedding_text(plaintext)
         item.embedding_json = embedding
         item.embedding_checksum = compute_embedding_checksum(embedding)
+        with contextlib.suppress(Exception):
+            from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
+
+            sync_memory_item_to_retrieval_index(item)
         try:
             from anima_server.services.agent.vector_store import upsert_memory
 
@@ -626,6 +715,10 @@ def sync_to_vector_store(
         if embedding is None:
             continue
         plaintext = df(user_id, item.content, table="memory_items", field="content")
+        with contextlib.suppress(Exception):
+            from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
+
+            sync_memory_item_to_retrieval_index(item)
         index_data.append(
             (
                 item.id,
@@ -698,6 +791,10 @@ def sync_embeddings_to_runtime(
 
             plaintext = df(user_id, item.content,
                            table="memory_items", field="content")
+            with contextlib.suppress(Exception):
+                from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
+
+                sync_memory_item_to_retrieval_index(item)
             store.upsert(
                 user_id,
                 item_id=item.id,
@@ -901,20 +998,13 @@ async def hybrid_search(
     # --- Semantic leg ---
     semantic_ranked: list[tuple[int, float]] = []
     if query_embedding is not None:
-        try:
-            sem_results = search_similar(
-                user_id,
-                query_embedding=query_embedding,
-                limit=limit,
-                db=db,
-            )
-            semantic_ranked = [
-                (r["id"], r["similarity"])
-                for r in sem_results
-                if r["similarity"] >= similarity_threshold
-            ]
-        except Exception:
-            logger.debug("Semantic search failed in hybrid_search")
+        semantic_ranked = _semantic_ranked_ids(
+            db,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+            similarity_threshold=similarity_threshold,
+        )
 
     # --- Keyword leg (BM25) ---
     keyword_ranked: list[tuple[int, float]] = []

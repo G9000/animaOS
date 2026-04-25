@@ -21,6 +21,7 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
 from anima_server.services.agent import adaptive_retrieval as adaptive_retrieval_module
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import (
     AdaptiveRetrievalConfig,
     HybridSearchResult,
@@ -945,6 +946,229 @@ class TestHybridSearchIntegration:
                 # Should still find via keyword
                 found_ids = {item.id for item, _ in result.items}
                 assert item.id in found_ids
+
+    @pytest.mark.asyncio
+    async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(self):
+        """The live hybrid path should use the Rust memory index when it is clean."""
+        from anima_server.services import anima_core_retrieval as retrieval_module
+        from anima_server.services.agent import bm25_index as bm25_module
+        from anima_server.services.agent.embeddings import hybrid_search
+
+        with _db_session() as db:
+            user = _make_user(db)
+            item = _make_item(db, user.id, "user likes pour over coffee")
+            db.commit()
+
+            async def mock_embed_fail(text: str) -> list[float] | None:
+                return None
+
+            with (
+                patch(
+                    "anima_server.services.agent.embeddings.generate_embedding",
+                    side_effect=mock_embed_fail,
+                ),
+                patch.object(retrieval_module, "get_retrieval_root", return_value=Path("indices")),
+                patch.object(retrieval_module, "is_retrieval_family_dirty", return_value=False),
+                patch.object(
+                    retrieval_module,
+                    "memory_index_search",
+                    return_value=[{"record_id": item.id, "score": 2.5}],
+                ) as mock_search,
+                patch.object(
+                    bm25_module,
+                    "get_or_build_index",
+                    side_effect=AssertionError("fallback bm25 should not run"),
+                ),
+            ):
+                result = await hybrid_search(
+                    db,
+                    user_id=user.id,
+                    query="coffee",
+                    limit=10,
+                    similarity_threshold=0.0,
+                )
+
+                found_ids = {hit.id for hit, _score in result.items}
+                assert item.id in found_ids
+                mock_search.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_uses_rust_memory_index_when_available(self):
+        """The semantic leg should prefer Rust-backed vector search when available."""
+        from anima_server.services import anima_core_retrieval as retrieval_module
+        from anima_server.services.agent.embeddings import semantic_search
+
+        with _db_session() as db:
+            user = _make_user(db)
+            preferred = _make_item(db, user.id, "user likes pour over coffee")
+            distractor = _make_item(db, user.id, "user works as a designer")
+            db.commit()
+
+            async def mock_embed(text: str) -> list[float] | None:
+                return [0.9, 0.1, 0.0]
+
+            with (
+                patch(
+                    "anima_server.services.agent.embeddings.generate_embedding",
+                    side_effect=mock_embed,
+                ),
+                patch.object(retrieval_module, "get_retrieval_root", return_value=Path("indices")),
+                patch.object(retrieval_module, "is_retrieval_family_dirty", return_value=False),
+                patch.object(
+                    retrieval_module,
+                    "memory_index_vector_search",
+                    return_value=[
+                        {"record_id": preferred.id, "score": 0.98},
+                        {"record_id": distractor.id, "score": 0.42},
+                    ],
+                ) as mock_search,
+                patch(
+                    "anima_server.services.agent.vector_store.search_similar",
+                    side_effect=AssertionError("vector store fallback should not run"),
+                ),
+            ):
+                results = await semantic_search(
+                    db,
+                    user_id=user.id,
+                    query="coffee",
+                    limit=5,
+                    similarity_threshold=0.0,
+                )
+
+                assert [item.id for item, _score in results] == [preferred.id, distractor.id]
+                mock_search.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_falls_back_when_rust_vector_search_has_no_hits(self):
+        """Rust semantic search should not suppress the existing vector-store fallback."""
+        from anima_server.services import anima_core_retrieval as retrieval_module
+        from anima_server.services.agent.embeddings import semantic_search
+
+        with _db_session() as db:
+            user = _make_user(db)
+            item = _make_item(db, user.id, "cooking pasta recipe")
+            db.commit()
+
+            async def mock_embed(text: str) -> list[float] | None:
+                return [0.9, 0.1, 0.0]
+
+            with (
+                patch(
+                    "anima_server.services.agent.embeddings.generate_embedding",
+                    side_effect=mock_embed,
+                ),
+                patch.object(retrieval_module, "get_retrieval_root", return_value=Path("indices")),
+                patch.object(retrieval_module, "is_retrieval_family_dirty", return_value=False),
+                patch.object(retrieval_module, "memory_index_vector_search", return_value=[]),
+                patch(
+                    "anima_server.services.agent.vector_store.search_similar",
+                    return_value=[
+                        {
+                            "id": item.id,
+                            "similarity": 0.91,
+                        }
+                    ],
+                ) as mock_vector_search,
+            ):
+                results = await semantic_search(
+                    db,
+                    user_id=user.id,
+                    query="pasta",
+                    limit=5,
+                    similarity_threshold=0.0,
+                )
+
+                assert [hit.id for hit, _score in results] == [item.id]
+                mock_vector_search.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_hybrid_search_rebuilds_missing_rust_memory_index_for_keyword_leg(
+        self, tmp_path: Path
+    ):
+        """A missing Rust memory index should be rebuilt from canonical memory rows."""
+        from anima_server.services import anima_core_retrieval as retrieval_module
+        from anima_server.services.agent import bm25_index as bm25_module
+        from anima_server.services.agent.embeddings import hybrid_search
+
+        with _db_session() as db:
+            user = _make_user(db)
+            item = _make_item(db, user.id, "user likes pour over coffee")
+            db.commit()
+
+            root = tmp_path / "indices"
+
+            async def mock_embed_fail(text: str) -> list[float] | None:
+                return None
+
+            with (
+                patch(
+                    "anima_server.services.agent.embeddings.generate_embedding",
+                    side_effect=mock_embed_fail,
+                ),
+                patch.object(retrieval_module, "get_retrieval_root", return_value=root),
+                patch.object(
+                    bm25_module,
+                    "get_or_build_index",
+                    side_effect=AssertionError("python bm25 fallback should not run"),
+                ),
+            ):
+                result = await hybrid_search(
+                    db,
+                    user_id=user.id,
+                    query="coffee",
+                    limit=10,
+                    similarity_threshold=0.0,
+                )
+
+                found_ids = {hit.id for hit, _score in result.items}
+                assert item.id in found_ids
+                assert (root / "memory" / "documents.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_rebuilds_missing_rust_memory_index_from_canonical(
+        self, tmp_path: Path
+    ):
+        """A missing Rust semantic index should rebuild from canonical cached embeddings."""
+        from anima_server.services import anima_core_retrieval as retrieval_module
+        from anima_server.services.agent.embeddings import semantic_search
+
+        with _db_session() as db:
+            user = _make_user(db)
+            item = _make_item(
+                db,
+                user.id,
+                "user likes pour over coffee",
+                embedding=[1.0, 0.0, 0.0],
+            )
+            item.embedding_checksum = compute_embedding_checksum([1.0, 0.0, 0.0])
+            db.commit()
+
+            root = tmp_path / "indices"
+
+            async def mock_embed(text: str) -> list[float] | None:
+                return [0.9, 0.1, 0.0]
+
+            with (
+                patch(
+                    "anima_server.services.agent.embeddings.generate_embedding",
+                    side_effect=mock_embed,
+                ),
+                patch.object(retrieval_module, "get_retrieval_root", return_value=root),
+                patch(
+                    "anima_server.services.agent.vector_store.search_similar",
+                    side_effect=AssertionError("vector-store fallback should not run"),
+                ),
+            ):
+                results = await semantic_search(
+                    db,
+                    user_id=user.id,
+                    query="coffee",
+                    limit=5,
+                    similarity_threshold=0.0,
+                )
+
+                assert [hit.id for hit, _score in results] == [item.id]
+                assert (root / "memory" / "documents.json").exists()
 
     # Brute-force fallback test removed — P6 eliminated O(n) brute-force
     # over embedding_json in favor of pgvector ANN search.

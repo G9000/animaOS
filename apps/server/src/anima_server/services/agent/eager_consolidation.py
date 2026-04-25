@@ -19,8 +19,11 @@ from anima_server.services.agent.persistence import list_transcript_messages
 from anima_server.services.agent.soul_writer import run_soul_writer
 from anima_server.services.agent.transcript_archive import (
     export_transcript,
+    load_transcript_sidecar,
     messages_to_transcript_dicts,
+    resolve_transcript_path,
 )
+from anima_server.services import anima_core_retrieval
 from anima_server.services.data_crypto import df, get_active_dek
 
 logger = logging.getLogger(__name__)
@@ -276,21 +279,42 @@ async def prune_expired_transcripts() -> int:
 
     for meta_path in list(transcripts_dir.glob("*.meta.json")):
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = load_transcript_sidecar(meta_path)
+            if meta is None:
+                continue
             archived_at = datetime.fromisoformat(str(meta.get("archived_at", "")).replace("Z", "+00:00"))
-        except (OSError, json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
 
         if archived_at >= cutoff:
             continue
 
-        transcript_path = meta_path.parent / meta_path.name.replace(".meta.json", ".jsonl.enc")
-        if not transcript_path.exists():
-            transcript_path = meta_path.parent / meta_path.name.replace(".meta.json", ".jsonl")
+        transcript_path = resolve_transcript_path(meta_path)
         try:
-            if transcript_path.exists():
+            if transcript_path is not None and transcript_path.exists():
                 transcript_path.unlink()
             meta_path.unlink()
+            try:
+                anima_core_retrieval.transcript_index_delete(
+                    root=anima_core_retrieval.get_retrieval_root(),
+                    thread_id=int(meta.get("thread_id", 0)),
+                    user_id=int(meta.get("user_id", 0)),
+                )
+            except RuntimeError:
+                logger.debug("Rust transcript index delete is unavailable during transcript pruning")
+            except Exception:
+                logger.warning(
+                    "Failed to delete transcript %s from the Rust retrieval index during pruning",
+                    meta_path.name,
+                    exc_info=True,
+                )
+                try:
+                    anima_core_retrieval.mark_retrieval_index_dirty(
+                        root=anima_core_retrieval.get_retrieval_root(),
+                        family="transcript",
+                    )
+                except Exception:
+                    logger.debug("Failed to mark transcript index dirty during pruning", exc_info=True)
             deleted += 1
         except OSError:
             logger.warning("Failed to delete expired transcript artifact %s", meta_path.name, exc_info=True)

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from anima_server.services.agent.transcript_archive import decrypt_transcript
+from anima_server.services import anima_core_retrieval
+from anima_server.services.agent import transcript_archive as transcript_archive_module
 
 logger = logging.getLogger(__name__)
 
@@ -73,32 +73,75 @@ def _date_recency_bonus(date_str: str) -> float:
 
 
 def _load_sidecar(meta_path: Path) -> dict | None:
+    return transcript_archive_module.load_transcript_sidecar(meta_path)
+
+
+def _transcript_index_is_dirty(root: Path) -> bool:
     try:
-        return json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("Failed to read transcript sidecar %s",
-                       meta_path.name, exc_info=True)
-        return None
+        return anima_core_retrieval.is_retrieval_family_dirty(root=root, family="transcript")
+    except Exception:
+        logger.debug("Failed to inspect transcript index manifest state", exc_info=True)
+        return False
 
 
-def search_transcripts(
+def _candidate_transcripts_from_rust_index(
     *,
     query: str,
     user_id: int,
-    dek: bytes | None,
     transcripts_dir: Path,
-    days_back: int = 30,
-    max_transcripts: int = 5,
-    max_snippets: int = 10,
-    snippet_context: int = 2,
-    budget_chars: int = 3000,
-) -> list[TranscriptSnippet]:
-    """Search archived transcripts and return context-windowed snippets."""
-    if not transcripts_dir.exists():
-        return TranscriptSearchResults()
-
+    days_back: int,
+    max_transcripts: int,
+) -> list[tuple[Path, int, str]] | None:
+    root = anima_core_retrieval.get_retrieval_root()
     cutoff = datetime.now(UTC) - timedelta(days=days_back)
-    candidates: list[tuple[float, Path, dict]] = []
+    try:
+        hits = anima_core_retrieval.transcript_index_search(
+            root=root,
+            user_id=user_id,
+            query=query,
+            limit=max_transcripts,
+        )
+    except Exception:
+        logger.debug(
+            "Falling back to sidecar transcript search after Rust index failure",
+            exc_info=True,
+        )
+        return None
+
+    candidates: list[tuple[Path, int, str]] = []
+    for hit in hits:
+        transcript_ref = str(hit.get("transcript_ref", "")).strip()
+        if not transcript_ref:
+            continue
+        enc_path = transcripts_dir / transcript_ref
+        if not enc_path.exists():
+            try:
+                anima_core_retrieval.mark_retrieval_index_dirty(root=root, family="transcript")
+            except Exception:
+                logger.debug("Failed to mark transcript index dirty after missing artifact", exc_info=True)
+            return None
+        thread_id = int(hit.get("thread_id", 0))
+        date_start = int(hit.get("date_start", 0) or 0)
+        if date_start <= 0:
+            continue
+        date_value = datetime.fromtimestamp(date_start, tz=UTC)
+        if date_value < cutoff:
+            continue
+        date_str = date_value.date().isoformat()
+        candidates.append((enc_path, thread_id, date_str))
+    return candidates
+
+
+def _candidate_transcripts_from_sidecars(
+    *,
+    query: str,
+    user_id: int,
+    transcripts_dir: Path,
+    days_back: int,
+    max_transcripts: int,
+) -> list[tuple[Path, int, str]]:
+    cutoff = datetime.now(UTC) - timedelta(days=days_back)
+    candidates: list[tuple[float, Path, int, str]] = []
 
     for meta_path in transcripts_dir.glob("*.meta.json"):
         meta = _load_sidecar(meta_path)
@@ -127,24 +170,45 @@ def search_transcripts(
         keyword_score = _keyword_overlap_score(
             query, list(meta.get("keywords", [])))
         score = (keyword_score * 2.0) + _date_recency_bonus(date_start_str)
-        candidates.append((score, enc_path, meta))
+        candidates.append((score, enc_path, int(meta.get("thread_id", 0)), date_start_str[:10]))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    if not candidates:
-        return TranscriptSearchResults()
+    return [
+        (enc_path, thread_id, date_str)
+        for _score, enc_path, thread_id, date_str in candidates[:max_transcripts]
+    ]
 
+
+def _snippets_from_candidates(
+    *,
+    query: str,
+    dek: bytes | None,
+    candidates: list[tuple[Path, int, str]],
+    max_transcripts: int,
+    max_snippets: int,
+    snippet_context: int,
+    budget_chars: int,
+    mark_index_dirty_on_failure: bool,
+    root: Path,
+) -> tuple[list[TranscriptSnippet], int, bool]:
     snippets: list[TranscriptSnippet] = []
     chars_used = 0
     total_matches = 0
+    had_candidate_failures = False
 
-    for _score, enc_path, meta in candidates[:max_transcripts]:
-        thread_id = int(meta.get("thread_id", 0))
+    for enc_path, thread_id, date_str in candidates[:max_transcripts]:
         try:
-            messages = decrypt_transcript(
+            messages = transcript_archive_module.decrypt_transcript(
                 enc_path, dek=dek, thread_id=thread_id)
         except Exception:
             logger.warning("Failed to decrypt transcript %s",
                            enc_path.name, exc_info=True)
+            if mark_index_dirty_on_failure:
+                had_candidate_failures = True
+                try:
+                    anima_core_retrieval.mark_retrieval_index_dirty(root=root, family="transcript")
+                except Exception:
+                    logger.debug("Failed to mark transcript index dirty after decrypt failure", exc_info=True)
             continue
 
         scored_hits: list[tuple[float, int]] = []
@@ -156,7 +220,6 @@ def search_transcripts(
 
         scored_hits.sort(key=lambda item: item[0], reverse=True)
         seen_indices: set[int] = set()
-        date_str = str(meta.get("date_start", "unknown"))[:10]
 
         for _hit_score, hit_idx in scored_hits:
             start = max(0, hit_idx - snippet_context)
@@ -184,6 +247,91 @@ def search_transcripts(
                 )
             )
             chars_used += len(text)
+
+    return snippets, total_matches, had_candidate_failures
+
+
+def search_transcripts(
+    *,
+    query: str,
+    user_id: int,
+    dek: bytes | None,
+    transcripts_dir: Path,
+    days_back: int = 30,
+    max_transcripts: int = 5,
+    max_snippets: int = 10,
+    snippet_context: int = 2,
+    budget_chars: int = 3000,
+) -> list[TranscriptSnippet]:
+    """Search archived transcripts and return context-windowed snippets."""
+    if not transcripts_dir.exists():
+        return TranscriptSearchResults()
+
+    candidates: list[tuple[Path, int, str]] | None
+    used_rust_candidates = False
+    root = anima_core_retrieval.get_retrieval_root()
+    if _transcript_index_is_dirty(root):
+        transcript_archive_module.rebuild_transcript_index(
+            user_id=user_id,
+            dek=dek,
+            transcripts_dir=transcripts_dir,
+            root=root,
+        )
+
+    candidates = None
+    if not _transcript_index_is_dirty(root):
+        rust_candidates = _candidate_transcripts_from_rust_index(
+            query=query,
+            user_id=user_id,
+            transcripts_dir=transcripts_dir,
+            days_back=days_back,
+            max_transcripts=max_transcripts,
+        )
+        if rust_candidates:
+            candidates = rust_candidates
+            used_rust_candidates = True
+    if not candidates:
+        candidates = _candidate_transcripts_from_sidecars(
+            query=query,
+            user_id=user_id,
+            transcripts_dir=transcripts_dir,
+            days_back=days_back,
+            max_transcripts=max_transcripts,
+        )
+    if not candidates:
+        return TranscriptSearchResults()
+
+    snippets, total_matches, had_rust_candidate_failures = _snippets_from_candidates(
+        query=query,
+        dek=dek,
+        candidates=candidates,
+        max_transcripts=max_transcripts,
+        max_snippets=max_snippets,
+        snippet_context=snippet_context,
+        budget_chars=budget_chars,
+        mark_index_dirty_on_failure=used_rust_candidates,
+        root=root,
+    )
+
+    if used_rust_candidates and had_rust_candidate_failures and not snippets:
+        sidecar_candidates = _candidate_transcripts_from_sidecars(
+            query=query,
+            user_id=user_id,
+            transcripts_dir=transcripts_dir,
+            days_back=days_back,
+            max_transcripts=max_transcripts,
+        )
+        snippets, total_matches, _had_sidecar_failures = _snippets_from_candidates(
+            query=query,
+            dek=dek,
+            candidates=sidecar_candidates,
+            max_transcripts=max_transcripts,
+            max_snippets=max_snippets,
+            snippet_context=snippet_context,
+            budget_chars=budget_chars,
+            mark_index_dirty_on_failure=False,
+            root=root,
+        )
 
     return TranscriptSearchResults(snippets, total_matches=total_matches)
 

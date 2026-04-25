@@ -1,5 +1,10 @@
 """Tests for BM25 index -- F1 hybrid search."""
 
+from unittest.mock import MagicMock
+
+import pytest
+
+from anima_server.services.agent import bm25_index as bm25_module
 from anima_server.services.agent.bm25_index import (
     BM25Index,
     _tokenize,
@@ -154,3 +159,57 @@ class TestModuleLevelCache:
         # Should not raise
         invalidate_index(999)
         assert 999 not in _user_indices
+
+
+class TestRustBackedKeywordSearch:
+    def test_bm25_search_uses_rust_memory_index_when_clean(self, monkeypatch: pytest.MonkeyPatch):
+        search_calls: list[dict[str, object]] = []
+
+        monkeypatch.setattr(bm25_module.anima_core_retrieval, "get_retrieval_root", lambda: "indices")
+        monkeypatch.setattr(
+            bm25_module.anima_core_retrieval,
+            "is_retrieval_family_dirty",
+            lambda **kwargs: False,
+        )
+
+        def _fake_search(**kwargs):
+            search_calls.append(kwargs)
+            return [{"record_id": 17, "score": 2.75}]
+
+        monkeypatch.setattr(bm25_module.anima_core_retrieval, "memory_index_search", _fake_search)
+        monkeypatch.setattr(
+            bm25_module,
+            "get_or_build_index",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback should not run")),
+        )
+
+        hits = bm25_module.bm25_search(7, query="coffee", limit=5, db=MagicMock())
+
+        assert hits == [(17, 2.75)]
+        assert len(search_calls) == 1
+        assert search_calls[0]["user_id"] == 7
+        assert search_calls[0]["query"] == "coffee"
+
+    def test_bm25_search_falls_back_when_memory_family_is_dirty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        fallback_index = BM25Index()
+        fallback_index.build([(42, "user likes coffee")])
+
+        monkeypatch.setattr(bm25_module.anima_core_retrieval, "get_retrieval_root", lambda: "indices")
+        monkeypatch.setattr(
+            bm25_module.anima_core_retrieval,
+            "is_retrieval_family_dirty",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            bm25_module.anima_core_retrieval,
+            "memory_index_search",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("dirty index should not be queried")),
+        )
+        monkeypatch.setattr(bm25_module, "get_or_build_index", lambda *args, **kwargs: fallback_index)
+
+        hits = bm25_module.bm25_search(7, query="coffee", limit=5, db=MagicMock())
+
+        assert hits
+        assert hits[0][0] == 42
