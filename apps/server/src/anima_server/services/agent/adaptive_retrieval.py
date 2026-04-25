@@ -1,36 +1,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, Sequence, TypeVar
+from typing import Literal
+
+from anima_server.services import anima_core_bindings
 
 logger = logging.getLogger(__name__)
 
-try:
-    import anima_core as _anima_core
-except (ImportError, ModuleNotFoundError):
-    _anima_core = None
-    _rust_find_adaptive_cutoff = None
-    _rust_normalize_scores = None
-except Exception:
-    logger.warning(
-        "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
-        exc_info=True,
-    )
-    _anima_core = None
-    _rust_find_adaptive_cutoff = None
-    _rust_normalize_scores = None
-else:
-    try:
-        _rust_find_adaptive_cutoff = getattr(_anima_core, "find_adaptive_cutoff")
-        _rust_normalize_scores = getattr(_anima_core, "normalize_scores")
-    except Exception:
-        logger.warning(
-            "Failed to import Rust adaptive retrieval acceleration; falling back to Python implementation.",
-            exc_info=True,
-        )
-        _rust_find_adaptive_cutoff = None
-        _rust_normalize_scores = None
+_rust_find_adaptive_cutoff = anima_core_bindings.rust_find_adaptive_cutoff
+_rust_normalize_scores = anima_core_bindings.rust_normalize_scores
 
 
 AdaptiveStrategy = Literal[
@@ -42,9 +22,6 @@ AdaptiveStrategy = Literal[
     "combined",
     "disabled",
 ]
-
-_T = TypeVar("_T")
-
 
 @dataclass(frozen=True, slots=True)
 class AdaptiveRetrievalConfig:
@@ -109,8 +86,8 @@ class AdaptiveFilterStats:
 
 
 @dataclass(frozen=True, slots=True)
-class AdaptiveFilterResult(Generic[_T]):
-    results: list[tuple[_T, float]]
+class AdaptiveFilterResult[ItemT]:
+    results: list[tuple[ItemT, float]]
     stats: AdaptiveFilterStats
 
 
@@ -163,11 +140,11 @@ def find_adaptive_cutoff(
     return _python_cutoff(capped_scores, active_config)
 
 
-def apply_adaptive_filter(
-    results: list[tuple[_T, float]],
+def apply_adaptive_filter[ItemT](
+    results: list[tuple[ItemT, float]],
     *,
     config: AdaptiveRetrievalConfig | None = None,
-) -> AdaptiveFilterResult[_T]:
+) -> AdaptiveFilterResult[ItemT]:
     active_config = config or AdaptiveRetrievalConfig()
     capped = results[: _effective_max(active_config)]
     scores = [float(score) for _, score in capped]

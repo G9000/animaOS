@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import json
 import logging
 import math
 import time
@@ -28,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryItem
-from anima_server.services import anima_core_retrieval
+from anima_server.services import anima_core_bindings, anima_core_retrieval
 from anima_server.services.agent.adaptive_retrieval import (
     AdaptiveFilterResult,
     AdaptiveRetrievalConfig,
@@ -414,6 +413,11 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
     if len(a) != len(b) or not a:
         return 0.0
+    if anima_core_bindings.rust_cosine_similarity is not None:
+        try:
+            return float(anima_core_bindings.rust_cosine_similarity(list(a), list(b)))
+        except Exception:
+            logger.debug("Rust cosine similarity failed; falling back to Python", exc_info=True)
     dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -424,7 +428,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 def _set_embedding_checksum(target: Any, checksum: str) -> bool:
     try:
-        setattr(target, "embedding_checksum", checksum)
+        target.embedding_checksum = checksum
         return True
     except Exception:
         return False
@@ -506,7 +510,9 @@ def _semantic_ranked_ids_via_rust(
 ) -> list[tuple[int, float]] | None:
     try:
         root = anima_core_retrieval.get_retrieval_root()
-        from anima_server.services.agent.memory_store import ensure_memory_retrieval_index_ready
+        from anima_server.services.agent.memory_store import (
+            ensure_memory_retrieval_index_ready,
+        )
 
         if not ensure_memory_retrieval_index_ready(db, user_id=user_id, root=root):
             return None
@@ -792,7 +798,9 @@ def sync_embeddings_to_runtime(
             plaintext = df(user_id, item.content,
                            table="memory_items", field="content")
             with contextlib.suppress(Exception):
-                from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
+                from anima_server.services.agent.memory_store import (
+                    sync_memory_item_to_retrieval_index,
+                )
 
                 sync_memory_item_to_retrieval_index(item)
             store.upsert(
@@ -936,6 +944,22 @@ def _reciprocal_rank_fusion(
     keyword_weight: float = 0.5,
 ) -> list[tuple[int, float]]:
     """Merge two ranked lists using RRF. Returns (item_id, rrf_score) sorted descending."""
+    if (
+        anima_core_bindings.rust_rrf_fuse is not None
+        and abs(semantic_weight - keyword_weight) < 1e-12
+    ):
+        try:
+            ranked_lists = [
+                [(int(item_id), float(score)) for item_id, score in semantic_ranked],
+                [(int(item_id), float(score)) for item_id, score in keyword_ranked],
+            ]
+            return [
+                (int(item_id), float(score) * semantic_weight)
+                for item_id, score in anima_core_bindings.rust_rrf_fuse(ranked_lists, _RRF_K)
+            ]
+        except Exception:
+            logger.debug("Rust RRF fusion failed; falling back to Python", exc_info=True)
+
     scores: dict[int, float] = {}
 
     for rank, (item_id, _sim) in enumerate(semantic_ranked):
@@ -992,8 +1016,6 @@ async def hybrid_search(
         return HybridSearchResult(items=[], query_embedding=None)
 
     query_embedding = await generate_embedding(prepared_query)
-
-    from anima_server.services.agent.vector_store import search_similar
 
     # --- Semantic leg ---
     semantic_ranked: list[tuple[int, float]] = []

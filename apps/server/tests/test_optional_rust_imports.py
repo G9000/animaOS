@@ -3,9 +3,9 @@ from __future__ import annotations
 import builtins
 import importlib
 import sys
-from types import ModuleType
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import ModuleType
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +13,10 @@ import pytest
 
 def _import_fresh(module_name: str):
     sys.modules.pop(module_name, None)
+    sys.modules.pop("anima_server.services.anima_core_bindings", None)
+    services_pkg = sys.modules.get("anima_server.services")
+    if services_pkg is not None and hasattr(services_pkg, "anima_core_bindings"):
+        delattr(services_pkg, "anima_core_bindings")
     sys.modules.pop("anima_core", None)
     sys.modules.pop("anima_core.anima_core", None)
     return importlib.import_module(module_name)
@@ -20,6 +24,10 @@ def _import_fresh(module_name: str):
 
 def _import_fresh_preserving_anima_core(module_name: str):
     sys.modules.pop(module_name, None)
+    sys.modules.pop("anima_server.services.anima_core_bindings", None)
+    services_pkg = sys.modules.get("anima_server.services")
+    if services_pkg is not None and hasattr(services_pkg, "anima_core_bindings"):
+        delattr(services_pkg, "anima_core_bindings")
     return importlib.import_module(module_name)
 
 
@@ -64,8 +72,6 @@ def test_text_processing_falls_back_on_non_import_errors() -> None:
 
 
 def test_graph_triplets_falls_back_on_import_error() -> None:
-    import anima_server.services.agent.text_processing  # ensure dependency is loaded normally
-
     with _patched_anima_core_import(ImportError("mocked")):
         module = _import_fresh("anima_server.services.agent.graph_triplets")
 
@@ -75,8 +81,6 @@ def test_graph_triplets_falls_back_on_import_error() -> None:
 
 
 def test_graph_triplets_falls_back_on_non_import_errors() -> None:
-    import anima_server.services.agent.text_processing  # ensure dependency is loaded normally
-
     broken_module = ModuleType("anima_core")
 
     def _broken_getattr(name: str):
@@ -110,18 +114,17 @@ def test_adaptive_retrieval_logs_and_falls_back_on_non_import_errors(caplog: pyt
 
     broken_module.__getattr__ = _broken_getattr  # type: ignore[attr-defined]
 
-    with caplog.at_level("WARNING"):
-        with patch.dict(sys.modules, {"anima_core": broken_module}):
-            module = _import_fresh_preserving_anima_core("anima_server.services.agent.adaptive_retrieval")
+    with caplog.at_level("WARNING"), patch.dict(sys.modules, {"anima_core": broken_module}):
+        module = _import_fresh_preserving_anima_core("anima_server.services.agent.adaptive_retrieval")
 
     assert module._rust_find_adaptive_cutoff is None
     assert module._rust_normalize_scores is None
     assert any(
-        "adaptive retrieval acceleration" in record.message
+        "Failed to resolve anima_core.find_adaptive_cutoff" in record.message
         for record in caplog.records
     )
     assert any(
-        record.name == "anima_server.services.agent.adaptive_retrieval"
+        record.name == "anima_server.services.anima_core_bindings"
         for record in caplog.records
     )
 

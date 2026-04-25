@@ -4,29 +4,17 @@ import logging
 from pathlib import Path
 
 from anima_server.config import settings
+from anima_server.services import anima_core_bindings
 
 logger = logging.getLogger(__name__)
 
-try:
-    import anima_core as _anima_core
-except (ImportError, ModuleNotFoundError):
-    _anima_core = None
-except Exception:
-    logger.warning(
-        "anima_core retrieval bindings are unavailable due to an unexpected import failure",
-        exc_info=True,
-    )
-    _anima_core = None
-
 
 def _has_binding(name: str) -> bool:
-    return _anima_core is not None and hasattr(_anima_core, name)
+    return anima_core_bindings.has_binding(name)
 
 
 def _require_binding(name: str):
-    if not _has_binding(name):
-        raise RuntimeError(f"anima_core.{name} is unavailable")
-    return getattr(_anima_core, name)
+    return anima_core_bindings.require_binding(name)
 
 
 def get_retrieval_root() -> Path:
@@ -34,7 +22,7 @@ def get_retrieval_root() -> Path:
 
 
 def get_retrieval_status() -> dict[str, object]:
-    available = _anima_core is not None
+    available = anima_core_bindings.is_available()
     capabilities = {
         "memory_index": _has_binding("memory_index_search"),
         "memory_vector_index": _has_binding("memory_index_vector_search"),

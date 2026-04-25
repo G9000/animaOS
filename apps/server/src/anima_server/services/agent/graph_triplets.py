@@ -4,20 +4,12 @@ import logging
 import re
 from typing import Any
 
+from anima_server.services import anima_core_bindings
 from anima_server.services.agent.text_processing import prepare_memory_text
 
 logger = logging.getLogger(__name__)
 
-try:
-    from anima_core import extract_triplets as _rust_extract_triplets
-except (ImportError, ModuleNotFoundError):
-    _rust_extract_triplets = None
-except Exception:
-    logger.warning(
-        "anima_core triplet extraction is unavailable due to an unexpected import failure",
-        exc_info=True,
-    )
-    _rust_extract_triplets = None
+_rust_extract_triplets = anima_core_bindings.rust_extract_triplets
 
 
 _FP_EMPLOYER_RE = re.compile(
@@ -242,10 +234,10 @@ def extract_triplets(text: str, *, limit: int = 8_192) -> list[dict[str, Any]]:
     if not prepared:
         return []
 
-    if _rust_extract_triplets is not None:
+    if anima_core_bindings.rust_extract_triplets is not None:
         triplets: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
-        for item in _rust_extract_triplets(prepared):
+        for item in anima_core_bindings.rust_extract_triplets(prepared):
             triplet = _coerce_rust_triplet(item)
             if triplet is None:
                 continue

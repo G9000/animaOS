@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import importlib
 import json
 import logging
 import os
@@ -31,6 +30,7 @@ from anima_server.models import (
     User,
     UserKey,
 )
+from anima_server.services import anima_core_bindings
 from anima_server.services.crypto import (
     AUTH_TAG_LENGTH,
     IV_LENGTH,
@@ -50,16 +50,15 @@ vault_logger = logging.getLogger(__name__)
 
 
 def _load_capsule_bindings():
-    try:
-        anima_core = importlib.import_module("anima_core")
-    except (ImportError, ModuleNotFoundError) as exc:
+    read_capsule = anima_core_bindings.rust_read_capsule
+    write_capsule = anima_core_bindings.rust_write_capsule
+    if read_capsule is None or write_capsule is None:
         vault_logger.warning(
-            "Capsule bindings are unavailable; anima_core import failed: %s",
-            exc,
+            "Capsule bindings are unavailable; anima_core capsule bindings are missing.",
         )
         return None, None
 
-    return anima_core.read_capsule, anima_core.write_capsule
+    return read_capsule, write_capsule
 
 
 _anima_core_read_capsule, _anima_core_write_capsule = _load_capsule_bindings()
