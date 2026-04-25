@@ -9,11 +9,30 @@ def test_adapter_exposes_expected_capabilities() -> None:
     from anima_server.services import anima_core_bindings
 
     status = anima_core_bindings.get_binding_status()
+    capabilities = status["capabilities"]
+    expected_capabilities = {
+        "text_processing",
+        "triplet_extraction",
+        "adaptive_retrieval",
+        "capsule",
+        "retrieval_index",
+        "search_helpers",
+        "stateful_engine",
+    }
 
     assert isinstance(status["available"], bool)
-    assert status["capabilities"]["text_processing"] is True
-    assert status["capabilities"]["capsule"] is True
-    assert status["capabilities"]["retrieval_index"] is True
+    assert isinstance(status["degraded"], bool)
+    assert status["degraded"] is (not status["available"])
+    assert isinstance(capabilities, dict)
+    assert set(capabilities) == expected_capabilities
+    assert all(isinstance(value, bool) for value in capabilities.values())
+
+    if not status["available"]:
+        pytest.skip("anima_core is optional and unavailable in this environment")
+
+    assert capabilities["text_processing"] is True
+    assert capabilities["capsule"] is True
+    assert capabilities["retrieval_index"] is True
 
 
 def test_cosine_similarity_uses_adapter_binding(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,16 +93,15 @@ def test_heat_scoring_uses_adapter_binding(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_text_processing_uses_adapter_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
-    from anima_server.services import anima_core_bindings
     from anima_server.services.agent import text_processing
 
     monkeypatch.setattr(
-        anima_core_bindings,
+        text_processing.anima_core_bindings,
         "rust_normalize_text",
         lambda text, limit: (f"normalized:{text}:{limit}", False),
     )
     monkeypatch.setattr(
-        anima_core_bindings,
+        text_processing.anima_core_bindings,
         "rust_fix_pdf_spacing",
         lambda text: text.replace("s pa cing", "spacing"),
     )
@@ -95,11 +113,10 @@ def test_text_processing_uses_adapter_bindings(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_triplets_use_adapter_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    from anima_server.services import anima_core_bindings
     from anima_server.services.agent import graph_triplets
 
     monkeypatch.setattr(
-        anima_core_bindings,
+        graph_triplets.anima_core_bindings,
         "rust_extract_triplets",
         lambda _text: [("User", "person", "works_at", "OpenAI", "organization", 0.9, 0, 10)],
     )

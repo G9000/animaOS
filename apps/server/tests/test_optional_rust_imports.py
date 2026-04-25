@@ -48,8 +48,10 @@ def test_text_processing_falls_back_on_import_error() -> None:
     with _patched_anima_core_import(ImportError("mocked")):
         module = _import_fresh("anima_server.services.agent.text_processing")
 
-    assert module._rust_fix_pdf_spacing is None
-    assert module._rust_normalize_text is None
+    assert not hasattr(module, "_rust_fix_pdf_spacing")
+    assert not hasattr(module, "_rust_normalize_text")
+    assert module.anima_core_bindings.rust_fix_pdf_spacing is None
+    assert module.anima_core_bindings.rust_normalize_text is None
 
     _import_fresh("anima_server.services.agent.text_processing")
 
@@ -65,8 +67,10 @@ def test_text_processing_falls_back_on_non_import_errors() -> None:
     with patch.dict(sys.modules, {"anima_core": broken_module}):
         module = _import_fresh_preserving_anima_core("anima_server.services.agent.text_processing")
 
-    assert module._rust_fix_pdf_spacing is None
-    assert module._rust_normalize_text is None
+    assert not hasattr(module, "_rust_fix_pdf_spacing")
+    assert not hasattr(module, "_rust_normalize_text")
+    assert module.anima_core_bindings.rust_fix_pdf_spacing is None
+    assert module.anima_core_bindings.rust_normalize_text is None
 
     _import_fresh("anima_server.services.agent.text_processing")
 
@@ -75,7 +79,8 @@ def test_graph_triplets_falls_back_on_import_error() -> None:
     with _patched_anima_core_import(ImportError("mocked")):
         module = _import_fresh("anima_server.services.agent.graph_triplets")
 
-    assert module._rust_extract_triplets is None
+    assert not hasattr(module, "_rust_extract_triplets")
+    assert module.anima_core_bindings.rust_extract_triplets is None
 
     _import_fresh("anima_server.services.agent.graph_triplets")
 
@@ -91,7 +96,8 @@ def test_graph_triplets_falls_back_on_non_import_errors() -> None:
     with patch.dict(sys.modules, {"anima_core": broken_module}):
         module = _import_fresh_preserving_anima_core("anima_server.services.agent.graph_triplets")
 
-    assert module._rust_extract_triplets is None
+    assert not hasattr(module, "_rust_extract_triplets")
+    assert module.anima_core_bindings.rust_extract_triplets is None
 
     _import_fresh("anima_server.services.agent.graph_triplets")
 

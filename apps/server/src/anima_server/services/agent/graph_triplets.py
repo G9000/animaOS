@@ -9,8 +9,6 @@ from anima_server.services.agent.text_processing import prepare_memory_text
 
 logger = logging.getLogger(__name__)
 
-_rust_extract_triplets = anima_core_bindings.rust_extract_triplets
-
 
 _FP_EMPLOYER_RE = re.compile(
     r"\b(?i:(?:i\s+work\s+(?:at|for)|i(?:'m|\s+am)\s+(?:at|with)|i(?:'m|\s+am)\s+employed\s+(?:at|by)))\s+([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,5})(?=\s*[.,;!?]|\s+(?i:as|and|where|since|for)\b|$)"

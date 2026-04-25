@@ -267,7 +267,7 @@ def test_export_and_import_anima_capsule_restores_auth_and_files(
         assert (user_dir / "memory" / "entry.md").read_text(encoding="utf-8") == "hello from capsule"
 
 
-def test_load_capsule_bindings_logs_missing_dependency(
+def test_load_capsule_bindings_returns_none_when_adapter_bindings_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(vault_module.anima_core_bindings, "rust_read_capsule", None)

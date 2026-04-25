@@ -7,9 +7,6 @@ from anima_server.services import anima_core_bindings
 
 logger = logging.getLogger(__name__)
 
-_rust_fix_pdf_spacing = anima_core_bindings.rust_fix_pdf_spacing
-_rust_normalize_text = anima_core_bindings.rust_normalize_text
-
 
 DEFAULT_TEXT_LIMIT = 16_384
 _VALID_SINGLE_CHARS = {"a", "i", "A", "I"}
