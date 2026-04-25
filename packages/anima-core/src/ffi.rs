@@ -1221,7 +1221,7 @@ mod python {
         let meta = HeatMeta {
             access_count,
             interaction_depth: depth as f64,
-            importance: importance.round().clamp(0.0, u8::MAX as f32) as u8,
+            importance: importance.round().clamp(0.0, 5.0) as u8,
             last_accessed_at: Some(now - age_seconds),
             is_superseded: superseded,
         };

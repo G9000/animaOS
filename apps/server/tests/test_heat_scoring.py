@@ -118,6 +118,30 @@ class TestComputeHeat:
         # Difference should be HEAT_DELTA * (10 - 1) = 0.5 * 9 = 4.5
         assert (high - low) == pytest.approx(HEAT_DELTA * 9.0, rel=1e-2)
 
+    def test_rust_fast_path_skips_out_of_scale_importance(self, monkeypatch):
+        from anima_server.services.agent import heat_scoring as heat_module
+
+        now = datetime(2026, 4, 26, tzinfo=UTC)
+
+        def _unexpected_rust_heat(**_kwargs):
+            pytest.fail("out-of-scale importance should use the Python heat path")
+
+        monkeypatch.setattr(
+            heat_module.anima_core_bindings,
+            "rust_compute_heat",
+            _unexpected_rust_heat,
+        )
+
+        heat = heat_module.compute_heat(
+            access_count=1,
+            interaction_depth=1,
+            last_accessed_at=now,
+            importance=10.0,
+            now=now,
+        )
+
+        assert heat == pytest.approx((1.0 + 1.0 + HEAT_DELTA * 10.0) + 1.0)
+
     def test_defaults_used_when_now_omitted(self):
         """compute_heat should work without explicit now parameter."""
         heat = compute_heat(

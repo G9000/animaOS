@@ -138,6 +138,19 @@ def test_heat_scoring_uses_adapter_binding(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def test_rust_heat_binding_clamps_importance_to_memory_scale() -> None:
+    from anima_server.services import anima_core_bindings
+
+    rust_heat = anima_core_bindings.get_binding("compute_heat")
+    if rust_heat is None:
+        pytest.skip("anima_core.compute_heat is optional and unavailable in this environment")
+
+    assert float(rust_heat(1, 1, 10.0, 0.0, False)) == pytest.approx(
+        float(rust_heat(1, 1, 5.0, 0.0, False)),
+        rel=1e-6,
+    )
+
+
 def test_text_processing_uses_adapter_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
     from anima_server.services.agent import text_processing
 

@@ -31,6 +31,7 @@ HEAT_BETA: float = 1.0  # interaction depth weight
 HEAT_GAMMA: float = 1.0  # recency decay weight
 HEAT_DELTA: float = 0.5  # importance weight
 RECENCY_TAU_HOURS: float = 24.0  # time-decay constant
+MAX_IMPORTANCE: int = 5
 
 
 def compute_time_decay(
@@ -75,7 +76,7 @@ def compute_heat(
         and tau_hours == RECENCY_TAU_HOURS
         and anima_core_bindings.rust_compute_heat is not None
         and float(importance).is_integer()
-        and 0 <= int(importance) <= 255
+        and 0 <= int(importance) <= MAX_IMPORTANCE
     ):
         if recency_ref.tzinfo is None:
             recency_ref = recency_ref.replace(tzinfo=UTC)
