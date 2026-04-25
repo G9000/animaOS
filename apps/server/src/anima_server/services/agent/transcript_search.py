@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -176,6 +175,78 @@ def _candidate_transcripts_from_sidecars(
     ]
 
 
+def _snippets_from_candidates(
+    *,
+    query: str,
+    dek: bytes | None,
+    candidates: list[tuple[Path, int, str]],
+    max_transcripts: int,
+    max_snippets: int,
+    snippet_context: int,
+    budget_chars: int,
+    mark_index_dirty_on_failure: bool,
+    root: Path,
+) -> tuple[list[TranscriptSnippet], int, bool]:
+    snippets: list[TranscriptSnippet] = []
+    chars_used = 0
+    total_matches = 0
+    had_candidate_failures = False
+
+    for enc_path, thread_id, date_str in candidates[:max_transcripts]:
+        try:
+            messages = transcript_archive_module.decrypt_transcript(
+                enc_path, dek=dek, thread_id=thread_id)
+        except Exception:
+            logger.warning("Failed to decrypt transcript %s",
+                           enc_path.name, exc_info=True)
+            if mark_index_dirty_on_failure:
+                had_candidate_failures = True
+                try:
+                    anima_core_retrieval.mark_retrieval_index_dirty(root=root, family="transcript")
+                except Exception:
+                    logger.debug("Failed to mark transcript index dirty after decrypt failure", exc_info=True)
+            continue
+
+        scored_hits: list[tuple[float, int]] = []
+        for index, message in enumerate(messages):
+            content = str(message.get("content", ""))
+            score = 0.5 if not query.strip() else _text_overlap_score(query, content)
+            if score > 0:
+                scored_hits.append((score, index))
+
+        scored_hits.sort(key=lambda item: item[0], reverse=True)
+        seen_indices: set[int] = set()
+
+        for _hit_score, hit_idx in scored_hits:
+            start = max(0, hit_idx - snippet_context)
+            end = min(len(messages), hit_idx + snippet_context + 1)
+            window_indices = set(range(start, end))
+            if window_indices & seen_indices:
+                continue
+            seen_indices |= window_indices
+
+            lines = [
+                f"{str(messages[idx].get('role', 'unknown')).capitalize()}: "
+                f"{messages[idx].get('content', '')!s}"
+                for idx in range(start, end)
+            ]
+            text = "\n".join(lines)
+            total_matches += 1
+            if len(snippets) >= max_snippets or chars_used + len(text) > budget_chars:
+                continue
+
+            snippets.append(
+                TranscriptSnippet(
+                    date=date_str,
+                    thread_id=thread_id,
+                    text=text,
+                )
+            )
+            chars_used += len(text)
+
+    return snippets, total_matches, had_candidate_failures
+
+
 def search_transcripts(
     *,
     query: str,
@@ -225,74 +296,36 @@ def search_transcripts(
     if not candidates:
         return TranscriptSearchResults()
 
-    snippets: list[TranscriptSnippet] = []
-    chars_used = 0
-    total_matches = 0
-    had_rust_candidate_failures = False
-
-    for enc_path, thread_id, date_str in candidates[:max_transcripts]:
-        try:
-            messages = transcript_archive_module.decrypt_transcript(
-                enc_path, dek=dek, thread_id=thread_id)
-        except Exception:
-            logger.warning("Failed to decrypt transcript %s",
-                           enc_path.name, exc_info=True)
-            if used_rust_candidates:
-                had_rust_candidate_failures = True
-                try:
-                    anima_core_retrieval.mark_retrieval_index_dirty(root=root, family="transcript")
-                except Exception:
-                    logger.debug("Failed to mark transcript index dirty after decrypt failure", exc_info=True)
-            continue
-
-        scored_hits: list[tuple[float, int]] = []
-        for index, message in enumerate(messages):
-            content = str(message.get("content", ""))
-            score = 0.5 if not query.strip() else _text_overlap_score(query, content)
-            if score > 0:
-                scored_hits.append((score, index))
-
-        scored_hits.sort(key=lambda item: item[0], reverse=True)
-        seen_indices: set[int] = set()
-
-        for _hit_score, hit_idx in scored_hits:
-            start = max(0, hit_idx - snippet_context)
-            end = min(len(messages), hit_idx + snippet_context + 1)
-            window_indices = set(range(start, end))
-            if window_indices & seen_indices:
-                continue
-            seen_indices |= window_indices
-
-            lines = [
-                f"{str(messages[idx].get('role', 'unknown')).capitalize()}: "
-                f"{messages[idx].get('content', '')!s}"
-                for idx in range(start, end)
-            ]
-            text = "\n".join(lines)
-            total_matches += 1
-            if len(snippets) >= max_snippets or chars_used + len(text) > budget_chars:
-                continue
-
-            snippets.append(
-                TranscriptSnippet(
-                    date=date_str,
-                    thread_id=thread_id,
-                    text=text,
-                )
-            )
-            chars_used += len(text)
+    snippets, total_matches, had_rust_candidate_failures = _snippets_from_candidates(
+        query=query,
+        dek=dek,
+        candidates=candidates,
+        max_transcripts=max_transcripts,
+        max_snippets=max_snippets,
+        snippet_context=snippet_context,
+        budget_chars=budget_chars,
+        mark_index_dirty_on_failure=used_rust_candidates,
+        root=root,
+    )
 
     if used_rust_candidates and had_rust_candidate_failures and not snippets:
-        return search_transcripts(
+        sidecar_candidates = _candidate_transcripts_from_sidecars(
             query=query,
             user_id=user_id,
-            dek=dek,
             transcripts_dir=transcripts_dir,
             days_back=days_back,
+            max_transcripts=max_transcripts,
+        )
+        snippets, total_matches, _had_sidecar_failures = _snippets_from_candidates(
+            query=query,
+            dek=dek,
+            candidates=sidecar_candidates,
             max_transcripts=max_transcripts,
             max_snippets=max_snippets,
             snippet_context=snippet_context,
             budget_chars=budget_chars,
+            mark_index_dirty_on_failure=False,
+            root=root,
         )
 
     return TranscriptSearchResults(snippets, total_matches=total_matches)

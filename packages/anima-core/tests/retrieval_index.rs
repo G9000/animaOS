@@ -77,6 +77,10 @@ fn transcript_documents_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("transcripts").join("documents.json")
 }
 
+fn manifest_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("manifest.json")
+}
+
 #[test]
 fn memory_index_upsert_and_search_round_trip() {
     let root = temp_root("memory_index_upsert_and_search_round_trip");
@@ -100,6 +104,48 @@ fn memory_index_upsert_and_search_round_trip() {
 }
 
 #[test]
+fn memory_documents_do_not_persist_full_plaintext_text() {
+    let root = temp_root("memory_documents_do_not_persist_full_plaintext_text");
+    upsert_memory_document(
+        &root,
+        MemoryIndexDocument {
+            record_id: 101,
+            user_id: 7,
+            text: "user likes pour over coffee in the quiet kitchen".into(),
+            embedding: None,
+            source_type: "memory_item".into(),
+            category: "preference".into(),
+            importance: 4,
+            created_at: 1_710_000_000,
+        },
+    )
+    .unwrap();
+
+    let raw_documents = std::fs::read_to_string(memory_documents_path(&root)).unwrap();
+
+    assert!(!raw_documents.contains("\"text\""));
+    assert!(!raw_documents.contains("user likes pour over coffee in the quiet kitchen"));
+    assert!(
+        search_memory_documents(&root, 7, "quiet kitchen", 5)
+            .unwrap()
+            .len()
+            == 1
+    );
+}
+
+#[test]
+fn retrieval_atomic_write_replaces_existing_files() {
+    let root = temp_root("retrieval_atomic_write_replaces_existing_files");
+
+    mark_family_dirty(&root, IndexFamily::Memory).unwrap();
+    mark_family_dirty(&root, IndexFamily::Transcript).unwrap();
+
+    let manifest = load_manifest(&manifest_path(&root)).unwrap();
+    assert!(manifest.is_family_dirty(IndexFamily::Memory));
+    assert!(manifest.is_family_dirty(IndexFamily::Transcript));
+}
+
+#[test]
 fn memory_index_delete_removes_document() {
     let root = temp_root("memory_index_delete_removes_document");
     let document = MemoryIndexDocument {
@@ -115,7 +161,9 @@ fn memory_index_delete_removes_document() {
 
     upsert_memory_document(&root, document).unwrap();
     assert!(delete_memory_document(&root, 7, 101).unwrap());
-    assert!(search_memory_documents(&root, 7, "coffee", 5).unwrap().is_empty());
+    assert!(search_memory_documents(&root, 7, "coffee", 5)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -305,7 +353,11 @@ fn memory_search_rebuilds_stale_persisted_lexical_index() {
         importance: 3,
         created_at: 1_710_000_100,
     });
-    std::fs::write(&documents_path, format!("{}\n", to_string(&documents).unwrap())).unwrap();
+    std::fs::write(
+        &documents_path,
+        format!("{}\n", to_string(&documents).unwrap()),
+    )
+    .unwrap();
 
     let hits = search_memory_documents(&root, 7, "jasmine", 5).unwrap();
 
@@ -335,6 +387,35 @@ fn transcript_index_upsert_and_search_round_trip() {
 }
 
 #[test]
+fn transcript_documents_do_not_persist_full_plaintext_text() {
+    let root = temp_root("transcript_documents_do_not_persist_full_plaintext_text");
+    upsert_transcript_document(
+        &root,
+        TranscriptIndexDocument {
+            thread_id: 42,
+            user_id: 7,
+            transcript_ref: "2026-03-28_thread-42.jsonl.enc".into(),
+            summary: "Conversation about planning".into(),
+            keywords: vec!["planning".into()],
+            text: "Assistant explained the private launch checklist in detail.".into(),
+            date_start: 1_711_621_600,
+        },
+    )
+    .unwrap();
+
+    let raw_documents = std::fs::read_to_string(transcript_documents_path(&root)).unwrap();
+
+    assert!(!raw_documents.contains("\"text\""));
+    assert!(!raw_documents.contains("Assistant explained the private launch checklist in detail."));
+    assert!(
+        search_transcript_documents(&root, 7, "private launch checklist", 5)
+            .unwrap()
+            .len()
+            == 1
+    );
+}
+
+#[test]
 fn transcript_index_delete_removes_document() {
     let root = temp_root("transcript_index_delete_removes_document");
     let document = TranscriptIndexDocument {
@@ -349,7 +430,9 @@ fn transcript_index_delete_removes_document() {
 
     upsert_transcript_document(&root, document).unwrap();
     assert!(delete_transcript_document(&root, 7, 42).unwrap());
-    assert!(search_transcript_documents(&root, 7, "quantum", 5).unwrap().is_empty());
+    assert!(search_transcript_documents(&root, 7, "quantum", 5)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -493,7 +576,11 @@ fn transcript_search_rebuilds_stale_persisted_lexical_index() {
         text: "User asked about bakery orders.".into(),
         date_start: 1_711_622_000,
     });
-    std::fs::write(&documents_path, format!("{}\n", to_string(&documents).unwrap())).unwrap();
+    std::fs::write(
+        &documents_path,
+        format!("{}\n", to_string(&documents).unwrap()),
+    )
+    .unwrap();
 
     let hits = search_transcript_documents(&root, 7, "bakery", 5).unwrap();
 

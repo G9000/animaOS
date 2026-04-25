@@ -1063,6 +1063,54 @@ class TestTranscriptSearch:
         assert len(snippets) > 0
         assert any(snippet.thread_id == 43 for snippet in snippets)
 
+    def test_search_falls_back_once_after_rust_candidate_decrypt_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from anima_server.services.agent import transcript_search
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        bad_path = transcripts_dir / "bad.jsonl.enc"
+        bad_path.write_bytes(b"not a valid encrypted transcript")
+        root = transcripts_dir.parent / "indices"
+        monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: root)
+        monkeypatch.setattr(transcript_search, "_transcript_index_is_dirty", lambda _root: False)
+
+        rust_calls = 0
+
+        def _rust_candidates(**_kwargs: object) -> list[tuple[Path, int, str]]:
+            nonlocal rust_calls
+            rust_calls += 1
+            if rust_calls > 1:
+                raise AssertionError("Rust transcript candidates were retried recursively")
+            return [(bad_path, 42, "2026-03-28")]
+
+        sidecar_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            transcript_search,
+            "_candidate_transcripts_from_rust_index",
+            _rust_candidates,
+        )
+        monkeypatch.setattr(
+            transcript_search,
+            "_candidate_transcripts_from_sidecars",
+            lambda **kwargs: sidecar_calls.append(kwargs) or [],
+        )
+
+        snippets = search_transcripts(
+            query="coffee",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=30,
+        )
+
+        assert snippets == []
+        assert rust_calls == 1
+        assert len(sidecar_calls) == 1
+
     def test_search_respects_budget(
         self,
         transcripts_dir: Path,

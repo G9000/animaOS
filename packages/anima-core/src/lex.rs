@@ -48,7 +48,7 @@ impl SimpleBm25Index {
     }
 
     /// Tokenize text: lowercase + split on whitespace + alphanumeric filter.
-    fn tokenize(text: &str) -> Vec<String> {
+    pub fn tokenize(text: &str) -> Vec<String> {
         text.to_lowercase()
             .split_whitespace()
             .map(|w| {

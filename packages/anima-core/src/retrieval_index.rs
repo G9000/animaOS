@@ -4,7 +4,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 use crate::lex::SimpleBm25Index;
@@ -101,8 +102,9 @@ impl RetrievalManifest {
 }
 
 pub fn load_manifest(path: &Path) -> crate::Result<RetrievalManifest> {
-    let raw = fs::read_to_string(path)
-        .map_err(|e| crate::Error::Io(format!("read retrieval manifest {}: {e}", path.display())))?;
+    let raw = fs::read_to_string(path).map_err(|e| {
+        crate::Error::Io(format!("read retrieval manifest {}: {e}", path.display()))
+    })?;
     serde_json::from_str(&raw).map_err(|e| {
         crate::Error::Serialization(format!(
             "deserialize retrieval manifest {}: {e}",
@@ -126,10 +128,14 @@ pub fn save_manifest(path: &Path, manifest: &RetrievalManifest) -> crate::Result
             ))
         })?;
     }
-    atomic_write(path, format!("{serialized}\n").as_bytes(), "retrieval manifest")
+    atomic_write(
+        path,
+        format!("{serialized}\n").as_bytes(),
+        "retrieval manifest",
+    )
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemoryIndexDocument {
     pub record_id: u64,
     pub user_id: u64,
@@ -139,6 +145,65 @@ pub struct MemoryIndexDocument {
     pub category: String,
     pub importance: u8,
     pub created_at: i64,
+}
+
+#[derive(Deserialize)]
+struct PersistedMemoryIndexDocument {
+    record_id: u64,
+    user_id: u64,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    lexical_terms: Vec<String>,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    source_type: String,
+    category: String,
+    importance: u8,
+    created_at: i64,
+}
+
+impl Serialize for MemoryIndexDocument {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let lexical_terms = SimpleBm25Index::tokenize(&self.text);
+        let mut state = serializer.serialize_struct("MemoryIndexDocument", 8)?;
+        state.serialize_field("record_id", &self.record_id)?;
+        state.serialize_field("user_id", &self.user_id)?;
+        state.serialize_field("lexical_terms", &lexical_terms)?;
+        state.serialize_field("embedding", &self.embedding)?;
+        state.serialize_field("source_type", &self.source_type)?;
+        state.serialize_field("category", &self.category)?;
+        state.serialize_field("importance", &self.importance)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MemoryIndexDocument {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let persisted = PersistedMemoryIndexDocument::deserialize(deserializer)?;
+        let text = if persisted.text.is_empty() {
+            persisted.lexical_terms.join(" ")
+        } else {
+            persisted.text
+        };
+        Ok(Self {
+            record_id: persisted.record_id,
+            user_id: persisted.user_id,
+            text,
+            embedding: persisted.embedding,
+            source_type: persisted.source_type,
+            category: persisted.category,
+            importance: persisted.importance,
+            created_at: persisted.created_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,7 +216,7 @@ pub struct MemorySearchHit {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptIndexDocument {
     pub thread_id: u64,
     pub user_id: u64,
@@ -160,6 +225,62 @@ pub struct TranscriptIndexDocument {
     pub keywords: Vec<String>,
     pub text: String,
     pub date_start: i64,
+}
+
+#[derive(Deserialize)]
+struct PersistedTranscriptIndexDocument {
+    thread_id: u64,
+    user_id: u64,
+    transcript_ref: String,
+    summary: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    lexical_terms: Vec<String>,
+    date_start: i64,
+}
+
+impl Serialize for TranscriptIndexDocument {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let lexical_terms = SimpleBm25Index::tokenize(&transcript_search_text(self));
+        let mut state = serializer.serialize_struct("TranscriptIndexDocument", 7)?;
+        state.serialize_field("thread_id", &self.thread_id)?;
+        state.serialize_field("user_id", &self.user_id)?;
+        state.serialize_field("transcript_ref", &self.transcript_ref)?;
+        state.serialize_field("summary", &self.summary)?;
+        state.serialize_field("keywords", &self.keywords)?;
+        state.serialize_field("lexical_terms", &lexical_terms)?;
+        state.serialize_field("date_start", &self.date_start)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for TranscriptIndexDocument {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let persisted = PersistedTranscriptIndexDocument::deserialize(deserializer)?;
+        let text = if persisted.text.is_empty() {
+            persisted.lexical_terms.join(" ")
+        } else {
+            persisted.text
+        };
+        Ok(Self {
+            thread_id: persisted.thread_id,
+            user_id: persisted.user_id,
+            transcript_ref: persisted.transcript_ref,
+            summary: persisted.summary,
+            keywords: persisted.keywords,
+            text,
+            date_start: persisted.date_start,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -393,22 +514,29 @@ fn save_memory_lexical_store(root: &Path, store: &MemoryLexicalIndexStore) -> cr
             path.display()
         ))
     })?;
-    atomic_write(&path, format!("{serialized}\n").as_bytes(), "memory lexical index")
+    atomic_write(
+        &path,
+        format!("{serialized}\n").as_bytes(),
+        "memory lexical index",
+    )
 }
 
 fn sync_memory_lexical_store(
     root: &Path,
     documents: &[MemoryIndexDocument],
     user_id: u64,
+    previous_documents_state: Option<SourceDocumentState>,
 ) -> crate::Result<()> {
     let mut store = match load_memory_lexical_store(root) {
-        Ok(Some(store)) if store.documents_state == current_memory_documents_state(root)? => store,
+        Ok(Some(store)) if store.documents_state == previous_documents_state => store,
         Ok(None) | Ok(Some(_)) | Err(_) => build_memory_lexical_store(root, documents)?,
     };
 
-    if let Some(user_index) =
-        build_memory_user_lexical_index(documents.iter().filter(|document| document.user_id == user_id))
-    {
+    if let Some(user_index) = build_memory_user_lexical_index(
+        documents
+            .iter()
+            .filter(|document| document.user_id == user_id),
+    ) {
         store.users.insert(user_id, user_index);
     } else {
         store.users.remove(&user_id);
@@ -420,7 +548,9 @@ fn sync_memory_lexical_store(
 
 fn load_or_rebuild_memory_lexical_store(root: &Path) -> crate::Result<MemoryLexicalIndexStore> {
     match load_memory_lexical_store(root) {
-        Ok(Some(store)) if store.documents_state == current_memory_documents_state(root)? => Ok(store),
+        Ok(Some(store)) if store.documents_state == current_memory_documents_state(root)? => {
+            Ok(store)
+        }
         Ok(None) | Err(_) => {
             let documents = load_memory_documents(root)?;
             let store = build_memory_lexical_store(root, &documents)?;
@@ -489,14 +619,19 @@ fn build_transcript_lexical_store(
     Ok(store)
 }
 
-fn load_transcript_lexical_store(root: &Path) -> crate::Result<Option<TranscriptLexicalIndexStore>> {
+fn load_transcript_lexical_store(
+    root: &Path,
+) -> crate::Result<Option<TranscriptLexicalIndexStore>> {
     let path = transcript_lexical_index_path(root);
     if !path.exists() {
         return Ok(None);
     }
 
     let raw = fs::read_to_string(&path).map_err(|e| {
-        crate::Error::Io(format!("read transcript lexical index {}: {e}", path.display()))
+        crate::Error::Io(format!(
+            "read transcript lexical index {}: {e}",
+            path.display()
+        ))
     })?;
     let store: TranscriptLexicalIndexStore = serde_json::from_str(&raw).map_err(|e| {
         crate::Error::Serialization(format!(
@@ -536,14 +671,17 @@ fn sync_transcript_lexical_store(
     root: &Path,
     documents: &[TranscriptIndexDocument],
     user_id: u64,
+    previous_documents_state: Option<SourceDocumentState>,
 ) -> crate::Result<()> {
     let mut store = match load_transcript_lexical_store(root) {
-        Ok(Some(store)) if store.documents_state == current_transcript_documents_state(root)? => store,
+        Ok(Some(store)) if store.documents_state == previous_documents_state => store,
         Ok(None) | Ok(Some(_)) | Err(_) => build_transcript_lexical_store(root, documents)?,
     };
 
     if let Some(user_index) = build_transcript_user_lexical_index(
-        documents.iter().filter(|document| document.user_id == user_id),
+        documents
+            .iter()
+            .filter(|document| document.user_id == user_id),
     ) {
         store.users.insert(user_id, user_index);
     } else {
@@ -558,7 +696,9 @@ fn load_or_rebuild_transcript_lexical_store(
     root: &Path,
 ) -> crate::Result<TranscriptLexicalIndexStore> {
     match load_transcript_lexical_store(root) {
-        Ok(Some(store)) if store.documents_state == current_transcript_documents_state(root)? => Ok(store),
+        Ok(Some(store)) if store.documents_state == current_transcript_documents_state(root)? => {
+            Ok(store)
+        }
         Ok(None) | Err(_) => {
             let documents = load_transcript_documents(root)?;
             let store = build_transcript_lexical_store(root, &documents)?;
@@ -594,7 +734,10 @@ fn load_memory_documents(root: &Path) -> crate::Result<Vec<MemoryIndexDocument>>
     }
 
     let raw = fs::read_to_string(&path).map_err(|e| {
-        crate::Error::Io(format!("read memory index documents {}: {e}", path.display()))
+        crate::Error::Io(format!(
+            "read memory index documents {}: {e}",
+            path.display()
+        ))
     })?;
     serde_json::from_str(&raw).map_err(|e| {
         crate::Error::Serialization(format!(
@@ -621,7 +764,11 @@ fn save_memory_documents(root: &Path, documents: &[MemoryIndexDocument]) -> crat
             path.display()
         ))
     })?;
-    atomic_write(&path, format!("{serialized}\n").as_bytes(), "memory index documents")
+    atomic_write(
+        &path,
+        format!("{serialized}\n").as_bytes(),
+        "memory index documents",
+    )
 }
 
 fn load_transcript_documents(root: &Path) -> crate::Result<Vec<TranscriptIndexDocument>> {
@@ -644,7 +791,10 @@ fn load_transcript_documents(root: &Path) -> crate::Result<Vec<TranscriptIndexDo
     })
 }
 
-fn save_transcript_documents(root: &Path, documents: &[TranscriptIndexDocument]) -> crate::Result<()> {
+fn save_transcript_documents(
+    root: &Path,
+    documents: &[TranscriptIndexDocument],
+) -> crate::Result<()> {
     let path = transcript_documents_path(root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
@@ -671,7 +821,10 @@ fn save_transcript_documents(root: &Path, documents: &[TranscriptIndexDocument])
 fn atomic_write(path: &Path, contents: &[u8], label: &str) -> crate::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
-            crate::Error::Io(format!("create {label} directory {}: {e}", parent.display()))
+            crate::Error::Io(format!(
+                "create {label} directory {}: {e}",
+                parent.display()
+            ))
         })?;
     }
 
@@ -681,7 +834,10 @@ fn atomic_write(path: &Path, contents: &[u8], label: &str) -> crate::Result<()> 
         .write(true)
         .open(&temp_path)
         .map_err(|e| {
-            crate::Error::Io(format!("create temporary {label} {}: {e}", temp_path.display()))
+            crate::Error::Io(format!(
+                "create temporary {label} {}: {e}",
+                temp_path.display()
+            ))
         })?;
 
     if let Err(err) = temp_file.write_all(contents) {
@@ -702,33 +858,86 @@ fn atomic_write(path: &Path, contents: &[u8], label: &str) -> crate::Result<()> 
 
     drop(temp_file);
 
-    fs::rename(&temp_path, path).map_err(|e| {
+    replace_file(&temp_path, path, label).map_err(|e| {
         let _ = fs::remove_file(&temp_path);
-        crate::Error::Io(format!("replace {label} {}: {e}", path.display()))
+        e
     })
+}
+
+fn replace_file(source: &Path, destination: &Path, label: &str) -> crate::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        unsafe extern "system" {
+            fn MoveFileExW(
+                lp_existing_file_name: *const u16,
+                lp_new_file_name: *const u16,
+                dw_flags: u32,
+            ) -> i32;
+        }
+
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x00000001;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x00000008;
+
+        let source_wide = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+        let destination_wide = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+
+        let replaced = unsafe {
+            MoveFileExW(
+                source_wide.as_ptr(),
+                destination_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if replaced == 0 {
+            return Err(crate::Error::Io(format!(
+                "replace {label} {}: {}",
+                destination.display(),
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination).map_err(|e| {
+            crate::Error::Io(format!("replace {label} {}: {e}", destination.display()))
+        })
+    }
 }
 
 pub fn upsert_memory_document(root: &Path, document: MemoryIndexDocument) -> crate::Result<()> {
     let manifest = load_or_default_manifest(root)?;
+    let previous_documents_state = current_memory_documents_state(root)?;
     let mut documents = load_memory_documents(root)?;
     let user_id = document.user_id;
 
-    if let Some(existing) = documents
-        .iter_mut()
-        .find(|existing| existing.user_id == document.user_id && existing.record_id == document.record_id)
-    {
+    if let Some(existing) = documents.iter_mut().find(|existing| {
+        existing.user_id == document.user_id && existing.record_id == document.record_id
+    }) {
         *existing = document;
     } else {
         documents.push(document);
     }
 
     save_memory_documents(root, &documents)?;
-    sync_memory_lexical_store(root, &documents, user_id)?;
+    sync_memory_lexical_store(root, &documents, user_id, previous_documents_state)?;
     save_root_manifest(root, &manifest)
 }
 
 pub fn delete_memory_document(root: &Path, user_id: u64, record_id: u64) -> crate::Result<bool> {
     let manifest = load_or_default_manifest(root)?;
+    let previous_documents_state = current_memory_documents_state(root)?;
     let mut documents = load_memory_documents(root)?;
     let before = documents.len();
     documents.retain(|document| !(document.user_id == user_id && document.record_id == record_id));
@@ -736,7 +945,7 @@ pub fn delete_memory_document(root: &Path, user_id: u64, record_id: u64) -> crat
 
     if deleted {
         save_memory_documents(root, &documents)?;
-        sync_memory_lexical_store(root, &documents, user_id)?;
+        sync_memory_lexical_store(root, &documents, user_id, previous_documents_state)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -745,6 +954,7 @@ pub fn delete_memory_document(root: &Path, user_id: u64, record_id: u64) -> crat
 
 pub fn delete_memory_documents_for_user(root: &Path, user_id: u64) -> crate::Result<u64> {
     let manifest = load_or_default_manifest(root)?;
+    let previous_documents_state = current_memory_documents_state(root)?;
     let mut documents = load_memory_documents(root)?;
     let before = documents.len();
     documents.retain(|document| document.user_id != user_id);
@@ -752,7 +962,7 @@ pub fn delete_memory_documents_for_user(root: &Path, user_id: u64) -> crate::Res
 
     if deleted > 0 {
         save_memory_documents(root, &documents)?;
-        sync_memory_lexical_store(root, &documents, user_id)?;
+        sync_memory_lexical_store(root, &documents, user_id, previous_documents_state)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -804,14 +1014,17 @@ pub fn search_memory_documents(
         .search(query, limit)
         .into_iter()
         .filter_map(|result| {
-            user_index.metadata.get(&result.frame_id).map(|document| MemorySearchHit {
-                record_id: document.record_id,
-                score: result.score,
-                source_type: document.source_type.clone(),
-                category: document.category.clone(),
-                importance: document.importance,
-                created_at: document.created_at,
-            })
+            user_index
+                .metadata
+                .get(&result.frame_id)
+                .map(|document| MemorySearchHit {
+                    record_id: document.record_id,
+                    score: result.score,
+                    source_type: document.source_type.clone(),
+                    category: document.category.clone(),
+                    importance: document.importance,
+                    created_at: document.created_at,
+                })
         })
         .collect())
 }
@@ -861,6 +1074,7 @@ pub fn upsert_transcript_document(
     document: TranscriptIndexDocument,
 ) -> crate::Result<()> {
     let manifest = load_or_default_manifest(root)?;
+    let previous_documents_state = current_transcript_documents_state(root)?;
     let mut documents = load_transcript_documents(root)?;
     let user_id = document.user_id;
 
@@ -873,12 +1087,17 @@ pub fn upsert_transcript_document(
     }
 
     save_transcript_documents(root, &documents)?;
-    sync_transcript_lexical_store(root, &documents, user_id)?;
+    sync_transcript_lexical_store(root, &documents, user_id, previous_documents_state)?;
     save_root_manifest(root, &manifest)
 }
 
-pub fn delete_transcript_document(root: &Path, user_id: u64, thread_id: u64) -> crate::Result<bool> {
+pub fn delete_transcript_document(
+    root: &Path,
+    user_id: u64,
+    thread_id: u64,
+) -> crate::Result<bool> {
     let manifest = load_or_default_manifest(root)?;
+    let previous_documents_state = current_transcript_documents_state(root)?;
     let mut documents = load_transcript_documents(root)?;
     let before = documents.len();
     documents.retain(|document| !(document.user_id == user_id && document.thread_id == thread_id));
@@ -886,7 +1105,7 @@ pub fn delete_transcript_document(root: &Path, user_id: u64, thread_id: u64) -> 
 
     if deleted {
         save_transcript_documents(root, &documents)?;
-        sync_transcript_lexical_store(root, &documents, user_id)?;
+        sync_transcript_lexical_store(root, &documents, user_id, previous_documents_state)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -895,6 +1114,7 @@ pub fn delete_transcript_document(root: &Path, user_id: u64, thread_id: u64) -> 
 
 pub fn delete_transcript_documents_for_user(root: &Path, user_id: u64) -> crate::Result<u64> {
     let manifest = load_or_default_manifest(root)?;
+    let previous_documents_state = current_transcript_documents_state(root)?;
     let mut documents = load_transcript_documents(root)?;
     let before = documents.len();
     documents.retain(|document| document.user_id != user_id);
@@ -902,7 +1122,7 @@ pub fn delete_transcript_documents_for_user(root: &Path, user_id: u64) -> crate:
 
     if deleted > 0 {
         save_transcript_documents(root, &documents)?;
-        sync_transcript_lexical_store(root, &documents, user_id)?;
+        sync_transcript_lexical_store(root, &documents, user_id, previous_documents_state)?;
     }
 
     save_root_manifest(root, &manifest)?;
@@ -956,11 +1176,11 @@ pub fn search_transcript_documents(
                 .metadata
                 .get(&result.frame_id)
                 .map(|document| TranscriptSearchHit {
-                thread_id: document.thread_id,
-                transcript_ref: document.transcript_ref.clone(),
-                score: result.score,
-                date_start: document.date_start,
-            })
+                    thread_id: document.thread_id,
+                    transcript_ref: document.transcript_ref.clone(),
+                    score: result.score,
+                    date_start: document.date_start,
+                })
         })
         .collect())
 }
