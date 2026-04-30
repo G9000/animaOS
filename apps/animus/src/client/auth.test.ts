@@ -26,6 +26,7 @@ describe("auth config", () => {
       serverUrl: "ws://localhost:3031",
       unlockToken: "test_token",
       username: "leo",
+      workspaceDir: join(tempDir, "workspace"),
     };
     writeConfig(path, config);
     const read = readConfig(path);

@@ -12,16 +12,32 @@ function shouldShow(field: { showWhen?: Record<string, unknown> }, values: Recor
   return Object.entries(field.showWhen).every(([k, v]) => values[k] === v);
 }
 
+function buildSavePayload(
+  schema: ModConfigSchema,
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (schema[key]?.type === "secret" && value === "***") continue;
+    payload[key] = value;
+  }
+  return payload;
+}
+
 export default function ConfigForm({ schema, values: initialValues, onSave }: ConfigFormProps) {
   const [values, setValues] = useState<Record<string, unknown>>(initialValues);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const set = (key: string, val: unknown) => setValues((prev) => ({ ...prev, [key]: val }));
 
   const handleSave = async () => {
     setSaving(true);
+    setError(null);
     try {
-      await onSave(values);
+      await onSave(buildSavePayload(schema, values));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
     }
@@ -98,6 +114,10 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
           </div>
         );
       })}
+
+      {error && (
+        <p className="font-mono text-[8px] text-destructive">{error}</p>
+      )}
 
       <button
         onClick={handleSave}

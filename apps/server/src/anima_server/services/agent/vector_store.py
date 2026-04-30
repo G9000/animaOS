@@ -409,7 +409,8 @@ def search_similar(
     db: Session | None = None,
     runtime_db: Session | None = None,
 ) -> list[dict[str, Any]]:
-    _maybe_cold_start_sync(user_id, db)
+    if runtime_db is None:
+        _maybe_cold_start_sync(user_id, db)
     store, owned_session = _get_store(db, runtime_db=runtime_db)
     try:
         results = store.search_by_vector(
@@ -418,7 +419,7 @@ def search_similar(
             limit=limit,
             category=category,
         )
-        return [
+        payload = [
             {
                 "id": r.item_id,
                 "content": r.content,
@@ -428,6 +429,16 @@ def search_similar(
             }
             for r in results
         ]
+        if owned_session is not None:
+            # StaticPool-backed SQLite tests share one connection; committing
+            # read-only owned sessions prevents close() from rolling back an
+            # outer request transaction on that same connection.
+            owned_session.commit()
+        return payload
+    except Exception:
+        if owned_session is not None:
+            owned_session.rollback()
+        raise
     finally:
         if owned_session is not None:
             owned_session.close()
@@ -450,7 +461,7 @@ def search_by_text(
             limit=limit,
             category=category,
         )
-        return [
+        payload = [
             {
                 "id": r.item_id,
                 "content": r.content,
@@ -460,6 +471,13 @@ def search_by_text(
             }
             for r in results
         ]
+        if owned_session is not None:
+            owned_session.commit()
+        return payload
+    except Exception:
+        if owned_session is not None:
+            owned_session.rollback()
+        raise
     finally:
         if owned_session is not None:
             owned_session.close()
@@ -504,7 +522,14 @@ def get_collection(
         def count(self) -> int:
             store, owned_session = _get_store(db, runtime_db=runtime_db)
             try:
-                return store.count(user_id)
+                count = store.count(user_id)
+                if owned_session is not None:
+                    owned_session.commit()
+                return count
+            except Exception:
+                if owned_session is not None:
+                    owned_session.rollback()
+                raise
             finally:
                 if owned_session is not None:
                     owned_session.close()

@@ -28,7 +28,15 @@ modules:
   #   path: ./mods/discord
   #   config:
   #     token: ${DISCORD_BOT_TOKEN}
-  
+
+  # Google integration module
+  - id: google
+    path: ./mods/google
+    config:
+      clientId: ${GOOGLE_CLIENT_ID}
+      clientSecret: ${GOOGLE_CLIENT_SECRET}
+      # redirectUri: "http://127.0.0.1:3034/google/callback"
+
   # User modules (from user-mods/)
   # - id: custom-integration
   #   path: ./user-mods/custom-integration

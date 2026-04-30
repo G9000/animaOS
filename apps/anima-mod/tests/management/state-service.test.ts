@@ -37,6 +37,25 @@ describe("StateService", () => {
     expect(state?.status).toBe("running");
   });
 
+  test("getState normalizes nullable database values", async () => {
+    sqlite
+      .query(
+        "INSERT INTO mod_state (mod_id, enabled, status, last_error, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      .run("partial", null, null, null, null, null);
+
+    const state = await stateService.getState("partial");
+
+    expect(state).toEqual({
+      modId: "partial",
+      enabled: false,
+      status: "stopped",
+      lastError: null,
+      startedAt: null,
+      updatedAt: null,
+    });
+  });
+
   test("setState updates existing state", async () => {
     await stateService.setState("telegram", { enabled: true, status: "running" });
     await stateService.setState("telegram", { status: "error", lastError: "connection lost" });
@@ -78,6 +97,14 @@ describe("EventService", () => {
     const events = await eventService.getEvents("telegram");
     expect(events).toHaveLength(1);
     expect(events[0].eventType).toBe("started");
+  });
+
+  test("getEvents parses structured event details", async () => {
+    await eventService.logEvent("telegram", "error", { message: "connection lost" });
+
+    const events = await eventService.getEvents("telegram");
+
+    expect(events[0].detail).toEqual({ message: "connection lost" });
   });
 
   test("getEvents returns events in reverse chronological order", async () => {

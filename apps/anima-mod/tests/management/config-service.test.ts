@@ -49,14 +49,22 @@ describe("ConfigService", () => {
     expect(config.token).toBe("abc123");
   });
 
-  test("setConfig validates required fields", () => {
-    expect(
+  test("setConfig validates required fields", async () => {
+    await expect(
       service.setConfig("telegram", { mode: "polling" }, telegramSchema)
     ).rejects.toThrow(/required/i);
   });
 
-  test("setConfig validates enum values", () => {
-    expect(
+  test("setConfig validates partial updates against existing config", async () => {
+    await service.setConfig("telegram", { token: "abc123", mode: "polling" }, telegramSchema);
+    await service.setConfig("telegram", { mode: "webhook" }, telegramSchema);
+
+    const config = await service.getConfig("telegram", { maskSecrets: false });
+    expect(config).toEqual({ token: "abc123", mode: "webhook" });
+  });
+
+  test("setConfig validates enum values", async () => {
+    await expect(
       service.setConfig("telegram", { token: "abc", mode: "invalid" }, telegramSchema)
     ).rejects.toThrow(/invalid.*mode/i);
   });

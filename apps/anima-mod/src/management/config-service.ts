@@ -35,7 +35,8 @@ export class ConfigService {
     schema?: ModConfigSchema
   ): Promise<void> {
     if (schema) {
-      this.validate(values, schema);
+      const existing = await this.getConfig(modId, { maskSecrets: false });
+      this.validate({ ...existing, ...values }, schema);
     }
 
     for (const [key, value] of Object.entries(values)) {

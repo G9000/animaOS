@@ -1,10 +1,13 @@
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
+import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import * as schema from "./schema.js";
 
-let db: ReturnType<typeof drizzle> | null = null;
+type ModDatabase = BunSQLiteDatabase<typeof schema>;
+
+let db: ModDatabase | null = null;
 let sqlite: Database | null = null;
 
 const CREATE_TABLES_SQL = `
@@ -40,7 +43,7 @@ const CREATE_TABLES_SQL = `
   );
 `;
 
-export function getDb(dbPath = "./data/a-mod.db"): ReturnType<typeof drizzle> {
+export function getDb(dbPath = "./data/a-mod.db"): ModDatabase {
   if (db) return db;
 
   mkdirSync(dirname(dbPath), { recursive: true });

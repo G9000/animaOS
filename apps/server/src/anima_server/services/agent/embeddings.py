@@ -467,6 +467,7 @@ def _semantic_ranked_ids(
     query_embedding: list[float],
     limit: int,
     similarity_threshold: float,
+    runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
     rust_ranked = _semantic_ranked_ids_via_rust(
         db=db,
@@ -489,6 +490,7 @@ def _semantic_ranked_ids(
             query_embedding=query_embedding,
             limit=limit,
             db=db,
+            runtime_db=runtime_db,
         )
     except Exception:
         logger.debug("Semantic search failed in hybrid_search")
@@ -816,8 +818,11 @@ def sync_embeddings_to_runtime(
 
         if repaired_any:
             soul_db.flush()
-        if count > 0:
-            runtime_db.commit()
+        # Commit even when no embeddings were written. In tests the runtime
+        # engine uses StaticPool, so closing this owned read/write session
+        # without a commit can roll back an outer request transaction sharing
+        # the same SQLite connection.
+        runtime_db.commit()
         return count
     except Exception:
         runtime_db.rollback()
@@ -985,6 +990,7 @@ async def hybrid_search(
     keyword_weight: float = 0.5,
     tags: list[str] | None = None,
     tag_match_mode: str = "any",
+    runtime_db: Session | None = None,
 ) -> HybridSearchResult:
     """Combined semantic + keyword search over memory items using RRF merge.
 
@@ -1026,6 +1032,7 @@ async def hybrid_search(
             query_embedding=query_embedding,
             limit=limit,
             similarity_threshold=similarity_threshold,
+            runtime_db=runtime_db,
         )
 
     # --- Keyword leg (BM25) ---
@@ -1033,7 +1040,13 @@ async def hybrid_search(
     try:
         from anima_server.services.agent.bm25_index import bm25_search
 
-        keyword_ranked = bm25_search(user_id, query=prepared_query, limit=limit, db=db)
+        keyword_ranked = bm25_search(
+            user_id,
+            query=prepared_query,
+            limit=limit,
+            db=db,
+            runtime_db=runtime_db,
+        )
     except Exception:
         logger.debug("BM25 keyword search failed in hybrid_search")
 

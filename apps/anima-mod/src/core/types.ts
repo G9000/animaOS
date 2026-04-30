@@ -28,6 +28,28 @@ export interface ModContext {
   dispatch: DispatchBus;
 }
 
+/**
+ * Schema for a single tool a mod exposes to the cognitive core.
+ * The management API aggregates these at GET /api/tools so the Python
+ * server can build @tool wrappers dynamically — no server code per mod.
+ */
+export interface ModToolSchema {
+  /** Python-safe function name (snake_case) */
+  name: string;
+  /** LLM-facing description */
+  description: string;
+  /** Path relative to the mod prefix, e.g. "/gmail/search" */
+  endpoint: string;
+  /** JSON Schema (type: "object") for the tool's arguments. userId is injected automatically. */
+  parameters: {
+    type: "object";
+    // Values are standard JSON Schema property descriptors — use [key: string]: unknown
+    // to allow array/enum fields without an exhaustive union type here.
+    properties: Record<string, { type: string; [key: string]: unknown }>;
+    required?: string[];
+  };
+}
+
 /** Module interface - all a-mod modules implement this */
 export interface Mod {
   /** Unique module identifier (kebab-case recommended) */
@@ -66,6 +88,13 @@ export interface Mod {
 
   /** Optional setup wizard steps. If present, desktop shows wizard for first-time setup. */
   setupGuide?: SetupStep[];
+
+  /**
+   * Tools this mod exposes to the cognitive core.
+   * Advertised via GET /api/tools — the Python server builds @tool wrappers
+   * dynamically so no server-side code is needed per mod.
+   */
+  toolSchemas?: ModToolSchema[];
 }
 
 /** Logger interface */

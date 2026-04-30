@@ -1,4 +1,5 @@
 import { Elysia } from "elysia";
+import type { AnyElysia } from "elysia";
 
 export type ModEvent =
   | { type: "mod:status"; modId: string; status: string; error?: string }
@@ -16,7 +17,7 @@ export function broadcastModEvent(event: ModEvent): void {
   }
 }
 
-export function createWsRouter(): Elysia {
+export function createWsRouter(): AnyElysia {
   return new Elysia().ws("/api/events", {
     open(ws) {
       const handler = (event: ModEvent) => {
@@ -32,5 +33,5 @@ export function createWsRouter(): Elysia {
     message() {
       // Client doesn't send messages — this is a push-only channel
     },
-  });
+  }) as unknown as AnyElysia;
 }

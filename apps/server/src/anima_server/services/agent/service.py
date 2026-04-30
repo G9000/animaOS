@@ -24,6 +24,7 @@ from anima_server.services.agent.companion import (
     get_or_build_companion,
     invalidate_companion,
 )
+from anima_server.services.agent.client_actions import build_client_action_runtime
 from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
@@ -80,7 +81,7 @@ from anima_server.services.agent.tool_context import (
     clear_tool_context,
     set_tool_context,
 )
-from anima_server.services.agent.tools import get_tools
+from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.health.event_logger import emit as health_emit
@@ -175,12 +176,19 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
             db, runtime_db=runtime_db)
 
     runner = get_or_build_runner()
+    client_action_runtime = build_client_action_runtime(user_id)
+    prepared_action_schemas: list[dict[str, Any]] = []
+    if client_action_runtime is not None:
+        prepared_action_schemas = prepare_action_tool_schemas(
+            list(client_action_runtime.action_tool_schemas)
+        )
     result = await runner.invoke(
         user_message,
         user_id,
         history,
         memory_blocks=memory_blocks,
         dry_run=True,
+        extra_tool_schemas=prepared_action_schemas,
     )
     assert isinstance(result, DryRunResult)
     return result
@@ -407,40 +415,52 @@ async def _execute_agent_turn(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
 ) -> AgentResult:
-    if thread_id is not None:
-        thread_lock = get_thread_lock(thread_id)
-        async with thread_lock:
-            return await _execute_agent_turn_locked(
-                user_message,
-                user_id,
-                db,
-                runtime_db,
-                thread_id=thread_id,
-                event_callback=event_callback,
-                source=source,
-                tool_delegate=tool_delegate,
-                delegated_tool_names=delegated_tool_names,
-                extra_tool_schemas=extra_tool_schemas,
-            )
-    else:
-        # Hold the creation lock through thread lock acquisition so that
-        # concurrent first-turn requests can't race on get_or_create_thread()
-        # with uncommitted DB sessions.
-        async with get_user_creation_lock(user_id):
-            resolved_thread_id = _resolve_thread_id(user_id, runtime_db)
-            thread_lock = get_thread_lock(resolved_thread_id)
+    client_action_runtime = None
+    if tool_delegate is None:
+        client_action_runtime = build_client_action_runtime(user_id)
+        if client_action_runtime is not None:
+            tool_delegate = client_action_runtime.delegate
+            delegated_tool_names = client_action_runtime.delegated_tool_names
+            extra_tool_schemas = list(client_action_runtime.action_tool_schemas)
+
+    try:
+        if thread_id is not None:
+            thread_lock = get_thread_lock(thread_id)
             async with thread_lock:
                 return await _execute_agent_turn_locked(
                     user_message,
                     user_id,
                     db,
                     runtime_db,
+                    thread_id=thread_id,
                     event_callback=event_callback,
                     source=source,
                     tool_delegate=tool_delegate,
                     delegated_tool_names=delegated_tool_names,
                     extra_tool_schemas=extra_tool_schemas,
                 )
+        else:
+            # Hold the creation lock through thread lock acquisition so that
+            # concurrent first-turn requests can't race on get_or_create_thread()
+            # with uncommitted DB sessions.
+            async with get_user_creation_lock(user_id):
+                resolved_thread_id = _resolve_thread_id(user_id, runtime_db)
+                thread_lock = get_thread_lock(resolved_thread_id)
+                async with thread_lock:
+                    return await _execute_agent_turn_locked(
+                        user_message,
+                        user_id,
+                        db,
+                        runtime_db,
+                        event_callback=event_callback,
+                        source=source,
+                        tool_delegate=tool_delegate,
+                        delegated_tool_names=delegated_tool_names,
+                        extra_tool_schemas=extra_tool_schemas,
+                    )
+    finally:
+        if client_action_runtime is not None:
+            client_action_runtime.close()
 
 
 def _resolve_thread_id(user_id: int, runtime_db: Session) -> int:
@@ -691,6 +711,7 @@ async def _prepare_turn_context(
             query=user_message,
             limit=15,
             similarity_threshold=0.25,
+            runtime_db=runtime_db,
         )
         retrieval_ms = (time.monotonic() - retrieval_started) * 1000.0
         query_embedding = search_result.query_embedding
@@ -937,17 +958,15 @@ async def _invoke_turn_runtime(
         tool_executor: ToolExecutor | None = None
 
         prepared_action_schemas: list[dict[str, Any]] = []
+        if extra_tool_schemas:
+            prepared_action_schemas = prepare_action_tool_schemas(
+                extra_tool_schemas)
         if tool_delegate:
             tool_executor = ToolExecutor(
                 get_tools(),
                 delegate=tool_delegate,
                 delegated_tool_names=delegated_tool_names,
             )
-            if extra_tool_schemas:
-                from anima_server.services.agent.tools import prepare_action_tool_schemas
-
-                prepared_action_schemas = prepare_action_tool_schemas(
-                    extra_tool_schemas)
 
         try:
             return await runner.invoke(

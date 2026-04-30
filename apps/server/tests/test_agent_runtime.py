@@ -36,6 +36,21 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+ACTION_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": "Execute a shell command through Animus.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+            },
+            "required": ["command"],
+        },
+    },
+}
+
 
 class QueueAdapter(BaseLLMAdapter):
     provider = "test"
@@ -316,6 +331,75 @@ async def test_text_response_coerced_to_send_message_when_not_forced() -> None:
     assert result.stop_reason == StopReason.TERMINAL_TOOL.value
     assert len(adapter.requests) == 1
     assert adapter.requests[0].force_tool_call is False
+
+
+@pytest.mark.asyncio
+async def test_dry_run_includes_connected_action_tools_as_allowed_tools() -> None:
+    runtime = AgentRuntime(
+        adapter=QueueAdapter([]),
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=2,
+    )
+
+    result = await runtime.invoke(
+        "inspect files",
+        user_id=1,
+        history=[],
+        dry_run=True,
+        extra_tool_schemas=[ACTION_TOOL_SCHEMA],
+    )
+
+    assert "send_message" in result.allowed_tools
+    assert "bash" in result.allowed_tools
+    assert {schema["name"] for schema in result.tool_schemas} >= {
+        "send_message",
+        "bash",
+    }
+    assert "Core Action Tools" in result.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_step_trace_includes_action_tool_schemas() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={"message": "done"},
+                    ),
+                )
+            )
+        ]
+    )
+    events: list[AgentStreamEvent] = []
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=2,
+    )
+
+    async def collect(event: AgentStreamEvent) -> None:
+        events.append(event)
+
+    await runtime.invoke(
+        "inspect files",
+        user_id=1,
+        history=[],
+        event_callback=collect,
+        extra_tool_schemas=[ACTION_TOOL_SCHEMA],
+    )
+
+    request_event = next(
+        event
+        for event in events
+        if event.event == "step_state" and event.data.get("phase") == "request"
+    )
+    assert "bash" in request_event.data["allowedTools"]
+    assert "bash" in request_event.data["toolSchemas"]
 
 
 @pytest.mark.asyncio

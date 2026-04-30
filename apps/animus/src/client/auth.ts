@@ -6,6 +6,7 @@ export interface AnimusConfig {
   serverUrl: string;
   unlockToken: string;
   username: string;
+  workspaceDir?: string;
 }
 
 const DEFAULT_CONFIG_PATH = join(homedir(), ".animus", "config.json");

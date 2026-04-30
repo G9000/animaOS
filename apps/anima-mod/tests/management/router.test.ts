@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { Elysia } from "elysia";
 import { treaty } from "@elysiajs/eden";
 import { Database } from "bun:sqlite";
@@ -37,18 +37,21 @@ describe("Management API", () => {
   let sqlite: Database;
   let app: Elysia;
   let client: ReturnType<typeof treaty>;
+  let stateService: StateService;
+  let eventService: EventService;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     sqlite = new Database(":memory:");
     sqlite.exec(CREATE_TABLES);
     const db = drizzle(sqlite, { schema });
 
     const configService = new ConfigService(db);
-    const stateService = new StateService(db);
-    const eventService = new EventService(db);
+    stateService = new StateService(db);
+    eventService = new EventService(db);
 
     // Seed state
     await stateService.setState("test-mod", { enabled: true, status: "running" });
+    await eventService.logEvent("test-mod", "started", { source: "test" });
 
     const modsMap = new Map([
       ["test-mod", {
@@ -62,13 +65,35 @@ describe("Management API", () => {
       configService,
       stateService,
       eventService,
+      onEnable: async (id) => {
+        await stateService.setState(id, {
+          enabled: true,
+          status: "running",
+          startedAt: "2026-04-30T00:00:00.000Z",
+          lastError: null,
+        });
+        await eventService.logEvent(id, "started");
+      },
+      onDisable: async (id) => {
+        await stateService.setState(id, { enabled: false, status: "stopped" });
+        await eventService.logEvent(id, "stopped");
+      },
+      onRestart: async (id) => {
+        await stateService.setState(id, {
+          enabled: true,
+          status: "running",
+          startedAt: "2026-04-30T00:00:00.000Z",
+          lastError: null,
+        });
+        await eventService.logEvent(id, "started");
+      },
     });
 
     app = new Elysia().use(router);
     client = treaty(app);
   });
 
-  afterAll(() => sqlite.close());
+  afterEach(() => sqlite.close());
 
   test("GET /api/mods lists all mods", async () => {
     const { data } = await client.api.mods.get();
@@ -83,6 +108,8 @@ describe("Management API", () => {
     expect(data!.id).toBe("test-mod");
     expect(data!.configSchema).toBeDefined();
     expect(data!.setupGuide).toHaveLength(1);
+    expect(data!.events).toHaveLength(1);
+    expect(data!.events[0].detail).toEqual({ source: "test" });
   });
 
   test("PUT /api/mods/:id/config updates config", async () => {
@@ -91,10 +118,61 @@ describe("Management API", () => {
       mode: "polling",
     });
     expect(error).toBeNull();
+    expect(data!.state.status).toBe("running");
+
+    const events = await client.api.mods({ id: "test-mod" }).events.get();
+    const configEvent = events.data!.find((event) => event.eventType === "config_changed");
+    expect(configEvent!.detail).toEqual({ fields: ["mode", "token"] });
+    expect(JSON.stringify(configEvent!.detail)).not.toContain("new-token");
   });
 
   test("GET /api/mods/:id/health returns status", async () => {
     const { data } = await client.api.mods({ id: "test-mod" }).health.get();
     expect(data!.status).toBe("running");
+  });
+
+  test("GET /api/mods/:id/events returns recent events", async () => {
+    await eventService.logEvent("test-mod", "config_changed", { key: "token" });
+
+    const { data } = await client.api.mods({ id: "test-mod" }).events.get();
+
+    expect(data).toHaveLength(2);
+    expect(data![0].eventType).toBe("config_changed");
+    expect(data![0].detail).toEqual({ key: "token" });
+  });
+
+  test("GET /api/mods/:id/events ignores invalid limits", async () => {
+    const response = await app.handle(
+      new Request("http://localhost/api/mods/test-mod/events?limit=not-a-number"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveLength(1);
+  });
+
+  test("POST /api/mods/:id/disable returns refreshed state", async () => {
+    const { data, error } = await client.api.mods({ id: "test-mod" }).disable.post();
+
+    expect(error).toBeNull();
+    expect(data!.status).toBe("stopped");
+    expect(data!.enabled).toBe(false);
+  });
+
+  test("POST /api/mods/:id/enable returns refreshed state", async () => {
+    await stateService.setState("test-mod", { enabled: false, status: "stopped" });
+
+    const { data, error } = await client.api.mods({ id: "test-mod" }).enable.post();
+
+    expect(error).toBeNull();
+    expect(data!.status).toBe("running");
+    expect(data!.enabled).toBe(true);
+  });
+
+  test("POST /api/mods/:id/restart returns refreshed state", async () => {
+    const { data, error } = await client.api.mods({ id: "test-mod" }).restart.post();
+
+    expect(error).toBeNull();
+    expect(data!.status).toBe("running");
+    expect(data!.enabled).toBe(true);
   });
 });

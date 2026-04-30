@@ -30,6 +30,7 @@ This repo is a mixed monorepo:
 - `apps/server`: Python + FastAPI — the cognitive core. SQLAlchemy models in `src/anima_server/models/`, Alembic revisions in `alembic/versions/`. All new backend work goes here.
 - `apps/api`: Bun + Hono bot gateway. LangChain and Drizzle have been stripped — this now serves as a thin adapter layer (e.g. Telegram). Not a general backend.
 - `apps/desktop`: React + Vite + Tailwind + Tauri desktop app (`src/pages`, `src/components`, `src/context`, `src/lib`; Rust host in `src-tauri/`).
+- `apps/anima-mod`: Bun + Elysia mod runtime (port 3034). Self-contained skill/integration modules ("mods") live in `mods/`. Each mod exposes config schemas, setup wizards, and HTTP routes. The cognitive core can call mod APIs via thin `@tool` adapters. Example: `mods/google/` for Gmail + Calendar.
 - `docs/`: project documentation and thesis.
 
 ## Build, Test, and Development Commands

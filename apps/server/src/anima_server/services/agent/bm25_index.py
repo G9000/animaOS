@@ -79,7 +79,12 @@ _user_indices: dict[int, BM25Index] = {}
 _indices_lock: Lock = Lock()
 
 
-def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
+def get_or_build_index(
+    user_id: int,
+    *,
+    db: Session,
+    runtime_db: Session | None = None,
+) -> BM25Index:
     """Lazy-load the BM25 index for a user.
 
     Data source priority:
@@ -97,24 +102,31 @@ def get_or_build_index(user_id: int, *, db: Session) -> BM25Index:
 
     # Try RuntimeEmbedding in PG
     try:
-        from anima_server.db.runtime import get_runtime_session_factory
         from anima_server.models.runtime_embedding import RuntimeEmbedding
 
-        runtime_db = get_runtime_session_factory()()
+        owned_runtime_db: Session | None = None
+        active_runtime_db = runtime_db
+        if active_runtime_db is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            owned_runtime_db = get_runtime_session_factory()()
+            active_runtime_db = owned_runtime_db
         try:
-            rows = runtime_db.execute(
+            rows = active_runtime_db.execute(
                 select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
                     RuntimeEmbedding.user_id == user_id
                 )
             ).all()
             docs = [(row[0], row[1]) for row in rows]
         finally:
-            # Commit before close so that closing a read-only session on a
-            # shared StaticPool connection (tests) does not issue ROLLBACK and
-            # undo pending writes from an outer session.  In production each
-            # session has its own PG connection so commit() is a harmless no-op.
-            runtime_db.commit()
-            runtime_db.close()
+            if owned_runtime_db is not None:
+                # Commit before close so that closing a read-only session on a
+                # shared StaticPool connection (tests) does not issue ROLLBACK
+                # and undo pending writes from an outer session.  In production
+                # each session has its own PG connection so commit() is a
+                # harmless no-op.
+                owned_runtime_db.commit()
+                owned_runtime_db.close()
     except Exception:
         pass
 
@@ -150,6 +162,7 @@ def bm25_search(
     query: str,
     limit: int = 20,
     db: Session,
+    runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
     """Search using BM25. Returns (item_id, score) pairs ranked descending."""
     rust_hits = _search_memory_index_via_rust(
@@ -161,7 +174,7 @@ def bm25_search(
     if rust_hits:
         return rust_hits
 
-    index = get_or_build_index(user_id, db=db)
+    index = get_or_build_index(user_id, db=db, runtime_db=runtime_db)
     return index.search(query, limit=limit)
 
 

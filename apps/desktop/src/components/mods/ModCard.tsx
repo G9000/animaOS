@@ -6,10 +6,28 @@ interface ModCardProps {
   version: string;
   status: string;
   enabled: boolean;
-  onToggle: (id: string, enable: boolean) => void;
+  hasConfigSchema?: boolean;
+  hasSetupGuide?: boolean;
+  toolsCount?: number;
+  canUninstall?: boolean;
+  busy?: boolean;
+  error?: string | null;
+  onToggle: (id: string, enable: boolean) => void | Promise<void>;
 }
 
-export default function ModCard({ id, version, status, enabled, onToggle }: ModCardProps) {
+export default function ModCard({
+  id,
+  version,
+  status,
+  enabled,
+  hasConfigSchema,
+  hasSetupGuide,
+  toolsCount = 0,
+  canUninstall,
+  busy,
+  error,
+  onToggle,
+}: ModCardProps) {
   const navigate = useNavigate();
 
   return (
@@ -26,6 +44,29 @@ export default function ModCard({ id, version, status, enabled, onToggle }: ModC
         <StatusBadge status={status} />
       </div>
 
+      <div className="flex flex-wrap gap-1 min-h-[18px]">
+        {hasConfigSchema && (
+          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+            CFG
+          </span>
+        )}
+        {hasSetupGuide && (
+          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+            SETUP
+          </span>
+        )}
+        {toolsCount > 0 && (
+          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+            TOOLS {toolsCount}
+          </span>
+        )}
+        {canUninstall && (
+          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+            USER
+          </span>
+        )}
+      </div>
+
       <div className="flex items-center justify-between mt-3">
         <span className="font-mono text-[8px] text-muted-foreground/40">v{version}</span>
         <button
@@ -33,9 +74,11 @@ export default function ModCard({ id, version, status, enabled, onToggle }: ModC
             e.stopPropagation();
             onToggle(id, !enabled);
           }}
+          disabled={busy}
           className={`w-7 h-4 rounded-full transition-colors relative ${
             enabled ? "bg-primary/30" : "bg-input"
-          }`}
+          } disabled:opacity-40`}
+          title={enabled ? "Disable mod" : "Enable mod"}
         >
           <div
             className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${
@@ -44,6 +87,11 @@ export default function ModCard({ id, version, status, enabled, onToggle }: ModC
           />
         </button>
       </div>
+      {error && (
+        <div className="font-mono text-[8px] text-destructive mt-2 truncate" title={error}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }

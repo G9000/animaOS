@@ -9,6 +9,7 @@ from anima_server.models import User
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.services.agent import list_agent_history, run_agent
 from anima_server.services.agent import service as agent_service
+from anima_server.services.agent.client_actions import ActionToolConnection, action_registry
 from anima_server.services.agent.compaction import compact_thread_context
 from anima_server.services.agent.persistence import create_run, persist_agent_result
 from anima_server.services.agent.prompt_budget import (
@@ -53,7 +54,6 @@ class RecordingRunner:
         history: list[agent_service.StoredMessage],
         **kwargs: object,
     ) -> AgentResult:
-        del kwargs
         self.requests.append(
             {
                 "user_message": user_message,
@@ -62,6 +62,8 @@ class RecordingRunner:
                     (message.role, message.content, message.tool_name, message.tool_call_id)
                     for message in history
                 ],
+                "extra_tool_schemas": kwargs.get("extra_tool_schemas"),
+                "tool_executor": kwargs.get("tool_executor"),
             }
         )
         reply = f"Reply to: {user_message}"
@@ -72,6 +74,11 @@ class RecordingRunner:
             stop_reason="end_turn",
             step_traces=[StepTrace(step_index=0, assistant_text=reply)],
         )
+
+
+class FakeWebSocket:
+    async def send_json(self, message: dict[str, object]) -> None:
+        del message
 
 
 @contextmanager
@@ -173,6 +180,55 @@ async def test_run_agent_passes_only_prior_turns_in_history(
         ("user", "first turn", None, None),
         ("assistant", "Reply to: first turn", None, None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_attaches_connected_animus_action_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="action-tools",
+                password_hash="not-used",
+                display_name="Action Tools",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            conn = ActionToolConnection(
+                websocket=FakeWebSocket(),
+                user_id=user.id,
+                username="animus",
+                action_tool_schemas=[
+                    {
+                        "name": "bash",
+                        "description": "Execute a shell command through Animus.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    }
+                ],
+            )
+            action_registry.add(conn)
+            try:
+                await run_agent("inspect files", user.id, soul_session, runtime_session)
+            finally:
+                action_registry.remove(conn)
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    extra_tool_schemas = runner.requests[0]["extra_tool_schemas"]
+    assert isinstance(extra_tool_schemas, list)
+    assert extra_tool_schemas[0]["function"]["name"] == "bash"
+    assert runner.requests[0]["tool_executor"] is not None
 
 
 def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:

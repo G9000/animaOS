@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     health_log_dir: str = ""
     health_log_retention_days: int = 7
     health_log_level: Literal["trace", "info", "warn", "error"] = "info"
+    mod_url: str = "http://127.0.0.1:3034"
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",

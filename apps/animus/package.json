@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "test": "bun test",
-    "build": "bun build src/index.ts --outdir dist --target node"
+    "build": "bun build src/index.ts --outdir dist --target bun"
   },
   "dependencies": {
     "ink": "^5.0.0",

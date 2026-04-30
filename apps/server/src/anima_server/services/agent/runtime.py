@@ -217,24 +217,11 @@ class AgentRuntime:
             conversation_turn_count=conversation_turn_count,
         )
 
-        # When action tools are registered (from a connected client like
-        # Animus CLI), append their descriptions to the system prompt so the
-        # model knows they exist alongside the server-side tools.
-        if extra_tool_schemas:
-            action_lines = []
-            for s in extra_tool_schemas:
-                fn = s.get("function", {})
-                name = fn.get("name", "")
-                desc = fn.get("description", "")
-                if name:
-                    action_lines.append(f"- {name}: {desc}")
-            if action_lines:
-                system_prompt += (
-                    "\n\nAction Tools (client-side execution):\n"
-                    + "\n".join(action_lines)
-                    + "\n\nThese action tools are fully registered and available. "
-                    "Use them via function calling just like any other tool."
-                )
+        system_prompt = _append_action_tool_prompt(
+            system_prompt,
+            extra_tool_schemas,
+        )
+        extra_tool_names = _action_tool_names(extra_tool_schemas)
 
         messages = build_conversation_messages(
             history,
@@ -244,7 +231,8 @@ class AgentRuntime:
 
         rules_solver = ToolRulesSolver(self._tool_rules)
         allowed_tool_names = tuple(
-            sorted(rules_solver.get_allowed_tools(self._tool_names)))
+            sorted(rules_solver.get_allowed_tools(self._tool_names) | extra_tool_names)
+        )
 
         # --- Dry-run: return prompt assembly without side effects ---
         if dry_run:
@@ -253,6 +241,12 @@ class AgentRuntime:
                 _tool_schema(self._tool_registry[name])
                 for name in allowed_tool_names
                 if name in self._tool_registry
+            ) + tuple(
+                _action_tool_schema_snapshot(schema)
+                for schema in extra_tool_schemas
+                if (name := _action_tool_name(schema))
+                and name in allowed_tool_names
+                and name not in self._tool_registry
             )
             estimated_tokens = estimate_message_tokens(
                 content_text=system_prompt,
@@ -304,11 +298,6 @@ class AgentRuntime:
             allowed_set = rules_solver.get_allowed_tools(self._tool_names)
             # Action tools from connected clients bypass the rules solver
             # — they are always allowed when registered.
-            extra_tool_names = frozenset(
-                s.get("function", {}).get("name", "")
-                for s in extra_tool_schemas
-                if s.get("function", {}).get("name")
-            )
             allowed_set = allowed_set | extra_tool_names
             # Exclude a tool only if it failed twice consecutively —
             # give the model one retry chance (matching the sandwich
@@ -335,6 +324,10 @@ class AgentRuntime:
                         for name in allowed_tool_names
                         if name in self._tool_registry
                     }
+                    for schema in extra_tool_schemas:
+                        name = _action_tool_name(schema)
+                        if name and name in allowed_tool_names and name not in schemas:
+                            schemas[name] = _action_tool_schema_snapshot(schema)
                 await event_callback(
                     build_step_request_event(
                         step_index,
@@ -1789,6 +1782,67 @@ def _snapshot_tool_calls(raw_tool_calls: object) -> tuple[ToolCall, ...]:
         )
 
     return tuple(tool_calls)
+
+
+def _append_action_tool_prompt(
+    system_prompt: str,
+    extra_tool_schemas: Sequence[dict[str, Any]],
+) -> str:
+    action_lines: list[str] = []
+    for schema in extra_tool_schemas:
+        snapshot = _action_tool_schema_snapshot(schema)
+        name = str(snapshot.get("name", "")).strip()
+        description = str(snapshot.get("description", "")).strip()
+        if name:
+            action_lines.append(f"- {name}: {description}")
+
+    if not action_lines:
+        return system_prompt
+
+    return (
+        system_prompt
+        + "\n\nCore Action Tools (client-side execution via Animus):\n"
+        + "\n".join(action_lines)
+        + "\n\nThese tools are part of the active tool surface when an Animus "
+        "client is connected. Use them via function calling like any other "
+        "core tool, and treat their outputs as authoritative runtime context."
+    )
+
+
+def _action_tool_names(
+    extra_tool_schemas: Sequence[dict[str, Any]],
+) -> frozenset[str]:
+    return frozenset(
+        name
+        for schema in extra_tool_schemas
+        if (name := _action_tool_name(schema))
+    )
+
+
+def _action_tool_name(schema: dict[str, Any]) -> str:
+    function = schema.get("function", {})
+    if isinstance(function, dict):
+        name = function.get("name", "")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    name = schema.get("name", "")
+    return name.strip() if isinstance(name, str) else ""
+
+
+def _action_tool_schema_snapshot(schema: dict[str, Any]) -> dict[str, Any]:
+    function = schema.get("function", {})
+    if isinstance(function, dict):
+        return {
+            "name": str(function.get("name", "")).strip(),
+            "description": str(function.get("description", "")).strip(),
+            "parameters": function.get("parameters", {}),
+        }
+
+    return {
+        "name": str(schema.get("name", "")).strip(),
+        "description": str(schema.get("description", "")).strip(),
+        "parameters": schema.get("parameters", {}),
+    }
 
 
 def _tool_schema(tool: Any) -> dict[str, Any]:

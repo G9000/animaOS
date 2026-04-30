@@ -1201,6 +1201,104 @@ def get_core_tools() -> list[Any]:
     ]
 
 
+_mod_tools_cache: list[Any] | None = None
+
+
+def reload_mod_tools() -> None:
+    """Bust the mod tools cache so the next agent turn re-fetches from anima-mod."""
+    global _mod_tools_cache
+    _mod_tools_cache = None
+
+
+def _load_mod_tools() -> list[Any]:
+    """Fetch tool schemas from the running anima-mod service and build @tool wrappers.
+
+    Returns an empty list (without caching) if the service is unreachable, so the
+    agent degrades gracefully and retries on the next turn.
+    """
+    global _mod_tools_cache
+    if _mod_tools_cache is not None:
+        return _mod_tools_cache
+
+    import httpx
+    from anima_server.config import settings
+
+    try:
+        resp = httpx.get(f"{settings.mod_url}/api/tools", timeout=5.0)
+        resp.raise_for_status()
+        schemas: list[dict[str, Any]] = resp.json()
+    except Exception as exc:
+        logger.debug("anima-mod tools unavailable: %s", exc)
+        return []  # don't cache — retry next turn
+
+    built: list[Any] = []
+    for schema in schemas:
+        try:
+            built.append(_build_mod_tool(schema))
+        except Exception as exc:
+            logger.warning("Skipping mod tool %r: %s", schema.get("name"), exc)
+
+    _mod_tools_cache = built
+    if built:
+        names = ", ".join(t.name for t in built)
+        logger.info("Loaded %d mod tool(s) from anima-mod: %s", len(built), names)
+    return built
+
+
+def _build_mod_tool(schema: dict[str, Any]) -> Any:
+    """Build a callable @tool from a ModToolSchema returned by GET /api/tools."""
+    import httpx
+    from anima_server.config import settings
+
+    mod_id: str = schema["modId"]
+    name: str = schema["name"]
+    description: str = schema["description"]
+    endpoint: str = schema["endpoint"]  # e.g. "/gmail/search"
+    params_schema: dict[str, Any] = schema["parameters"]
+
+    url = f"{settings.mod_url.rstrip('/')}/{mod_id}{endpoint}"
+
+    def _fn(**kwargs: Any) -> str:
+        from anima_server.services.agent.tool_context import get_tool_context
+        ctx = get_tool_context()
+        payload = {"userId": ctx.user_id, **kwargs}
+        try:
+            r = httpx.post(url, json=payload, timeout=30.0)
+            r.raise_for_status()
+            data = r.json()
+            if "error" in data:
+                return f"[{mod_id}] error: {data['error']}"
+            return str(data.get("result", data))
+        except httpx.ConnectError:
+            return (
+                f"[{mod_id}] unavailable — ensure anima-mod is running "
+                f"and the {mod_id} mod is enabled."
+            )
+        except httpx.HTTPStatusError as exc:
+            try:
+                err = exc.response.json()
+                msg = err.get("error") or err.get("message") or str(err)
+            except Exception:
+                msg = exc.response.text or f"HTTP {exc.response.status_code}"
+            return f"[{mod_id}] error ({exc.response.status_code}): {msg}"
+        except Exception as exc:
+            logger.warning("Mod tool %s failed: %s", name, exc)
+            return f"[{mod_id}] {name} failed: {exc}"
+
+    # Override signature so the executor's kwarg-filtering logic sees the real
+    # param names even though the underlying function uses **kwargs.
+    sig_params = [
+        inspect.Parameter(p, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for p in params_schema.get("properties", {})
+    ]
+    _fn.__signature__ = inspect.Signature(sig_params)  # type: ignore[attr-defined]
+    _fn.__name__ = name
+    _fn.name = name  # type: ignore[attr-defined]
+    _fn.description = description  # type: ignore[attr-defined]
+    _fn.args_schema = _SimpleSchema(params_schema)  # type: ignore[attr-defined]
+    return _fn
+
+
 def get_extension_tools() -> list[Any]:
     """Return optional extension tools (task management, intentions, etc.)."""
     return [
@@ -1222,6 +1320,7 @@ def get_extension_tools() -> list[Any]:
         current_datetime,
         recall_transcript,
         check_system_health,
+        *_load_mod_tools(),
     ]
 
 

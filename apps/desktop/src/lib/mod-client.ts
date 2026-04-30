@@ -11,6 +11,8 @@ export interface ModSummary {
   enabled: boolean;
   hasConfigSchema: boolean;
   hasSetupGuide: boolean;
+  toolsCount?: number;
+  canUninstall?: boolean;
 }
 
 export interface ModHealth {
@@ -28,12 +30,28 @@ export interface ModDetail {
   setupGuide: SetupStep[] | null;
   config: Record<string, unknown> | null;
   health: ModHealth | null;
+  events?: ModEvent[];
+  toolsCount?: number;
+  canUninstall?: boolean;
 }
 
 export interface InstallModResult {
   id?: string;
   status?: string;
   [key: string]: unknown;
+}
+
+export interface UninstallModResult {
+  id?: string;
+  status: string;
+}
+
+export interface ModEvent {
+  id: number;
+  modId: string;
+  eventType: string;
+  detail: Record<string, unknown> | null;
+  createdAt: string | null;
 }
 
 function buildModApiUrl(baseUrl: string, path: string): string {
@@ -125,8 +143,16 @@ function createModClient(baseUrl: string) {
         body: JSON.stringify({ source }),
       });
     },
+    uninstallMod(modId: string): Promise<UninstallModResult> {
+      return requestJson<UninstallModResult>(baseUrl, `/api/mods/${modId}/uninstall`, {
+        method: "POST",
+      });
+    },
     getModHealth(modId: string): Promise<ModHealth> {
       return requestJson<ModHealth>(baseUrl, `/api/mods/${modId}/health`);
+    },
+    getModEvents(modId: string): Promise<ModEvent[]> {
+      return requestJson<ModEvent[]>(baseUrl, `/api/mods/${modId}/events`);
     },
   };
 }

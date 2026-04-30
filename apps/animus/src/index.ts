@@ -2,29 +2,54 @@
 // apps/animus/src/index.ts
 import { readConfig, writeConfig, login, getConfigPath } from "./client/auth";
 import { runHeadless } from "./headless";
+import { parseCliArgs } from "./cli";
+import {
+  ensureWorkspaceDir,
+  resolveWorkspaceDir,
+} from "./workspace";
 
 const args = process.argv.slice(2);
-const serverFlag = args.indexOf("--server");
-
-// Validate --server has a value
-if (serverFlag >= 0 && (!args[serverFlag + 1] || args[serverFlag + 1].startsWith("--"))) {
-  console.error("Error: --server requires a URL argument (e.g. --server ws://localhost:3031)");
+let parsedArgs: ReturnType<typeof parseCliArgs>;
+try {
+  parsedArgs = parseCliArgs(args);
+} catch (err) {
+  console.error(err instanceof Error ? `Error: ${err.message}` : String(err));
   process.exit(1);
 }
-
-const serverUrl = serverFlag >= 0 ? args[serverFlag + 1] : undefined;
 
 async function main() {
   let config = readConfig();
 
+  if (parsedArgs.configCommand?.type === "show") {
+    const workspaceDir = resolveWorkspaceDir(config, parsedArgs.workspaceOverride);
+    const safeConfig = config
+      ? { ...config, unlockToken: config.unlockToken ? "[redacted]" : "", workspaceDir }
+      : { configPath: getConfigPath(), workspaceDir };
+    console.log(JSON.stringify(safeConfig, null, 2));
+    return;
+  }
+
+  if (parsedArgs.configCommand?.type === "set-workspace") {
+    if (!config) {
+      console.error("No Animus config found. Run `anima` once to log in before setting a workspace.");
+      process.exit(1);
+    }
+
+    const workspaceDir = ensureWorkspaceDir(parsedArgs.configCommand.workspaceDir);
+    config = { ...config, workspaceDir };
+    writeConfig(getConfigPath(), config);
+    console.log(`Workspace set to ${workspaceDir}`);
+    return;
+  }
+
   // Override server URL if provided
-  if (serverUrl && config) {
-    config = { ...config, serverUrl };
+  if (parsedArgs.serverUrl && config) {
+    config = { ...config, serverUrl: parsedArgs.serverUrl };
   }
 
   // If no config, prompt for login
   if (!config) {
-    const url = serverUrl || "ws://localhost:3031";
+    const url = parsedArgs.serverUrl || "ws://localhost:3031";
     console.log(`Connecting to ${url}`);
     console.log("Login required.");
 
@@ -39,6 +64,7 @@ async function main() {
 
     try {
       config = await login(url, username, password);
+      config = { ...config, workspaceDir: resolveWorkspaceDir(config) };
       writeConfig(getConfigPath(), config);
       console.log(`Logged in as ${config.username}. Config saved.`);
     } catch (err) {
@@ -47,28 +73,25 @@ async function main() {
     }
   }
 
-  // Collect flags
-  const prompt = args.find((a, i) => {
-    if (a.startsWith("--")) return false;
-    // Skip values that follow a flag expecting a value
-    const prev = args[i - 1];
-    if (prev === "--server" || prev === "--timeout") return false;
-    return true;
-  });
+  if (!config.workspaceDir) {
+    config = { ...config, workspaceDir: resolveWorkspaceDir(config) };
+    writeConfig(getConfigPath(), config);
+  }
+
+  const workspaceDir = ensureWorkspaceDir(
+    resolveWorkspaceDir(config, parsedArgs.workspaceOverride),
+  );
+  config = { ...config, workspaceDir };
+  process.chdir(workspaceDir);
 
   // Headless mode: first non-flag arg is the prompt
-  if (prompt) {
-    const jsonMode = args.includes("--json");
-    const planMode = args.includes("--plan");
-    const timeoutIdx = args.indexOf("--timeout");
-    const timeout = timeoutIdx >= 0 ? parseInt(args[timeoutIdx + 1], 10) : undefined;
-
+  if (parsedArgs.prompt) {
     await runHeadless({
       config,
-      prompt,
-      json: jsonMode,
-      plan: planMode,
-      timeout: timeout && !isNaN(timeout) ? timeout : undefined,
+      prompt: parsedArgs.prompt,
+      json: parsedArgs.json,
+      plan: parsedArgs.plan,
+      timeout: parsedArgs.timeout,
     });
     return;
   }

@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "node ./scripts/run-nx.cjs run-many -t dev --projects=server,desktop --parallel=2",
+    "dev": "node ./scripts/run-nx.cjs run-many -t dev --projects=server,desktop,anima-mod --parallel=3",
     "dev:server": "node ./scripts/run-nx.cjs dev server",
     "dev:desktop": "node ./scripts/run-nx.cjs dev desktop",
     "dev:web": "cd apps/desktop && vite",
