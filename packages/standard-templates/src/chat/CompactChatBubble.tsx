@@ -125,7 +125,7 @@ export function CompactChatBubble({
               ? "bg-primary text-primary-foreground"
               : isSystem
                 ? "bg-muted/50 border border-border/60"
-                : "bg-card border border-border/80 shadow-sm hover:shadow-md transition-shadow",
+                : "bg-card border border-border/80 hover:transition-shadow",
           )}
         >
           {/* Header Row */}
@@ -310,7 +310,7 @@ export function CompactChatBubble({
             {showRetrievalPanel && retrieval && (
               <div
                 className={cn(
-                  "inline-block text-left px-3 py-2 border",
+                  "inline-block text-left px-3 py-2 border rounded-none",
                   "bg-card/50 border-emerald-400/25",
                   "min-w-[200px] max-w-full",
                 )}
@@ -335,7 +335,7 @@ export function CompactChatBubble({
             {showTracePanel && (
               <div
                 className={cn(
-                  "inline-block text-left px-3 py-2 border max-h-64 overflow-y-auto",
+                  "inline-block text-left px-3 py-2 border rounded-none max-h-64 overflow-y-auto",
                   "bg-card/50 border-yellow-400/30",
                   "min-w-[200px] max-w-full",
                 )}
@@ -348,7 +348,7 @@ export function CompactChatBubble({
             {showTranslationPanel && (
               <div
                 className={cn(
-                  "inline-block text-left px-3 py-2 border",
+                  "inline-block text-left px-3 py-2 border rounded-none",
                   "bg-card/50 border-border/60",
                   "min-w-[200px] max-w-full",
                 )}
@@ -372,8 +372,8 @@ export function CompactChatBubble({
 
             {/* Translating indicator */}
             {showTranslatingIndicator && (
-              <div className="inline-block px-3 py-2 bg-card/50 border border-border/60 flex items-center gap-2">
-                <span className="w-3 h-3 border-2 border-primary/30 border-t-primary/60 animate-spin" />
+              <div className="inline-block px-3 py-2 bg-card/50 border rounded-none border-border/60 flex items-center gap-2">
+                <span className="w-3 h-3 border border-primary/30 border-t-primary/60 animate-spin" />
                 <span className="font-mono text-[9px] text-muted-foreground/60 tracking-wider">
                   Translating...
                 </span>

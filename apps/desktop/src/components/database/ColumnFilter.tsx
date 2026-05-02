@@ -80,14 +80,14 @@ export function ColumnFilterPanel({
         <Icons.Filter />
         Filter
         {activeFilters.length > 0 && (
-          <span className="ml-1 px-1.5 py-0.5 bg-primary/30 rounded-full text-[10px]">
+          <span className="ml-1 px-1.5 py-0.5 bg-primary/30 rounded-none text-[10px]">
             {activeFilters.length}
           </span>
         )}
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1 w-72 bg-card border border-border rounded-lg shadow-lg z-50 p-3">
+        <div className="absolute left-0 top-full mt-1 w-72 bg-card border border-border rounded-none z-50 p-3">
           {/* Active Filters */}
           {activeFilters.length > 0 && (
             <div className="mb-3 space-y-1.5">

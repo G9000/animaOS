@@ -49,19 +49,19 @@ export function ThreadSidebar({
   );
 
   return (
-    <div className="w-72 flex-shrink-0 border-l border-border flex flex-col bg-sidebar">
+    <div className="w-72 flex-shrink-0 border-l-2 border-border flex flex-col bg-sidebar">
       {/* Header */}
-      <div className="px-4 py-2.5 border-b border-border flex items-center justify-between gap-2 flex-shrink-0">
+      <div className="px-4 py-3 border-b-2 border-border flex items-center justify-between gap-2 flex-shrink-0">
         <button
           onClick={onToggleSidebar}
-          className="font-mono text-[9px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground transition-colors"
+          className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 hover:text-muted-foreground transition-colors"
           title="Minimize"
         >
           ▶
         </button>
         <button
           onClick={onNewThread}
-          className="font-mono text-[9px] tracking-widest text-muted-foreground/40 hover:text-primary transition-colors"
+          className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/50 hover:text-accent transition-colors"
           title="New chat"
         >
           + NEW
@@ -69,9 +69,9 @@ export function ThreadSidebar({
       </div>
 
       {/* Thread list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {filteredThreads.length === 0 ? (
-          <div className="px-4 py-6 font-mono text-[9px] text-muted-foreground/25 tracking-widest text-center">
+          <div className="px-4 py-6 font-mono text-[9px] text-muted-foreground/25 tracking-[0.2em] uppercase text-center">
             {searchQuery ? "NO MATCH" : "NO CONVERSATIONS"}
           </div>
         ) : (
@@ -80,23 +80,23 @@ export function ThreadSidebar({
             return (
               <div
                 key={thread.id}
-                className={`group/thread flex items-center transition-colors border-b border-border/20 ${
+                className={`group/thread flex items-center transition-all rounded-none border ${
                   isActive
-                    ? "bg-primary/10 text-foreground"
-                    : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+                    ? "bg-primary text-primary-foreground border-primary "
+                    : "bg-transparent text-muted-foreground border-transparent hover:bg-secondary hover:text-foreground hover:border-border"
                 }`}
               >
                 <button
                   onClick={() => onSelectThread(thread.id)}
-                  className="flex-1 text-left px-4 py-3 min-w-0"
+                  className="flex-1 text-left px-3 py-2.5 min-w-0"
                 >
-                  <div className="text-sm truncate leading-snug">
+                  <div className="text-sm truncate leading-snug font-mono">
                     {formatThreadTitle(thread)}
                   </div>
                 </button>
                 <button
                   onClick={() => onDeleteThread(thread.id)}
-                  className="opacity-0 group-hover/thread:opacity-100 shrink-0 px-3 py-3 font-mono text-[9px] text-muted-foreground/40 hover:text-destructive transition-all"
+                  className="opacity-0 group-hover/thread:opacity-100 shrink-0 px-3 py-2.5 font-mono text-[9px] text-muted-foreground/40 hover:text-destructive transition-all"
                   title="Delete thread"
                 >
                   ✕
@@ -108,8 +108,8 @@ export function ThreadSidebar({
       </div>
 
       {/* Search */}
-      <div className="border-t border-border bg-card/40 px-4 py-3 flex-shrink-0 flex items-center gap-2.5">
-        <span className="font-mono text-[10px] text-primary/40 tracking-wider select-none shrink-0">
+      <div className="border-t-2 border-border bg-card/40 px-4 py-3 flex-shrink-0 flex items-center gap-2.5">
+        <span className="font-mono text-[10px] text-accent/50 tracking-wider select-none shrink-0">
           /
         </span>
         <input
@@ -117,7 +117,7 @@ export function ThreadSidebar({
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder="search conversations..."
-          className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/35 outline-none py-0.5"
+          className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/30 outline-none py-0.5 font-mono"
         />
         {searchQuery && (
           <button

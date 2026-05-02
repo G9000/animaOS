@@ -31,32 +31,32 @@ const SETTINGS_SECTIONS = [
 export default function Settings() {
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto px-8 py-8 space-y-8">
+      <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
         <header className="space-y-2">
-          <h1 className="font-mono text-sm tracking-wider">CONFIG</h1>
-          <p className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+          <h1 className="font-mono text-sm tracking-[0.18em] uppercase">CONFIG</h1>
+          <p className="font-mono text-[10px] text-muted-foreground/50 tracking-[0.22em] uppercase">
             RUNTIME CONFIGURATION, VAULT, AND AUTH CONTROLS
           </p>
         </header>
 
-        <nav className="grid gap-px md:grid-cols-4 bg-border">
+        <nav className="grid gap-2 md:grid-cols-5">
           {SETTINGS_SECTIONS.map((section) => (
             <NavLink
               key={section.to}
               to={section.to}
               end
               className={({ isActive }) =>
-                `p-4 transition-colors ${
+                `p-4 transition-all rounded-none border ${
                   isActive
-                    ? "bg-primary/[0.06] border-l-2 border-primary text-foreground"
-                    : "bg-card text-muted-foreground hover:text-foreground border-l-2 border-transparent"
+                    ? "bg-primary text-primary-foreground border-primary "
+                    : "bg-card text-muted-foreground hover:text-foreground border-border hover:bg-secondary hover:"
                 }`
               }
             >
-              <div className="font-mono text-[10px] tracking-wider">
+              <div className="font-mono text-[10px] tracking-[0.18em] uppercase">
                 {section.label}
               </div>
-              <div className="mt-1.5 text-[11px] text-muted-foreground/50 leading-relaxed">
+              <div className="mt-2 text-[11px] text-muted-foreground/60 leading-relaxed">
                 {section.description}
               </div>
             </NavLink>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from anima_server.services.health.models import CheckResult, HealthReport, HealthStatus
@@ -93,29 +94,25 @@ def test_health_check_one_returns_single_check() -> None:
         assert data["message"] == "SQLite OK"
 
 
-def test_health_logs_summary_returns_counts() -> None:
+def test_health_logs_summary_returns_counts(managed_tmp_path: Path) -> None:
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         # Emit some warn/error events through a fresh EventLogger
-        import tempfile
-        from pathlib import Path
-
         from anima_server.services.health.event_logger import EventLogger
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            el = EventLogger(log_dir=Path(tmpdir), min_level="trace")
-            el.emit("llm", "failure", "error", data={"reason": "timeout"})
-            el.emit("llm", "failure", "warn", data={"reason": "slow"})
-            el.emit("tool", "crash", "error", data={"tool": "search"})
-            el.emit("db", "query", "info")  # info should not count
-            el.flush()
+        el = EventLogger(log_dir=managed_tmp_path / "summary-logs", min_level="trace")
+        el.emit("llm", "failure", "error", data={"reason": "timeout"})
+        el.emit("llm", "failure", "warn", data={"reason": "slow"})
+        el.emit("tool", "crash", "error", data={"tool": "search"})
+        el.emit("db", "query", "info")  # info should not count
+        el.flush()
 
-            with patch(
-                "anima_server.api.routes.health.require_unlocked_session",
-                return_value=_mock_session(),
-            ), patch(
-                "anima_server.api.routes.health.get_event_logger", return_value=el
-            ):
-                response = client.get("/api/health/logs/summary?hours=1")
+        with patch(
+            "anima_server.api.routes.health.require_unlocked_session",
+            return_value=_mock_session(),
+        ), patch(
+            "anima_server.api.routes.health.get_event_logger", return_value=el
+        ):
+            response = client.get("/api/health/logs/summary?hours=1")
 
         assert response.status_code == 200
         summary = response.json()
@@ -125,26 +122,22 @@ def test_health_logs_summary_returns_counts() -> None:
         assert "db" not in summary  # only info events, no warn/error
 
 
-def test_health_logs_returns_event_list() -> None:
+def test_health_logs_returns_event_list(managed_tmp_path: Path) -> None:
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
-        import tempfile
-        from pathlib import Path
-
         from anima_server.services.health.event_logger import EventLogger
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            el = EventLogger(log_dir=Path(tmpdir), min_level="trace")
-            el.emit("llm", "invoke", "info", user_id=1)
-            el.emit("llm", "failure", "error", data={"reason": "500"}, user_id=1)
-            el.flush()
+        el = EventLogger(log_dir=managed_tmp_path / "event-logs", min_level="trace")
+        el.emit("llm", "invoke", "info", user_id=1)
+        el.emit("llm", "failure", "error", data={"reason": "500"}, user_id=1)
+        el.flush()
 
-            with patch(
-                "anima_server.api.routes.health.require_unlocked_session",
-                return_value=_mock_session(),
-            ), patch(
-                "anima_server.api.routes.health.get_event_logger", return_value=el
-            ):
-                response = client.get("/api/health/logs?category=llm&since_hours=1")
+        with patch(
+            "anima_server.api.routes.health.require_unlocked_session",
+            return_value=_mock_session(),
+        ), patch(
+            "anima_server.api.routes.health.get_event_logger", return_value=el
+        ):
+            response = client.get("/api/health/logs?category=llm&since_hours=1")
 
         assert response.status_code == 200
         events = response.json()

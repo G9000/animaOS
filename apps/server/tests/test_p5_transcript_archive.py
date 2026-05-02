@@ -13,10 +13,11 @@ from anima_server.models import runtime as _runtime_models  # noqa: F401
 from anima_server.services import anima_core_retrieval as retrieval_module
 from cryptography.exceptions import InvalidTag
 from sqlalchemy import BigInteger, create_engine, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+TRANSCRIPT_TEST_DAYS_BACK = 10_000
 
 
 @compiles(BigInteger, "sqlite")
@@ -108,17 +109,22 @@ class TestRuntimeThreadSchema:
         ).all()
         assert len(threads) == 2
 
-    def test_only_one_active_thread_per_user(self, runtime_db: Session) -> None:
+    def test_multiple_active_threads_per_user_allowed(self, runtime_db: Session) -> None:
         from anima_server.models.runtime import RuntimeThread
 
         runtime_db.add(RuntimeThread(user_id=1, status="active"))
         runtime_db.flush()
 
         runtime_db.add(RuntimeThread(user_id=1, status="active"))
-        with pytest.raises(IntegrityError):
-            runtime_db.flush()
+        runtime_db.flush()
 
-        runtime_db.rollback()
+        threads = runtime_db.scalars(
+            select(RuntimeThread).where(
+                RuntimeThread.user_id == 1,
+                RuntimeThread.status == "active",
+            )
+        ).all()
+        assert len(threads) == 2
 
 
 class TestSettingsSchema:
@@ -754,7 +760,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(snippets) > 0
@@ -786,7 +792,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert snippets == []
@@ -841,7 +847,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(search_calls) == 1
@@ -950,7 +956,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(search_calls) == 1
@@ -997,7 +1003,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(search_calls) == 1
@@ -1055,7 +1061,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(rebuild_calls) == 1
@@ -1118,7 +1124,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
-            days_back=30,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(snippets) > 0
@@ -1200,6 +1206,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
             budget_chars=200,
         )
 
@@ -1255,6 +1262,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=None,
             transcripts_dir=transcripts_dir,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
         )
 
         assert len(snippets) > 0
@@ -1290,6 +1298,7 @@ class TestTranscriptSearch:
             user_id=1,
             dek=test_dek,
             transcripts_dir=transcripts_dir,
+            days_back=TRANSCRIPT_TEST_DAYS_BACK,
             max_snippets=2,
             snippet_context=0,
             budget_chars=120,

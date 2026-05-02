@@ -34,7 +34,7 @@ export function ChatLayout({
         {!showSidebar && (
           <div
             onClick={onToggleSidebar}
-            className="absolute top-3 right-3 z-50 px-3 py-2 font-mono text-[10px] tracking-widest text-muted-foreground/60 hover:text-foreground hover:bg-card border border-border bg-background/80 backdrop-blur-sm transition-all cursor-pointer select-none"
+            className="absolute top-3 right-3 z-50 px-3 py-2 font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 hover:text-foreground hover:bg-card border border-border bg-background/80 backdrop-blur-sm rounded-none transition-all cursor-pointer select-none "
             title="Show threads"
             role="button"
           >
@@ -43,8 +43,8 @@ export function ChatLayout({
         )}
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto overscroll-contain px-2.5 md:px-4 lg:px-6 py-4 md:py-6 pb-32 scroll-smooth">
-          <div className="max-w-5xl mx-auto w-full space-y-1">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-3 md:px-5 lg:px-8 py-5 md:py-8 pb-36 scroll-smooth">
+          <div className="max-w-5xl mx-auto w-full space-y-2">
             {children}
           </div>
         </div>
@@ -53,31 +53,29 @@ export function ChatLayout({
         {showScrollButton && (
           <button
             onClick={onScrollToBottom}
-            className="absolute right-3 md:right-6 bottom-20 md:bottom-24 z-20 font-mono text-[9px] px-2.5 py-1.5 border border-border bg-card text-muted-foreground hover:text-foreground transition-all tracking-wider shadow-lg hover:shadow-xl"
+            className="absolute right-3 md:right-6 bottom-24 md:bottom-28 z-20 font-mono text-[9px] px-3 py-2 border border-border bg-card text-muted-foreground hover:text-foreground transition-all tracking-[0.2em] uppercase rounded-none hover:active:translate-y-[1px]"
           >
             LATEST ↓
           </button>
         )}
 
-        {/* Floating Input - ChatGPT style */}
+        {/* Floating Input — chunky hardware bar */}
         <div className="absolute bottom-0 left-0 right-0 z-10 px-4 py-4 bg-gradient-to-t from-background via-background to-transparent pointer-events-none">
           <div className="max-w-3xl mx-auto w-full pointer-events-auto">
-            <div className="border border-border bg-card shadow-lg px-4 py-3">
-              <PromptInput
-                value={input}
-                onChange={onInputChange}
-                onSubmit={onSubmit}
-                disabled={streaming}
-                placeholder="type something..."
-                showMic={false}
-              />
-            </div>
+            <PromptInput
+              value={input}
+              onChange={onInputChange}
+              onSubmit={onSubmit}
+              disabled={streaming}
+              placeholder="type something..."
+              showMic={false}
+            />
             <div className="mt-2 flex items-center justify-center gap-4">
-              <span className="font-mono text-[9px] text-muted-foreground/25 tracking-wider">
+              <span className="font-mono text-[8px] text-muted-foreground/25 tracking-[0.2em] uppercase">
                 ENTER to send · SHIFT+ENTER for newline
               </span>
               {streaming && (
-                <span className="font-mono text-[9px] text-primary/40 tracking-wider animate-pulse">
+                <span className="font-mono text-[8px] text-accent/60 tracking-[0.2em] uppercase animate-pulse">
                   PROCESSING...
                 </span>
               )}

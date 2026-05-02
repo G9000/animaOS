@@ -139,27 +139,25 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
         with patch(
             "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
             new=AsyncMock(return_value=[]),
-        ) as run_sleeptime_agents:
-            with patch(
-                "anima_server.services.agent.consolidation.run_background_extraction",
-                new=AsyncMock(return_value=None),
-            ) as run_background_extraction:
-                with _db_session() as session, runtime_db_session() as runtime_session:
-                    user = User(
-                        username="background-memory",
-                        password_hash="not-used",
-                        display_name="Background Memory",
-                    )
-                    session.add(user)
-                    session.commit()
+        ) as run_sleeptime_agents, patch(
+            "anima_server.services.agent.consolidation.run_background_extraction",
+            new=AsyncMock(return_value=None),
+        ) as run_background_extraction, _db_session() as session, runtime_db_session() as runtime_session:
+            user = User(
+                username="background-memory",
+                password_hash="not-used",
+                display_name="Background Memory",
+            )
+            session.add(user)
+            session.commit()
 
-                    result = await run_agent(
-                        "I prefer short walks. My current focus is finishing the memory pipeline.",
-                        user.id,
-                        session,
-                        runtime_session,
-                    )
-                    await drain_background_memory_tasks()
+            result = await run_agent(
+                "I prefer short walks. My current focus is finishing the memory pipeline.",
+                user.id,
+                session,
+                runtime_session,
+            )
+            await drain_background_memory_tasks()
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()
@@ -181,28 +179,26 @@ async def test_run_agent_routes_third_turn_into_sleeptime_orchestrator() -> None
         with patch(
             "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
             new=AsyncMock(return_value=[]),
-        ) as run_sleeptime_agents:
-            with patch(
-                "anima_server.services.agent.consolidation.run_background_extraction",
-                new=AsyncMock(return_value=None),
-            ) as run_background_extraction:
-                with _db_session() as session, runtime_db_session() as runtime_session:
-                    user = User(
-                        username="background-memory-third-turn",
-                        password_hash="not-used",
-                        display_name="Background Memory Third Turn",
-                    )
-                    session.add(user)
-                    session.commit()
+        ) as run_sleeptime_agents, patch(
+            "anima_server.services.agent.consolidation.run_background_extraction",
+            new=AsyncMock(return_value=None),
+        ) as run_background_extraction, _db_session() as session, runtime_db_session() as runtime_session:
+            user = User(
+                username="background-memory-third-turn",
+                password_hash="not-used",
+                display_name="Background Memory Third Turn",
+            )
+            session.add(user)
+            session.commit()
 
-                    await run_agent("first turn", user.id, session, runtime_session)
-                    await drain_background_memory_tasks()
+            await run_agent("first turn", user.id, session, runtime_session)
+            await drain_background_memory_tasks()
 
-                    await run_agent("second turn", user.id, session, runtime_session)
-                    await drain_background_memory_tasks()
+            await run_agent("second turn", user.id, session, runtime_session)
+            await drain_background_memory_tasks()
 
-                    result = await run_agent("third turn", user.id, session, runtime_session)
-                    await drain_background_memory_tasks()
+            result = await run_agent("third turn", user.id, session, runtime_session)
+            await drain_background_memory_tasks()
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()

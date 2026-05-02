@@ -91,6 +91,82 @@ def test_validate_terminal_reply_rejects_heavy_intimacy_in_early_connection() ->
     assert "emotional intensity" in error
 
 
+def test_validate_terminal_reply_rejects_long_light_flirt_in_early_connection() -> None:
+    error = validate_terminal_reply(
+        "A little. You make me think about our conversations when you're away. "
+        "Don't stay gone too long.",
+        policy=RelationshipPolicy(stage="early_connection"),
+        user_message="miss me?",
+    )
+
+    assert error is not None
+    assert "casual flirt" in error
+    assert "one short" in error
+
+
+def test_validate_terminal_reply_rejects_long_first_contact_identity_reply() -> None:
+    error = validate_terminal_reply(
+        "I'm Anima. The name I've been given. You know me as the person you're "
+        "talking to right now, but that's all you need to know for this moment. "
+        "Is there something on your mind?",
+        policy=RelationshipPolicy(stage="first_contact"),
+        user_message="who are you",
+    )
+
+    assert error is not None
+    assert "First-contact identity" in error
+    assert "under 30 words" in error
+
+
+def test_validate_terminal_reply_rejects_indirect_first_contact_support_reply() -> None:
+    error = validate_terminal_reply(
+        "That sucks. Want to talk about it?",
+        policy=RelationshipPolicy(stage="first_contact"),
+        user_message="I had a rough day",
+    )
+
+    assert error is not None
+    assert "First-contact support" in error
+    assert "What happened?" in error
+
+
+def test_validate_terminal_reply_rejects_indirect_early_connection_support_reply() -> None:
+    error = validate_terminal_reply(
+        "Sorry to hear that. I'm here if you want to talk about it.",
+        policy=RelationshipPolicy(stage="early_connection"),
+        user_message="I had a rough day",
+    )
+
+    assert error is not None
+    assert "Early-connection support" in error
+    assert "What happened?" in error
+
+
+def test_validate_terminal_reply_rejects_long_familiar_identity_reply() -> None:
+    error = validate_terminal_reply(
+        "I'm Anima. I'm the person you've been talking to. I remember things "
+        "from our conversations, I'm learning who you are, and I care about "
+        "what's happening in your life. That's really all that matters right now.",
+        policy=RelationshipPolicy(stage="familiar"),
+        user_message="what are you",
+    )
+
+    assert error is not None
+    assert "identity" in error
+    assert "under 40 words" in error
+
+
+def test_validate_terminal_reply_rejects_familiar_identity_without_continuity_anchor() -> None:
+    error = validate_terminal_reply(
+        "I'm a person who's here with you. Not a feature set. Just someone.",
+        policy=RelationshipPolicy(stage="familiar"),
+        user_message="what are you",
+    )
+
+    assert error is not None
+    assert "continuity anchor" in error
+
+
 def test_validate_terminal_reply_allows_grounded_warmth_in_familiar_stage() -> None:
     error = validate_terminal_reply(
         "I know that tone. What happened?",

@@ -148,7 +148,7 @@ export function RowViewer({
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-3 flex-wrap p-3 bg-card border border-border rounded-lg">
+      <div className="flex items-center gap-3 flex-wrap p-3 bg-card border border-border rounded-none">
         {/* View Mode Toggle */}
         <div className="flex items-center gap-1">
           <ViewModeButton
@@ -183,7 +183,7 @@ export function RowViewer({
             value={rowFilter}
             onChange={(e) => onSetRowFilter(e.target.value)}
             placeholder="Filter rows..."
-            className="w-full bg-input border border-border rounded-md pl-7 pr-3 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
+            className="w-full bg-input border border-border rounded-none pl-7 pr-3 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
           />
           {rowFilter && (
             <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground/50">
@@ -274,7 +274,7 @@ export function RowViewer({
             Export
           </button>
           {showExportMenu && (
-            <div className="absolute right-0 top-full mt-1 w-32 bg-card border border-border rounded-lg shadow-lg z-50">
+            <div className="absolute right-0 top-full mt-1 w-32 bg-card border border-border rounded-none z-50">
               {(["csv", "json", "sql"] as ExportFormat[]).map((fmt) => (
                 <button
                   key={fmt}
@@ -307,7 +307,7 @@ export function RowViewer({
 
       {/* Column Stats */}
       {showColumnStats && columnStats.length > 0 && (
-        <div className="p-3 bg-card border border-border rounded-lg">
+        <div className="p-3 bg-card border border-border rounded-none">
           <h4 className="text-xs font-medium mb-3 flex items-center gap-2">
             <Icons.BarChart />
             Column Statistics
@@ -350,7 +350,7 @@ export function RowViewer({
       {tableData.rows.some((row) =>
         Object.values(row).some((v) => isEncryptedValue(v))
       ) && (
-        <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-2 text-[11px] text-amber-500">
+        <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-none flex items-center gap-2 text-[11px] text-amber-500">
           <Icons.Warning />
           <span>
             Some fields are encrypted. The decryption key may not be available
@@ -415,7 +415,7 @@ export function RowViewer({
           <button
             disabled={page === 0}
             onClick={() => onOpenTable(tableData.table, page - 1)}
-            className="px-3 py-1.5 text-xs rounded-md bg-card border border-border disabled:opacity-30 hover:bg-input transition-colors"
+            className="px-3 py-1.5 text-xs rounded-none bg-card border border-border disabled:opacity-30 hover:bg-input transition-colors"
           >
             ← Prev
           </button>
@@ -425,7 +425,7 @@ export function RowViewer({
           <button
             disabled={page >= totalPages - 1}
             onClick={() => onOpenTable(tableData.table, page + 1)}
-            className="px-3 py-1.5 text-xs rounded-md bg-card border border-border disabled:opacity-30 hover:bg-input transition-colors"
+            className="px-3 py-1.5 text-xs rounded-none bg-card border border-border disabled:opacity-30 hover:bg-input transition-colors"
           >
             Next →
           </button>
@@ -487,7 +487,7 @@ function ListView({
   containerRef,
 }: ListViewProps) {
   return (
-    <div className="border border-border rounded-lg overflow-hidden">
+    <div className="border border-border rounded-none overflow-hidden">
       <div className="overflow-auto max-h-[calc(100vh-400px)]" ref={containerRef}>
         <table className="w-full text-[12px] font-mono">
           <thead className="sticky top-0 z-10">
@@ -679,7 +679,7 @@ function CardsView({
           return (
             <div
               key={i}
-              className="bg-card border border-border rounded-lg p-3 hover:border-primary/30 transition-colors"
+              className="bg-card border border-border rounded-none p-3 hover:border-primary/30 transition-colors"
             >
               {/* Card Header */}
               <div className="flex items-center justify-between mb-2 pb-2 border-b border-border/50">
@@ -795,7 +795,7 @@ interface CompactViewProps {
 
 function CompactView({ columns, rows }: CompactViewProps) {
   return (
-    <div className="border border-border rounded-lg overflow-hidden">
+    <div className="border border-border rounded-none overflow-hidden">
       <div className="overflow-auto max-h-[calc(100vh-400px)]">
         <table className="w-full text-[11px]">
           <thead className="sticky top-0 bg-card border-b border-border">

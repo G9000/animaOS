@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from anima_server.services import anima_core_retrieval as retrieval_module
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
-from anima_server.services import anima_core_retrieval as retrieval_module
 
 
 def _register_user(client: TestClient) -> dict[str, object]:
@@ -183,7 +183,7 @@ def test_memory_search_uses_rust_index_when_available(monkeypatch) -> None:
         search_calls.append(kwargs)
         return [
             {
-                "record_id": kwargs["record_id"] if "record_id" in kwargs else 2,
+                "record_id": kwargs.get("record_id", 2),
                 "source_type": "memory_item",
                 "category": "preference",
                 "importance": 4,

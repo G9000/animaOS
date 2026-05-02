@@ -165,10 +165,15 @@ def _run_soul_writer_inner(
 ) -> None:
     """Inner pipeline — called under lock via asyncio.to_thread."""
     from anima_server.db.runtime import get_runtime_session_factory
-    from anima_server.db.session import SessionLocal
+    from anima_server.db.session import SessionLocal, get_user_session_factory, is_sqlite_mode
 
     rt_factory = runtime_db_factory or get_runtime_session_factory()
-    soul_factory = soul_db_factory or SessionLocal
+    if soul_db_factory is not None:
+        soul_factory = soul_db_factory
+    elif is_sqlite_mode():
+        soul_factory = get_user_session_factory(user_id)
+    else:
+        soul_factory = SessionLocal
 
     # Phase 1: Process PendingMemoryOps
     with rt_factory() as runtime_db:

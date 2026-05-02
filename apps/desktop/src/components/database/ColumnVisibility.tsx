@@ -24,7 +24,7 @@ export function ColumnVisibilityPanel({
         Columns ({visibleCount}/{columns.length})
       </button>
 
-      <div className="absolute right-0 top-full mt-1 w-48 bg-card border border-border rounded-lg shadow-lg z-50 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
+      <div className="absolute right-0 top-full mt-1 w-48 bg-card border border-border rounded-none z-50 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
         <div className="px-3 py-2 border-b border-border flex items-center justify-between">
           <span className="text-[11px] font-medium">Toggle Columns</span>
           <div className="flex gap-1">

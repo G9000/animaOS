@@ -75,13 +75,13 @@ export default function ModCard({
             onToggle(id, !enabled);
           }}
           disabled={busy}
-          className={`w-7 h-4 rounded-full transition-colors relative ${
+          className={`w-7 h-4 rounded-none transition-colors relative ${
             enabled ? "bg-primary/30" : "bg-input"
           } disabled:opacity-40`}
           title={enabled ? "Disable mod" : "Enable mod"}
         >
           <div
-            className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${
+            className={`absolute top-0.5 w-3 h-3 rounded-none transition-all ${
               enabled ? "left-3.5 bg-primary" : "left-0.5 bg-text-muted/30"
             }`}
           />

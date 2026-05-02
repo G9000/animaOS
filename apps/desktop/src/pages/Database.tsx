@@ -541,7 +541,7 @@ export default function Database() {
       <div className="h-full flex items-center justify-center">
         <div className="w-full max-w-sm space-y-4">
           <div className="text-center space-y-1">
-            <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+            <div className="w-12 h-12 mx-auto mb-4 rounded-none bg-primary/10 flex items-center justify-center text-primary">
               <Icons.Schema />
             </div>
             <h1 className="text-lg font-semibold">Database Viewer</h1>
@@ -560,13 +560,13 @@ export default function Database() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Password"
               autoFocus
-              className="w-full bg-input border border-border rounded-lg px-4 py-3 text-sm placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors"
+              className="w-full bg-input border border-border rounded-none px-4 py-3 text-sm placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors"
             />
             {verifyError && <p className="text-xs text-destructive px-1">{verifyError}</p>}
             <button
               type="submit"
               disabled={verifying || !password}
-              className="w-full px-4 py-3 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              className="w-full px-4 py-3 bg-primary text-white rounded-none text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
               {verifying ? "Verifying…" : "Unlock Database"}
             </button>
@@ -583,7 +583,7 @@ export default function Database() {
         <div className="flex items-center justify-between">
           {/* Left: Logo & Title */}
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+            <div className="w-9 h-9 rounded-none bg-primary/10 flex items-center justify-center text-primary">
               <Icons.Schema />
             </div>
             <div>
@@ -595,7 +595,7 @@ export default function Database() {
           </div>
 
           {/* Center: Main Navigation */}
-          <nav className="flex items-center gap-1 bg-input/50 p-1 rounded-lg">
+          <nav className="flex items-center gap-1 bg-input/50 p-1 rounded-none">
             <NavButton 
               active={view === "dashboard"} 
               onClick={() => setView("dashboard")} 
@@ -625,7 +625,7 @@ export default function Database() {
             <button
               onClick={loadTables}
               disabled={loading}
-              className="p-2 text-muted-foreground hover:text-foreground hover:bg-input rounded-lg transition-colors disabled:opacity-50"
+              className="p-2 text-muted-foreground hover:text-foreground hover:bg-input rounded-none transition-colors disabled:opacity-50"
               title="Refresh tables"
             >
               <Icons.Refresh />
@@ -638,7 +638,7 @@ export default function Database() {
 
             {/* Settings/Menu placeholder */}
             <button
-              className="p-2 text-muted-foreground hover:text-foreground hover:bg-input rounded-lg transition-colors"
+              className="p-2 text-muted-foreground hover:text-foreground hover:bg-input rounded-none transition-colors"
               title="Settings"
             >
               <Icons.Settings />
@@ -676,7 +676,7 @@ export default function Database() {
       {/* Content */}
       <div className="flex-1 overflow-auto px-6 py-5">
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+          <div className="mb-4 px-4 py-3 rounded-none bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
             <Icons.Warning />
             {error}
           </div>

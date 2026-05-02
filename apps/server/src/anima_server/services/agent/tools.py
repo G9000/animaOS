@@ -1221,6 +1221,7 @@ def _load_mod_tools() -> list[Any]:
         return _mod_tools_cache
 
     import httpx
+
     from anima_server.config import settings
 
     try:
@@ -1248,6 +1249,7 @@ def _load_mod_tools() -> list[Any]:
 def _build_mod_tool(schema: dict[str, Any]) -> Any:
     """Build a callable @tool from a ModToolSchema returned by GET /api/tools."""
     import httpx
+
     from anima_server.config import settings
 
     mod_id: str = schema["modId"]

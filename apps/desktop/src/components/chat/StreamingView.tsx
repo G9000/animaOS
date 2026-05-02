@@ -60,7 +60,7 @@ export function StreamingView({
           <div className="flex flex-col items-center shrink-0 w-12 pt-2">
             <ChatAvatar role="assistant" avatarUrl={agentAvatarUrl} size="md" />
           </div>
-          <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-card border border-border/80 px-4 py-3 shadow-sm">
+          <div className="max-w-[84%] md:max-w-[72%] xl:max-w-[62%] bg-card border border-border/80 px-4 py-3 ">
             <div className="prose prose-invert prose-sm md:prose-base max-w-none">
               <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
                 {streamBuffer}

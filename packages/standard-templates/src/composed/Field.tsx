@@ -31,10 +31,10 @@ export function Field({
   const helperId = hasError ? errorId : hint ? hintId : undefined;
 
   return (
-    <div className={cn("relative pt-2", containerClassName)}>
+    <div className={cn("space-y-1.5", containerClassName)}>
       <Label
         htmlFor={fieldId}
-        className="absolute top-0 left-3 z-10 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-background bg-muted-foreground leading-none"
+        className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground"
       >
         {label}
       </Label>
@@ -43,18 +43,17 @@ export function Field({
         aria-invalid={hasError}
         aria-describedby={helperId}
         className={cn(
-          "pt-4 focus:border-primary/35 focus:bg-card",
           hasError && "border-destructive focus:border-destructive",
           className,
         )}
         {...inputProps}
       />
       {hasError ? (
-        <p id={errorId} className="mt-2 text-[11px] text-destructive">
+        <p id={errorId} className="font-mono text-[9px] tracking-wider text-destructive">
           {error}
         </p>
       ) : hint ? (
-        <p id={hintId} className="mt-2 text-[11px] text-muted-foreground">
+        <p id={hintId} className="font-mono text-[9px] tracking-wider text-muted-foreground/60">
           {hint}
         </p>
       ) : null}

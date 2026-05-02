@@ -11,7 +11,7 @@ from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import KGRelation, User
 from anima_server.models.runtime import RuntimeBackgroundTaskRun
-from anima_server.services.agent import sleep_agent as sleep_agent_module
+from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.sleep_agent import (
     _issue_background_task,
     _should_run_expensive,
@@ -506,7 +506,7 @@ class TestGraphIngestionTask:
     @pytest.mark.asyncio()
     async def test_scaffold_mode_uses_rule_ingestion(self, db_factory, monkeypatch):
         monkeypatch.setattr(
-            sleep_agent_module.settings,
+            knowledge_graph_module.settings,
             "agent_provider",
             "scaffold",
             raising=False,

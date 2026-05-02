@@ -148,7 +148,7 @@ export function AutoCharts({ columns, rows }: AutoChartsProps) {
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-[800px] max-h-[80vh] bg-card border border-border rounded-lg flex flex-col">
+          <div className="w-[800px] max-h-[80vh] bg-card border border-border rounded-none flex flex-col">
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">
               <h3 className="text-sm font-medium">Auto Charts</h3>

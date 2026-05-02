@@ -22,8 +22,8 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
   ],
   openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
   anthropic: [
-    "claude-sonnet-4-20250514",
-    "claude-3-5-haiku-20241022",
+    "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5",
     "claude-3-opus-20240229",
   ],
   openrouter: [
@@ -44,6 +44,11 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
   { name: "vllm", defaultModel: "default", requiresApiKey: false },
   { name: "openrouter", defaultModel: "openrouter/free", requiresApiKey: true },
   { name: "openai", defaultModel: "gpt-4o", requiresApiKey: true },
+  {
+    name: "anthropic",
+    defaultModel: "claude-haiku-4-5-20251001",
+    requiresApiKey: true,
+  },
 ];
 
 const LOCAL_PROVIDERS = new Set(["ollama", "vllm", "scaffold"]);

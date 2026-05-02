@@ -19,6 +19,8 @@ __pycache__/
 .claude/worktrees/
 .anima-cli-session
 .worktrees/
+.tmp-eval-*
+/snippet.tsx
 apps/server/eval/data/
 apps/server/eval/results/
 

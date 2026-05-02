@@ -28,7 +28,7 @@ export function TableList({
             value={tableSearch}
             onChange={(e) => onSetTableSearch(e.target.value)}
             placeholder="Search tables..."
-            className="w-full bg-input border border-border rounded-md pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
+            className="w-full bg-input border border-border rounded-none pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
           />
           {tableSearch && (
             <button
@@ -72,7 +72,7 @@ export function TableList({
             <div
               key={t.name}
               onClick={() => onOpenTable(t.name)}
-              className="flex items-center justify-between p-3 rounded-lg bg-card/50 hover:bg-card border border-border/50 hover:border-border transition-all cursor-pointer group"
+              className="flex items-center justify-between p-3 rounded-none bg-card/50 hover:bg-card border border-border/50 hover:border-border transition-all cursor-pointer group"
             >
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded bg-primary/10 flex items-center justify-center text-primary">

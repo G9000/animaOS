@@ -7,7 +7,13 @@ import httpx
 import pytest
 from anima_server.config import settings
 from anima_server.services.agent.embeddings import generate_embedding
-from anima_server.services.agent.llm import LLMConfigError, build_provider_headers
+from anima_server.services.agent.llm import (
+    LLMConfigError,
+    build_provider_headers,
+    create_llm,
+    invalidate_llm_cache,
+    resolve_base_url,
+)
 
 
 @pytest.mark.asyncio
@@ -30,6 +36,36 @@ async def test_generate_embedding_skips_openrouter_without_embedding_provider(
                             "_embed_ollama", unexpected_embed)
         monkeypatch.setattr(embeddings_module,
                             "_embed_openai_compatible", unexpected_embed)
+
+        result = await generate_embedding("hello")
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_skips_anthropic_without_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    async def unexpected_embed(text: str) -> list[float] | None:
+        raise AssertionError(
+            "Anthropic embeddings should be skipped without an explicit embedding provider"
+        )
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+
+    try:
+        settings.agent_provider = "anthropic"
+        settings.agent_embedding_provider = ""
+        monkeypatch.setattr(embeddings_module, "_embed_ollama", unexpected_embed)
+        monkeypatch.setattr(
+            embeddings_module, "_embed_openai_compatible", unexpected_embed
+        )
 
         result = await generate_embedding("hello")
     finally:
@@ -115,6 +151,94 @@ def test_build_provider_headers_rejects_openrouter_without_api_key() -> None:
             build_provider_headers("openrouter")
     finally:
         settings.agent_api_key = original_api_key
+
+
+def test_build_provider_headers_supports_anthropic() -> None:
+    original_api_key = settings.agent_api_key
+
+    try:
+        settings.agent_api_key = "test-anthropic-key"
+        headers = build_provider_headers("anthropic")
+    finally:
+        settings.agent_api_key = original_api_key
+
+    assert headers == {
+        "x-api-key": "test-anthropic-key",
+        "anthropic-version": "2023-06-01",
+    }
+
+
+def test_build_provider_headers_rejects_anthropic_without_api_key() -> None:
+    original_api_key = settings.agent_api_key
+
+    try:
+        settings.agent_api_key = ""
+        with pytest.raises(
+            LLMConfigError,
+            match="ANIMA_AGENT_API_KEY is required",
+        ):
+            build_provider_headers("anthropic")
+    finally:
+        settings.agent_api_key = original_api_key
+
+
+def test_create_llm_uses_anthropic_client() -> None:
+    from anima_server.services.agent.anthropic_client import AnthropicChatClient
+
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_api_key = settings.agent_api_key
+    original_base_url = settings.agent_base_url
+
+    try:
+        settings.agent_provider = "anthropic"
+        settings.agent_model = "claude-haiku-4-5-20251001"
+        settings.agent_api_key = "test-anthropic-key"
+        settings.agent_base_url = ""
+        invalidate_llm_cache()
+
+        client = create_llm()
+        anthropic_base_url = resolve_base_url("anthropic")
+    finally:
+        invalidate_llm_cache()
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_api_key = original_api_key
+        settings.agent_base_url = original_base_url
+
+    assert isinstance(client, AnthropicChatClient)
+    assert client.model == "claude-haiku-4-5-20251001"
+    assert anthropic_base_url == "https://api.anthropic.com/v1"
+
+
+def test_create_llm_uses_configured_temperature() -> None:
+    from anima_server.services.agent.anthropic_client import AnthropicChatClient
+
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_api_key = settings.agent_api_key
+    original_base_url = settings.agent_base_url
+    original_temperature = settings.agent_temperature
+
+    try:
+        settings.agent_provider = "anthropic"
+        settings.agent_model = "claude-haiku-4-5-20251001"
+        settings.agent_api_key = "test-anthropic-key"
+        settings.agent_base_url = ""
+        settings.agent_temperature = 0.0
+        invalidate_llm_cache()
+
+        client = create_llm()
+    finally:
+        invalidate_llm_cache()
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_api_key = original_api_key
+        settings.agent_base_url = original_base_url
+        settings.agent_temperature = original_temperature
+
+    assert isinstance(client, AnthropicChatClient)
+    assert client._temperature == 0.0
 
 
 def test_resolve_embedding_dim_normalizes_tagged_model(

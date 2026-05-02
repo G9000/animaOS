@@ -4,6 +4,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
 from anima_server.api.routes import chat as chat_routes
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
@@ -13,6 +14,7 @@ from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleResponse,
     OpenAICompatibleStreamChunk,
 )
+from anima_server.services.agent.runtime_types import StepTrace, UsageStats
 from anima_server.services.agent.state import (
     AgentCitation,
     AgentContextFragment,
@@ -23,7 +25,6 @@ from anima_server.services.agent.state import (
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
-import pytest
 from starlette.requests import Request
 
 
@@ -280,6 +281,16 @@ async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None
             provider="test-provider",
             stop_reason="end_turn",
             tools_used=["send_message"],
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    usage=UsageStats(
+                        prompt_tokens=100,
+                        completion_tokens=25,
+                        total_tokens=125,
+                    ),
+                )
+            ],
             retrieval=AgentRetrievalTrace(
                 retriever="hybrid",
                 citations=(
@@ -334,6 +345,13 @@ async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None
         unlock_session_store.revoke(token)
 
     payload = response.model_dump(mode="json")
+    assert payload["usage"] == {
+        "promptTokens": 100,
+        "completionTokens": 25,
+        "totalTokens": 125,
+        "reasoningTokens": None,
+        "cachedInputTokens": None,
+    }
     assert payload["retrieval"]["retriever"] == "hybrid"
     assert payload["retrieval"]["citations"] == [
         {
@@ -640,6 +658,13 @@ def test_chat_ollama_provider_uses_live_adapter_surface(monkeypatch) -> None:
     assert response.json()["provider"] == "ollama"
     assert response.json()["model"] == "llama3.2"
     assert response.json()["response"] == "hello from ollama adapter"
+    assert response.json()["usage"] == {
+        "promptTokens": 5,
+        "completionTokens": 3,
+        "totalTokens": 8,
+        "reasoningTokens": None,
+        "cachedInputTokens": None,
+    }
     assert "private reasoning" not in response.json()["response"]
     assert fake_client.tool_choice == "auto"
     tool_names = [getattr(tool, "name", "") for tool in fake_client.bound_tools]

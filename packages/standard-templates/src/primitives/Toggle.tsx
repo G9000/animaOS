@@ -23,16 +23,20 @@ export const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(
         disabled={disabled}
         onClick={() => onChange(!enabled)}
         className={cn(
-          "w-7 h-4 rounded-full transition-colors relative",
-          enabled ? "bg-primary/30" : "bg-input",
+          "w-9 h-5 rounded-none border transition-all relative",
+          enabled
+            ? "bg-accent/20 border-accent"
+            : "bg-input border-border",
           disabled && "opacity-50 cursor-not-allowed",
           className,
         )}
       >
         <div
           className={cn(
-            "absolute top-0.5 w-3 h-3 rounded-full transition-all",
-            enabled ? "left-3.5 bg-primary" : "left-0.5 bg-muted-foreground/30",
+            "absolute top-[2px] w-3.5 h-3.5 rounded-none border transition-all",
+            enabled
+              ? "left-[14px] bg-accent border-accent"
+              : "left-[2px] bg-muted-foreground/30 border-transparent",
           )}
         />
       </button>

@@ -37,18 +37,18 @@ export function AttachMenu({ onAttach }: AttachMenuProps) {
       />
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-40 border border-foreground/10 bg-foreground/10 flex flex-col gap-px animate-fade-in z-50">
+        <div className="absolute bottom-full left-0 mb-2 w-40 border border-border bg-card rounded-none flex flex-col gap-px animate-fade-in z-50 overflow-hidden">
           {ITEMS.map(({ label, icon }) => (
             <button
               key={label}
               type="button"
               onClick={() => { onAttach?.(label); setOpen(false); }}
-              className="group relative overflow-hidden flex items-center gap-3 px-3 py-2 bg-background font-mono text-detail text-subtle-foreground before:absolute before:inset-0 before:-translate-x-full before:bg-foreground before:transition-transform before:duration-300 before:ease-[cubic-bezier(0.16,1,0.3,1)] hover:before:translate-x-0"
+              className="group flex items-center gap-3 px-3 py-2.5 bg-card font-mono text-[10px] tracking-wider uppercase text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             >
-              <span className="relative z-10 flex items-center gap-3 group-hover:text-background transition-colors duration-300">
+              <span className="shrink-0 text-muted-foreground/60 group-hover:text-foreground transition-colors">
                 {icon}
-                {label}
               </span>
+              <span>{label}</span>
             </button>
           ))}
         </div>

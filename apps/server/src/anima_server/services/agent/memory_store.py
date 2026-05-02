@@ -504,24 +504,26 @@ def get_memory_items_scored(
         )
         blended: list[tuple[float, MemoryItem]] = []
         for base_score, item in scored:
-            checked = check_embedding(item.embedding_json, item.embedding_checksum)
-            item_emb = checked.embedding
-            if checked.status == "missing_checksum":
-                logger.debug(
-                    "Memory item %s is missing an embedding checksum during fallback retrieval",
-                    item.id,
-                )
-            elif checked.status == "checksum_mismatch":
-                logger.warning(
-                    "Skipping memory item %s during fallback retrieval due to checksum mismatch",
-                    item.id,
-                )
-                item_emb = None
-            elif checked.status == "invalid":
-                logger.warning(
-                    "Skipping memory item %s during fallback retrieval due to malformed embedding payload",
-                    item.id,
-                )
+            item_emb: list[float] | None = None
+            if item.embedding_json is not None:
+                checked = check_embedding(item.embedding_json, item.embedding_checksum)
+                item_emb = checked.embedding
+                if checked.status == "missing_checksum":
+                    logger.debug(
+                        "Memory item %s is missing an embedding checksum during fallback retrieval",
+                        item.id,
+                    )
+                elif checked.status == "checksum_mismatch":
+                    logger.warning(
+                        "Skipping memory item %s during fallback retrieval due to checksum mismatch",
+                        item.id,
+                    )
+                    item_emb = None
+                elif checked.status == "invalid":
+                    logger.warning(
+                        "Skipping memory item %s during fallback retrieval due to malformed embedding payload",
+                        item.id,
+                    )
             if item_emb is not None:
                 sim = cosine_similarity(query_embedding, item_emb)
                 # Normalize sim from [-1,1] to [0,1] for blending

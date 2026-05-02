@@ -11,6 +11,8 @@ from anima_server.db.user_store import authenticate_account
 from anima_server.models.user import User
 from anima_server.services.agent.client_actions import (
     ActionToolConnection as ClientConnection,
+)
+from anima_server.services.agent.client_actions import (
     action_registry as registry,
 )
 from anima_server.services.sessions import unlock_session_store

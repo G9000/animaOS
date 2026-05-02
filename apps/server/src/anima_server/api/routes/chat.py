@@ -41,10 +41,12 @@ from anima_server.services.agent import (
 )
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
+from anima_server.services.agent.runtime_types import UsageStats
 from anima_server.services.agent.state import (
     extract_stored_retrieval,
     serialize_agent_retrieval,
 )
+from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,7 @@ async def send_message(
             provider=result.provider,
             toolsUsed=result.tools_used,
             retrieval=serialize_agent_retrieval(result.retrieval),
+            usage=_serialize_usage(summarize_usage(result)),
         )
 
     try:
@@ -459,6 +462,18 @@ def _format_sse_event(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _serialize_usage(usage: UsageStats | None) -> dict[str, int | None] | None:
+    if usage is None:
+        return None
+    return {
+        "promptTokens": usage.prompt_tokens,
+        "completionTokens": usage.completion_tokens,
+        "totalTokens": usage.total_tokens,
+        "reasoningTokens": usage.reasoning_tokens,
+        "cachedInputTokens": usage.cached_input_tokens,
+    }
+
+
 @router.post("/runs/{run_id}/cancel", response_model=CancelRunResponse)
 async def cancel_run(
     run_id: int,
@@ -585,4 +600,5 @@ async def handle_approval(
         provider=result.provider,
         toolsUsed=list(result.tools_used),
         retrieval=serialize_agent_retrieval(result.retrieval),
+        usage=_serialize_usage(summarize_usage(result)),
     )

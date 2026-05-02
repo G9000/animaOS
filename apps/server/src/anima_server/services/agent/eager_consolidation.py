@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -14,6 +13,7 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models.agent_runtime import MemoryEpisode
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.episodes import maybe_generate_episode
 from anima_server.services.agent.persistence import list_transcript_messages
 from anima_server.services.agent.soul_writer import run_soul_writer
@@ -23,7 +23,6 @@ from anima_server.services.agent.transcript_archive import (
     messages_to_transcript_dicts,
     resolve_transcript_path,
 )
-from anima_server.services import anima_core_retrieval
 from anima_server.services.data_crypto import df, get_active_dek
 
 logger = logging.getLogger(__name__)

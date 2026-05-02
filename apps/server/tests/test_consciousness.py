@@ -1510,7 +1510,7 @@ def test_config_rejects_invalid_provider() -> None:
     assert "vllm" in VALID_PROVIDERS
     assert "scaffold" in VALID_PROVIDERS
     assert "openai" in VALID_PROVIDERS
-    assert "anthropic" not in VALID_PROVIDERS
+    assert "anthropic" in VALID_PROVIDERS
 
 
 # --- Invariant Tests: Self-Model Write Governance ---

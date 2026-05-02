@@ -186,15 +186,7 @@ async def test_call_llm_for_segmentation_prefers_extraction_model_and_caps_reque
             return_value=prompt_loader,
         ),
         patch(
-            "anima_server.services.agent.llm.resolve_base_url",
-            return_value="https://example.test/v1",
-        ),
-        patch(
-            "anima_server.services.agent.llm.build_provider_headers",
-            return_value={"Authorization": "Bearer test"},
-        ),
-        patch(
-            "anima_server.services.agent.openai_compatible_client.OpenAICompatibleChatClient",
+            "anima_server.services.agent.batch_segmenter.create_provider_chat_client",
             return_value=mock_client,
         ) as mock_client_cls,
     ):
@@ -243,15 +235,7 @@ async def test_call_llm_for_segmentation_falls_back_to_primary_model_after_empty
             return_value=prompt_loader,
         ),
         patch(
-            "anima_server.services.agent.llm.resolve_base_url",
-            return_value="https://example.test/v1",
-        ),
-        patch(
-            "anima_server.services.agent.llm.build_provider_headers",
-            return_value={"Authorization": "Bearer test"},
-        ),
-        patch(
-            "anima_server.services.agent.openai_compatible_client.OpenAICompatibleChatClient",
+            "anima_server.services.agent.batch_segmenter.create_provider_chat_client",
             side_effect=[extraction_client, primary_client],
         ) as mock_client_cls,
     ):

@@ -29,6 +29,7 @@ from anima_server.services.auth import (
 from anima_server.services.core import (
     allocate_user_id,
     ensure_core_manifest,
+    get_owner_user_id,
     get_user_id_from_index,
     get_wrapped_sqlcipher_key,
     is_provisioned,
@@ -210,7 +211,7 @@ def authenticate_account(
     else:
         account = find_account_by_username(normalized)
         if account is None:
-            raise InvalidCredentialsError("Invalid credentials")
+            raise InvalidCredentialsError(f"User not found: {normalized}")
         account_user_id = account.user_id
         # Backfill the index for next time
         store_user_index_entry(normalized, account_user_id)
@@ -219,7 +220,7 @@ def authenticate_account(
         try:
             user, deks = authenticate_user(db, normalized, password)
         except ValueError as exc:
-            raise InvalidCredentialsError("Invalid credentials") from exc
+            raise InvalidCredentialsError(f"authenticate_user failed for user_id={account_user_id}: {exc}") from exc
         return serialize_user(user), deks
 
 
@@ -330,51 +331,58 @@ def recover_account_with_phrase(
     from anima_server.services.recovery import recover_account
     from anima_server.services.sessions import set_sqlcipher_key
 
-    # 1. Unwrap SQLCipher key from manifest using recovery phrase
+    # 1. Unwrap SQLCipher key from manifest using recovery phrase when unified
+    # passphrase mode is active. Env-passphrase and unencrypted test modes do
+    # not have a recovery-wrapped SQLCipher key, but can still recover the
+    # domain DEKs stored in the user database.
     recovery_wrapped = get_recovery_sqlcipher_key()
-    if recovery_wrapped is None:
-        raise ValueError("No recovery data found")
+    raw_key: bytes | None = None
+    if recovery_wrapped is not None:
+        record = WrappedDekRecord(
+            kdf_salt=str(recovery_wrapped["kdf_salt"]),
+            kdf_time_cost=int(recovery_wrapped["kdf_time_cost"]),
+            kdf_memory_cost_kib=int(recovery_wrapped["kdf_memory_cost_kib"]),
+            kdf_parallelism=int(recovery_wrapped["kdf_parallelism"]),
+            kdf_key_length=int(recovery_wrapped["kdf_key_length"]),
+            wrap_iv=str(recovery_wrapped["wrap_iv"]),
+            wrap_tag=str(recovery_wrapped["wrap_tag"]),
+            wrapped_dek=str(recovery_wrapped["wrapped_key"]),
+        )
+        user_id = int(recovery_wrapped.get("user_id", 0))
+        try:
+            raw_key = unwrap_dek(phrase, record, user_id, "recovery:sqlcipher")
+        except InvalidTag:
+            raise ValueError("Invalid recovery phrase") from None
 
-    record = WrappedDekRecord(
-        kdf_salt=str(recovery_wrapped["kdf_salt"]),
-        kdf_time_cost=int(recovery_wrapped["kdf_time_cost"]),
-        kdf_memory_cost_kib=int(recovery_wrapped["kdf_memory_cost_kib"]),
-        kdf_parallelism=int(recovery_wrapped["kdf_parallelism"]),
-        kdf_key_length=int(recovery_wrapped["kdf_key_length"]),
-        wrap_iv=str(recovery_wrapped["wrap_iv"]),
-        wrap_tag=str(recovery_wrapped["wrap_tag"]),
-        wrapped_dek=str(recovery_wrapped["wrapped_key"]),
-    )
-    user_id = int(recovery_wrapped.get("user_id", 0))
-    try:
-        raw_key = unwrap_dek(phrase, record, user_id, "recovery:sqlcipher")
-    except InvalidTag:
-        raise ValueError("Invalid recovery phrase") from None
-
-    # 2. Cache the SQLCipher key so we can open the encrypted database
-    set_sqlcipher_key(raw_key)
+        # 2. Cache the SQLCipher key so we can open the encrypted database.
+        set_sqlcipher_key(raw_key)
+    else:
+        user_id = get_owner_user_id()
+        if user_id is None:
+            raise ValueError("No recovery data found")
 
     # 3. Open the user database and recover DEKs
     with get_user_session_factory(user_id)() as db:
         deks = recover_account(db, phrase, new_password, user_id)
 
-    # 4. Re-wrap SQLCipher key with new password in manifest
+    # 4. Re-wrap SQLCipher key with new password in manifest when present.
     from anima_server.services.crypto import wrap_dek
 
-    wrapped = wrap_dek(new_password, raw_key, user_id, "sqlcipher")
-    store_wrapped_sqlcipher_key(
-        {
-            "user_id": user_id,
-            "kdf_salt": wrapped.kdf_salt,
-            "kdf_time_cost": wrapped.kdf_time_cost,
-            "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
-            "kdf_parallelism": wrapped.kdf_parallelism,
-            "kdf_key_length": wrapped.kdf_key_length,
-            "wrap_iv": wrapped.wrap_iv,
-            "wrap_tag": wrapped.wrap_tag,
-            "wrapped_key": wrapped.wrapped_dek,
-        }
-    )
+    if raw_key is not None:
+        wrapped = wrap_dek(new_password, raw_key, user_id, "sqlcipher")
+        store_wrapped_sqlcipher_key(
+            {
+                "user_id": user_id,
+                "kdf_salt": wrapped.kdf_salt,
+                "kdf_time_cost": wrapped.kdf_time_cost,
+                "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
+                "kdf_parallelism": wrapped.kdf_parallelism,
+                "kdf_key_length": wrapped.kdf_key_length,
+                "wrap_iv": wrapped.wrap_iv,
+                "wrap_tag": wrapped.wrap_tag,
+                "wrapped_key": wrapped.wrapped_dek,
+            }
+        )
 
     # 5. Re-read user for response
     with get_user_session_factory(user_id)() as db:

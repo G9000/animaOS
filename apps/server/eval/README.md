@@ -1,60 +1,187 @@
 # AnimaOS Evaluation Harness
 
-Benchmarks AnimaOS memory against LoCoMo and LongMemEval datasets.
+This harness evaluates AnimaOS memory and agent behavior with three layers:
 
-## Quick Start
+- conversation smoke evals for fast prompt/runtime regression checks
+- LongMemEval as the primary long-memory benchmark
+- LoCoMo as the heavier release/stress benchmark
+- LLM-as-judge scoring and summary reporting for repeatable comparisons
 
-```bash
-# 1. Download datasets
-python download_data.py
+Benchmark output rows include the final answer plus model, provider, tools used,
+and retrieval metadata from `/api/chat` so failures can be debugged from the
+result file.
 
-# 2. Run LoCoMo benchmark (requires running AnimaOS server)
-python run_locomo.py --base-url http://127.0.0.1:3031
+## Quick Smoke
 
-# 3. Run LongMemEval benchmark
-python run_longmemeval.py --base-url http://127.0.0.1:3031
-
-# 4. Run the lightweight conversation eval against the real app stack
-python run_conversation_eval.py --mode in-process
-
-# 5. Or run the conversation eval against an already running server
-python run_conversation_eval.py --mode http --base-url http://127.0.0.1:3031 --username <user> --password <pass>
-
-# 6. Score benchmark results (uses LLM-as-judge via Ollama)
-python score_results.py results/locomo_results.json
-python score_results.py results/longmemeval_results.json
-
-# 7. Print summary
-python print_summary.py results/
-```
-
-## Ablation Configs
-
-Run with features toggled to measure each component's contribution:
+Run the lightweight behavioral suite without starting a separate server:
 
 ```bash
-# Baseline: no memory system, just conversation history
-python run_locomo.py --config baseline
-
-# +Memory: fact extraction + retrieval, no self-model/emotions/reflection
-python run_locomo.py --config memory_only
-
-# +Reflection: memory + sleep-time consolidation
-python run_locomo.py --config memory_reflection
-
-# Full: everything enabled
-python run_locomo.py --config full
+uv run --project apps/server python apps/server/eval/run_agent_eval.py --profile pr
 ```
 
-## Datasets
+This is the best PR-gate eval. It creates isolated temporary state, forces a
+local Ollama-compatible provider by default, and disables background memory
+work so the run is not affected by provider settings from the desktop app or by
+sleep-time database writes.
 
-- **LoCoMo** (Long Conversation Memory): 10 multi-session conversations, ~1986 QA pairs
-  across 5 categories: single-hop, temporal, multi-hop, open-ended, adversarial
-- **LongMemEval** (ICLR 2025): 500 questions across 5 abilities: information extraction,
-  multi-session reasoning, knowledge updates, temporal reasoning, abstention
+Override the local model when needed:
 
-## Metrics
+```bash
+uv run --project apps/server python apps/server/eval/run_agent_eval.py \
+  --profile pr \
+  --agent-provider ollama \
+  --agent-model qwen3:8b \
+  --agent-base-url http://127.0.0.1:11434
+```
 
-- **Accuracy**: LLM-as-judge (does the response contain the correct answer?)
-- **Per-category breakdown**: scores by question type
-- **Ablation delta**: improvement from each enabled feature
+For a fast infrastructure-only smoke that does not call any model, use the
+scaffold provider directly. This exercises routing, auth, persistence, and
+reset plumbing, but it is not a real behavioral-quality score:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_conversation_eval.py \
+  --mode in-process \
+  --agent-provider scaffold \
+  --agent-model scaffold \
+  --disable-background-memory \
+  --limit 1
+```
+
+To see what any profile will run without executing it:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_agent_eval.py --profile release --score --dry-run
+```
+
+## Benchmark Server Setup
+
+Run LoCoMo and LongMemEval against a disposable eval data directory. Do not run
+destructive eval reset against your personal development Core.
+
+PowerShell:
+
+```powershell
+$env:ANIMA_DATA_DIR = "$PWD\.anima\eval"
+$env:ANIMA_EVAL_RESET_ENABLED = "true"
+$env:ANIMA_CORE_REQUIRE_ENCRYPTION = "false"
+bun run dev:server
+```
+
+The benchmark runners use `eval` / `eval-password` by default. On a fresh eval
+data directory, pass `--create-user` once so the runner provisions that account.
+
+## Memory Benchmarks
+
+Use the profile runner for standard runs.
+
+Nightly primary memory eval:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_agent_eval.py \
+  --profile nightly \
+  --create-user
+```
+
+Release eval with judge scoring:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_agent_eval.py \
+  --profile release \
+  --score
+```
+
+Architecture ablation slice:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_agent_eval.py \
+  --profile ablation
+```
+
+The profile policy is:
+
+- `pr`: in-process conversation smoke only; no external server required; local Ollama provider forced by default; background memory disabled
+- `nightly`: LongMemEval oracle `--limit 50`
+- `release`: full LongMemEval oracle, then LoCoMo categories `1,2,3,5`
+- `ablation`: LongMemEval oracle `--limit 50` across `baseline`, `memory_only`, `memory_reflection`, and `full`
+
+You can still run individual benchmark scripts directly when debugging.
+
+LoCoMo, quick category 1-3 run:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_locomo.py \
+  --base-url http://127.0.0.1:3031 \
+  --create-user \
+  --limit 1 \
+  --categories 1,2,3
+```
+
+LongMemEval oracle subset:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_longmemeval.py \
+  --base-url http://127.0.0.1:3031 \
+  --create-user \
+  --dataset oracle \
+  --limit 50
+```
+
+After the eval user already exists, omit `--create-user`.
+
+## Scoring
+
+Start Ollama and pull the judge model, then score result files:
+
+```bash
+ollama pull qwen3:8b
+uv run --project apps/server python apps/server/eval/score_results.py apps/server/eval/results/locomo_full.json --model qwen3:8b
+uv run --project apps/server python apps/server/eval/score_results.py apps/server/eval/results/longmemeval_oracle_full.json --model qwen3:8b
+uv run --project apps/server python apps/server/eval/print_summary.py apps/server/eval/results
+```
+
+Use a stronger local judge, such as `qwen3:32b`, for release-quality scoring
+when available.
+
+## Ablations
+
+The `--config` value is recorded as a result label:
+
+```bash
+uv run --project apps/server python apps/server/eval/run_locomo.py --config baseline --limit 1
+uv run --project apps/server python apps/server/eval/run_locomo.py --config memory_only --limit 1
+uv run --project apps/server python apps/server/eval/run_locomo.py --config memory_reflection --limit 1
+uv run --project apps/server python apps/server/eval/run_locomo.py --config full --limit 1
+```
+
+Use the same dataset slice and judge model across configs. Compare with:
+
+```bash
+uv run --project apps/server python apps/server/eval/print_summary.py apps/server/eval/results
+```
+
+## Industry-Standard Gate
+
+Recommended cadence:
+
+- PR: unit tests plus `run_conversation_eval.py --mode in-process`
+- Nightly: LongMemEval oracle `--limit 50`
+- Release: full LongMemEval oracle, LoCoMo categories `1,2,3,5`, and ablation comparison
+- Product regression set: add Anima-specific cases for memory updates, stale-memory correction, privacy/forgetting, and tool-call correctness as real usage patterns emerge
+
+Track these with every result file:
+
+- git SHA
+- model and provider
+- eval config label
+- dataset and limit
+- judge model
+- accuracy by category
+- token/latency metadata when available
+- retrieval metadata for failed cases
+
+## Safety Notes
+
+`/api/eval/reset` is disabled unless `ANIMA_EVAL_RESET_ENABLED=true`. It deletes
+benchmark-generated memory, runtime messages, candidates, retrieval feedback,
+working context, and related eval state for the authenticated user. Use it only
+on disposable eval data directories.

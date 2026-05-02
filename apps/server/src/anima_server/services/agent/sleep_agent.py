@@ -17,7 +17,6 @@ from typing import Any
 
 from sqlalchemy.exc import OperationalError
 
-from anima_server.config import settings
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)

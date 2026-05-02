@@ -63,7 +63,7 @@ function ToastItem({ id, message, type, duration = 5000, action, onDismiss }: To
 
   return (
     <div
-      className={`relative flex items-start gap-3 px-4 py-3 rounded-lg border shadow-lg min-w-[300px] max-w-[400px] animate-slide-in ${toastStyles[type]}`}
+      className={`relative flex items-start gap-3 px-4 py-3 rounded-none border min-w-[300px] max-w-[400px] animate-slide-in ${toastStyles[type]}`}
       onMouseEnter={() => setIsPaused(true)}
       onMouseLeave={() => setIsPaused(false)}
       role="alert"

@@ -11,9 +11,9 @@ Covers:
 
 from __future__ import annotations
 
-from conftest import managed_test_client
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.services.agent.pending_ops import create_pending_op
+from conftest import managed_test_client
 from fastapi.testclient import TestClient
 
 
@@ -78,8 +78,8 @@ def test_register_seeds_persona_block_default() -> None:
             f"/api/consciousness/{user_id}/self-model", headers=h)
         sections = resp.json()["sections"]
         assert "persona" in sections
-        # Default template is blank slate
-        assert "A new presence" in sections["persona"]["content"]
+        # Default template starts from a neutral, unforced presence.
+        assert "At the beginning of a relationship" in sections["persona"]["content"]
         assert sections["persona"]["version"] == 1
 
 
@@ -248,10 +248,10 @@ def test_agent_setup_rerenders_persona_with_chosen_template() -> None:
         h = _headers(payload)
         user_id = int(payload["id"])
 
-        # Initially the persona is "default" (blank slate)
+        # Initially the persona is "default" (neutral starting point)
         resp = client.get(
             f"/api/consciousness/{user_id}/self-model", headers=h)
-        assert "A new presence" in resp.json(
+        assert "At the beginning of a relationship" in resp.json(
         )["sections"]["persona"]["content"]
 
         # Switch to companion template
@@ -264,7 +264,7 @@ def test_agent_setup_rerenders_persona_with_chosen_template() -> None:
         resp = client.get(
             f"/api/consciousness/{user_id}/self-model", headers=h)
         persona = resp.json()["sections"]["persona"]["content"]
-        assert "warm, emotionally attuned companion" in persona
+        assert "warm, emotionally perceptive companion" in persona
         assert "Nova" in persona
 
 
@@ -283,7 +283,7 @@ def test_agent_setup_anima_template() -> None:
         resp = client.get(
             f"/api/consciousness/{user_id}/self-model", headers=h)
         persona = resp.json()["sections"]["persona"]["content"]
-        assert "quiet presence" in persona.lower()
+        assert "quiet, deliberate presence" in persona.lower()
         assert "Anima" in persona
 
 

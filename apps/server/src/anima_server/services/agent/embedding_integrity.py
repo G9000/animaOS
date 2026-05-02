@@ -5,8 +5,9 @@ import hmac
 import json
 import math
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 
 def _normalize_embedding_values(values: list[Any]) -> list[float] | None:

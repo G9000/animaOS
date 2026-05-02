@@ -15,21 +15,26 @@ export interface TabBarProps {
 
 export function TabBar({ tabs, active, onSelect, className }: TabBarProps) {
   return (
-    <div className={cn("px-5 py-1.5 border-b border-border flex gap-px", className)}>
+    <div className={cn("px-5 py-2 border-b-2 border-border flex gap-1", className)}>
       {tabs.map((t) => (
         <button
           key={t.key}
           onClick={() => onSelect(t.key)}
           className={cn(
-            "font-mono text-[9px] px-2.5 py-1.5 tracking-wider transition-colors",
+            "font-mono text-[9px] px-3 py-2 tracking-[0.18em] uppercase transition-all rounded-none border",
             active === t.key
-              ? "bg-primary/[0.08] text-primary border-b-2 border-primary"
-              : "text-muted-foreground/50 hover:text-muted-foreground",
+              ? "bg-primary text-primary-foreground border-primary "
+              : "bg-transparent text-muted-foreground border-transparent hover:text-foreground hover:bg-secondary",
           )}
         >
           {t.label}
           {t.count !== undefined && (
-            <span className="ml-1 text-muted-foreground/30">{t.count}</span>
+            <span className={cn(
+              "ml-1.5 text-[8px]",
+              active === t.key ? "text-primary-foreground/60" : "text-muted-foreground/40"
+            )}>
+              {t.count}
+            </span>
           )}
         </button>
       ))}

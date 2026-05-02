@@ -104,6 +104,7 @@ def judge_with_ollama(
             "model": model,
             "prompt": prompt,
             "stream": False,
+            "think": False,
             "options": {"temperature": 0.0, "num_predict": 10},
         },
         timeout=60,

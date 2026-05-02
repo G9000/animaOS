@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models import MemoryEpisode
 from anima_server.services.agent.json_utils import parse_json_array
+from anima_server.services.agent.llm import create_provider_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -112,14 +113,7 @@ async def _call_llm_for_segmentation(
     messages: list[tuple[str, str]],
 ) -> list[list[int]]:
     """Call LLM to segment messages by topic coherence."""
-    from anima_server.services.agent.llm import (
-        build_provider_headers,
-        resolve_base_url,
-    )
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
-    from anima_server.services.agent.openai_compatible_client import (
-        OpenAICompatibleChatClient,
-    )
 
     # Format messages for the prompt
     lines: list[str] = []
@@ -145,11 +139,9 @@ async def _call_llm_for_segmentation(
 
     for model_index, model in enumerate(models):
         # Segmentation is a small extraction task, so keep it on the faster path.
-        client = OpenAICompatibleChatClient(
+        client = create_provider_chat_client(
             provider=settings.agent_provider,
             model=model,
-            base_url=resolve_base_url(settings.agent_provider),
-            headers=build_provider_headers(settings.agent_provider),
             timeout=timeout,
             max_tokens=max_tokens,
             temperature=0.2,
@@ -180,7 +172,9 @@ async def _call_llm_for_segmentation(
                     last_error = exc
                     break
         finally:
-            await client.aclose()
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
 
         if model_index < len(models) - 1:
             logger.warning(

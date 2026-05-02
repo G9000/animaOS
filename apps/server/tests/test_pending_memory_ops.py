@@ -593,8 +593,8 @@ def test_world_context_block_is_separate_from_human_block() -> None:
 
 def test_consolidate_pending_memory_runs_soul_writer() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
-        from anima_server.services.agent.tools import consolidate_pending_memory
         from anima_server.services.agent.soul_writer import SoulWriterResult
+        from anima_server.services.agent.tools import consolidate_pending_memory
 
         user = User(username="consolidate-pending", password_hash="x",
                     display_name="Consolidate Pending")

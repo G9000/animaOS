@@ -10,7 +10,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         ref={ref}
         rows={rows}
         className={cn(
-          "w-full border border-border bg-input px-3.5 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-muted-foreground/40 placeholder:text-muted-foreground/30 resize-y min-h-[80px]",
+          "w-full border border-border bg-input px-4 py-3 text-sm text-foreground font-mono rounded-none outline-none transition-all",
+          "focus:border-muted-foreground/50 focus:",
+          "placeholder:text-muted-foreground/40 placeholder:font-mono",
+          "disabled:opacity-50 disabled:cursor-not-allowed",
+          "resize-y min-h-[80px]",
           className,
         )}
         {...props}

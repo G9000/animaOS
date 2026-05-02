@@ -19,12 +19,12 @@ from anima_server.models.runtime_memory import (
     MemoryRetrievalFeedback,
     PromotionJournal,
 )
+from anima_server.services.agent.retrieval_feedback import sync_retrieval_feedback
 from anima_server.services.agent.soul_writer import (
     SoulWriterResult,
     plan_candidate_promotion,
     run_soul_writer,
 )
-from anima_server.services.agent.retrieval_feedback import sync_retrieval_feedback
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker

@@ -578,6 +578,7 @@ class AgentRuntime:
                         tool_call=tc,
                         tool_result=tr,
                         relationship_policy=relationship_policy,
+                        user_message=user_message,
                     )
                     tool_results.append(tr)
                     messages.append(
@@ -804,6 +805,7 @@ class AgentRuntime:
                 tool_call=tool_call,
                 tool_result=tool_result,
                 relationship_policy=relationship_policy,
+                user_message=None,
             )
             rules_solver.update_state(tool_call.name, tool_result.output)
         else:
@@ -985,6 +987,7 @@ class AgentRuntime:
                     tool_call=tc,
                     tool_result=tr,
                     relationship_policy=relationship_policy,
+                    user_message=None,
                 )
                 follow_tool_results.append(tr)
                 messages.append(
@@ -1400,6 +1403,7 @@ class AgentRuntime:
         tool_call: ToolCall,
         tool_result: ToolExecutionResult,
         relationship_policy: RelationshipPolicy | None,
+        user_message: str | None,
     ) -> ToolExecutionResult:
         if not tool_result.is_terminal or tool_call.name != "send_message":
             return tool_result
@@ -1409,6 +1413,7 @@ class AgentRuntime:
         policy_error = validate_terminal_reply(
             tool_result.output,
             policy=relationship_policy,
+            user_message=user_message,
         )
         if policy_error is None:
             return tool_result

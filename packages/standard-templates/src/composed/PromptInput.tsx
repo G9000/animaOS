@@ -69,7 +69,7 @@ export function PromptInput({
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); submit(); }} className={cn("w-full", className)}>
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-2 bg-input border border-border rounded-none px-3 py-2.5 transition-all focus-within:border-muted-foreground/40 ">
         {showAttach && <AttachMenu />}
 
         <textarea
@@ -80,10 +80,10 @@ export function PromptInput({
           placeholder={placeholder || `talk to ${agentName}...`}
           disabled={disabled}
           rows={1}
-          className="flex-1 bg-transparent text-body text-foreground font-mono placeholder:text-foreground/15 outline-none resize-none pb-1 leading-6"
+          className="flex-1 bg-transparent text-body text-foreground font-mono placeholder:text-muted-foreground/30 outline-none resize-none pb-0.5 leading-6"
         />
 
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center shrink-0 gap-1">
           {showMic && (
             <Button
               type="button"
@@ -91,24 +91,22 @@ export function PromptInput({
               size="sm"
               iconOnly
               icon={<MicIcon />}
-              className="opacity-25 hover:opacity-60"
+              className="opacity-30 hover:opacity-70"
             />
           )}
           {(value.trim() || disabled) && (
             <Button
               type="submit"
-              variant="ghost"
+              variant="accent"
               size="sm"
               iconOnly
               icon={<SendIcon />}
               disabled={disabled || !value.trim()}
-              className="opacity-50 hover:opacity-90 animate-fade-in disabled:opacity-20"
+              className="animate-fade-in disabled:opacity-20"
             />
           )}
         </div>
       </div>
-
-      <div className="h-px bg-foreground/5 mt-1" />
     </form>
   );
 }

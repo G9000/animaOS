@@ -7,12 +7,13 @@ from typing import Any, Final, Protocol
 import httpx
 
 from anima_server.config import settings
+from anima_server.services.agent.anthropic_client import AnthropicChatClient
 from anima_server.services.agent.openai_compatible_client import (
     OpenAICompatibleChatClient,
 )
 
 SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = (
-    "ollama", "openrouter", "moonshot", "vllm", "openai",
+    "ollama", "openrouter", "moonshot", "vllm", "openai", "anthropic",
 )
 DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "ollama": "http://127.0.0.1:11434/v1",
@@ -20,6 +21,7 @@ DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "moonshot": "https://api.moonshot.cn/v1",
     "vllm": "http://127.0.0.1:8000/v1",
     "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
 }
 
 
@@ -57,20 +59,54 @@ def create_llm() -> ChatClient:
     """Create a concrete chat client for the configured provider."""
     provider = settings.agent_provider
 
-    validate_provider_configuration(provider)
-
-    return OpenAICompatibleChatClient(
+    return create_provider_chat_client(
         provider=provider,
         model=settings.agent_model,
-        base_url=resolve_base_url(provider),
-        headers=build_provider_headers(provider),
         timeout=settings.agent_llm_timeout,
         max_tokens=settings.agent_max_tokens,
+        temperature=settings.agent_temperature,
     )
 
 
 def invalidate_llm_cache() -> None:
     create_llm.cache_clear()
+
+
+def create_provider_chat_client(
+    *,
+    provider: str,
+    model: str,
+    timeout: float,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> ChatClient:
+    """Create an uncached chat client for a concrete provider/model pair."""
+    validate_provider_configuration(provider)
+    base_url = resolve_base_url(provider)
+    headers = build_provider_headers(provider)
+
+    if provider == "anthropic":
+        return AnthropicChatClient(
+            model=model,
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            transport=transport,
+        )
+
+    return OpenAICompatibleChatClient(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        headers=headers,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        transport=transport,
+    )
 
 
 def resolve_base_url(provider: str) -> str:
@@ -113,6 +149,12 @@ def build_provider_headers(provider: str) -> dict[str, str]:
         headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
+    if provider == "anthropic":
+        api_key = require_provider_api_key(provider)
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+        return headers
+
     if provider == "vllm" and api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -134,7 +176,7 @@ def validate_provider_configuration(provider: str) -> None:
 
 def require_provider_api_key(provider: str) -> str:
     api_key = settings.agent_api_key.strip()
-    if provider in ("openrouter", "moonshot", "openai") and not api_key:
+    if provider in ("openrouter", "moonshot", "openai", "anthropic") and not api_key:
         raise LLMConfigError(f"ANIMA_AGENT_API_KEY is required when agent_provider='{provider}'")
     return api_key
 

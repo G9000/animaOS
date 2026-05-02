@@ -28,7 +28,7 @@ export function RelationsView({
           Foreign Keys
         </h3>
         {foreignKeys.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground/50 bg-card border border-border rounded-lg">
+          <div className="text-center py-8 text-muted-foreground/50 bg-card border border-border rounded-none">
             <Icons.Network />
             <p className="mt-2">No foreign key relations detected</p>
             <p className="text-xs mt-1">
@@ -40,7 +40,7 @@ export function RelationsView({
             {foreignKeys.map((fk, i) => (
               <div
                 key={i}
-                className="p-4 bg-card border border-border rounded-lg"
+                className="p-4 bg-card border border-border rounded-none"
               >
                 <div className="flex items-center gap-3 text-sm">
                   <span className="font-mono text-muted-foreground">
@@ -77,7 +77,7 @@ export function RelationsView({
               <button
                 key={t.name}
                 onClick={() => onOpenTable(t.name)}
-                className="flex items-center justify-between p-3 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors"
+                className="flex items-center justify-between p-3 bg-card border border-border rounded-none hover:border-primary/30 transition-colors"
               >
                 <span className="font-mono text-sm">{t.name}</span>
                 <div className="flex items-center gap-2">

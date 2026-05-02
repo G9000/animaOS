@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.services.agent.client_actions import build_client_action_runtime
 from anima_server.services.agent.compaction import (
     CompactionResult,
     compact_thread_context,
@@ -24,7 +25,6 @@ from anima_server.services.agent.companion import (
     get_or_build_companion,
     invalidate_companion,
 )
-from anima_server.services.agent.client_actions import build_client_action_runtime
 from anima_server.services.agent.consolidation import schedule_background_memory_consolidation
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import ContextWindowOverflowError, invalidate_llm_cache
@@ -1499,19 +1499,29 @@ async def reset_agent_thread(
             from anima_server.services.agent.eager_consolidation import on_thread_close
 
             soul_db_factory = _build_db_factory(db) if db is not None else None
-            asyncio.get_running_loop().create_task(
-                on_thread_close(
-                    thread_id=thread_id,
-                    user_id=user_id,
-                    soul_db_factory=soul_db_factory,
-                )
+            close_task = on_thread_close(
+                thread_id=thread_id,
+                user_id=user_id,
+                runtime_db_factory=_build_runtime_db_factory(),
+                soul_db_factory=soul_db_factory,
             )
+            if _runtime_db_is_sqlite(runtime_db):
+                await close_task
+            else:
+                asyncio.get_running_loop().create_task(close_task)
     except RuntimeError:
         pass
 
     companion = get_companion(user_id)
     if companion is not None:
         companion.reset()
+
+
+def _runtime_db_is_sqlite(runtime_db: Session) -> bool:
+    try:
+        return runtime_db.get_bind().dialect.name == "sqlite"
+    except Exception:
+        return False
 
 
 def _build_db_factory(db: Session) -> Callable[[], Session]:

@@ -50,7 +50,7 @@ export function Dashboard({
 
       <div className="grid md:grid-cols-2 gap-6">
         {/* Top Tables */}
-        <div className="bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-none p-4">
           <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Icons.Table />
             Largest Tables
@@ -69,9 +69,9 @@ export function Dashboard({
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <div className="w-24 h-1.5 bg-input rounded-full overflow-hidden">
+                  <div className="w-24 h-1.5 bg-input rounded-none overflow-hidden">
                     <div
-                      className="h-full bg-primary/50 rounded-full"
+                      className="h-full bg-primary/50 rounded-none"
                       style={{
                         width: `${Math.min(
                           100,
@@ -90,7 +90,7 @@ export function Dashboard({
         </div>
 
         {/* Recent Tables */}
-        <div className="bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-none p-4">
           <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Icons.History />
             Recent Tables
@@ -114,7 +114,7 @@ export function Dashboard({
       </div>
 
       {/* Quick Actions */}
-      <div className="bg-card border border-border rounded-lg p-4">
+      <div className="bg-card border border-border rounded-none p-4">
         <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
           <Icons.Eye />
           Quick Actions
@@ -126,7 +126,7 @@ export function Dashboard({
 
       {/* Bookmarks */}
       {bookmarks.length > 0 && (
-        <div className="bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-none p-4">
           <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Icons.Bookmark />
             Bookmarks
@@ -142,7 +142,7 @@ export function Dashboard({
                     // SQL will be set by parent
                   }
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-input border border-border rounded-lg hover:border-primary/50 transition-colors text-sm"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-input border border-border rounded-none hover:border-primary/50 transition-colors text-sm"
               >
                 {bm.type === "table" ? <Icons.Table /> : <Icons.Eye />}
                 <span className="font-mono">{bm.name}</span>
@@ -162,7 +162,7 @@ export function Dashboard({
       )}
 
       {/* All Tables Preview */}
-      <div className="bg-card border border-border rounded-lg p-4">
+      <div className="bg-card border border-border rounded-none p-4">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-medium flex items-center gap-2">
             <Icons.Grid />
@@ -180,7 +180,7 @@ export function Dashboard({
             <button
               key={table.name}
               onClick={() => onOpenTable(table.name)}
-              className="p-3 rounded-lg bg-input hover:bg-input/80 border border-border hover:border-primary/30 transition-all text-left group"
+              className="p-3 rounded-none bg-input hover:bg-input/80 border border-border hover:border-primary/30 transition-all text-left group"
             >
               <div className="flex items-center justify-between mb-1">
                 <span className="font-mono text-xs truncate">{table.name}</span>

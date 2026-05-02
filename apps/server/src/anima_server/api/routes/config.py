@@ -75,6 +75,11 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
                  requiresApiKey=True),
     ProviderInfo(name="vllm", defaultModel="default", requiresApiKey=False),
     ProviderInfo(name="openai", defaultModel="gpt-4o", requiresApiKey=True),
+    ProviderInfo(
+        name="anthropic",
+        defaultModel="claude-haiku-4-5-20251001",
+        requiresApiKey=True,
+    ),
 ]
 
 VALID_PROVIDERS = {"scaffold"} | set(SUPPORTED_PROVIDERS)

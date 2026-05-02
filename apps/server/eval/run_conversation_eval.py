@@ -260,6 +260,11 @@ async def build_in_process_client(
     case_id: str,
     *,
     timeout: float,
+    agent_provider: str | None = None,
+    agent_model: str | None = None,
+    agent_base_url: str | None = None,
+    agent_api_key: str | None = None,
+    disable_background_memory: bool = False,
 ) -> AsyncGenerator[SessionBoundAnimaClient, None]:
     _ensure_server_import_path()
     _ensure_sqlite_biginteger_support()
@@ -283,7 +288,23 @@ async def build_in_process_client(
 
     temp_root = Path(tempfile.mkdtemp(prefix="anima-conversation-eval-"))
     original_data_dir = settings.data_dir
+    original_agent_provider = settings.agent_provider
+    original_agent_model = settings.agent_model
+    original_agent_base_url = settings.agent_base_url
+    original_agent_api_key = settings.agent_api_key
+    original_background_memory_enabled = settings.agent_background_memory_enabled
+
     settings.data_dir = temp_root / "anima-data"
+    if agent_provider is not None:
+        settings.agent_provider = agent_provider
+    if agent_model is not None:
+        settings.agent_model = agent_model
+    if agent_base_url is not None:
+        settings.agent_base_url = agent_base_url
+    if agent_api_key is not None:
+        settings.agent_api_key = agent_api_key
+    if disable_background_memory:
+        settings.agent_background_memory_enabled = False
 
     dispose_cached_engines()
     unlock_session_store.clear()
@@ -349,6 +370,11 @@ async def build_in_process_client(
         reset_vector_store()
         dispose_cached_engines()
         settings.data_dir = original_data_dir
+        settings.agent_provider = original_agent_provider
+        settings.agent_model = original_agent_model
+        settings.agent_base_url = original_agent_base_url
+        settings.agent_api_key = original_agent_api_key
+        settings.agent_background_memory_enabled = original_background_memory_enabled
         invalidate_agent_runtime_cache()
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -492,6 +518,31 @@ async def main() -> None:
         help="Trigger /api/chat/consolidate after each case prelude.",
     )
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--agent-provider",
+        default=None,
+        help="Override ANIMA_AGENT_PROVIDER for in-process mode.",
+    )
+    parser.add_argument(
+        "--agent-model",
+        default=None,
+        help="Override ANIMA_AGENT_MODEL for in-process mode.",
+    )
+    parser.add_argument(
+        "--agent-base-url",
+        default=None,
+        help="Override ANIMA_AGENT_BASE_URL for in-process mode.",
+    )
+    parser.add_argument(
+        "--agent-api-key",
+        default=None,
+        help="Override ANIMA_AGENT_API_KEY for in-process mode.",
+    )
+    parser.add_argument(
+        "--disable-background-memory",
+        action="store_true",
+        help="Disable background memory/sleep tasks for deterministic in-process smoke evals.",
+    )
     args = parser.parse_args()
 
     cases = load_cases()
@@ -544,7 +595,15 @@ async def main() -> None:
             await client.close()
     else:
         for index, case in enumerate(cases, start=1):
-            async with build_in_process_client(case.case_id, timeout=args.timeout) as client:
+            async with build_in_process_client(
+                case.case_id,
+                timeout=args.timeout,
+                agent_provider=args.agent_provider,
+                agent_model=args.agent_model,
+                agent_base_url=args.agent_base_url,
+                agent_api_key=args.agent_api_key,
+                disable_background_memory=args.disable_background_memory,
+            ) as client:
                 result = await run_case(
                     client,
                     case,

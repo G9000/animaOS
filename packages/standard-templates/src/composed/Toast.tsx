@@ -72,7 +72,7 @@ function ToastItem({
   return (
     <div
       className={cn(
-        "relative flex items-start gap-3 px-4 py-3 border shadow-lg min-w-[300px] max-w-[400px] animate-slide-in",
+        "relative flex items-start gap-3 px-4 py-3 border min-w-[300px] max-w-[400px] animate-slide-in",
         toastStyles[type],
       )}
       onMouseEnter={() => setIsPaused(true)}

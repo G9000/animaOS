@@ -5,29 +5,32 @@ import { cn } from "../utils/cn";
 export const buttonVariants = cva(
   // Base — shared across all variants
   [
-    "group relative overflow-hidden font-mono tracking-widest uppercase cursor-pointer",
+    "group relative overflow-hidden font-mono tracking-[0.22em] uppercase cursor-pointer",
     "inline-flex items-center justify-center gap-1.5",
-    "transition-[border-color,opacity] duration-300",
-    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-    "disabled:opacity-40 disabled:cursor-not-allowed disabled:before:hidden",
-    // Fill layer
-    "before:absolute before:inset-0 before:-translate-x-full",
-    "before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]",
-    "hover:before:translate-x-0",
+    "border rounded-none transition-all duration-200",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+    "disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none disabled:translate-y-0",
+    "active:translate-y-[1px]",
   ],
   {
     variants: {
       variant: {
-        fill:   "border border-border/50 dark:border-border hover:border-ring before:bg-foreground",
-        invert: "border border-foreground/20 dark:border-foreground/30 hover:border-foreground before:bg-foreground",
-        ghost:  "before:bg-foreground/8",
-        danger: "border border-border/50 dark:border-border hover:border-destructive before:bg-destructive",
+        fill:
+          "border-primary bg-primary text-primary-foreground hover:hover:bg-primary/90 active:",
+        invert:
+          "border-border bg-card text-foreground hover:hover:bg-secondary active:",
+        ghost:
+          "border-transparent bg-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/60 active:bg-secondary",
+        danger:
+          "border-destructive bg-destructive text-destructive-foreground hover:hover:bg-destructive/90 active:",
+        accent:
+          "border-accent bg-accent text-accent-foreground hover:hover:bg-accent/90 active:",
       },
       size: {
-        xs: "text-label px-2.5 py-1 gap-1",
-        sm: "text-caption px-4 py-1.5",
-        md: "text-body px-5 py-2",
-        lg: "text-ui px-6 py-2.5",
+        xs: "text-[9px] px-3 py-1.5 gap-1",
+        sm: "text-[10px] px-4 py-2",
+        md: "text-[11px] px-5 py-2.5",
+        lg: "text-xs px-6 py-3",
       },
       iconOnly: {
         true:  "px-0",
@@ -35,31 +38,16 @@ export const buttonVariants = cva(
       },
     },
     compoundVariants: [
-      { size: "xs", iconOnly: true, class: "w-6 h-6" },
-      { size: "sm", iconOnly: true, class: "w-7 h-7" },
-      { size: "md", iconOnly: true, class: "w-8 h-8" },
-      { size: "lg", iconOnly: true, class: "w-10 h-10" },
+      { size: "xs", iconOnly: true, class: "w-7 h-7" },
+      { size: "sm", iconOnly: true, class: "w-8 h-8" },
+      { size: "md", iconOnly: true, class: "w-9 h-9" },
+      { size: "lg", iconOnly: true, class: "w-11 h-11" },
     ],
     defaultVariants: {
       variant: "fill",
       size: "sm",
       iconOnly: false,
     },
-  },
-);
-
-const textVariants = cva(
-  "relative z-10 inline-flex items-center gap-[inherit] transition-colors duration-300 tracking-widest",
-  {
-    variants: {
-      variant: {
-        fill:   "text-muted-foreground group-hover:text-background",
-        invert: "text-foreground group-hover:text-background",
-        ghost:  "text-muted-foreground group-hover:text-foreground",
-        danger: "text-muted-foreground group-hover:text-destructive-foreground",
-      },
-    },
-    defaultVariants: { variant: "fill" },
   },
 );
 
@@ -94,7 +82,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         className={cn(buttonVariants({ variant, size, iconOnly }), className)}
         {...props}
       >
-        <span className={textVariants({ variant })}>
+        <span className="relative z-10 inline-flex items-center gap-[inherit]">
           {loading ? (
             <LoadingDots />
           ) : (
@@ -114,10 +102,10 @@ Button.displayName = "Button";
 
 function LoadingDots() {
   return (
-    <span className="inline-flex gap-0.5 items-center">
-      <span className="w-[3px] h-[3px] rounded-full bg-current animate-pulse" />
-      <span className="w-[3px] h-[3px] rounded-full bg-current animate-pulse [animation-delay:150ms]" />
-      <span className="w-[3px] h-[3px] rounded-full bg-current animate-pulse [animation-delay:300ms]" />
+    <span className="inline-flex gap-1 items-center">
+      <span className="w-1 h-1 rounded-none bg-current animate-pulse" />
+      <span className="w-1 h-1 rounded-none bg-current animate-pulse [animation-delay:150ms]" />
+      <span className="w-1 h-1 rounded-none bg-current animate-pulse [animation-delay:300ms]" />
     </span>
   );
 }

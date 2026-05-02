@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     agent_spawn_timeout: float = 300.0
     agent_spawn_max_steps: int = 4
     agent_max_tokens: int = 4096
+    agent_temperature: float | None = None
     agent_compaction_trigger_ratio: float = 0.8
     agent_compaction_keep_last_messages: int = 8
     agent_stream_chunk_size: int = 48
@@ -76,6 +77,7 @@ class Settings(BaseSettings):
     health_log_retention_days: int = 7
     health_log_level: Literal["trace", "info", "warn", "error"] = "info"
     mod_url: str = "http://127.0.0.1:3034"
+    eval_reset_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_prefix="ANIMA_",

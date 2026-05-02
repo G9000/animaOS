@@ -54,7 +54,7 @@ export function KeyboardShortcutsHelp() {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="w-[500px] max-h-[80vh] bg-card border border-border rounded-lg overflow-hidden">
+      <div className="w-[500px] max-h-[80vh] bg-card border border-border rounded-none overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-medium">Keyboard Shortcuts</h3>
           <button onClick={() => setIsOpen(false)} className="p-1 text-muted-foreground/50 hover:text-foreground">

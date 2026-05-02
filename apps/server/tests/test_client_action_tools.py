@@ -4,7 +4,6 @@ import asyncio
 from typing import Any
 
 import pytest
-
 from anima_server.services.agent.client_actions import (
     ActionToolConnection,
     ClientActionRegistry,

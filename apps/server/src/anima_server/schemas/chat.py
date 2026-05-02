@@ -49,12 +49,21 @@ class RetrievalTrace(BaseModel):
     stats: RetrievalStats | None = None
 
 
+class TokenUsage(BaseModel):
+    promptTokens: int | None = None
+    completionTokens: int | None = None
+    totalTokens: int | None = None
+    reasoningTokens: int | None = None
+    cachedInputTokens: int | None = None
+
+
 class ChatResponse(BaseModel):
     response: str
     model: str
     provider: str
     toolsUsed: list[str] = Field(default_factory=list)
     retrieval: RetrievalTrace | None = None
+    usage: TokenUsage | None = None
 
 
 class ChatResetRequest(BaseModel):
@@ -119,3 +128,4 @@ class ApprovalResponse(BaseModel):
     provider: str = ""
     toolsUsed: list[str] = Field(default_factory=list)
     retrieval: RetrievalTrace | None = None
+    usage: TokenUsage | None = None

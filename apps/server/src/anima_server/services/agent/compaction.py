@@ -9,8 +9,8 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
-from anima_server.services.agent.state import RETRIEVAL_CONTENT_KEY
 from anima_server.services.agent.sequencing import reserve_message_sequences
+from anima_server.services.agent.state import RETRIEVAL_CONTENT_KEY
 
 logger = logging.getLogger(__name__)
 

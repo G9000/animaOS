@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator
 
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User

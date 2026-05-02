@@ -20,6 +20,7 @@ from .api.routes.config import router as config_router
 from .api.routes.consciousness import router as consciousness_router
 from .api.routes.core import router as core_router
 from .api.routes.db import router as db_router
+from .api.routes.eval import router as eval_router
 from .api.routes.forgetting import router as forgetting_router
 from .api.routes.graph import router as graph_router
 from .api.routes.health import router as health_router
@@ -159,29 +160,31 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         from .services.agent.reflection import cancel_pending_reflection
 
         try:
-            # Flush pending Soul Writer candidates for all active users
-            try:
-                from sqlalchemy import select as _sel
+            # Flush pending Soul Writer candidates for all active users unless
+            # background memory work was explicitly disabled for this process.
+            if settings.agent_background_memory_enabled:
+                try:
+                    from sqlalchemy import select as _sel
 
-                from .db.runtime import get_runtime_session_factory
-                from .models.runtime import RuntimeThread
-                from .services.agent.soul_writer import run_soul_writer
+                    from .db.runtime import get_runtime_session_factory
+                    from .models.runtime import RuntimeThread
+                    from .services.agent.soul_writer import run_soul_writer
 
-                rt_factory = get_runtime_session_factory()
-                with rt_factory() as rt_db:
-                    active_user_ids = list(rt_db.scalars(
-                        _sel(RuntimeThread.user_id).where(
-                            RuntimeThread.status == "active")
-                    ).all())
-                for uid in set(active_user_ids):
-                    try:
-                        await run_soul_writer(uid)
-                    except Exception:
-                        logger.debug(
-                            "Shutdown Soul Writer failed for user %s", uid)
-            except Exception:
-                logger.debug(
-                    "Shutdown Soul Writer sweep failed", exc_info=True)
+                    rt_factory = get_runtime_session_factory()
+                    with rt_factory() as rt_db:
+                        active_user_ids = list(rt_db.scalars(
+                            _sel(RuntimeThread.user_id).where(
+                                RuntimeThread.status == "active")
+                        ).all())
+                    for uid in set(active_user_ids):
+                        try:
+                            await run_soul_writer(uid)
+                        except Exception:
+                            logger.debug(
+                                "Shutdown Soul Writer failed for user %s", uid)
+                except Exception:
+                    logger.debug(
+                        "Shutdown Soul Writer sweep failed", exc_info=True)
 
             for task in sweep_tasks:
                 task.cancel()
@@ -315,6 +318,7 @@ def create_app() -> FastAPI:
     app.include_router(consciousness_router)
     app.include_router(core_router)
     app.include_router(db_router)
+    app.include_router(eval_router)
     app.include_router(forgetting_router)
     app.include_router(graph_router)
     app.include_router(health_router)

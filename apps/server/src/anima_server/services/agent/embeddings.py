@@ -63,6 +63,7 @@ _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
     "moonshot": "https://api.moonshot.cn/v1",
     "vllm": "http://127.0.0.1:8000/v1",
     "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
 }
 
 
@@ -160,6 +161,8 @@ def resolve_base_url() -> str:
 def _embedding_skip_reason(provider: str) -> str | None:
     if provider == "openrouter":
         return "provider has no supported embeddings endpoint; configure an explicit embedding provider"
+    if provider == "anthropic":
+        return "provider has no embeddings endpoint; configure an explicit embedding provider"
     return None
 
 

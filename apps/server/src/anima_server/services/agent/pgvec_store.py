@@ -15,7 +15,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime_embedding import RuntimeEmbedding
-from anima_server.services.agent.embedding_integrity import check_embedding, compute_embedding_checksum
+from anima_server.services.agent.embedding_integrity import (
+    check_embedding,
+    compute_embedding_checksum,
+)
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
 
 logger = logging.getLogger(__name__)

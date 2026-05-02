@@ -267,6 +267,38 @@ def test_scored_retrieval_does_not_backfill_missing_checksums() -> None:
         assert item.embedding_checksum is None
 
 
+def test_scored_retrieval_does_not_warn_for_missing_embedding(caplog) -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        now = datetime.now(UTC)
+        item = MemoryItem(
+            user_id=user.id,
+            content="raw transcript chunk",
+            category="fact",
+            importance=3,
+            source="eval_import_raw",
+            reference_count=0,
+            embedding_json=None,
+            embedding_checksum=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(item)
+        db.flush()
+
+        with caplog.at_level("WARNING", logger="anima_server.services.agent.memory_store"):
+            scored = get_memory_items_scored(
+                db,
+                user_id=user.id,
+                category="fact",
+                limit=1,
+                query_embedding=[1.0, 0.0],
+            )
+
+        assert [result.id for result in scored] == [item.id]
+        assert "malformed embedding payload" not in caplog.text
+
+
 def test_cosine_similarity() -> None:
     from anima_server.services.agent.embeddings import cosine_similarity
 

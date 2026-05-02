@@ -78,7 +78,7 @@ export default function AgentProfileSettings() {
             <img
               src={avatarUrl}
               alt="Agent avatar"
-              className="w-20 h-20 rounded-full border border-border object-cover flex-shrink-0"
+              className="w-20 h-20 rounded-none border border-border object-cover flex-shrink-0"
             />
             <div className="flex flex-col gap-2">
               <input

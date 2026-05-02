@@ -15,7 +15,7 @@ export function StatCard({
 }) {
   return (
     <div
-      className={`bg-card border ${color} rounded-lg p-4 hover:border-primary/30 transition-colors`}
+      className={`bg-card border ${color} rounded-none p-4 hover:border-primary/30 transition-colors`}
     >
       <div className="flex items-start justify-between">
         <div>
@@ -70,7 +70,7 @@ export function NavButton({
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-all ${
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-none transition-all ${
         active
           ? "bg-primary/15 text-primary border border-primary/20"
           : "text-muted-foreground hover:text-foreground hover:bg-input border border-transparent"
@@ -124,7 +124,7 @@ export function Button({
   className?: string;
 }) {
   const base =
-    "rounded-md transition-colors disabled:opacity-30 flex items-center gap-1.5";
+    "rounded-none transition-colors disabled:opacity-30 flex items-center gap-1.5";
 
   const variants = {
     default: "bg-card border border-border hover:bg-input text-foreground",

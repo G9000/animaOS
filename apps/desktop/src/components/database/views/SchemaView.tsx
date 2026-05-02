@@ -21,7 +21,7 @@ export function SchemaView({
       </div>
 
       {/* Columns */}
-      <div className="bg-card border border-border rounded-lg overflow-hidden">
+      <div className="bg-card border border-border rounded-none overflow-hidden">
         <div className="px-4 py-2 bg-input border-b border-border text-xs font-medium">
           Columns ({schemaColumns.length})
         </div>
@@ -63,7 +63,7 @@ export function SchemaView({
 
       {/* Indexes */}
       {schemaIndexes.length > 0 && (
-        <div className="bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-none p-4">
           <h3 className="text-xs font-medium mb-3">
             Indexes ({schemaIndexes.length})
           </h3>
@@ -82,7 +82,7 @@ export function SchemaView({
 
       {/* Primary Keys Info */}
       {tableData.primaryKeys.length > 0 && (
-        <div className="bg-card border border-border rounded-lg p-4">
+        <div className="bg-card border border-border rounded-none p-4">
           <h3 className="text-xs font-medium mb-2">Primary Key</h3>
           <p className="text-sm font-mono text-primary">
             {tableData.primaryKeys.join(", ")}

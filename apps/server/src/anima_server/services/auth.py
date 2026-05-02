@@ -214,11 +214,11 @@ def create_user(
 def authenticate_user(db: Session, username: str, password: str) -> tuple[User, dict[str, bytes]]:
     user = get_user_by_username(db, username)
     if user is None:
-        raise ValueError("Invalid credentials")
+        raise ValueError(f"User not found in DB: {username}")
 
     verification = verify_password(password, user.password_hash)
     if not verification.valid:
-        raise ValueError("Invalid credentials")
+        raise ValueError(f"Password verification failed for user: {username}")
 
     all_keys = get_user_keys_by_user_id(db, user.id)
     # Skip recovery-wrapped keys — they use the mnemonic, not the password

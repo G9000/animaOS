@@ -51,11 +51,11 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
             {/* Step indicator */}
             <div className="flex flex-col items-center">
               <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-mono ${
+                className={`w-6 h-6 rounded-none flex items-center justify-center text-[10px] font-mono ${
                   isDone
                     ? "bg-success text-black"
                     : isActive
-                    ? "border-2 border-primary text-primary"
+                    ? "border border-primary text-primary"
                     : "border border-border text-muted-foreground/40"
                 }`}
               >

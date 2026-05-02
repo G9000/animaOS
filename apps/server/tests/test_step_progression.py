@@ -280,24 +280,26 @@ async def test_step_state_and_empty_warning_emitted_via_callback() -> None:
     await runtime.invoke("hello", user_id=1, history=[], event_callback=collect)
 
     assert [event.event for event in events] == [
+        "memory_state",
         "step_state",
         "step_state",
         "warning",
         "timing",
     ]
-    assert events[0].data["stepIndex"] == 0
-    assert events[0].data["phase"] == "request"
-    assert events[0].data["messageCount"] == 2
-    assert events[0].data["allowedTools"] == ["send_message"]
-    assert events[0].data["forceToolCall"] is True
-    assert events[0].data["messages"][0]["role"] == "system"
-    assert events[0].data["messages"][0]["chars"] > 0
-    assert events[0].data["messages"][1] == {
+    assert events[0].data == {"blocks": {}}
+    assert events[1].data["stepIndex"] == 0
+    assert events[1].data["phase"] == "request"
+    assert events[1].data["messageCount"] == 2
+    assert events[1].data["allowedTools"] == ["send_message"]
+    assert events[1].data["forceToolCall"] is False
+    assert events[1].data["messages"][0]["role"] == "system"
+    assert events[1].data["messages"][0]["chars"] > 0
+    assert events[1].data["messages"][1] == {
         "role": "user",
         "chars": 5,
         "preview": "hello",
     }
-    assert events[1].data == {
+    assert events[2].data == {
         "stepIndex": 0,
         "phase": "result",
         "assistantTextChars": 0,
@@ -306,7 +308,7 @@ async def test_step_state_and_empty_warning_emitted_via_callback() -> None:
         "reasoningChars": 0,
         "reasoningCaptured": False,
     }
-    assert events[2].data == {
+    assert events[3].data == {
         "stepIndex": 0,
         "code": "empty_step_result",
         "message": "LLM returned no assistant text and no tool calls for this step.",

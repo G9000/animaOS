@@ -89,7 +89,7 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1 w-80 bg-card border border-border rounded-lg shadow-lg z-50 max-h-96 overflow-hidden flex flex-col">
+        <div className="absolute left-0 top-full mt-1 w-80 bg-card border border-border rounded-none z-50 max-h-96 overflow-hidden flex flex-col">
           <div className="px-3 py-2 bg-input border-b border-border flex items-center justify-between">
             <span className="text-xs font-medium">Saved Queries</span>
             <button onClick={() => setIsOpen(false)} className="p-1 text-muted-foreground/50 hover:text-foreground">
@@ -143,7 +143,7 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
       {/* Save Dialog */}
       {showSaveDialog && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-96 bg-card border border-border rounded-lg p-4">
+          <div className="w-96 bg-card border border-border rounded-none p-4">
             <h3 className="text-sm font-medium mb-3">Save Query</h3>
             <div className="space-y-3">
               <div>

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import shutil
+import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db.user_store import _bootstrapped_roots
-from anima_server.main import create_app
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
+from anima_server.services.core import release_core_lock
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
+from conftest import create_managed_temp_dir
 from fastapi.testclient import TestClient
 
 SENTINEL_ROUND_TRIP = "SENTINEL_ROUND_TRIP_ALPHA_20260320"
@@ -20,9 +25,32 @@ SENTINEL_SOUL_MIGRATION = "SENTINEL_SOUL_MIGRATION_DELTA_20260320"
 SENTINEL_ENCRYPTED_LOOKALIKE = "enc2:not-base64"
 
 
+def _create_app():
+    """Import the app factory only after test settings point at an isolated core."""
+    sys.modules.pop("anima_server.main", None)
+    import anima_server.main as main_module
+
+    # Importing anima_server.main creates the module-level ASGI app for uvicorn.
+    # Tests need fresh app instances, so release that import-time advisory lock
+    # before constructing the app used by this test.
+    release_core_lock()
+    return main_module.create_app()
+
+
+@contextmanager
+def _test_client(**kwargs: object) -> Generator[TestClient, None, None]:
+    app = _create_app()
+    main_module = sys.modules["anima_server.main"]
+    with patch.object(main_module, "_start_embedded_pg", return_value=None), TestClient(
+        app,
+        **kwargs,
+    ) as client:
+        yield client
+
+
 @pytest.fixture()
-def isolated_runtime_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    runtime_root = tmp_path / "runtime"
+def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    runtime_root = managed_tmp_path / "runtime"
     runtime_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ANIMA_DATA_DIR", str(runtime_root))
 
@@ -49,10 +77,9 @@ def isolated_runtime_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
 
 @pytest.fixture(scope="module")
 def encrypted_core_supported() -> bool:
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="anima-sqlcipher-probe-") as tmp:
-        runtime_root = Path(tmp) / "runtime"
+    temp_root = create_managed_temp_dir("anima-sqlcipher-probe-")
+    try:
+        runtime_root = temp_root / "runtime"
         runtime_root.mkdir(parents=True, exist_ok=True)
 
         original_data_dir = settings.data_dir
@@ -67,8 +94,7 @@ def encrypted_core_supported() -> bool:
 
         _reset_fresh_process_state()
         try:
-            app = create_app()
-            with TestClient(app) as client:
+            with _test_client() as client:
                 register = client.post(
                     "/api/auth/register",
                     json={
@@ -93,8 +119,7 @@ def encrypted_core_supported() -> bool:
 
             _reset_fresh_process_state()
 
-            app = create_app()
-            with TestClient(app) as client:
+            with _test_client() as client:
                 login = client.post(
                     "/api/auth/login",
                     json={"username": "probe-user", "password": "probe-password"},
@@ -108,9 +133,12 @@ def encrypted_core_supported() -> bool:
             settings.database_url = original_database_url
             settings.core_passphrase = original_passphrase
             settings.core_require_encryption = original_require_encryption
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _reset_fresh_process_state() -> None:
+    release_core_lock()
     dispose_cached_engines()
     unlock_session_store.clear()
     clear_sqlcipher_key()
@@ -147,7 +175,7 @@ def test_encrypted_core_opens_with_correct_passphrase_and_round_trips_data(
     settings.core_passphrase = "core-passphrase-correct"
     settings.core_require_encryption = True
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         reg = _register_user(client, "enc-open", "password-1", "Enc Open")
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": str(reg["unlockToken"])}
@@ -161,7 +189,7 @@ def test_encrypted_core_opens_with_correct_passphrase_and_round_trips_data(
 
     _reset_fresh_process_state()
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         login = _login_user(client, "enc-open", "password-1")
         login_headers = {"x-anima-unlock": str(login.json()["unlockToken"])}
         items = client.get(f"/api/memory/{user_id}/items", headers=login_headers)
@@ -182,7 +210,7 @@ def test_encrypted_core_rejects_wrong_passphrase_without_corrupting_data(
     settings.core_passphrase = ""
     settings.core_require_encryption = True
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         reg = _register_user(client, "enc-wrong-pass", "correct-password", "Wrong Pass")
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": str(reg["unlockToken"])}
@@ -195,7 +223,7 @@ def test_encrypted_core_rejects_wrong_passphrase_without_corrupting_data(
 
     _reset_fresh_process_state()
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         wrong_login = client.post(
             "/api/auth/login",
             json={"username": "enc-wrong-pass", "password": "wrong-password"},
@@ -205,7 +233,7 @@ def test_encrypted_core_rejects_wrong_passphrase_without_corrupting_data(
 
     _reset_fresh_process_state()
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         login = _login_user(client, "enc-wrong-pass", "correct-password")
         login_headers = {"x-anima-unlock": str(login.json()["unlockToken"])}
         items = client.get(f"/api/memory/{user_id}/items", headers=login_headers)
@@ -215,7 +243,7 @@ def test_encrypted_core_rejects_wrong_passphrase_without_corrupting_data(
 
 def test_encrypted_core_is_portable_when_canonical_artifacts_are_copied(
     isolated_runtime_root: Path,
-    tmp_path: Path,
+    managed_tmp_path: Path,
     encrypted_core_supported: bool,
 ) -> None:
     if not encrypted_core_supported:
@@ -225,9 +253,9 @@ def test_encrypted_core_is_portable_when_canonical_artifacts_are_copied(
     settings.core_require_encryption = True
 
     source_root = isolated_runtime_root
-    copied_root = tmp_path / "copied-runtime"
+    copied_root = managed_tmp_path / "copied-runtime"
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         reg = _register_user(client, "enc-port", "portable-password", "Portable")
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": str(reg["unlockToken"])}
@@ -241,14 +269,14 @@ def test_encrypted_core_is_portable_when_canonical_artifacts_are_copied(
     _reset_fresh_process_state()
 
     shutil.copytree(source_root, copied_root, dirs_exist_ok=True)
-    tombstone_root = tmp_path / "original-gone"
+    tombstone_root = managed_tmp_path / "original-gone"
     source_root.rename(tombstone_root)
 
     settings.data_dir = copied_root
     settings.database_url = f"sqlite:///{(copied_root / 'anima.db').as_posix()}"
     _reset_fresh_process_state()
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         login = _login_user(client, "enc-port", "portable-password")
         login_headers = {"x-anima-unlock": str(login.json()["unlockToken"])}
         items = client.get(f"/api/memory/{user_id}/items", headers=login_headers)
@@ -262,7 +290,7 @@ def test_legacy_plaintext_soul_is_rewritten_on_first_read_without_data_loss(
     settings.core_passphrase = ""
     settings.core_require_encryption = False
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         reg = _register_user(client, "legacy-soul", "legacy-password", "Legacy Soul")
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": str(reg["unlockToken"])}
@@ -304,7 +332,7 @@ def test_plaintext_soul_that_looks_encrypted_is_returned_verbatim(
     settings.core_passphrase = ""
     settings.core_require_encryption = False
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         reg = _register_user(client, "soul-prefix", "prefix-password", "Soul Prefix")
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": str(reg["unlockToken"])}
@@ -351,7 +379,7 @@ def test_corrupt_wrapped_sqlcipher_metadata_surfaces_server_error(
     settings.core_passphrase = ""
     settings.core_require_encryption = True
 
-    with TestClient(create_app()) as client:
+    with _test_client() as client:
         _register_user(client, "corrupt-wrap", "correct-password", "Corrupt Wrap")
 
         from anima_server.services.core import (
@@ -366,7 +394,7 @@ def test_corrupt_wrapped_sqlcipher_metadata_surfaces_server_error(
 
     _reset_fresh_process_state()
 
-    with TestClient(create_app(), raise_server_exceptions=False) as client:
+    with _test_client(raise_server_exceptions=False) as client:
         response = client.post(
             "/api/auth/login",
             json={"username": "corrupt-wrap", "password": "correct-password"},

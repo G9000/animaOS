@@ -17,8 +17,8 @@ from contextlib import contextmanager
 
 import pytest
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
 from anima_server.models import pending_memory_op as _pending_memory_op_models  # noqa: F401
+from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
 from anima_server.models import runtime_consciousness as _runtime_consciousness_models  # noqa: F401
 from anima_server.models import runtime_memory as _runtime_memory_models  # noqa: F401
 from sqlalchemy import BigInteger, create_engine, event

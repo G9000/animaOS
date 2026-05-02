@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from anima_server.services.agent import bm25_index as bm25_module
 from anima_server.services.agent.bm25_index import (
     BM25Index,

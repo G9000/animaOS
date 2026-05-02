@@ -97,7 +97,10 @@ def recover_account(
     deks: dict[str, bytes] = {}
     for uk in recovery_keys:
         original_domain = uk.domain[len(RECOVERY_DOMAIN_PREFIX):]
-        dek = unwrap_dek(phrase, to_wrapped_dek_record(uk), user_id, uk.domain)
+        try:
+            dek = unwrap_dek(phrase, to_wrapped_dek_record(uk), user_id, uk.domain)
+        except Exception as exc:
+            raise ValueError("Invalid recovery phrase") from exc
         deks[original_domain] = dek
 
     # Re-wrap DEKs with new password (update existing password-wrapped keys)

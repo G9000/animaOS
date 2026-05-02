@@ -1,17 +1,4 @@
 from __future__ import annotations
-from sqlalchemy.pool import StaticPool
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy import BigInteger, create_engine, event
-from fastapi.testclient import TestClient
-from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
-from anima_server.services.agent.vector_store import reset_vector_store
-from anima_server.services.agent import invalidate_agent_runtime_cache
-from anima_server.db.runtime_base import RuntimeBase
-from anima_server.db import runtime as runtime_mod
-from anima_server.db import dispose_cached_engines
-from anima_server.config import settings
-import pytest
 
 import os
 import shutil
@@ -22,6 +9,20 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
+
+import pytest
+from anima_server.config import settings
+from anima_server.db import dispose_cached_engines
+from anima_server.db import runtime as runtime_mod
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.services.agent import invalidate_agent_runtime_cache
+from anima_server.services.agent.vector_store import reset_vector_store
+from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
+from fastapi.testclient import TestClient
+from sqlalchemy import BigInteger, create_engine, event
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # Disable encryption requirement for tests (must be set before settings import).
 os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
@@ -95,10 +96,18 @@ def _resolve_test_temp_root() -> Path:
     override = os.environ.get("ANIMA_TEST_TEMP_ROOT")
     if override:
         return Path(override)
-    return Path(tempfile.gettempdir()) / "anima-tests"
+    return Path(__file__).resolve().parents[3] / ".tmp-tests"
 
 
 TEST_TEMP_ROOT = _resolve_test_temp_root()
+TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Python's tempfile defaults use %TEMP% on Windows. In some dev shells, Python
+# 0o700 temp directories become ACL-broken and unreadable by the creating
+# process. Route test temp creation through the managed root used by this suite.
+tempfile.tempdir = str(TEST_TEMP_ROOT)
+os.environ.setdefault("TMP", str(TEST_TEMP_ROOT))
+os.environ.setdefault("TEMP", str(TEST_TEMP_ROOT))
 
 
 def create_managed_temp_dir(prefix: str) -> Path:
@@ -106,6 +115,15 @@ def create_managed_temp_dir(prefix: str) -> Path:
     temp_root = TEST_TEMP_ROOT / f"{prefix}{uuid4().hex}"
     temp_root.mkdir(parents=True, exist_ok=False)
     return temp_root
+
+
+@pytest.fixture()
+def tmp_path() -> Generator[Path, None, None]:
+    temp_root = create_managed_temp_dir("pytest-tmp-")
+    try:
+        yield temp_root
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 @pytest.fixture()

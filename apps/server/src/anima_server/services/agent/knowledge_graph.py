@@ -25,7 +25,11 @@ from anima_server.services.agent.embedding_integrity import (
     compute_embedding_checksum,
     parse_embedding_payload,
 )
-from anima_server.services.agent.embeddings import cosine_similarity, generate_embedding, generate_embeddings_batch
+from anima_server.services.agent.embeddings import (
+    cosine_similarity,
+    generate_embedding,
+    generate_embeddings_batch,
+)
 from anima_server.services.agent.graph_triplets import extract_triplets as extract_rule_triplets
 from anima_server.services.agent.text_processing import prepare_embedding_text
 

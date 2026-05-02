@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -252,11 +252,9 @@ def sync_retrieval_feedback(
     for row in rows:
         if not row.was_used and not row.was_corrected:
             unused_counts[int(row.memory_item_id)] += 1
-        group_key: int | tuple[str, int]
-        if row.run_id is None:
-            group_key = ("legacy", int(row.id))
-        else:
-            group_key = int(row.run_id)
+        group_key: int | tuple[str, int] = (
+            ("legacy", int(row.id)) if row.run_id is None else int(row.run_id)
+        )
         run_feedback[group_key].append(row)
 
     used_counts: dict[int, int] = defaultdict(int)
@@ -508,9 +506,7 @@ def _normalize_token(token: str) -> str:
         normalized = normalized[:-3] + "y"
     elif len(normalized) > 5 and normalized.endswith("ing"):
         normalized = normalized[:-3]
-    elif len(normalized) > 4 and normalized.endswith("ed"):
-        normalized = normalized[:-2]
-    elif len(normalized) > 4 and normalized.endswith("es"):
+    elif (len(normalized) > 4 and normalized.endswith("ed")) or (len(normalized) > 4 and normalized.endswith("es")):
         normalized = normalized[:-2]
     elif len(normalized) > 3 and normalized.endswith("s") and not normalized.endswith("ss"):
         normalized = normalized[:-1]

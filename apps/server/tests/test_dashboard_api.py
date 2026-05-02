@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from conftest import managed_test_client
-from fastapi.testclient import TestClient
-
+import pytest
 from anima_server import config as config_module
 from anima_server.config import settings
+from conftest import managed_test_client
+from fastapi.testclient import TestClient
 
 
 def _register_user(client: TestClient) -> dict[str, object]:
@@ -91,6 +91,7 @@ def test_config_providers() -> None:
         names = [p["name"] for p in providers]
         assert "scaffold" in names
         assert "ollama" in names
+        assert "anthropic" in names
 
 
 def test_config_ollama_models(monkeypatch) -> None:
@@ -134,6 +135,7 @@ def test_config_ollama_models(monkeypatch) -> None:
         ]
 
 
+@pytest.mark.asyncio
 async def test_list_ollama_models_reads_payload_before_client_close(monkeypatch) -> None:
     from anima_server.api.routes import config as config_route
 

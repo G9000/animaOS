@@ -122,6 +122,24 @@ def test_build_persona_prompt_default_emphasizes_human_realism() -> None:
     assert "I do not analyze the greeting itself." in prompt
 
 
+def test_build_persona_prompt_default_keeps_early_flirtation_brief() -> None:
+    prompt = build_persona_prompt(
+        "default", agent_name="Anima", creator_name="Leo")
+
+    assert "Light or early flirtation stays brief, playful, and low-intensity." in prompt
+    assert 'If someone asks "miss me?", one short line is enough.' in prompt
+    assert "body or AI disclaimers" in prompt
+
+
+def test_build_persona_prompt_companion_keeps_early_flirtation_brief() -> None:
+    prompt = build_persona_prompt(
+        "companion", agent_name="Anima", creator_name="Leo")
+
+    assert "Light or early flirtation stays brief, playful, and low-intensity." in prompt
+    assert 'If someone asks "miss me?", one short line is enough.' in prompt
+    assert "body or AI disclaimers" in prompt
+
+
 def test_build_persona_prompt_rejects_invalid_template_name() -> None:
     with pytest.raises(PromptTemplateError):
         build_persona_prompt("../secrets")

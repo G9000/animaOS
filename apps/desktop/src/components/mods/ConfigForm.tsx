@@ -62,12 +62,12 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
             {field.type === "boolean" ? (
               <button
                 onClick={() => set(key, !values[key])}
-                className={`w-7 h-4 rounded-full transition-colors relative ${
+                className={`w-7 h-4 rounded-none transition-colors relative ${
                   values[key] ? "bg-primary/30" : "bg-input"
                 }`}
               >
                 <div
-                  className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${
+                  className={`absolute top-0.5 w-3 h-3 rounded-none transition-all ${
                     values[key] ? "left-3.5 bg-primary" : "left-0.5 bg-text-muted/30"
                   }`}
                 />

@@ -170,7 +170,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="w-[600px] max-h-[80vh] bg-card border border-border rounded-lg flex flex-col">
+          <div className="w-[600px] max-h-[80vh] bg-card border border-border rounded-none flex flex-col">
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">
               <h3 className="text-sm font-medium">Import Data into {tableName}</h3>
@@ -209,7 +209,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
                     const file = e.dataTransfer.files[0];
                     if (file) handleFile(file);
                   }}
-                  className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                  className={`border border-dashed rounded-none p-8 text-center cursor-pointer transition-colors ${
                     isDragging ? "border-primary bg-primary/5" : "border-border hover:border-text-muted"
                   }`}
                 >

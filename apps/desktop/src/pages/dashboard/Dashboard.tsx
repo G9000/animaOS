@@ -81,23 +81,21 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-6 px-8 py-8 overflow-hidden">
-      {/* Symbol */}
+    <div className="h-full flex flex-col items-center justify-center gap-8 px-8 py-8 overflow-hidden">
+      {/* Symbol — hardware screen vibe */}
       <div className="relative pointer-events-none">
-        <pre
-          className="whitespace-pre leading-none text-foreground/30 bg-transparent select-none"
-          style={{ fontSize: "5.5px", lineHeight: "5.5px" }}
-        >
-          {symbol.base}
-        </pre>
-        <div
-          className="absolute inset-0 -z-10 blur-2xl"
-          style={{ background: "radial-gradient(ellipse at center, var(--color-foreground) 0%, transparent 70%)", opacity: 0.04 }}
-        />
+        <div className="hw-module p-6">
+          <pre
+            className="whitespace-pre leading-none text-foreground/25 bg-transparent select-none"
+            style={{ fontSize: "5.5px", lineHeight: "5.5px" }}
+          >
+            {symbol.base}
+          </pre>
+        </div>
       </div>
 
       {/* Greeting + input */}
-      <div className="w-full max-w-sm">
+      <div className="w-full max-w-md space-y-6">
         <DashboardGreeting
           userName={user?.name}
           tod={tod}

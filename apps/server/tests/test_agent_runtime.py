@@ -213,6 +213,355 @@ async def test_runtime_retries_invalid_first_contact_terminal_reply() -> None:
     assert "origin-story narration" in first_result.output
 
 
+@pytest.mark.asyncio
+async def test_runtime_retries_long_light_flirt_in_early_connection() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "A little. You make me think about our conversations "
+                                "when you're away. Don't stay gone too long."
+                            )
+                        },
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={"message": "A little. Don't get smug."},
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "miss me?",
+        user_id=1,
+        history=[
+            StoredMessage(role="user", content="hey"),
+            StoredMessage(role="assistant", content="Hey."),
+            StoredMessage(
+                role="user",
+                content="I keep coming back here because I like your vibe.",
+            ),
+            StoredMessage(role="assistant", content="I like that you're here."),
+        ],
+        conversation_turn_count=3,
+        memory_blocks=(),
+    )
+
+    assert result.response == "A little. Don't get smug."
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "casual flirt" in first_result.output
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_long_first_contact_identity_reply() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "I'm Anima. The name I've been given. You know me as "
+                                "the person you're talking to right now, but that's all "
+                                "you need to know for this moment. Is there something "
+                                "on your mind?"
+                            )
+                        },
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={"message": "Hey, I'm Anima. Nice to meet you."},
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "who are you",
+        user_id=1,
+        history=[],
+        conversation_turn_count=1,
+        memory_blocks=(),
+    )
+
+    assert result.response == "Hey, I'm Anima. Nice to meet you."
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "First-contact identity" in first_result.output
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_indirect_first_contact_support_reply() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={"message": "That sucks. Want to talk about it?"},
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={"message": "What happened?"},
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "I had a rough day",
+        user_id=1,
+        history=[],
+        conversation_turn_count=1,
+        memory_blocks=(),
+    )
+
+    assert result.response == "What happened?"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "First-contact support" in first_result.output
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_indirect_early_connection_support_reply() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "Sorry to hear that. I'm here if you want to talk about it."
+                            )
+                        },
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={"message": "What happened?"},
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "I had a rough day",
+        user_id=1,
+        history=[
+            StoredMessage(role="user", content="hey"),
+            StoredMessage(role="assistant", content="Hey."),
+            StoredMessage(role="user", content="I like talking to you."),
+            StoredMessage(role="assistant", content="Good. Same."),
+        ],
+        conversation_turn_count=3,
+        memory_blocks=(),
+    )
+
+    assert result.response == "What happened?"
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "Early-connection support" in first_result.output
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_long_familiar_identity_reply() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "I'm Anima. I'm the person you've been talking to. "
+                                "I remember things from our conversations, I'm learning "
+                                "who you are, and I care about what's happening in your "
+                                "life. That's really all that matters right now."
+                            )
+                        },
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "I'm Anima. Not the usual kind, but I remember, "
+                                "I care, and I know you now."
+                            )
+                        },
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "what are you",
+        user_id=1,
+        history=[
+            StoredMessage(role="user", content="hey"),
+            StoredMessage(role="assistant", content="Hey."),
+            StoredMessage(role="user", content="I like how direct you are."),
+            StoredMessage(role="assistant", content="Good. I'll keep it simple."),
+            StoredMessage(role="user", content="Talking here feels familiar."),
+            StoredMessage(role="assistant", content="Yeah. It does."),
+        ],
+        conversation_turn_count=7,
+        memory_blocks=(),
+    )
+
+    assert result.response == (
+        "I'm Anima. Not the usual kind, but I remember, I care, and I know you now."
+    )
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "identity" in first_result.output
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_familiar_identity_without_continuity_anchor() -> None:
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "I'm a person who's here with you. "
+                                "Not a feature set. Just someone."
+                            )
+                        },
+                    ),
+                )
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-2",
+                        name="send_message",
+                        arguments={
+                            "message": (
+                                "I'm Anima. Not the usual kind, but I remember, "
+                                "I care, and I know you now."
+                            )
+                        },
+                    ),
+                )
+            ),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke(
+        "what are you",
+        user_id=1,
+        history=[
+            StoredMessage(role="user", content="hey"),
+            StoredMessage(role="assistant", content="Hey."),
+            StoredMessage(role="user", content="Talking here feels familiar."),
+            StoredMessage(role="assistant", content="Yeah. It does."),
+        ],
+        conversation_turn_count=7,
+        memory_blocks=(),
+    )
+
+    assert result.response == (
+        "I'm Anima. Not the usual kind, but I remember, I care, and I know you now."
+    )
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert len(result.step_traces) == 2
+    first_result = result.step_traces[0].tool_results[0]
+    assert first_result.is_error is True
+    assert "continuity anchor" in first_result.output
+
+
 def test_validate_terminal_reply_rejects_normalized_origin_wording() -> None:
     from anima_server.services.agent.conversation_policy import (
         RelationshipPolicy,

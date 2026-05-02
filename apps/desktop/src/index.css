@@ -6,8 +6,6 @@
 @import "@fontsource/space-grotesk/700.css";
 @import "@fontsource/space-mono/400.css";
 @import "@fontsource/space-mono/700.css";
-@import "@fontsource/playfair-display/400.css";
-@import "@fontsource/playfair-display/400-italic.css";
 @source "../../../packages/standard-templates/src";
 @plugin "@tailwindcss/typography";
 
@@ -39,10 +37,10 @@ body {
 }
 
 ::selection {
-  background: rgba(94, 160, 171, 0.18);
+  background: rgba(212, 165, 154, 0.22);
 }
 
-/* Scrollbar — thin, industrial */
+/* Scrollbar — thin, minimal */
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
@@ -53,12 +51,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(74, 74, 90, 0.3);
+  background: var(--border);
   border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(62, 205, 232, 0.3);
+  background: var(--muted-foreground);
 }
 
 /* Transitions */
@@ -67,6 +65,37 @@ textarea,
 button,
 a {
   transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ── Minimal utilities ── */
+
+/* Flat button — thin border, no shadow */
+.hw-btn {
+  @apply inline-flex items-center justify-center font-mono uppercase tracking-[0.22em] border border-border bg-card rounded-none transition-all;
+}
+.hw-btn:hover {
+  @apply border-muted-foreground/30 bg-secondary;
+}
+.hw-btn:active {
+  @apply translate-y-[1px];
+}
+
+/* Recessed panel / input */
+.hw-inset {
+  @apply bg-input border border-border rounded-none;
+}
+.dark .hw-inset {
+  box-shadow: inset 1px 1px 2px rgba(0,0,0,0.15);
+}
+
+/* Module card — flat, thin border */
+.hw-module {
+  @apply bg-card border border-border rounded-none;
+}
+
+/* Micro label — tiny, all-caps, wide tracking */
+.hw-label {
+  @apply font-mono text-[9px] uppercase tracking-[0.25em] text-muted-foreground;
 }
 
 /* Terminal cursor blink */
@@ -172,30 +201,20 @@ a {
   animation: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Subtle scan line for certain surfaces */
-@keyframes scanline {
-  0% {
-    transform: translateY(-100%);
-  }
-  100% {
-    transform: translateY(100%);
-  }
-}
-
-/* Prose — sharp, monospace headers */
+/* Prose — minimal, flat */
 .prose {
   --tw-prose-body: var(--foreground);
   --tw-prose-headings: var(--foreground);
   --tw-prose-lead: var(--muted-foreground);
-  --tw-prose-links: var(--primary);
+  --tw-prose-links: var(--accent);
   --tw-prose-bold: var(--foreground);
   --tw-prose-counters: var(--muted-foreground);
   --tw-prose-bullets: var(--muted-foreground);
   --tw-prose-hr: var(--border);
   --tw-prose-quotes: var(--foreground);
-  --tw-prose-quote-borders: var(--primary);
+  --tw-prose-quote-borders: var(--accent);
   --tw-prose-captions: var(--muted-foreground);
-  --tw-prose-code: var(--primary);
+  --tw-prose-code: var(--accent);
   --tw-prose-pre-code: var(--foreground);
   --tw-prose-pre-bg: var(--background);
   --tw-prose-th-borders: var(--border);
@@ -203,14 +222,12 @@ a {
 }
 
 .prose :where(code):not(:where([class~="not-prose"] *)) {
-  @apply bg-background border border-border px-1.5 py-0.5 text-xs;
-  border-radius: 2px;
+  @apply bg-background border border-border px-1.5 py-0.5 text-xs rounded-none;
   font-family: var(--font-mono);
 }
 
 .prose :where(pre):not(:where([class~="not-prose"] *)) {
-  @apply bg-background border border-border my-3;
-  border-radius: 2px;
+  @apply bg-background border border-border my-3 rounded-none;
 }
 
 .prose :where(pre code):not(:where([class~="not-prose"] *)) {
@@ -218,11 +235,11 @@ a {
 }
 
 .prose :where(a):not(:where([class~="not-prose"] *)) {
-  @apply text-primary no-underline border-b border-border hover:border-primary transition-colors;
+  @apply text-accent no-underline border-b border-border hover:border-accent transition-colors;
 }
 
 .prose :where(blockquote):not(:where([class~="not-prose"] *)) {
-  @apply border-l-2 border-primary/40 pl-4 italic text-muted-foreground;
+  @apply border-l border-accent/40 pl-4 italic text-muted-foreground;
 }
 
 .prose :where(ul, ol):not(:where([class~="not-prose"] *)) {
@@ -238,7 +255,7 @@ a {
 }
 
 .prose :where(table):not(:where([class~="not-prose"] *)) {
-  @apply border border-border;
+  @apply border border-border rounded-none overflow-hidden;
 }
 
 .prose :where(thead):not(:where([class~="not-prose"] *)) {

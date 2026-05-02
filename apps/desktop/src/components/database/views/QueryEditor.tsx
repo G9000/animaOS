@@ -44,7 +44,7 @@ export function QueryEditor({
         <h2 className="text-sm font-medium">SQL Query</h2>
       </div>
 
-      <div className="bg-card border border-border rounded-lg p-4">
+      <div className="bg-card border border-border rounded-none p-4">
         <textarea
           ref={queryRef}
           value={sql}
@@ -52,7 +52,7 @@ export function QueryEditor({
           onKeyDown={handleKeyDown}
           placeholder="SELECT * FROM users LIMIT 10"
           rows={5}
-          className="w-full px-3 py-2.5 rounded-md bg-input border border-border text-[13px] font-mono resize-y placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
+          className="w-full px-3 py-2.5 rounded-none bg-input border border-border text-[13px] font-mono resize-y placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
         />
         <div className="flex items-center justify-between mt-3">
           <div className="flex items-center gap-3">
@@ -101,14 +101,14 @@ export function QueryEditor({
           <div className="flex gap-2">
             <button
               onClick={() => onSetSql("")}
-              className="px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:text-foreground border border-transparent hover:border-border transition-colors"
+              className="px-3 py-1.5 text-xs rounded-none text-muted-foreground hover:text-foreground border border-transparent hover:border-border transition-colors"
             >
               Clear
             </button>
             <button
               onClick={onRunQuery}
               disabled={loading || !sql.trim()}
-              className="px-4 py-1.5 text-xs rounded-md bg-primary text-white hover:bg-primary/90 disabled:opacity-30 transition-colors flex items-center gap-2"
+              className="px-4 py-1.5 text-xs rounded-none bg-primary text-white hover:bg-primary/90 disabled:opacity-30 transition-colors flex items-center gap-2"
             >
               {loading ? "Running…" : "Run Query"}
             </button>
@@ -118,7 +118,7 @@ export function QueryEditor({
 
       {/* Query History */}
       {showHistory && queryHistory.length > 0 && (
-        <div className="bg-card border border-border rounded-lg overflow-hidden">
+        <div className="bg-card border border-border rounded-none overflow-hidden">
           <div className="px-3 py-2 bg-input border-b border-border text-[11px] text-muted-foreground flex items-center justify-between">
             <span>Recent Queries</span>
             <button
@@ -197,13 +197,13 @@ export function QueryEditor({
           {queryResult.rows.some((row) =>
             Object.values(row).some((v) => isEncryptedValue(v))
           ) && (
-            <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-2 text-[11px] text-amber-500">
+            <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-none flex items-center gap-2 text-[11px] text-amber-500">
               <Icons.Warning />
               <span>Some fields are encrypted and cannot be displayed.</span>
             </div>
           )}
 
-          <div className="border border-border rounded-lg overflow-hidden">
+          <div className="border border-border rounded-none overflow-hidden">
             <div className="overflow-auto max-h-[400px]">
               <table className="w-full text-[11px] font-mono">
                 <thead className="sticky top-0 bg-card border-b border-border">

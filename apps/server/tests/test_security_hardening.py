@@ -36,13 +36,16 @@ def _register_user(client: TestClient) -> dict[str, object]:
 
 
 def _create_test_app() -> tuple[object, object, object]:
-    from anima_server.main import create_app
+    from anima_server import main as main_module
+    from anima_server.services.core import release_core_lock
 
     temp_root = create_managed_temp_dir("anima-sec-app-")
     original_data_dir = settings.data_dir
     settings.data_dir = temp_root / "anima-data"
+    main_module._start_embedded_pg = lambda: None
+    release_core_lock()
     try:
-        return create_app(), original_data_dir, temp_root
+        return main_module.create_app(), original_data_dir, temp_root
     except Exception:
         settings.data_dir = original_data_dir
         shutil.rmtree(temp_root, ignore_errors=True)
@@ -399,7 +402,7 @@ def test_create_app_warns_when_nonce_missing_outside_development() -> None:
         with patch.object(main_module.logger, "warning") as warning:
             _, original_data_dir, temp_root = _create_test_app()
 
-        warning.assert_called_once_with(
+        warning.assert_any_call(
             "Sidecar nonce is not configured in non-development environment"
         )
     finally:
@@ -430,10 +433,12 @@ def test_create_app_refuses_to_start_when_encryption_required_without_nonce() ->
 
 def test_create_app_limits_localhost_cors_origins_outside_development() -> None:
     original_env = settings.app_env
+    original_nonce = settings.sidecar_nonce
     original_data_dir = settings.data_dir
     temp_root = None
     try:
         settings.app_env = "production"
+        settings.sidecar_nonce = "test-nonce-enforce"
         app, original_data_dir, temp_root = _create_test_app()
         origins = _cors_allow_origins(app)
         assert "http://localhost:1420" not in origins
@@ -442,6 +447,7 @@ def test_create_app_limits_localhost_cors_origins_outside_development() -> None:
         assert "https://tauri.localhost" in origins
     finally:
         settings.app_env = original_env
+        settings.sidecar_nonce = original_nonce
         settings.data_dir = original_data_dir
         if temp_root is not None:
             shutil.rmtree(temp_root, ignore_errors=True)

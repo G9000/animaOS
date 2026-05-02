@@ -9,6 +9,7 @@ import {
   ModsIcon,
   ConfigIcon,
   DatabaseIcon,
+  cn,
   type IconProps,
 } from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
@@ -25,23 +26,18 @@ interface NavItem {
 }
 
 const STATIC_NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "HOME", Icon: HomeIcon, description: "dashboard" },
-  { to: "/tasks", label: "TASKS", Icon: TasksIcon, description: "queue" },
-  { to: "/chat", label: "CHAT", Icon: ChatIcon, description: "console" },
-  { to: "/memory", label: "MEM", Icon: MemoryIcon, description: "archive" },
-  {
-    to: "/consciousness",
-    label: "MIND",
-    Icon: MindIcon,
-    description: "consciousness",
-  },
-  { to: "/mods", label: "MODS", Icon: ModsIcon, description: "extensions" },
-  { to: "/settings", label: "CFG", Icon: ConfigIcon, description: "system" },
+  { to: "/", label: "Home", Icon: HomeIcon, description: "dashboard" },
+  { to: "/tasks", label: "Tasks", Icon: TasksIcon, description: "queue" },
+  { to: "/chat", label: "Chat", Icon: ChatIcon, description: "console" },
+  { to: "/memory", label: "Memory", Icon: MemoryIcon, description: "archive" },
+  { to: "/consciousness", label: "Mind", Icon: MindIcon, description: "consciousness" },
+  { to: "/mods", label: "Mods", Icon: ModsIcon, description: "extensions" },
+  { to: "/settings", label: "Settings", Icon: ConfigIcon, description: "system" },
 ];
 
 const DATABASE_NAV_ITEM: NavItem = {
   to: "/database",
-  label: "DB",
+  label: "Database",
   Icon: DatabaseIcon,
   description: "inspector",
 };
@@ -60,7 +56,7 @@ function persistCollapsedState(collapsed: boolean): void {
   try {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, String(collapsed));
   } catch {
-    // Ignore storage failures.
+    // ignore
   }
 }
 
@@ -73,9 +69,7 @@ export function LayoutSidebar() {
   const [theme, setTheme] = useState<Theme>(getTheme);
   const { agentName, avatarUrl } = useAgentProfile(user?.id);
 
-  const handleAgentClick = useCallback(() => {
-    navigate("/agent");
-  }, [navigate]);
+  const handleAgentClick = useCallback(() => navigate("/agent"), [navigate]);
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((current) => {
@@ -85,192 +79,179 @@ export function LayoutSidebar() {
     });
   }, []);
 
-  const syncDbViewer = useCallback(() => {
-    setDbEnabled(getDbViewerEnabled());
-  }, []);
+  const syncDbViewer = useCallback(() => setDbEnabled(getDbViewerEnabled()), []);
 
   useEffect(() => {
     window.addEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
-    return () => {
-      window.removeEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
-    };
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
   }, [syncDbViewer]);
 
   useEffect(() => {
-    const handleShortcut = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "/") {
-        event.preventDefault();
+    const handleShortcut = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+        e.preventDefault();
         toggleCollapsed();
       }
     };
-
     window.addEventListener("keydown", handleShortcut);
-    return () => {
-      window.removeEventListener("keydown", handleShortcut);
-    };
+    return () => window.removeEventListener("keydown", handleShortcut);
   }, [toggleCollapsed]);
 
-  const navItems = dbEnabled
-    ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM]
-    : STATIC_NAV_ITEMS;
-
-  const agentLabel = agentName.toUpperCase();
+  const navItems = dbEnabled ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM] : STATIC_NAV_ITEMS;
 
   return (
     <aside
-      className={`relative flex-shrink-0 flex flex-col border-r border-border bg-sidebar transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden ${
-        collapsed ? "w-14" : "w-[13.5rem]"
-      }`}
+      className={cn(
+        "relative flex-shrink-0 flex flex-col border-r border-border bg-sidebar overflow-hidden",
+        "transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
+        collapsed ? "w-14" : "w-52",
+      )}
     >
-      {/* Agent card — click to go to agent profile settings */}
-      <button
-        onClick={handleAgentClick}
-        title={collapsed ? agentLabel : `${agentLabel} — click to edit`}
-        className="relative z-20 border-b border-border flex-shrink-0 cursor-pointer w-full text-left hover:opacity-90 transition-opacity"
-      >
-        <div
-          className={`relative overflow-hidden bg-card/60 ${
-            collapsed ? "aspect-square w-full" : "aspect-[1.08] w-full"
-          }`}
+      {/* Agent header — full-width avatar */}
+      <div className="flex-shrink-0 border-b border-border">
+        <button
+          onClick={handleAgentClick}
+          title={collapsed ? agentName : `${agentName} — click to edit`}
+          className="relative w-full overflow-hidden bg-card hover:opacity-90 transition-opacity"
         >
           <img
             src={avatarUrl}
-            alt={agentLabel}
-            className="h-full w-full object-cover"
+            alt={agentName}
+            className={cn("w-full object-cover", collapsed ? "aspect-square" : "aspect-[1.1]")}
           />
-        </div>
-      </button>
+          {!collapsed && (
+            <div className="absolute bottom-0 left-0 pb-0 pl-0">
+              <span className="inline-block bg-sidebar border border-border border-l-0 px-2.5 py-1 text-caption font-mono tracking-[0.18em] uppercase text-foreground">
+                {agentName}
+              </span>
+            </div>
+          )}
+        </button>
+      </div>
 
       {/* Navigation */}
-      <nav className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden pb-2">
-        <div className="space-y-0.5">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/"}
-              title={`${item.label} — ${item.description}`}
-              className={({ isActive }) =>
-                `group relative flex items-center transition-colors duration-150 ${
-                  collapsed ? "justify-center h-10" : "gap-2.5 px-3 py-2"
-                } ${
-                  isActive
-                    ? "bg-primary/10 text-foreground"
-                    : "text-muted-foreground hover:bg-card/60 hover:text-foreground"
-                }`
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  {/* Icon */}
-                  <span
-                    className={`flex h-7 w-7 flex-shrink-0 items-center justify-center transition-colors duration-150 ${
-                      isActive
-                        ? "text-primary"
-                        : "text-muted-foreground group-hover:text-foreground"
-                    }`}
-                  >
-                    <item.Icon size="sm" />
-                  </span>
-
-                  {/* Label */}
-                  {!collapsed && (
-                    <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current">
-                      {item.label}
-                    </span>
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2">
+        {navItems.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === "/"}
+            title={collapsed ? `${item.label} — ${item.description}` : undefined}
+            className={({ isActive }) =>
+              cn(
+                "group flex items-center transition-colors duration-100",
+                collapsed ? "justify-center px-0 py-2.5 mx-2" : "gap-3 px-3 py-2",
+                isActive
+                  ? "bg-secondary text-foreground border-l-2 border-primary"
+                  : cn(
+                      "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+                      !collapsed && "border-l-2 border-transparent",
+                    ),
+              )
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <span
+                  className={cn(
+                    "flex-shrink-0 flex items-center justify-center transition-colors",
+                    collapsed ? "w-5 h-5" : "w-4 h-4",
+                    isActive
+                      ? "text-foreground"
+                      : "text-muted-foreground group-hover:text-foreground",
                   )}
-                </>
-              )}
-            </NavLink>
-          ))}
-        </div>
+                >
+                  <item.Icon size="sm" />
+                </span>
+                {!collapsed && (
+                  <span className="text-body leading-none">{item.label}</span>
+                )}
+              </>
+            )}
+          </NavLink>
+        ))}
       </nav>
 
-      {/* Footer */}
-      <div className="relative z-10 border-t border-border flex-shrink-0 px-1.5 py-2">
-        {/* Collapse toggle */}
-        <button
-          onClick={toggleCollapsed}
-          title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
-          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground ${
-            collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
-          }`}
-        >
-          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border bg-card/50 font-mono text-[9px] transition-all duration-150 group-hover:bg-card">
-            {collapsed ? "\u2192" : "\u2190"}
-          </span>
-          {!collapsed && (
-            <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current">
-              COLLAPSE
-            </span>
-          )}
-        </button>
-
-        {/* Theme toggle */}
-        <button
-          onClick={() => setTheme(toggleTheme())}
-          title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-          className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground mt-0.5 ${
-            collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
-          }`}
-        >
-          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border bg-card/50 text-[12px] transition-all duration-150 group-hover:bg-card">
-            {theme === "dark" ? "\u2600" : "\u263E"}
-          </span>
-          {!collapsed && (
-            <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current">
-              {theme === "dark" ? "LIGHT" : "DARK"}
-            </span>
-          )}
-        </button>
-
-        {/* User menu */}
-        <div className="relative mt-0.5">
+      {/* Footer controls */}
+      <div className="flex-shrink-0 border-t border-border">
+        {/* Theme + Collapse row */}
+        <div className={cn("flex border-b border-border/50", collapsed ? "flex-col" : "flex-row")}>
           <button
-            onClick={() => setShowUser((current) => !current)}
-            className={`group w-full flex items-center border border-transparent transition-all duration-150 text-muted-foreground hover:border-border hover:bg-card/60 hover:text-foreground ${
-              collapsed ? "justify-center h-9" : "gap-2.5 px-2 py-2"
-            }`}
+            onClick={() => setTheme(toggleTheme())}
+            title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+            className={cn(
+              "flex items-center justify-center gap-2 py-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors",
+              collapsed ? "w-full" : "flex-1",
+            )}
           >
-            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center border border-border bg-card/50 font-mono text-[9px] font-bold uppercase transition-all duration-150 group-hover:border-primary/50 group-hover:text-primary">
+            <span className="text-xs leading-none">{theme === "dark" ? "☀" : "☾"}</span>
+            {!collapsed && (
+              <span className="text-caption font-mono tracking-[0.16em] uppercase">
+                {theme === "dark" ? "Light" : "Dark"}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={toggleCollapsed}
+            title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
+            className={cn(
+              "flex items-center justify-center gap-2 py-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors",
+              collapsed
+                ? "w-full border-t border-border/50"
+                : "flex-1 border-l border-border/50",
+            )}
+          >
+            <span className="text-xs leading-none font-mono">{collapsed ? "→" : "←"}</span>
+            {!collapsed && (
+              <span className="text-caption font-mono tracking-[0.16em] uppercase">Collapse</span>
+            )}
+          </button>
+        </div>
+
+        {/* User */}
+        <div className="relative">
+          <button
+            onClick={() => setShowUser((v) => !v)}
+            className={cn(
+              "w-full flex items-center gap-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors",
+              collapsed ? "justify-center px-0 py-2.5" : "px-3 py-2.5",
+            )}
+          >
+            <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 border border-border/60 bg-card font-mono text-caption font-bold uppercase">
               {user?.name?.charAt(0) || "?"}
             </span>
             {!collapsed && (
-              <span className="font-mono text-[9px] tracking-[0.22em] leading-none text-current truncate">
-                {user?.name?.toUpperCase() || "USER"}
+              <span className="text-body truncate flex-1 text-left">
+                {user?.name || "User"}
               </span>
             )}
           </button>
 
           {showUser && (
             <div
-              className={`absolute bottom-full mb-1.5 border border-border bg-sidebar shadow-lg z-50 ${
-                collapsed ? "left-full ml-2 min-w-[148px]" : "left-0 right-0"
-              }`}
+              className={cn(
+                "absolute bottom-full border border-border bg-sidebar z-50 overflow-hidden shadow-lg",
+                collapsed ? "left-full ml-1 min-w-[148px]" : "left-0 right-0",
+              )}
               onMouseLeave={() => setShowUser(false)}
             >
               <div className="px-3 py-2 border-b border-border">
-                <div className="font-mono text-[7px] text-muted-foreground tracking-[0.28em] uppercase truncate">
+                <div className="text-caption text-muted-foreground truncate">
                   {user?.name || "Guest"}
                 </div>
               </div>
               <button
-                onClick={() => {
-                  navigate("/profile");
-                  setShowUser(false);
-                }}
-                className="w-full text-left px-3 py-2 font-mono text-[9px] text-muted-foreground hover:text-foreground hover:bg-primary/10 tracking-[0.2em] transition-colors border-b border-border/50"
+                onClick={() => { navigate("/profile"); setShowUser(false); }}
+                className="w-full text-left px-3 py-2.5 text-caption text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors border-b border-border/50"
               >
-                PROFILE
+                Profile
               </button>
               <button
-                onClick={() => {
-                  setShowUser(false);
-                  void logout().then(() => navigate("/login"));
-                }}
-                className="w-full text-left px-3 py-2 font-mono text-[9px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 tracking-[0.2em] transition-colors"
+                onClick={() => { setShowUser(false); void logout().then(() => navigate("/login")); }}
+                className="w-full text-left px-3 py-2.5 text-caption text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
               >
-                LOG OUT
+                Log out
               </button>
             </div>
           )}

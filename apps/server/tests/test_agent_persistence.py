@@ -24,10 +24,10 @@ from anima_server.services.agent.runtime_types import (
     ToolExecutionResult,
     UsageStats,
 )
-from anima_server.services.agent.state import AgentResult
 from anima_server.services.agent.state import (
     AgentCitation,
     AgentContextFragment,
+    AgentResult,
     AgentRetrievalStats,
     AgentRetrievalTrace,
 )

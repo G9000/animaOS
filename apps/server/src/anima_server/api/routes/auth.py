@@ -158,7 +158,8 @@ def login(
 
     try:
         response, deks = authenticate_account(username, payload.password)
-    except InvalidCredentialsError:
+    except InvalidCredentialsError as exc:
+        logger.warning("Login failed for %s: %s", username, exc)
         retry_after = _record_failed_login_attempt(username, now)
         if retry_after is not None:
             return _rate_limited_login_response(retry_after)
