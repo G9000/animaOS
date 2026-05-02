@@ -318,7 +318,7 @@ async def get_home(
                     select(func.count(RuntimeMessage.id)).where(
                         RuntimeMessage.user_id == userId,
                         RuntimeMessage.role == "user",
-                        func.date(RuntimeMessage.created_at) == day.isoformat(),
+                        func.date(RuntimeMessage.created_at) == day,
                     )
                 )
                 or 0
