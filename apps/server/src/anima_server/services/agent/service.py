@@ -89,6 +89,100 @@ from anima_server.services.health.event_logger import emit as health_emit
 logger = logging.getLogger(__name__)
 
 
+class _SkipAdaptiveRetrieval(Exception):
+    """Sentinel to short-circuit the per-turn adaptive retrieval path."""
+
+
+@dataclass(slots=True)
+class _WideEvidenceTurnContext:
+    """Result of the wide-evidence retrieval pass for a single turn.
+
+    When ``used`` is True, callers should inject ``evidence_results`` into the
+    memory blocks builder, set ``query_embedding`` for query-aware re-ranking,
+    record ``retrieval_trace`` on the agent state, and skip the normal adaptive
+    filter for this turn.
+    """
+
+    used: bool
+    evidence_results: list[tuple[int, str, float]] | None = None
+    retrieval_trace: AgentRetrievalTrace | None = None
+    query_embedding: list[float] | None = None
+
+
+async def _run_wide_evidence_retrieval(
+    *,
+    db: Session,
+    user_id: int,
+    user_message: str,
+    runtime_db: Session | None,
+) -> _WideEvidenceTurnContext:
+    """Run wide-evidence retrieval for the current turn.
+
+    Returns a context with ``used=True`` only when the question's intent
+    classifies as needing wide evidence AND the retrieval surfaced at least one
+    answer-bearing chunk. Otherwise the caller should fall back to the normal
+    adaptive retrieval path.
+    """
+
+    from anima_server.services.agent.evidence_retrieval import retrieve_wide_evidence
+
+    started = time.monotonic()
+    wide = await retrieve_wide_evidence(
+        db=db,
+        user_id=user_id,
+        query=user_message,
+        runtime_db=runtime_db,
+    )
+    if not wide.intent.needs_wide_evidence or not wide.semantic_results:
+        return _WideEvidenceTurnContext(
+            used=False,
+            query_embedding=wide.query_embedding,
+        )
+
+    retrieval_ms = (time.monotonic() - started) * 1000.0
+    citations: list[AgentCitation] = []
+    fragments: list[AgentContextFragment] = []
+    for index, (item_id, content, score) in enumerate(wide.semantic_results, start=1):
+        citations.append(
+            AgentCitation(
+                index=index,
+                memory_item_id=item_id,
+                uri=_memory_item_uri(item_id),
+                score=score,
+                category="evidence",
+            )
+        )
+        fragments.append(
+            AgentContextFragment(
+                rank=index,
+                memory_item_id=item_id,
+                uri=_memory_item_uri(item_id),
+                text=content,
+                score=score,
+                category="evidence",
+            )
+        )
+
+    trace = AgentRetrievalTrace(
+        retriever="hybrid_wide_evidence",
+        citations=tuple(citations),
+        context_fragments=tuple(fragments),
+        stats=AgentRetrievalStats(
+            retrieval_ms=round(retrieval_ms, 3),
+            total_considered=wide.total_considered,
+            returned=len(wide.semantic_results),
+            triggered_by=str(wide.intent.mode),
+        ),
+    )
+
+    return _WideEvidenceTurnContext(
+        used=True,
+        evidence_results=list(wide.semantic_results),
+        retrieval_trace=trace,
+        query_embedding=wide.query_embedding,
+    )
+
+
 _runner_lock = Lock()
 _cached_runner: AgentRuntime | None = None
 
@@ -697,7 +791,35 @@ async def _prepare_turn_context(
     semantic_results: list[tuple[int, str, float]] | None = None
     retrieval_trace: AgentRetrievalTrace | None = None
     query_embedding: list[float] | None = None
+    evidence_results: list[tuple[int, str, float]] | None = None
+
+    # Wide-evidence pass for cross-session reasoning questions (count, latest,
+    # temporal, preference). For DIRECT intents this is a no-op; otherwise it
+    # produces a compacted evidence pool injected as a dedicated prompt block.
     try:
+        wide_ctx = await _run_wide_evidence_retrieval(
+            db=db,
+            user_id=user_id,
+            user_message=user_message,
+            runtime_db=runtime_db,
+        )
+        if wide_ctx.used:
+            evidence_results = wide_ctx.evidence_results
+            retrieval_trace = wide_ctx.retrieval_trace
+            if wide_ctx.query_embedding is not None:
+                query_embedding = wide_ctx.query_embedding
+    except Exception:
+        logger.debug(
+            "Wide evidence retrieval failed for user %s thread %s",
+            user_id,
+            thread.id,
+            exc_info=True,
+        )
+
+    skip_adaptive_retrieval = evidence_results is not None
+    try:
+        if skip_adaptive_retrieval:
+            raise _SkipAdaptiveRetrieval
         from anima_server.services.agent.embeddings import (
             AdaptiveRetrievalConfig,
             adaptive_filter_with_stats,
@@ -714,7 +836,8 @@ async def _prepare_turn_context(
             runtime_db=runtime_db,
         )
         retrieval_ms = (time.monotonic() - retrieval_started) * 1000.0
-        query_embedding = search_result.query_embedding
+        if query_embedding is None:
+            query_embedding = search_result.query_embedding
         if search_result.items:
             adaptive_result = adaptive_filter_with_stats(
                 search_result.items,
@@ -775,6 +898,11 @@ async def _prepare_turn_context(
                     triggered_by=adaptive_result.stats.triggered_by,
                 ),
             )
+    except _SkipAdaptiveRetrieval:
+        # Wide evidence retrieval already populated retrieval_trace and
+        # evidence_results for this turn; skip the adaptive filter to avoid
+        # diluting the prompt with redundant relevance hits.
+        pass
     except Exception:
         logger.debug(
             "Hybrid retrieval failed for user %s thread %s",
@@ -786,9 +914,9 @@ async def _prepare_turn_context(
     # Use companion-cached static blocks, reload from DB only if stale.
     static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
 
-    # If we have semantic results or a query embedding, build fresh
+    # If we have semantic results, evidence, or a query embedding, build fresh
     # blocks so query-aware scoring can re-rank facts/preferences/etc.
-    if semantic_results or query_embedding is not None:
+    if semantic_results or evidence_results or query_embedding is not None:
         memory_blocks = build_runtime_memory_blocks(
             db,
             user_id=user_id,
@@ -797,12 +925,20 @@ async def _prepare_turn_context(
             query_embedding=query_embedding,
             query=user_message,
             runtime_db=runtime_db,
+            evidence_results=evidence_results,
         )
         # Re-populate the cache with the freshly-built static subset so
         # the next turn that has no semantic changes still benefits.
         companion.set_memory_cache(
             tuple(
-                b for b in memory_blocks if b.label not in ("relevant_memories", "knowledge_graph")
+                b
+                for b in memory_blocks
+                if b.label
+                not in (
+                    "relevant_memories",
+                    "evidence_memories",
+                    "knowledge_graph",
+                )
             )
         )
     else:

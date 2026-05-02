@@ -36,6 +36,7 @@ _MIRROR_DESCRIPTIONS: dict[str, str] = {
     "goals": "My goals and aspirations.",
     "relationships": "People in my life.",
     "relevant_memories": "Relevant memories. Use these naturally.",
+    "evidence_memories": "Evidence retrieved for the current question. Use it to answer count, latest-update, temporal, or preference questions about my own history.",
     "user_tasks": "My task list.",
     "current_focus": "My current focus.",
     "thread_summary": "Summary of earlier conversation (compacted).",
@@ -82,6 +83,7 @@ def build_runtime_memory_blocks(
     query_embedding: list[float] | None = None,
     query: str | None = None,
     runtime_db: Session | None = None,
+    evidence_results: list[tuple[int, str, float]] | None = None,
 ) -> tuple[MemoryBlock, ...]:
     blocks: list[MemoryBlock] = []
     agent_type = _get_agent_type(db, user_id=user_id)
@@ -134,6 +136,17 @@ def build_runtime_memory_blocks(
         db, user_id=user_id, agent_type=agent_type)
     if emotional_patterns_block is not None:
         blocks.append(emotional_patterns_block)
+
+    # Wide evidence block (Priority 3a — task-specific evidence retrieval).
+    # When the user's question needs aggregation/temporal/latest-update/preference
+    # reasoning, the agent service collects a wider candidate pool and compacts
+    # it into this block. Insert it before relevant_memories so the LLM sees
+    # the answer-bearing evidence first.
+    if evidence_results:
+        evidence_block = build_evidence_memory_block(
+            evidence_results, agent_type=agent_type)
+        if evidence_block is not None:
+            blocks.append(evidence_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     if semantic_results:
@@ -200,6 +213,49 @@ def build_runtime_memory_blocks(
         blocks.append(session_block)
 
     return tuple(blocks)
+
+
+def build_evidence_memory_block(
+    results: list[tuple[int, str, float]],
+    agent_type: str = "companion",
+) -> MemoryBlock | None:
+    """Build a dedicated evidence memory block for cross-session reasoning.
+
+    Each result is (item_id, compacted_text, score). The block is labeled
+    ``evidence_memories`` and carries a description that primes the LLM to
+    answer count, latest-update, temporal, or preference questions directly
+    from the listed evidence rather than asking for clarification.
+    """
+
+    if not results:
+        return None
+
+    lines: list[str] = []
+    for _item_id, content, _score in results:
+        text = (content or "").strip()
+        if not text:
+            continue
+        lines.append(f"- {text}")
+
+    if not lines:
+        return None
+
+    description = _desc(
+        "evidence_memories",
+        (
+            "Evidence retrieved for the current question. "
+            "Use this evidence to answer count, latest-update, temporal, or "
+            "preference questions. Prefer user-stated lines and session dates. "
+            "Do not ask for clarification if the answer is present here."
+        ),
+        agent_type,
+    )
+
+    return MemoryBlock(
+        label="evidence_memories",
+        description=description,
+        value="\n".join(lines),
+    )
 
 
 def _build_semantic_block(
