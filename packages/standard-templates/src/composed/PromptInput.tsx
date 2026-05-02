@@ -14,6 +14,7 @@ export interface PromptInputProps {
   className?: string;
   showAttach?: boolean;
   showMic?: boolean;
+  size?: "default" | "lg";
 }
 
 const MAX_ROWS = 6;
@@ -28,6 +29,7 @@ export function PromptInput({
   className,
   showAttach = true,
   showMic = true,
+  size = "default",
 }: PromptInputProps) {
   const [internalValue, setInternalValue] = useState("");
   const isControlled = controlledValue !== undefined;
@@ -69,7 +71,10 @@ export function PromptInput({
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); submit(); }} className={cn("w-full", className)}>
-      <div className="flex items-end gap-2 bg-input border border-border rounded-none px-3 py-2.5 transition-all focus-within:border-muted-foreground/40 ">
+      <div className={cn(
+        "flex items-end gap-2 bg-input border border-border rounded-none transition-all focus-within:border-muted-foreground/40",
+        size === "lg" ? "px-4 py-3.5" : "px-3 py-2.5"
+      )}>
         {showAttach && <AttachMenu />}
 
         <textarea
@@ -80,7 +85,10 @@ export function PromptInput({
           placeholder={placeholder || `talk to ${agentName}...`}
           disabled={disabled}
           rows={1}
-          className="flex-1 bg-transparent text-body text-foreground font-mono placeholder:text-muted-foreground/30 outline-none resize-none pb-0.5 leading-6"
+          className={cn(
+            "flex-1 bg-transparent text-foreground font-mono placeholder:text-muted-foreground/30 outline-none resize-none",
+            size === "lg" ? "text-base leading-7 pb-0" : "text-body pb-0.5 leading-6"
+          )}
         />
 
         <div className="flex items-center shrink-0 gap-1">

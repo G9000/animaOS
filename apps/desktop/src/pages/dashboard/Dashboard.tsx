@@ -1,19 +1,50 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import type { Greeting } from "@anima/api-client";
+import type { Greeting, TaskItem } from "@anima/api-client";
 import { api } from "../../lib/api";
-import { useAnimaSymbol, PromptInput } from "@anima/standard-templates";
+import { PromptInput } from "@anima/standard-templates";
 import { DashboardGreeting } from "./DashboardGreeting";
-import { getTimeOfDay } from "./helpers";
+
+const GREETING_CACHE_KEY = "anima_dashboard_greeting";
+const GREETING_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getCachedGreeting(): { greeting: Greeting; ts: number } | null {
+  try {
+    const raw = sessionStorage.getItem(GREETING_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Date.now() - parsed.ts < GREETING_CACHE_TTL_MS) {
+      return parsed;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function setCachedGreeting(greeting: Greeting): void {
+  try {
+    sessionStorage.setItem(GREETING_CACHE_KEY, JSON.stringify({ greeting, ts: Date.now() }));
+  } catch { /* ignore */ }
+}
+
+function useClock() {
+  const [time, setTime] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setTime(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  return time;
+}
 
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const now = useClock();
   const [brief, setBrief] = useState<Greeting | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [agentName, setAgentName] = useState("Anima");
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
 
   // Check if agent setup is needed
   useEffect(() => {
@@ -27,22 +58,30 @@ export default function Dashboard() {
       .catch(() => setNeedsSetup(true));
   }, [user?.id]);
 
+  // Load greeting (cached)
   useEffect(() => {
     if (user?.id == null || needsSetup !== false) return;
     let active = true;
 
-    setBriefLoading(true);
-    api.chat
-      .greeting(user.id)
-      .then((g) => {
-        if (active) setBrief(g);
-      })
-      .catch(() => {
-        api.chat
-          .brief(user.id)
-          .then((b) => {
-            if (active)
-              setBrief({
+    const cached = getCachedGreeting();
+    if (cached) {
+      setBrief(cached.greeting);
+    } else {
+      setBriefLoading(true);
+      api.chat
+        .greeting(user.id)
+        .then((g) => {
+          if (!active) return;
+          setBrief(g);
+          setCachedGreeting(g);
+        })
+        .catch(() => {
+          if (!active) return;
+          api.chat
+            .brief(user.id)
+            .then((b) => {
+              if (!active) return;
+              const fallback: Greeting = {
                 message: b.message,
                 llmGenerated: false,
                 context: {
@@ -50,13 +89,33 @@ export default function Dashboard() {
                   overdueTasks: 0,
                   upcomingDeadlines: [],
                 },
-              });
-          })
-          .catch(() => {});
+              };
+              setBrief(fallback);
+              setCachedGreeting(fallback);
+            })
+            .catch(() => {});
+        })
+        .finally(() => {
+          if (active) setBriefLoading(false);
+        });
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, needsSetup]);
+
+  // Load pending tasks
+  useEffect(() => {
+    if (user?.id == null || needsSetup !== false) return;
+    let active = true;
+
+    api.tasks.list(user.id)
+      .then((taskList) => {
+        if (!active) return;
+        setTasks((taskList ?? []).filter((t) => !t.done).slice(0, 5));
       })
-      .finally(() => {
-        if (active) setBriefLoading(false);
-      });
+      .catch(() => {});
 
     return () => {
       active = false;
@@ -66,9 +125,6 @@ export default function Dashboard() {
   const handlePromptSubmit = (value: string) => {
     navigate(`/chat?msg=${encodeURIComponent(value)}`);
   };
-
-  const tod = getTimeOfDay();
-  const symbol = useAnimaSymbol(briefLoading ? 2 : 0.6);
 
   // Agent setup incomplete → send to Init flow
   if (needsSetup && user?.id != null) {
@@ -80,29 +136,39 @@ export default function Dashboard() {
     return <div className="h-full" />;
   }
 
-  return (
-    <div className="h-full flex flex-col items-center justify-center gap-8 px-8 py-8 overflow-hidden">
-      {/* Symbol — hardware screen vibe */}
-      <div className="relative pointer-events-none">
-        <div className="hw-module p-6">
-          <pre
-            className="whitespace-pre leading-none text-foreground/25 bg-transparent select-none"
-            style={{ fontSize: "5.5px", lineHeight: "5.5px" }}
-          >
-            {symbol.base}
-          </pre>
-        </div>
-      </div>
+  const openCount = tasks.length;
+  const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).toLowerCase();
 
-      {/* Greeting + input */}
-      <div className="w-full max-w-md space-y-6">
+  return (
+    <div className="h-full flex flex-col items-center justify-center px-6">
+      <div className="w-full max-w-xl space-y-8">
+        {/* Greeting */}
         <DashboardGreeting
           userName={user?.name}
-          tod={tod}
+          agentName={agentName}
           briefLoading={briefLoading}
           brief={brief}
         />
-        <PromptInput agentName={agentName} onSubmit={handlePromptSubmit} />
+
+        {/* Input */}
+        <PromptInput
+          agentName={agentName}
+          onSubmit={handlePromptSubmit}
+          size="lg"
+        />
+
+        {/* Status strip */}
+        <div className="flex items-center justify-between border-t border-border pt-3">
+          <span className="font-mono text-[9px] tracking-[0.22em] uppercase text-muted-foreground/40">
+            {timeStr}
+          </span>
+          <button
+            onClick={() => navigate("/tasks")}
+            className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40 hover:text-foreground transition-colors"
+          >
+            {openCount > 0 ? `${openCount} pending` : "all caught up"}
+          </button>
+        </div>
       </div>
     </div>
   );

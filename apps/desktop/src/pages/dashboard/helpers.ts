@@ -1,3 +1,5 @@
+import type { Thread } from "@anima/api-client";
+
 export function getTimeOfDay(): string {
   const h = new Date().getHours();
   if (h < 5) return "night";
@@ -50,3 +52,35 @@ export const PRIORITY_INDICATOR: Record<number, { dot: string; label: string }> 
   1: { dot: "bg-amber-400", label: "High" },
   2: { dot: "bg-red-500", label: "Urgent" },
 };
+
+/** Get initials from a name */
+export function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((w) => w[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
+/** Format thread timestamp nicely */
+export function formatThreadTimestamp(thread: Thread): string {
+  const raw = thread.lastMessageAt ?? thread.createdAt;
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMin = Math.round(diffMs / 60_000);
+  const diffHrs = Math.round(diffMs / 3_600_000);
+  const diffDays = Math.round(diffMs / 86_400_000);
+
+  if (diffMin < 1) return "now";
+  if (diffMin < 60) return `${diffMin}m`;
+  if (diffHrs < 24) return `${diffHrs}h`;
+  if (diffDays < 7) return `${diffDays}d`;
+
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
