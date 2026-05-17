@@ -475,6 +475,7 @@ def import_vault(
 
     # Rebuild vector index from imported embeddings
     _rebuild_vector_indices(db, database)
+    _invalidate_restored_memory_indexes(database, fallback_user_id=user_id)
 
     restored_memory_files = sum(
         1
@@ -489,6 +490,35 @@ def import_vault(
         "requiresReauth": True,
         "format": transfer_format,
     }
+
+
+def _invalidate_restored_memory_indexes(
+    database: dict[str, Any],
+    *,
+    fallback_user_id: int | None,
+) -> None:
+    memory_items = database.get("memory_items", [])
+    user_ids: set[int] = set()
+    if isinstance(memory_items, list):
+        for record in memory_items:
+            if not isinstance(record, dict):
+                continue
+            try:
+                user_ids.add(int(record["user_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not user_ids and fallback_user_id is not None:
+        user_ids.add(fallback_user_id)
+    if not user_ids:
+        return
+
+    try:
+        from anima_server.services.agent.memory_store import invalidate_memory_retrieval_indexes
+
+        for restored_user_id in user_ids:
+            invalidate_memory_retrieval_indexes(restored_user_id)
+    except Exception:
+        vault_logger.debug("Memory retrieval invalidation skipped during vault import", exc_info=True)
 
 
 def encrypt_string(

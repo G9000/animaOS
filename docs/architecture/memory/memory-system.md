@@ -6,7 +6,7 @@ category: architecture
 
 # Memory System Deep Dive
 
-[Back to Index](README.md)
+[Back to Index](../README.md)
 
 This document traces every path through AnimaOS's memory system: how memories are written, stored, retrieved, scored, consolidated, and maintained. It covers the full lifecycle from user utterance to long-term knowledge.
 
@@ -79,26 +79,40 @@ This document traces every path through AnimaOS's memory system: how memories ar
 
 ## Memory Taxonomy
 
-All persistent memory lives in SQLite tables. The system uses **supersession** (never deletes, creates new rows and links old ones via `superseded_by`).
+Canonical long-term memory lives in per-user SQLite + SQLCipher tables under `.anima/`. These tables are the portable source of truth for identity, durable memories, claims, episodes, self-model state, and user-facing memory edits. The system uses **supersession** for durable memory changes: it does not delete by default, but creates new rows and links old ones via `superseded_by`.
+
+Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL by default. The server starts an embedded PostgreSQL instance with `pgserver` unless `ANIMA_RUNTIME_DATABASE_URL` points at an explicit PostgreSQL service. Runtime rows are operational state and caches: active thread messages, runs, pending memory operations, memory candidates awaiting Soul Writer promotion, access logs, retrieval feedback, session notes, and pgvector search rows. Runtime data can be replayed, promoted, synced, or rebuilt from SQLCipher and transcripts depending on the table; it is not the portable memory authority.
 
 ### Storage Tables
 
 | Table | Purpose | Key Fields |
 |-------|---------|-----------|
 | `memory_items` | Core long-term memories (facts, preferences, goals, relationships, focus) | `content`, `category`, `importance`, `embedding_json`, `superseded_by`, `heat`, `reference_count`, `last_referenced_at` |
+| `memory_item_evidence` | Source provenance for each durable memory item | `memory_item_id`, `source_kind`, `runtime_message_id`, `runtime_message_ids_json`, `observed_at`, `speaker`, `confidence`, `evidence_text` |
 | `memory_item_tags` | Tag junction table for memory items | `item_id`, `tag`, `user_id` |
 | `memory_claims` | Structured slot-based claims (deterministic dedup) | `canonical_key`, `namespace`, `slot`, `value_text`, `polarity`, `confidence`, `status` |
 | `memory_claim_evidence` | Evidence backing each claim | `claim_id`, `source_text`, `source_kind` |
-| `memory_daily_logs` | Raw conversation turn logs | `user_message`, `assistant_response`, `date` |
 | `memory_episodes` | Summarized conversation sessions | `summary`, `topics_json`, `emotional_arc`, `significance_score`, `turn_count`, `message_indices_json`, `segmentation_method`, `needs_regeneration` |
-| `memory_vectors` | Packed float32 embeddings for fast search | `item_id`, `content`, `embedding` (binary), `category`, `importance` |
+| `memory_vectors` | Legacy packed float32 embedding table retained in the soul schema; active semantic search uses runtime pgvector plus `MemoryItem.embedding_json` | `item_id`, `content`, `embedding` (binary), `category`, `importance` |
 | `self_model_blocks` | Agent's self-model sections (identity, persona, soul, etc.) | `section`, `content`, `version`, `needs_regeneration` |
 | `emotional_signals` | Detected user emotional states | `emotion`, `confidence`, `trajectory`, `evidence_type`, `evidence` |
-| `session_notes` | Working notes scoped to conversation thread | `key`, `value`, `note_type`, `is_active` |
 | `kg_entities` | Knowledge graph entities (F4) | `name`, `name_normalized`, `entity_type`, `description`, `mention_count` |
 | `kg_relations` | Knowledge graph relations (F4) | `source_id`, `destination_id`, `relation_type`, `confidence` |
 | `forget_audit_log` | Audit trail for forgetting operations (F7) | `trigger`, `scope`, `items_forgotten`, `derived_refs_affected` |
 | `background_task_runs` | Sleep-time task tracking (F5) | `task_type`, `status`, `result_json`, `error_message` |
+
+### Runtime Store Tables
+
+| Table | Purpose | Durability expectation |
+|-------|---------|------------------------|
+| `runtime_threads`, `runtime_runs`, `runtime_steps`, `runtime_messages` | Active conversation runtime and trace state | Operational history; archived threads are also exported to encrypted JSONL transcripts |
+| `pending_memory_ops` | Tool-requested changes to soul/persona/human blocks | Must be promoted by Soul Writer or remain visible as pending work |
+| `memory_candidates` | Extracted facts/preferences/goals/relationships awaiting promotion | Retryable work queue; promoted memories land in SQLCipher |
+| `promotion_journal` | Audit trail for Soul Writer decisions | Operational audit for idempotency and debugging |
+| `runtime_session_notes` | Thread-scoped working notes | Ephemeral until promoted to durable memory |
+| `memory_extraction_failures` | Failed LLM extraction attempts with source message IDs | Retryable failure queue surfaced through memory pipeline health |
+| `memory_access_log`, `memory_retrieval_feedback` | Deferred read/feedback updates for ranking and heat | Synced back to durable memory metrics |
+| `embeddings` | pgvector-backed search rows for `MemoryItem` content | Cache derived from `MemoryItem.embedding_json` and rebuildable |
 
 ### Memory Categories
 
@@ -122,12 +136,11 @@ The agent can directly write memories during conversation via tools:
 
 ```
 save_to_memory(content, category, importance)
-  -> memory_store.store_memory_item()
-    -> analyze_memory_item()    # check for duplicates/conflicts
-    -> if "add": create MemoryItem
-    -> if "update": supersede_memory_item()
-    -> if "duplicate": skip
-    -> if "similar" + defer: return for LLM conflict resolution
+  -> session_memory.promote_session_note() if a matching note exists
+  -> candidate_ops.create_memory_candidate(importance_source="user_explicit")
+  -> candidate records latest user source message ID when available
+  -> same-turn pending-memory block makes the explicit save visible
+  -> Soul Writer promotes the candidate to MemoryItem + memory_item_evidence
 ```
 
 **`update_human_memory(content)`** updates the agent's understanding of the user (stored in `self_model_blocks` section="human").
@@ -138,14 +151,13 @@ After every conversation turn, `schedule_background_memory_consolidation()` runs
 
 ```
 consolidation pipeline:
-  1. add_daily_log()              -> raw turn log
-  2. extract_turn_memory()        -> regex patterns (fast, deterministic)
-  3. extract_memories_via_llm()   -> LLM extraction (rich, async)
-  4. store_memory_item()          -> for each extracted item
-  5. upsert_claim()               -> structured claim dual-write
-  6. record_emotional_signal()    -> emotional detection from LLM
-  7. backfill_embeddings()        -> embed items without vectors
-  8. companion.invalidate_memory() -> bust cache for next turn
+  1. extract_turn_memory()        -> regex patterns (fast, deterministic)
+  2. extract_memories_via_llm()   -> LLM extraction (rich, async)
+  3. create_memory_candidate()    -> runtime queue with source message IDs
+  4. record_memory_extraction_failure() if LLM extraction fails
+  5. record_emotional_signal()    -> emotional detection from LLM
+  6. Soul Writer promotion        -> MemoryItem + claim + memory_item_evidence
+  7. companion.invalidate_memory() -> bust cache for next turn
 ```
 
 ### Channel 3: Sleep Tasks (Maintenance)
@@ -243,6 +255,21 @@ service.py _prepare_turn_context():
      -> facts, prefs, goals, relationships re-ranked
 ```
 
+### 3. Tool-Driven Long-Memory Evidence
+
+The pre-turn English keyword classifier has been removed. Wide, cross-session recall is now an explicit agent tool call:
+
+```
+search_long_memory(query, mode)
+  -> evidence_retrieval.retrieve_wide_evidence(mode=...)
+  -> hybrid_search() for a broad candidate pool
+  -> expand memory_item_evidence rows when present
+  -> rank by observed_at for latest/temporal modes
+  -> preserve distinct evidence rows for aggregate/count modes
+```
+
+Supported modes are `aggregate`, `latest_update`, `temporal`, and `preference`. The tool is intended for questions such as "how many times", "what was the latest update", "which happened first", and preference-sensitive recommendations. Exact old chat wording should use `recall_conversation` or `recall_transcript(query, days_back=0)`.
+
 ---
 
 ## Memory Blocks: The System Prompt Interface
@@ -297,24 +324,23 @@ generate_embedding(text) -> list[float] | None
 ### Dual Storage
 
 Embeddings are stored in two places for resilience:
-1. **`MemoryItem.embedding_json`** (JSON column) -- portable, survives export/import
-2. **`MemoryVector` table** (packed float32 binary) -- fast search via `OrmVecStore`
+1. **`MemoryItem.embedding_json`** (SQLCipher JSON column) -- portable cache that survives `.anima/` export/import
+2. **Runtime `embeddings` table** (PostgreSQL + pgvector) -- fast search cache derived from canonical memory items
 
 ### Vector Store Architecture
 
 ```python
-class OrmVecStore(VectorStore):
-    """Per-user SQLAlchemy-backed store. Vectors live in anima.db."""
-    - upsert(): serialize float32 -> blob, store in MemoryVector
-    - search_by_vector(): load all vectors, compute cosine sim in Python
-    - search_by_text(): Jaccard word-overlap similarity
-    - rebuild(): bulk replace for vault import
+class PgVecStore(VectorStore):
+    """PostgreSQL pgvector-backed runtime cache."""
+    - upsert(): write RuntimeEmbedding by user/source item
+    - search_by_vector(): query pgvector cosine distance
+    - rebuild(): bulk replace a user's runtime embedding cache
 
 class InMemoryVectorStore(VectorStore):
-    """Dict-based fallback for tests. No persistence."""
+    """Process-local fallback for tests and degraded vector search."""
 ```
 
-The search is currently brute-force (load all vectors, compute similarity in Python). This works because memory counts are typically in the hundreds, not millions.
+If runtime PostgreSQL is available, semantic search uses pgvector and can be cold-start synced from `MemoryItem.embedding_json`. If pgvector is unavailable, vector search degrades to the in-memory fallback for the current process; durable memory remains in SQLCipher, but vector recall quality is reduced until the runtime cache is available again.
 
 ### Hybrid Search with RRF (F1 Enhanced)
 
@@ -324,7 +350,7 @@ async def hybrid_search(db, *, user_id, query, limit=15,
     1. Embed query -> query_embedding
     2. Semantic leg:
        - search_similar() via vector store
-       - Fallback: brute-force over embedding_json if vector store empty
+       - Fallback: cold-start sync from `embedding_json`; process-local vector store if runtime pgvector is unavailable
        - Filter by similarity_threshold (0.25)
     3. BM25 Lexical leg (F1):
        - bm25_search() via in-memory BM25Okapi index
@@ -438,15 +464,15 @@ Returns JSON:
 }
 ```
 
-The agent's inner thoughts (from `inner_thought` tool calls) are included in the consolidation input, so the LLM can extract observations the agent made about the user during reasoning.
+The agent's private `thinking` kwargs are stripped from tool calls and prepended to the consolidation input, so the LLM can extract observations the agent made about the user during reasoning.
 
-### Stage 3: Dedup & Store
+### Stage 3: Candidate Queue
 
-For each LLM-extracted item:
-1. Skip if already extracted by regex (content match)
-2. `store_memory_item()` with `allow_update=True, defer_on_similar=True`
-3. On "similar" result: ask LLM via `resolve_conflict()` -> "UPDATE" or "DIFFERENT"
-4. Dual-write: `upsert_claim()` for structured claim storage
+For each regex or LLM-extracted item:
+1. `create_memory_candidate()` writes a runtime `MemoryCandidate`
+2. Candidate rows include source message IDs when available
+3. Hash-based dedup avoids duplicate active candidates
+4. LLM extraction failures create `memory_extraction_failures` retry work
 
 ### Stage 4: Emotional Signal Recording
 
@@ -455,9 +481,9 @@ If the LLM detected an emotion with confidence > threshold:
 record_emotional_signal(db, user_id, emotion, confidence, evidence_type, evidence, trajectory)
 ```
 
-### Stage 5: Embedding Backfill
+### Stage 5: Soul Writer Promotion
 
-After consolidation, `_backfill_user_embeddings()` finds items without embeddings and generates them in batches.
+Soul Writer promotes queued candidates to SQLCipher. Promotion runs dedup/conflict checks through `store_memory_item()`, dual-writes structured claims, creates `MemoryItemEvidence`, and embeds/indexes promoted items when possible. Failed embedding leaves the promoted memory for later backfill.
 
 ### Stage 6: Cache Invalidation
 
@@ -560,6 +586,22 @@ MemoryClaimEvidence(
     source_kind="extraction",  # extraction, user_tool, or sleep_task
 )
 ```
+
+Freeform `MemoryItem` rows have their own provenance table:
+
+```python
+MemoryItemEvidence(
+    memory_item_id=item.id,
+    source_kind="explicit_save|llm_extraction|regex_extraction|eval_import|legacy_backfill",
+    runtime_message_ids_json=[...],
+    observed_at=source_time,
+    speaker="user",
+    confidence=0.8,
+    evidence_text=encrypted_source_snippet,
+)
+```
+
+`MemoryItemEvidence` is the recall surface for latest/count/temporal long-memory questions. It is intentionally separate from `MemoryClaimEvidence`, which remains scoped to structured claim rows.
 
 ---
 
@@ -851,7 +893,7 @@ ef(user_id, content, table="memory_items", field="content")  # encrypt
 df(user_id, content, table="memory_items", field="content")  # decrypt
 ```
 
-- **Encrypted fields**: `MemoryItem.content`, `EmotionalSignal.evidence`, `SessionNote.value`, `MemoryEpisode.summary`, `SelfModelBlock.content`, etc.
+- **Encrypted fields**: `MemoryItem.content`, `MemoryItemEvidence.evidence_text`, `EmotionalSignal.evidence`, `RuntimeSessionNote.value`, `MemoryEpisode.summary`, `SelfModelBlock.content`, etc.
 - **Vector content**: stored in plaintext in `MemoryVector.content` for search (not the actual memory content, just the searchable representation)
 - **Embeddings**: stored as float32 blobs -- numerical, not sensitive
 
@@ -865,6 +907,8 @@ Portability guarantee: copy `.anima/` directory, enter passphrase on new machine
 |------|------|
 | `memory_blocks.py` | Builds 15+ MemoryBlock objects for system prompt (incl. KG context) |
 | `memory_store.py` | Core CRUD, scored retrieval, dedup, supersession, heat visibility floor |
+| `provenance.py` | `MemoryItemEvidence` creation, candidate provenance, and legacy/eval backfill helper |
+| `evidence_retrieval.py` | Tool-driven wide evidence retrieval for aggregate/latest/temporal/preference recall |
 | `consolidation.py` | Post-turn extraction (predict-calibrate F3 + emotional signals), orchestrator routing (F5) |
 | `embeddings.py` | Embedding generation, hybrid search (BM25 F1 + semantic), heat floor, adaptive filter |
 | `vector_store.py` | ORM-backed vector storage and cosine similarity search |

@@ -226,6 +226,8 @@ async def consolidate_pending_ops(
 class LLMExtractionResult:
     memories: list[dict[str, Any]] = field(default_factory=list)
     emotion: dict[str, Any] | None = None
+    failed: bool = False
+    error: str | None = None
 
 
 async def extract_memories_via_llm(
@@ -278,9 +280,9 @@ async def extract_memories_via_llm(
         # Fallback: try as plain array (backward compat)
         result.memories = _parse_json_array(content)
         return result
-    except Exception:
+    except Exception as exc:
         logger.exception("LLM memory extraction failed")
-        return LLMExtractionResult()
+        return LLMExtractionResult(failed=True, error=str(exc))
 
 
 async def resolve_conflict(
@@ -489,6 +491,7 @@ async def run_background_extraction(
     assistant_response: str,
     runtime_db_factory: Callable[..., object] | None = None,
     trigger_soul_writer: bool = True,
+    source_message_ids: list[int] | None = None,
 ) -> None:
     """Per-turn extraction. Writes ONLY to PG. Never touches SQLCipher."""
     from anima_server.services.agent.candidate_ops import (
@@ -516,6 +519,7 @@ async def run_background_extraction(
                     importance=3,
                     importance_source="regex",
                     source="regex",
+                    source_message_ids=source_message_ids,
                 )
             for pref in extracted.preferences:
                 create_memory_candidate(
@@ -526,6 +530,7 @@ async def run_background_extraction(
                     importance=3,
                     importance_source="regex",
                     source="regex",
+                    source_message_ids=source_message_ids,
                 )
 
             regex_count = len(extracted.facts) + len(extracted.preferences)
@@ -544,50 +549,76 @@ async def run_background_extraction(
                         user_message=user_message,
                         assistant_response=assistant_response,
                     )
-                    for item in llm_result.memories:
-                        content = item.get("content", "")
-                        if not content or not isinstance(content, str):
-                            continue
-                        create_memory_candidate(
+                    if llm_result.failed:
+                        record_memory_extraction_failure(
                             rt_db,
                             user_id=user_id,
-                            content=content,
-                            category=item.get("category", "fact"),
-                            importance=item.get("importance", 3),
-                            importance_source="llm",
-                            source="llm",
+                            source_message_ids=source_message_ids,
+                            user_message=user_message,
+                            assistant_response=assistant_response,
+                            failure_reason=llm_result.error
+                            or "LLM memory extraction failed",
                         )
-                    llm_count = len(llm_result.memories)
-
-                    # Persist detected emotion (was previously only logged)
-                    if llm_result.emotion and llm_result.emotion.get("emotion"):
-                        record_emotional_signal(
-                            rt_db,
+                        health_emit(
+                            "memory",
+                            "extraction_failed",
+                            "warn",
                             user_id=user_id,
-                            emotion=llm_result.emotion["emotion"],
-                            confidence=float(
-                                llm_result.emotion.get("confidence", 0.5)
-                            ),
-                            evidence_type="linguistic",
-                            evidence=str(
-                                llm_result.emotion.get("evidence", "")
-                            ),
-                            trajectory=str(
-                                llm_result.emotion.get("trajectory", "stable")
-                            ),
+                            data={
+                                "error": llm_result.error,
+                                "source_message_ids": source_message_ids or [],
+                            },
                         )
+                        logger.warning(
+                            "LLM extraction failed for user %s; preserved retry work",
+                            user_id,
+                        )
+                    else:
+                        for item in llm_result.memories:
+                            content = item.get("content", "")
+                            if not content or not isinstance(content, str):
+                                continue
+                            create_memory_candidate(
+                                rt_db,
+                                user_id=user_id,
+                                content=content,
+                                category=item.get("category", "fact"),
+                                importance=item.get("importance", 3),
+                                importance_source="llm",
+                                source="llm",
+                                source_message_ids=source_message_ids,
+                            )
+                        llm_count = len(llm_result.memories)
 
-                    logger.info(
-                        "LLM extraction for user %s: %d memories extracted%s",
-                        user_id,
-                        llm_count,
-                        f" (emotion: {llm_result.emotion['emotion']})"
-                        if llm_result.emotion
-                        else "",
-                    )
+                        # Persist detected emotion (was previously only logged)
+                        if llm_result.emotion and llm_result.emotion.get("emotion"):
+                            record_emotional_signal(
+                                rt_db,
+                                user_id=user_id,
+                                emotion=llm_result.emotion["emotion"],
+                                confidence=float(
+                                    llm_result.emotion.get("confidence", 0.5)
+                                ),
+                                evidence_type="linguistic",
+                                evidence=str(
+                                    llm_result.emotion.get("evidence", "")
+                                ),
+                                trajectory=str(
+                                    llm_result.emotion.get("trajectory", "stable")
+                                ),
+                            )
+
+                        logger.info(
+                            "LLM extraction for user %s: %d memories extracted%s",
+                            user_id,
+                            llm_count,
+                            f" (emotion: {llm_result.emotion['emotion']})"
+                            if llm_result.emotion
+                            else "",
+                        )
                 except Exception:
                     logger.exception(
-                        "LLM extraction FAILED for user %s — facts from this turn are LOST. "
+                        "LLM extraction pipeline failed for user %s. "
                         "User message preview: %.100s",
                         user_id,
                         user_message[:100],
@@ -638,6 +669,39 @@ async def run_background_extraction(
     # of the full sleeptime orchestrator / inactivity reflection.
 
 
+def record_memory_extraction_failure(
+    runtime_db: Any,
+    *,
+    user_id: int,
+    source_message_ids: list[int] | None,
+    user_message: str,
+    assistant_response: str,
+    failure_reason: str,
+    extraction_model: str | None = None,
+) -> None:
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+
+    runtime_db.add(
+        MemoryExtractionFailure(
+            user_id=user_id,
+            source_message_ids=[int(message_id) for message_id in source_message_ids or []],
+            user_message_preview=_preview_text(user_message),
+            assistant_response_preview=_preview_text(assistant_response),
+            failure_reason=failure_reason[:2000],
+            extraction_model=extraction_model,
+            last_attempt_at=datetime.now(UTC),
+        )
+    )
+    runtime_db.flush()
+
+
+def _preview_text(value: str, *, limit: int = 240) -> str | None:
+    prepared = prepare_memory_text(value)
+    if not prepared:
+        return None
+    return prepared[:limit]
+
+
 async def _backfill_user_embeddings(
     user_id: int,
     *,
@@ -665,6 +729,7 @@ async def _run_post_turn_sleeptime_pipeline(
     thread_id: int | None = None,
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
+    source_message_ids: list[int] | None = None,
 ) -> None:
     """Run the post-turn extraction pipeline, then hand off to sleeptime orchestration."""
     await run_background_extraction(
@@ -673,6 +738,7 @@ async def _run_post_turn_sleeptime_pipeline(
         assistant_response=assistant_response,
         runtime_db_factory=runtime_db_factory,
         trigger_soul_writer=False,
+        source_message_ids=source_message_ids,
     )
 
     from anima_server.services.agent.sleep_agent import run_sleeptime_agents
@@ -696,6 +762,7 @@ def schedule_background_memory_consolidation(
     conversation_turn_count: int | None = None,
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
+    source_message_ids: list[int] | None = None,
 ) -> None:
     if not settings.agent_background_memory_enabled:
         return
@@ -718,6 +785,7 @@ def schedule_background_memory_consolidation(
                 thread_id=thread_id,
                 db_factory=db_factory,
                 runtime_db_factory=runtime_db_factory,
+                source_message_ids=source_message_ids,
             )
         )
     else:
@@ -728,6 +796,7 @@ def schedule_background_memory_consolidation(
                 user_message=user_message,
                 assistant_response=assistant_response,
                 runtime_db_factory=runtime_db_factory,
+                source_message_ids=source_message_ids,
             )
         )
 

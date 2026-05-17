@@ -9,8 +9,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Index, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import (
+    JSON as SA_JSON,
+)
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSON
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,11 +50,11 @@ class MemoryCandidate(RuntimeBase):
     supersedes_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     source_message_ids: Mapped[list[int] | None] = mapped_column(
-        ARRAY(Integer).with_variant(Text, "sqlite"), nullable=True
+        SA_JSON().with_variant(ARRAY(Integer), "postgresql"), nullable=True
     )
     extraction_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     tags_json: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(100)).with_variant(Text, "sqlite"), nullable=True
+        SA_JSON().with_variant(ARRAY(String(100)), "postgresql"), nullable=True
     )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="extracted")
@@ -50,6 +64,39 @@ class MemoryCandidate(RuntimeBase):
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+
+class MemoryExtractionFailure(RuntimeBase):
+    """Failed turn-level LLM extraction work preserved for retry."""
+
+    __tablename__ = "memory_extraction_failures"
+    __table_args__ = (
+        Index("ix_memory_extraction_failures_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_message_ids: Mapped[list[int]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    user_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assistant_response_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    extraction_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="failed", server_default=text("'failed'")
+    )
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
 
 
 class PromotionJournal(RuntimeBase):

@@ -21,6 +21,8 @@ from anima_server.models import MemoryItem
 from anima_server.services.agent.memory_store import (
     _similarity,
     get_memory_items,
+    invalidate_memory_retrieval_indexes,
+    remove_memory_item_from_retrieval_index,
     supersede_memory_item,
 )
 from anima_server.services.data_crypto import df
@@ -275,7 +277,7 @@ async def scan_contradictions(
 
 
 def _cleanup_superseded_indexes(user_id: int, item_id: int, db: Any) -> None:
-    """Remove a superseded item from vector store and BM25 index."""
+    """Remove a superseded item from vector, keyword, and Rust retrieval indexes."""
     try:
         from anima_server.services.agent.vector_store import delete_memory
 
@@ -283,11 +285,12 @@ def _cleanup_superseded_indexes(user_id: int, item_id: int, db: Any) -> None:
     except Exception:
         logger.debug("Vector cleanup failed for superseded item %d", item_id)
     try:
-        from anima_server.services.agent.bm25_index import invalidate_index
-
-        invalidate_index(user_id)
+        item = db.get(MemoryItem, item_id)
+        if item is not None:
+            remove_memory_item_from_retrieval_index(item)
+        invalidate_memory_retrieval_indexes(user_id)
     except Exception:
-        logger.debug("BM25 invalidation failed for user %d", user_id)
+        logger.debug("Retrieval index cleanup failed for user %d", user_id)
 
 
 def _suppress_after_contradiction(

@@ -307,6 +307,14 @@ def forget_memory(
         db.delete(claim)
 
     # 4. Hard-delete all items in the chain
+    try:
+        from anima_server.services.agent.memory_store import remove_memory_item_from_retrieval_index
+
+        for item in chain_items:
+            remove_memory_item_from_retrieval_index(item)
+    except Exception:
+        logger.debug("Rust retrieval cleanup failed for chain %s", chain_ids)
+
     for item in chain_items:
         db.delete(item)
     db.flush()
@@ -322,11 +330,11 @@ def forget_memory(
         logger.debug("Vector store cleanup failed for chain %s", chain_ids)
 
     try:
-        from anima_server.services.agent.bm25_index import invalidate_index
+        from anima_server.services.agent.memory_store import invalidate_memory_retrieval_indexes
 
-        invalidate_index(user_id)
+        invalidate_memory_retrieval_indexes(user_id)
     except Exception:
-        logger.debug("BM25 index invalidation failed for user %d", user_id)
+        logger.debug("Memory retrieval index invalidation failed for user %d", user_id)
 
     # 7. Record audit log (no content stored)
     log = ForgetAuditLog(

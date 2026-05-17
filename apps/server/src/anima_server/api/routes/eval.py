@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -14,8 +17,12 @@ from anima_server.models import MemoryItem
 from anima_server.schemas.chat import ChatResetRequest
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
-from anima_server.services.agent.memory_store import sync_memory_item_to_retrieval_index
+from anima_server.services.agent.memory_store import (
+    invalidate_memory_retrieval_indexes,
+    sync_memory_item_to_retrieval_index,
+)
 from anima_server.services.agent.persistence import append_message, get_or_create_thread
+from anima_server.services.agent.provenance import add_memory_item_evidence
 from anima_server.services.agent.sequencing import reserve_message_sequences
 from anima_server.services.agent.text_processing import prepare_embedding_text
 from anima_server.services.agent.vector_store import reset_vector_store
@@ -40,6 +47,44 @@ class EvalTranscriptImportRequest(BaseModel):
     sessions: list[EvalTranscriptSession] = Field(min_length=1)
     extractionMode: Literal["llm_pairs", "raw_chunks"] = "llm_pairs"
     embedRawChunks: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ImportedTranscriptTurn:
+    role: Literal["user", "assistant"]
+    content: str
+    message_id: int
+    thread_id: int
+    sequence_id: int
+    created_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ImportedExtractionPair:
+    user_message: str
+    assistant_response: str
+    source_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _RawMemoryChunk:
+    text: str
+    source_message_ids: tuple[int, ...] = ()
+    runtime_thread_id: int | None = None
+    runtime_message_id: int | None = None
+    sequence_id: int | None = None
+    speaker: str | None = None
+    observed_at: datetime | None = None
+    source_created_at: datetime | None = None
+    transcript_ref: str | None = None
+    metadata: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ImportedTranscriptResult:
+    messages_imported: int
+    extraction_pairs: tuple[_ImportedExtractionPair, ...] = ()
+    raw_chunks: tuple[_RawMemoryChunk, ...] = ()
 
 
 @router.post("/reset")
@@ -100,13 +145,18 @@ async def import_eval_transcript(
 
     require_unlocked_user(request, payload.userId)
 
-    messages_imported = _persist_imported_transcript(
+    imported = _persist_imported_transcript(
         payload,
         runtime_db=runtime_db,
     )
+    messages_imported = imported.messages_imported
 
     if payload.extractionMode == "raw_chunks":
-        raw_result = await _import_raw_transcript_chunks(payload, db=db)
+        raw_result = await _import_raw_transcript_chunks(
+            payload,
+            db=db,
+            chunks=list(imported.raw_chunks),
+        )
         invalidate_agent_runtime_cache()
         return {
             "status": "imported",
@@ -127,19 +177,19 @@ async def import_eval_transcript(
     turn_pairs_imported = 0
     errors: list[str] = []
 
-    for session in payload.sessions:
-        for user_message, assistant_response in _iter_extraction_pairs(session):
-            try:
-                await run_background_extraction(
-                    user_id=payload.userId,
-                    user_message=user_message,
-                    assistant_response=assistant_response,
-                    runtime_db_factory=runtime_db_factory,
-                    trigger_soul_writer=False,
-                )
-                turn_pairs_imported += 1
-            except Exception as exc:
-                errors.append(str(exc))
+    for pair in imported.extraction_pairs:
+        try:
+            await run_background_extraction(
+                user_id=payload.userId,
+                user_message=pair.user_message,
+                assistant_response=pair.assistant_response,
+                runtime_db_factory=runtime_db_factory,
+                trigger_soul_writer=False,
+                source_message_ids=list(pair.source_message_ids),
+            )
+            turn_pairs_imported += 1
+        except Exception as exc:
+            errors.append(str(exc))
 
     if turn_pairs_imported:
         try:
@@ -165,10 +215,10 @@ def _persist_imported_transcript(
     payload: EvalTranscriptImportRequest,
     *,
     runtime_db: Session,
-) -> int:
+) -> _ImportedTranscriptResult:
     message_count = sum(len(session.turns) for session in payload.sessions)
     if message_count <= 0:
-        return 0
+        return _ImportedTranscriptResult(messages_imported=0)
 
     thread = get_or_create_thread(runtime_db, payload.userId)
     sequence_id = reserve_message_sequences(
@@ -178,7 +228,10 @@ def _persist_imported_transcript(
     )
 
     imported = 0
+    extraction_pairs: list[_ImportedExtractionPair] = []
+    raw_chunks: list[_RawMemoryChunk] = []
     for session in payload.sessions:
+        imported_turns: list[_ImportedTranscriptTurn] = []
         for turn in session.turns:
             message = append_message(
                 runtime_db,
@@ -193,11 +246,29 @@ def _persist_imported_transcript(
             )
             message.is_in_context = False
             runtime_db.add(message)
+            imported_turns.append(
+                _ImportedTranscriptTurn(
+                    role=turn.role,
+                    content=turn.content,
+                    message_id=int(message.id),
+                    thread_id=int(message.thread_id),
+                    sequence_id=int(message.sequence_id),
+                    created_at=message.created_at,
+                )
+            )
             sequence_id += 1
             imported += 1
+        extraction_pairs.extend(
+            _build_imported_extraction_pairs(session.date, imported_turns)
+        )
+        raw_chunks.extend(_build_imported_raw_chunks(session.date, imported_turns))
 
     runtime_db.commit()
-    return imported
+    return _ImportedTranscriptResult(
+        messages_imported=imported,
+        extraction_pairs=tuple(extraction_pairs),
+        raw_chunks=tuple(raw_chunks),
+    )
 
 
 def _iter_extraction_pairs(
@@ -241,24 +312,159 @@ def _iter_raw_pairs(
     return pairs
 
 
+def _build_imported_extraction_pairs(
+    date: str | None,
+    turns: list[_ImportedTranscriptTurn],
+) -> list[_ImportedExtractionPair]:
+    pairs: list[_ImportedExtractionPair] = []
+    pending_user: _ImportedTranscriptTurn | None = None
+
+    for turn in turns:
+        if turn.role == "user":
+            if pending_user is not None:
+                pairs.append(
+                    _ImportedExtractionPair(
+                        user_message=_with_session_date(pending_user.content, date),
+                        assistant_response="",
+                        source_message_ids=(pending_user.message_id,),
+                    )
+                )
+            pending_user = turn
+            continue
+
+        if pending_user is None:
+            pairs.append(
+                _ImportedExtractionPair(
+                    user_message="",
+                    assistant_response=_with_session_date(turn.content, date),
+                    source_message_ids=(turn.message_id,),
+                )
+            )
+        else:
+            pairs.append(
+                _ImportedExtractionPair(
+                    user_message=_with_session_date(pending_user.content, date),
+                    assistant_response=_with_session_date(turn.content, date),
+                    source_message_ids=(pending_user.message_id, turn.message_id),
+                )
+            )
+            pending_user = None
+
+    if pending_user is not None:
+        pairs.append(
+            _ImportedExtractionPair(
+                user_message=_with_session_date(pending_user.content, date),
+                assistant_response="",
+                source_message_ids=(pending_user.message_id,),
+            )
+        )
+
+    return pairs
+
+
+def _build_imported_raw_chunks(
+    date: str | None,
+    turns: list[_ImportedTranscriptTurn],
+) -> list[_RawMemoryChunk]:
+    chunks: list[_RawMemoryChunk] = []
+    pending_user: _ImportedTranscriptTurn | None = None
+
+    for turn in turns:
+        if turn.role == "user":
+            if pending_user is not None:
+                chunk = _raw_chunk_from_turns(
+                    date=date,
+                    user_turn=pending_user,
+                    assistant_turn=None,
+                )
+                if chunk is not None:
+                    chunks.append(chunk)
+            pending_user = turn
+            continue
+
+        if pending_user is None:
+            chunk = _raw_chunk_from_turns(
+                date=date,
+                user_turn=None,
+                assistant_turn=turn,
+            )
+        else:
+            chunk = _raw_chunk_from_turns(
+                date=date,
+                user_turn=pending_user,
+                assistant_turn=turn,
+            )
+            pending_user = None
+        if chunk is not None:
+            chunks.append(chunk)
+
+    if pending_user is not None:
+        chunk = _raw_chunk_from_turns(
+            date=date,
+            user_turn=pending_user,
+            assistant_turn=None,
+        )
+        if chunk is not None:
+            chunks.append(chunk)
+
+    return chunks
+
+
+def _raw_chunk_from_turns(
+    *,
+    date: str | None,
+    user_turn: _ImportedTranscriptTurn | None,
+    assistant_turn: _ImportedTranscriptTurn | None,
+) -> _RawMemoryChunk | None:
+    text = _format_raw_memory_chunk(
+        user_message=user_turn.content if user_turn is not None else "",
+        assistant_response=assistant_turn.content if assistant_turn is not None else "",
+        date=date,
+    )
+    if not text:
+        return None
+
+    source_turns = tuple(turn for turn in (user_turn, assistant_turn) if turn is not None)
+    primary = user_turn or (source_turns[0] if source_turns else None)
+    observed_at = _parse_session_observed_at(date)
+    if observed_at is None and primary is not None:
+        observed_at = primary.created_at
+
+    return _RawMemoryChunk(
+        text=text,
+        source_message_ids=tuple(turn.message_id for turn in source_turns),
+        runtime_thread_id=primary.thread_id if primary is not None else None,
+        runtime_message_id=primary.message_id if primary is not None else None,
+        sequence_id=primary.sequence_id if primary is not None else None,
+        speaker=primary.role if primary is not None else "unknown",
+        observed_at=observed_at,
+        source_created_at=primary.created_at if primary is not None else None,
+        transcript_ref=(
+            f"eval_import:thread:{primary.thread_id}" if primary is not None else "eval_import"
+        ),
+        metadata=_raw_chunk_metadata(date),
+    )
+
+
 async def _import_raw_transcript_chunks(
     payload: EvalTranscriptImportRequest,
     *,
     db: Session,
+    chunks: list[_RawMemoryChunk] | None = None,
 ) -> dict[str, object]:
-    chunks = _build_raw_memory_chunks(payload)
-    if not chunks:
+    raw_chunks = chunks if chunks is not None else _build_raw_memory_chunks(payload)
+    if not raw_chunks:
         return {
             "memoryItemsImported": 0,
             "embeddingItemsImported": 0,
             "errors": [],
         }
 
-    items: list[tuple[MemoryItem, str]] = []
-    for chunk in chunks:
+    items: list[tuple[MemoryItem, _RawMemoryChunk]] = []
+    for chunk in raw_chunks:
         item = MemoryItem(
             user_id=payload.userId,
-            content=ef(payload.userId, chunk, table="memory_items", field="content"),
+            content=ef(payload.userId, chunk.text, table="memory_items", field="content"),
             category="fact",
             importance=4,
             source="eval_import_raw",
@@ -270,20 +476,42 @@ async def _import_raw_transcript_chunks(
 
     errors: list[str] = []
     if payload.embedRawChunks:
-        embeddings = await _generate_raw_chunk_embeddings([chunk for _item, chunk in items], errors)
+        embeddings = await _generate_raw_chunk_embeddings(
+            [chunk.text for _item, chunk in items],
+            errors,
+        )
     else:
         embeddings = [None] * len(items)
     embedded = 0
 
     for (item, chunk), embedding in zip(items, embeddings, strict=False):
+        add_memory_item_evidence(
+            db,
+            user_id=payload.userId,
+            memory_item_id=item.id,
+            evidence_text=chunk.text,
+            source_kind="eval_import",
+            runtime_thread_id=chunk.runtime_thread_id,
+            runtime_message_id=chunk.runtime_message_id,
+            runtime_message_ids=list(chunk.source_message_ids) or None,
+            transcript_ref=chunk.transcript_ref,
+            sequence_id=chunk.sequence_id,
+            speaker=chunk.speaker,
+            observed_at=chunk.observed_at,
+            source_created_at=chunk.source_created_at,
+            confidence=1.0,
+            extractor="eval_import",
+            metadata=chunk.metadata,
+        )
         if embedding is not None:
             item.embedding_json = embedding
             item.embedding_checksum = compute_embedding_checksum(embedding)
             embedded += 1
         sync_memory_item_to_retrieval_index(item)
         if embedding is not None:
-            _try_upsert_runtime_embedding(item, chunk, embedding, errors)
+            _try_upsert_runtime_embedding(item, chunk.text, embedding, errors)
 
+    invalidate_memory_retrieval_indexes(payload.userId)
     db.commit()
     return {
         "memoryItemsImported": len(items),
@@ -327,18 +555,58 @@ def _try_upsert_runtime_embedding(
         errors.append(f"runtime embedding upsert failed for memory {item.id}: {exc}")
 
 
-def _build_raw_memory_chunks(payload: EvalTranscriptImportRequest) -> list[str]:
-    chunks: list[str] = []
+def _build_raw_memory_chunks(payload: EvalTranscriptImportRequest) -> list[_RawMemoryChunk]:
+    chunks: list[_RawMemoryChunk] = []
     for session in payload.sessions:
         for user_message, assistant_response in _iter_raw_pairs(session):
-            chunk = _format_raw_memory_chunk(
+            text = _format_raw_memory_chunk(
                 user_message=user_message,
                 assistant_response=assistant_response,
                 date=session.date,
             )
-            if chunk:
-                chunks.append(chunk)
+            if text:
+                chunks.append(
+                    _RawMemoryChunk(
+                        text=text,
+                        speaker="user" if user_message else "assistant",
+                        observed_at=_parse_session_observed_at(session.date),
+                        transcript_ref="eval_import",
+                        metadata=_raw_chunk_metadata(session.date),
+                    )
+                )
     return chunks
+
+
+def _raw_chunk_metadata(date: str | None) -> dict[str, object]:
+    metadata: dict[str, object] = {"source": "raw_chunks"}
+    date_str = (date or "").strip()
+    if date_str:
+        metadata["session_date"] = date_str
+    return metadata
+
+
+_SESSION_DATE_RE = re.compile(
+    r"(?P<year>\d{4})[-/](?P<month>\d{1,2})[-/](?P<day>\d{1,2})"
+    r"(?:\D+(?P<hour>\d{1,2}):(?P<minute>\d{2}))?"
+)
+
+
+def _parse_session_observed_at(date: str | None) -> datetime | None:
+    date_str = (date or "").strip()
+    if not date_str:
+        return None
+    match = _SESSION_DATE_RE.search(date_str)
+    if match is None:
+        return None
+    groups = match.groupdict()
+    return datetime(
+        int(groups["year"]),
+        int(groups["month"]),
+        int(groups["day"]),
+        int(groups["hour"] or 0),
+        int(groups["minute"] or 0),
+        tzinfo=UTC,
+    )
 
 
 def _format_raw_memory_chunk(

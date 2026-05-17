@@ -28,6 +28,7 @@ TABLE_DOMAIN_MAP: dict[str, str] = {
     "agent_messages": DOMAIN_CONVERSATIONS,
     "agent_threads": DOMAIN_CONVERSATIONS,
     "memory_items": DOMAIN_MEMORIES,
+    "memory_item_evidence": DOMAIN_MEMORIES,
     "memory_episodes": DOMAIN_MEMORIES,
     "memory_claims": DOMAIN_MEMORIES,
     "memory_claim_evidence": DOMAIN_MEMORIES,

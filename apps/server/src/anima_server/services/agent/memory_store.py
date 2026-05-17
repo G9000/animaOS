@@ -164,6 +164,29 @@ def _clear_memory_index_dirty(*, root) -> None:
         logger.debug("Failed to clear memory retrieval index dirty state", exc_info=True)
 
 
+def invalidate_memory_retrieval_indexes(
+    user_id: int,
+    *,
+    root: Path | str | None = None,
+    mark_dirty: bool = True,
+) -> None:
+    try:
+        from anima_server.services.agent.bm25_index import invalidate_index
+
+        invalidate_index(user_id)
+    except Exception:
+        logger.debug("Failed to invalidate BM25 index for user %s", user_id, exc_info=True)
+
+    if not mark_dirty:
+        return
+
+    try:
+        resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
+        _mark_memory_index_dirty(root=resolved_root)
+    except Exception:
+        logger.debug("Failed to mark memory retrieval index dirty for user %s", user_id, exc_info=True)
+
+
 def _memory_embedding_for_retrieval_index(item: MemoryItem) -> list[float] | None:
     checked = check_embedding(item.embedding_json, item.embedding_checksum)
     if checked.status in {"valid", "missing_checksum"}:
@@ -293,6 +316,7 @@ def add_memory_item(
         _sync_tags(db, item=memory_item, user_id=user_id, tags=tags)
 
     sync_memory_item_to_retrieval_index(memory_item)
+    invalidate_memory_retrieval_indexes(user_id)
     return memory_item
 
 
@@ -428,6 +452,7 @@ def store_memory_item(
         _sync_tags(db, item=item, user_id=user_id, tags=tags)
 
     sync_memory_item_to_retrieval_index(item)
+    invalidate_memory_retrieval_indexes(user_id)
     return MemoryWriteResult(
         action="added",
         item=item,
@@ -644,6 +669,7 @@ def supersede_memory_item(
 
     remove_memory_item_from_retrieval_index(old_item)
     sync_memory_item_to_retrieval_index(new_item)
+    invalidate_memory_retrieval_indexes(old_item.user_id)
 
     return new_item
 
@@ -704,6 +730,7 @@ def set_current_focus(
     db.add(item)
     db.flush()
     sync_memory_item_to_retrieval_index(item)
+    invalidate_memory_retrieval_indexes(user_id)
     return item
 
 

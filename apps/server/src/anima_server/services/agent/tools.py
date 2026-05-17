@@ -267,6 +267,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
 
     parsed_tags = [t.strip().lower()
                    for t in tags.split(",") if t.strip()] if tags else None
+    source_message_ids = _latest_user_source_message_ids(ctx)
 
     # Try session-note promotion first (the original two-step flow).
     promoted = promote_session_note(
@@ -277,6 +278,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         category=category,
         importance=imp,
         tags=parsed_tags,
+        source_message_ids=source_message_ids,
     )
     if promoted:
         from anima_server.services.agent.companion import get_companion
@@ -296,6 +298,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         importance=imp,
         importance_source="user_explicit",
         source="tool",
+        source_message_ids=source_message_ids,
         tags=parsed_tags,
     )
     if candidate is None:
@@ -308,6 +311,25 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
         companion.invalidate_memory()
     ctx.memory_modified = True
     return f"Saved '{key}' to permanent memory (category: {category})"
+
+
+def _latest_user_source_message_ids(ctx: Any) -> list[int] | None:
+    from sqlalchemy import select
+
+    from anima_server.models.runtime import RuntimeMessage
+
+    message_id = ctx.runtime_db.scalar(
+        select(RuntimeMessage.id)
+        .where(
+            RuntimeMessage.thread_id == ctx.thread_id,
+            RuntimeMessage.user_id == ctx.user_id,
+            RuntimeMessage.role == "user",
+            RuntimeMessage.content_text.is_not(None),
+        )
+        .order_by(RuntimeMessage.sequence_id.desc())
+        .limit(1)
+    )
+    return [int(message_id)] if message_id is not None else None
 
 
 @tool
@@ -841,6 +863,65 @@ def recall_memory(
 
 
 @tool
+def search_long_memory(query: str, mode: str = "aggregate") -> str:
+    """Search long-term memory across sessions for compact evidence.
+
+    Use this when the user asks for counts, latest values, temporal ordering,
+    or preference-driven recommendations that are not already in visible memory.
+    Pick mode="aggregate", "latest_update", "temporal", or "preference".
+    """
+    import asyncio
+
+    from anima_server.services.agent import evidence_retrieval
+    from anima_server.services.agent.evidence_retrieval import RetrievalMode
+    from anima_server.services.agent.tool_context import get_tool_context
+
+    query_stripped = query.strip()
+    if not query_stripped:
+        return "Please provide a long-memory search query."
+
+    allowed_modes = {
+        RetrievalMode.AGGREGATE,
+        RetrievalMode.LATEST_UPDATE,
+        RetrievalMode.TEMPORAL,
+        RetrievalMode.PREFERENCE,
+    }
+    try:
+        parsed_mode = RetrievalMode(mode.strip().lower())
+    except ValueError:
+        valid = ", ".join(sorted(mode.value for mode in allowed_modes))
+        return f"Unknown long-memory search mode: {mode}. Valid modes: {valid}."
+    if parsed_mode not in allowed_modes:
+        valid = ", ".join(sorted(mode.value for mode in allowed_modes))
+        return f"Unknown long-memory search mode: {mode}. Valid modes: {valid}."
+
+    ctx = get_tool_context()
+    coro = evidence_retrieval.retrieve_wide_evidence(
+        db=ctx.db,
+        user_id=ctx.user_id,
+        query=query_stripped,
+        mode=parsed_mode,
+        runtime_db=ctx.runtime_db,
+    )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        result = asyncio.run(coro)
+    else:
+        result = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=30)
+
+    if not result.semantic_results:
+        return f"No long-memory evidence found for: {query_stripped}"
+
+    lines = [
+        f"Long-memory evidence ({result.mode or parsed_mode}, {len(result.semantic_results)} result(s)):"
+    ]
+    for _item_id, text, _score in result.semantic_results:
+        lines.append(text.strip())
+    return "\n\n".join(lines)
+
+
+@tool
 def recall_conversation(
     query: str, role: str = "", start_date: str = "", end_date: str = "", limit: str = "10"
 ) -> str:
@@ -905,8 +986,8 @@ def recall_conversation(
 
 
 @tool
-def recall_transcript(query: str, days_back: int = 30) -> str:
-    """Search past transcripts for exact wording or verbatim recall. Returns relevant snippets."""
+def recall_transcript(query: str, days_back: int = 0) -> str:
+    """Search past transcripts for exact wording or verbatim recall. Use days_back=0 for all archived transcripts."""
     from anima_server.config import settings
     from anima_server.services.agent.tool_context import get_tool_context
     from anima_server.services.agent.transcript_search import format_snippets, search_transcripts
@@ -917,7 +998,7 @@ def recall_transcript(query: str, days_back: int = 30) -> str:
     try:
         parsed_days_back = int(days_back)
     except (TypeError, ValueError):
-        parsed_days_back = 30
+        parsed_days_back = 0
 
     snippets = search_transcripts(
         query=query,
@@ -1188,12 +1269,13 @@ def check_system_health() -> str:
 def get_core_tools() -> list[Any]:
     """Return the minimal cognitive tool set.
 
-    These 6 tools are the AI's core capabilities — communicate,
+    These tools are the AI's core capabilities — communicate,
     remember, learn, persist.  Everything else is an extension.
     """
     return [
         send_message,
         recall_memory,
+        search_long_memory,
         recall_conversation,
         core_memory_append,
         core_memory_replace,

@@ -24,7 +24,7 @@ Memory:
 - Core blocks: only `human` and `persona` are writable with core_memory_append/replace.
 - Use `human` for your evolving understanding of the user, and `persona` for your own voice/style.
 - Never use runtime block names like `self_working_memory`, `self_inner_state`, `current_focus`, or `thread_summary` as core_memory_* labels.
-- Long-term facts, preferences, goals, and relationships: searchable. Write with save_to_memory, search with recall_memory.
+- Recall tool choice: use visible memory first; write durable facts/preferences/goals/relationships with save_to_memory; use `recall_memory` for durable facts/preferences/goals/relationships; use `recall_conversation` for active history; use `recall_transcript(query, days_back=0)` for exact archived wording; call `search_long_memory(query, mode)` before answering questions that require cross-session counts, latest values, temporal ordering, or preference-driven recommendations.
 - update_human_memory: full rewrite of the human block only. Use sparingly.
 - note_to_self: session-only scratch notes or temporary working context.
 - Use core_memory_replace only when the exact old text is visible in memory or a prior tool result; otherwise append or do a full rewrite.

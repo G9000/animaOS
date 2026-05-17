@@ -817,6 +817,44 @@ def test_runtime_memory_blocks_show_pending_writes_in_later_turns() -> None:
     assert "Has a dog named Biscuit" in human_block.value
 
 
+def test_runtime_memory_blocks_show_pending_explicit_saves() -> None:
+    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
+        from anima_server.services.agent.candidate_ops import create_memory_candidate
+        from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
+
+        user = User(username="pending-explicit-save",
+                    password_hash="x", display_name="Explicit Save")
+        soul_db.add(user)
+        soul_db.flush()
+
+        create_memory_candidate(
+            runtime_db,
+            user_id=user.id,
+            content="Likes jasmine tea",
+            category="preference",
+            importance=4,
+            importance_source="user_explicit",
+            source="tool",
+        )
+        runtime_db.flush()
+
+        blocks = build_runtime_memory_blocks(
+            soul_db,
+            user_id=user.id,
+            thread_id=99,
+            runtime_db=runtime_db,
+        )
+
+    pending_block = next(
+        (block for block in blocks if block.label == "pending_memory_updates"),
+        None,
+    )
+    assert pending_block is not None
+    assert "preference" in pending_block.value
+    assert "Likes jasmine tea" in pending_block.value
+    assert "pending explicit save" in pending_block.value
+
+
 def test_consolidate_pending_ops_applies_ops_in_order_and_is_idempotent() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.models import PendingMemoryOp

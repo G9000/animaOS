@@ -6,11 +6,11 @@ category: architecture
 
 # AnimaOS Architecture Documentation
 
-AnimaOS is a privacy-first, portable AI companion system. It wraps an AI agent's entire being -- memory, identity, conversations, emotional state, and consciousness -- inside a single encrypted `.anima/` directory backed by SQLite + SQLCipher. The system runs as a local FastAPI server (Python) that communicates with open LLM providers (Ollama, OpenRouter, vLLM) and exposes a REST/SSE API consumed by a Tauri desktop frontend.
+AnimaOS is a privacy-first, portable AI companion system. It wraps the agent's durable identity, long-term memory, emotional state, and consciousness inside a single encrypted `.anima/` directory backed by SQLite + SQLCipher. High-churn runtime state such as active messages, runs, pending memory work, and pgvector retrieval caches lives in a local PostgreSQL runtime store, started through embedded `pgserver` by default unless `ANIMA_RUNTIME_DATABASE_URL` is configured. The system runs as a local FastAPI server (Python) that communicates with open LLM providers (Ollama, OpenRouter, vLLM) and exposes a REST/SSE API consumed by a Tauri desktop frontend.
 
-The core design thesis is **"portable encrypted AI"**: copy the `.anima/` directory to a USB drive, plug it into a new machine, enter your passphrase, and the AI wakes up with all its memories intact. There is no cloud database, no Docker requirement, and no closed LLM providers (OpenAI, Anthropic, Google are explicitly excluded).
+The core design thesis is **"portable encrypted AI"**: copy the `.anima/` directory to a USB drive, plug it into a new machine, enter your passphrase, and the AI wakes up with its durable memories and identity intact. Runtime PostgreSQL is local operational state and can be rebuilt, replayed, or promoted from SQLCipher and transcript sources depending on the table. There is no cloud database and no Docker requirement.
 
-The server is structured as a classic three-layer application: **API routes (FastAPI) -> Service layer (agent services) -> Persistence (SQLAlchemy + SQLite/SQLCipher)**. On top of this foundation sits a sophisticated consciousness system with self-model, emotional intelligence, intentional agency, and inner monologue capabilities.
+The server is structured as a classic three-layer application: **API routes (FastAPI) -> Service layer (agent services) -> Persistence (SQLAlchemy + SQLCipher soul DB + PostgreSQL runtime DB)**. On top of this foundation sits a sophisticated consciousness system with self-model, emotional intelligence, intentional agency, and inner monologue capabilities.
 
 ## Document Index
 
@@ -87,8 +87,9 @@ flowchart TD
         end
 
         subgraph Persistence["Database Layer"]
-            Models["19 SQLAlchemy Models"]
-            DBSession["Per-User SQLite Sessions"]
+            Models["SQLAlchemy Models"]
+            SoulSession["Per-User SQLCipher Sessions"]
+            RuntimeDB["Local PostgreSQL Runtime DB"]
         end
     end
 
@@ -100,7 +101,7 @@ flowchart TD
 
     subgraph Storage["Disk"]
         AnimaDir[".anima/ directory"]
-        SQLiteDB["SQLite + SQLCipher DB"]
+        SQLiteDB["SQLite + SQLCipher Soul DBs"]
         Manifest["manifest.json"]
     end
 
@@ -109,6 +110,7 @@ flowchart TD
     API --> Services
     Services --> Persistence
     Persistence --> SQLiteDB
+    Persistence --> RuntimeDB
     CryptoLayer --> Manifest
     LLMLayer -->|"OpenAI-compatible API"| Ollama
     LLMLayer -->|"OpenAI-compatible API"| OpenRouter
@@ -121,8 +123,8 @@ flowchart TD
 
 1. **Single-thread-per-user model**: Per-user asyncio locks serialize conversation turns, preventing race conditions at the cost of queuing concurrent requests from the same user.
 2. **AnimaCompanion as cache layer**: The runtime is stateless; `AnimaCompanion` caches memory blocks and history between turns, invalidating via a version counter.
-3. **Tool-driven agent architecture**: The agent always starts with `inner_thought`, uses tools, and ends with `send_message`. Enforced by `ToolRulesSolver`. Max 6 steps per turn.
+3. **Tool-driven agent architecture**: The agent uses structured tools with inline `thinking` kwargs and usually ends with `send_message`. `ToolRulesSolver` enforces ordering and approval rules. Max 6 steps per turn.
 4. **Supersession instead of mutation**: Memory items are never deleted; updates create new rows and set `superseded_by` on the old one.
-5. **Per-user SQLite databases**: Each user gets their own SQLite file for true data isolation.
+5. **Dual local stores**: Each user gets an encrypted SQLCipher soul database for durable identity and memory, while the local PostgreSQL runtime DB handles active messages, queues, and rebuildable retrieval caches.
 6. **Field-level encryption with domain DEKs**: Data segmented into 5 cryptographic domains for fine-grained access control.
 7. **Hybrid search**: Combines vector similarity (cosine on embeddings) with keyword matching using adaptive filtering.

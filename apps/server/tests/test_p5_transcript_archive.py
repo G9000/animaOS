@@ -1229,6 +1229,51 @@ class TestTranscriptSearch:
 
         assert snippets == []
 
+    def test_search_days_back_zero_searches_all_archived_transcripts(
+        self,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from anima_server.services.agent.transcript_archive import export_transcript
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        old_timestamp = datetime.now(UTC) - timedelta(days=180)
+        export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "The exact old passphrase was blue lantern.",
+                    "ts": old_timestamp.isoformat().replace("+00:00", "Z"),
+                    "seq": 1,
+                },
+                {
+                    "role": "assistant",
+                    "content": "I will remember that exact phrase.",
+                    "ts": (old_timestamp + timedelta(seconds=5))
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "seq": 2,
+                },
+            ],
+            thread_id=77,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+        )
+
+        snippets = search_transcripts(
+            query="blue lantern",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=0,
+        )
+
+        assert len(snippets) == 1
+        assert "blue lantern" in snippets[0].text
+
     def test_search_finds_plaintext_transcript_without_dek(
         self,
         transcripts_dir: Path,
@@ -1326,7 +1371,7 @@ class TestRecallTranscriptTool:
         assert "query" in schema["properties"]
         assert "days_back" in schema["properties"]
 
-    def test_invalid_days_back_defaults_to_30(self, managed_tmp_path: Path) -> None:
+    def test_invalid_days_back_defaults_to_all_time(self, managed_tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from anima_server.services.agent.tools import recall_transcript
@@ -1349,7 +1394,32 @@ class TestRecallTranscriptTool:
             mock_settings.data_dir = managed_tmp_path
             recall_transcript("bakery order", days_back="invalid")
 
-        assert mock_search.call_args.kwargs["days_back"] == 30
+        assert mock_search.call_args.kwargs["days_back"] == 0
+
+    def test_recall_transcript_defaults_to_all_time(self, managed_tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from anima_server.services.agent.tools import recall_transcript
+
+        with (
+            patch(
+                "anima_server.services.agent.tool_context.get_tool_context",
+                return_value=SimpleNamespace(user_id=1),
+            ),
+            patch(
+                "anima_server.services.data_crypto.get_active_dek",
+                return_value=None,
+            ),
+            patch(
+                "anima_server.services.agent.transcript_search.search_transcripts",
+                return_value=[],
+            ) as mock_search,
+            patch("anima_server.config.settings") as mock_settings,
+        ):
+            mock_settings.data_dir = managed_tmp_path
+            recall_transcript("old exact phrase")
+
+        assert mock_search.call_args.kwargs["days_back"] == 0
 
 
 class TestThreadCloseEndpoint:

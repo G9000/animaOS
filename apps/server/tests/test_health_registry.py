@@ -94,3 +94,11 @@ async def test_format_report_text():
     assert "HEALTHY" in text
     assert "[OK]" in text
     assert "db_integrity" in text.lower() or "Database" in text
+
+
+def test_default_registry_includes_memory_pipeline():
+    from anima_server.services.health.registry import get_default_registry
+
+    registry = get_default_registry()
+
+    assert "memory_pipeline" in registry._checks

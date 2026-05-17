@@ -60,6 +60,13 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "Do not infer deep meaning from a casual greeting" in prompt
     assert "At the beginning of a relationship, I don't assume a role." in prompt
     assert "I don't turn a simple hello into a reading" in prompt
+    assert "Recall tool choice:" in prompt
+    assert "use visible memory first" in prompt
+    assert "use `recall_memory` for durable facts/preferences/goals/relationships" in prompt
+    assert "call `search_long_memory(query, mode)` before answering" in prompt
+    assert "counts, latest values, temporal ordering, or preference-driven recommendations" in prompt
+    assert "use `recall_conversation` for active history" in prompt
+    assert "use `recall_transcript(query, days_back=0)`" in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
     # Tool names no longer appear in prompt — they're in the API tools payload

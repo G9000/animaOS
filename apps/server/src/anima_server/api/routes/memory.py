@@ -20,6 +20,7 @@ from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.memory_store import (
     get_current_focus,
     get_memory_items,
+    invalidate_memory_retrieval_indexes,
     remove_memory_item_from_retrieval_index,
     supersede_memory_item,
     sync_memory_item_to_retrieval_index,
@@ -183,6 +184,7 @@ async def update_memory_item(
         existing.category = payload.category
     db.commit()
     sync_memory_item_to_retrieval_index(existing)
+    invalidate_memory_retrieval_indexes(user_id)
     return _item_to_response(existing, user_id)
 
 
@@ -208,6 +210,7 @@ async def delete_memory_item(
     db.commit()
     _remove_from_vector_store(user_id, item_id, db)
     remove_memory_item_from_retrieval_index(existing)
+    invalidate_memory_retrieval_indexes(user_id)
     return {"deleted": True}
 
 

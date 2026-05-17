@@ -54,7 +54,7 @@ async def _embed_and_index_item(
     content: str,
     category: str,
     importance: int,
-    soul_db: Session,
+    soul_db_factory: Callable[..., Session],
 ) -> None:
     """Generate embedding for a newly promoted item and upsert into indexes."""
     try:
@@ -69,8 +69,11 @@ async def _embed_and_index_item(
         if embedding is None:
             return
 
-        item = soul_db.get(MemoryItem, item_id)
-        if item is not None:
+        with soul_db_factory() as soul_db:
+            item = soul_db.get(MemoryItem, item_id)
+            if item is None:
+                return
+
             item.embedding_json = embedding
             item.embedding_checksum = compute_embedding_checksum(embedding)
             soul_db.flush()
@@ -85,6 +88,7 @@ async def _embed_and_index_item(
                 importance=importance,
                 db=soul_db,
             )
+            soul_db.commit()
 
         invalidate_index(user_id)
         logger.debug(
@@ -550,6 +554,17 @@ def _process_candidate(
                 logger.debug(
                     "upsert_claim failed for candidate %s", candidate.id)
 
+            from anima_server.services.agent.provenance import (
+                add_candidate_memory_item_evidence,
+            )
+
+            add_candidate_memory_item_evidence(
+                soul_db,
+                runtime_db=runtime_db,
+                candidate=candidate,
+                memory_item=new_item,
+            )
+
             soul_db.commit()
 
             # Embed immediately so the item is searchable right away
@@ -564,7 +579,7 @@ def _process_candidate(
                             candidate.content,
                             candidate.category,
                             candidate.importance,
-                            soul_db,
+                            soul_db_factory,
                         ),
                         event_loop,
                     ).result(timeout=15)
@@ -627,6 +642,17 @@ def _process_candidate(
                 logger.debug(
                     "upsert_claim failed for candidate %s", candidate.id)
 
+            from anima_server.services.agent.provenance import (
+                add_candidate_memory_item_evidence,
+            )
+
+            add_candidate_memory_item_evidence(
+                soul_db,
+                runtime_db=runtime_db,
+                candidate=candidate,
+                memory_item=new_item,
+            )
+
             # If store_memory_item did a supersession, suppress old item
             if write_result.action == "superseded" and write_result.matched_item:
                 try:
@@ -660,7 +686,7 @@ def _process_candidate(
                         candidate.content,
                         candidate.category,
                         candidate.importance,
-                        soul_db,
+                        soul_db_factory,
                     ),
                     event_loop,
                 ).result(timeout=15)

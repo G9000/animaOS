@@ -84,6 +84,12 @@ def _transcript_index_is_dirty(root: Path) -> bool:
         return False
 
 
+def _cutoff_for_days_back(days_back: int) -> datetime | None:
+    if days_back <= 0:
+        return None
+    return datetime.now(UTC) - timedelta(days=days_back)
+
+
 def _candidate_transcripts_from_rust_index(
     *,
     query: str,
@@ -93,7 +99,7 @@ def _candidate_transcripts_from_rust_index(
     max_transcripts: int,
 ) -> list[tuple[Path, int, str]] | None:
     root = anima_core_retrieval.get_retrieval_root()
-    cutoff = datetime.now(UTC) - timedelta(days=days_back)
+    cutoff = _cutoff_for_days_back(days_back)
     try:
         hits = anima_core_retrieval.transcript_index_search(
             root=root,
@@ -125,7 +131,7 @@ def _candidate_transcripts_from_rust_index(
         if date_start <= 0:
             continue
         date_value = datetime.fromtimestamp(date_start, tz=UTC)
-        if date_value < cutoff:
+        if cutoff is not None and date_value < cutoff:
             continue
         date_str = date_value.date().isoformat()
         candidates.append((enc_path, thread_id, date_str))
@@ -140,7 +146,7 @@ def _candidate_transcripts_from_sidecars(
     days_back: int,
     max_transcripts: int,
 ) -> list[tuple[Path, int, str]]:
-    cutoff = datetime.now(UTC) - timedelta(days=days_back)
+    cutoff = _cutoff_for_days_back(days_back)
     candidates: list[tuple[float, Path, int, str]] = []
 
     for meta_path in transcripts_dir.glob("*.meta.json"):
@@ -156,7 +162,7 @@ def _candidate_transcripts_from_sidecars(
                 date_start_str.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if date_start < cutoff:
+        if cutoff is not None and date_start < cutoff:
             continue
 
         enc_path = meta_path.parent / \
@@ -263,7 +269,11 @@ def search_transcripts(
     snippet_context: int = 2,
     budget_chars: int = 3000,
 ) -> list[TranscriptSnippet]:
-    """Search archived transcripts and return context-windowed snippets."""
+    """Search archived transcripts and return context-windowed snippets.
+
+    ``days_back`` values less than or equal to zero search all archived
+    transcripts.
+    """
     if not transcripts_dir.exists():
         return TranscriptSearchResults()
 

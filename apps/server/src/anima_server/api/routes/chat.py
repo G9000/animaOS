@@ -378,12 +378,18 @@ async def consolidate(
     )
 
     # Pair consecutive user/assistant messages for extraction
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[list[int], str, str]] = []
     msgs = list(reversed(messages))
     i = 0
     while i < len(msgs) - 1:
         if msgs[i].role == "user" and msgs[i + 1].role == "assistant":
-            pairs.append((msgs[i].content_text or "", msgs[i + 1].content_text or ""))
+            pairs.append(
+                (
+                    [int(msgs[i].id), int(msgs[i + 1].id)],
+                    msgs[i].content_text or "",
+                    msgs[i + 1].content_text or "",
+                )
+            )
             i += 2
         else:
             i += 1
@@ -391,13 +397,14 @@ async def consolidate(
     rt_factory = build_session_factory_for_db(runtime_db)
     candidates_created = 0
     errors: list[str] = []
-    for user_message, assistant_response in pairs:
+    for source_message_ids, user_message, assistant_response in pairs:
         try:
             await run_background_extraction(
                 user_id=payload.userId,
                 user_message=user_message,
                 assistant_response=assistant_response,
                 runtime_db_factory=rt_factory,
+                source_message_ids=source_message_ids,
             )
             candidates_created += 1
         except Exception as exc:

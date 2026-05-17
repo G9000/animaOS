@@ -19,7 +19,14 @@ if str(EVAL_DIR) not in sys.path:
 from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.runtime import get_runtime_session_factory
-from anima_server.models import MemoryItem, RuntimeMessage, RuntimeRun, RuntimeThread, User
+from anima_server.models import (
+    MemoryItem,
+    MemoryItemEvidence,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeThread,
+    User,
+)
 from anima_server.models.runtime_memory import MemoryCandidate
 from eval_client import HttpAnimaClient
 from run_agent_eval import build_eval_plan
@@ -814,6 +821,8 @@ def test_eval_import_transcript_processes_all_pairs(monkeypatch) -> None:
     assert len(calls) == 25
     assert calls[0]["user_message"] == "[Session date: 2023/04/10 (Mon) 14:47] Fact 0"
     assert calls[-1]["user_message"] == "[Session date: 2023/04/10 (Mon) 14:47] Fact 24"
+    assert calls[0]["source_message_ids"] == [imported[0].id, imported[1].id]
+    assert calls[-1]["source_message_ids"] == [imported[-2].id, imported[-1].id]
     assert all(call["trigger_soul_writer"] is False for call in calls)
     assert soul_writer_users
     assert soul_writer_users[-1] == user_id
@@ -899,6 +908,32 @@ def test_eval_import_transcript_raw_chunks_avoids_llm_extraction(monkeypatch) ->
                     df(user_id, item.content, table="memory_items", field="content")
                     for item in memory_items
                 ]
+                evidence_rows = list(
+                    db.scalars(
+                        select(MemoryItemEvidence)
+                        .where(MemoryItemEvidence.user_id == user_id)
+                        .order_by(MemoryItemEvidence.id)
+                    ).all()
+                )
+                evidence_plaintext = [
+                    df(
+                        user_id,
+                        evidence.evidence_text,
+                        table="memory_item_evidence",
+                        field="evidence_text",
+                    )
+                    for evidence in evidence_rows
+                ]
+
+            rt_factory = get_runtime_session_factory()
+            with rt_factory() as runtime_db:
+                imported_messages = list(
+                    runtime_db.scalars(
+                        select(RuntimeMessage)
+                        .where(RuntimeMessage.user_id == user_id)
+                        .order_by(RuntimeMessage.sequence_id)
+                    ).all()
+                )
     finally:
         settings.eval_reset_enabled = original_enabled
 
@@ -913,6 +948,23 @@ def test_eval_import_transcript_raw_chunks_avoids_llm_extraction(monkeypatch) ->
     assert "User: I had a GPS issue." in plaintext[0]
     assert "Assistant: The dealership fixed it." in plaintext[0]
     assert "User: I prefer Shell gas." in plaintext[1]
+    assert len(evidence_rows) == 2
+    assert evidence_rows[0].source_kind == "eval_import"
+    assert evidence_rows[0].runtime_message_id == imported_messages[0].id
+    assert evidence_rows[0].runtime_message_ids_json == [
+        imported_messages[0].id,
+        imported_messages[1].id,
+    ]
+    assert evidence_rows[0].runtime_thread_id == imported_messages[0].thread_id
+    assert evidence_rows[0].sequence_id == imported_messages[0].sequence_id
+    assert evidence_rows[0].speaker == "user"
+    assert evidence_rows[0].observed_at is not None
+    assert evidence_rows[0].extractor == "eval_import"
+    assert evidence_rows[0].metadata_json == {
+        "source": "raw_chunks",
+        "session_date": "2023/04/10 (Mon) 14:47",
+    }
+    assert evidence_plaintext[0] == plaintext[0]
 
 
 def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
@@ -928,15 +980,33 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
 
     try:
         with factory() as soul_db, runtime_db_session() as runtime_db:
+            eval_item = MemoryItem(user_id=1, content="Eval fact", category="fact")
+            other_item = MemoryItem(user_id=2, content="Other fact", category="fact")
             soul_db.add_all(
                 [
                     User(id=1, username="eval", display_name="Eval User", password_hash="x"),
                     User(id=2, username="other", display_name="Other User", password_hash="x"),
-                    MemoryItem(user_id=1, content="Eval fact", category="fact"),
-                    MemoryItem(user_id=2, content="Other fact", category="fact"),
+                    eval_item,
+                    other_item,
                 ]
             )
             soul_db.flush()
+            soul_db.add_all(
+                [
+                    MemoryItemEvidence(
+                        user_id=1,
+                        memory_item_id=eval_item.id,
+                        source_kind="eval_import",
+                        evidence_text="Eval evidence",
+                    ),
+                    MemoryItemEvidence(
+                        user_id=2,
+                        memory_item_id=other_item.id,
+                        source_kind="eval_import",
+                        evidence_text="Other evidence",
+                    ),
+                ]
+            )
 
             runtime_db.add_all(
                 [
@@ -990,13 +1060,22 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             )
 
             assert deleted["memory_items"] == 1
+            assert deleted["memory_item_evidence"] == 1
             assert deleted["runtime_threads"] == 1
             assert deleted["memory_candidates"] == 1
             assert soul_db.scalars(
                 select(MemoryItem).where(MemoryItem.user_id == 1)
             ).all() == []
+            assert soul_db.scalars(
+                select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 1)
+            ).all() == []
             assert len(
                 soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == 2)).all()
+            ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 2)
+                ).all()
             ) == 1
             assert runtime_db.scalars(
                 select(RuntimeThread).where(RuntimeThread.user_id == 1)

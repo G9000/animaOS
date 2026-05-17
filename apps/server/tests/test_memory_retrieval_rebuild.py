@@ -12,6 +12,7 @@ from anima_server.services.agent.memory_store import (
     ensure_memory_retrieval_index_ready,
     memory_retrieval_index_needs_rebuild,
     rebuild_memory_retrieval_index,
+    store_memory_item,
 )
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -190,3 +191,75 @@ def test_memory_ready_recovers_from_corrupt_manifest(tmp_path: Path) -> None:
 
         assert ready is True
         assert {hit["record_id"] for hit in hits} == {original.id, rebuilt_only.id}
+
+
+def test_direct_memory_write_rebuilds_stale_bm25_from_canonical(
+    monkeypatch,
+) -> None:
+    from anima_server.services.agent import bm25_index as bm25_module
+
+    bm25_module._user_indices.clear()
+    with _db_session() as db:
+        user = User(username="bm25_rebuild", display_name="BM25", password_hash="x")
+        db.add(user)
+        db.flush()
+
+        existing_one = MemoryItem(
+            user_id=user.id,
+            content="user likes pour over coffee",
+            category="preference",
+            importance=4,
+            source="test",
+            created_at=datetime.now(UTC),
+        )
+        existing_two = MemoryItem(
+            user_id=user.id,
+            content="user prefers jasmine tea",
+            category="preference",
+            importance=4,
+            source="test",
+            created_at=datetime.now(UTC),
+        )
+        db.add_all([existing_one, existing_two])
+        db.flush()
+
+        stale_index = bm25_module.BM25Index()
+        stale_index.build(
+            [
+                (existing_one.id, existing_one.content),
+                (existing_two.id, existing_two.content),
+            ]
+        )
+        bm25_module._user_indices[user.id] = stale_index
+
+        monkeypatch.setattr(
+            bm25_module,
+            "_search_memory_index_via_rust",
+            lambda **kwargs: None,
+        )
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_upsert",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("rust unavailable")),
+        )
+
+        result = store_memory_item(
+            db,
+            user_id=user.id,
+            content="user tracks saffron harvests",
+            category="fact",
+            importance=4,
+            source="test",
+        )
+        db.commit()
+
+        hits = bm25_module.bm25_search(
+            user.id,
+            query="saffron",
+            limit=5,
+            db=db,
+        )
+
+        assert result.item is not None
+        assert [item_id for item_id, _score in hits] == [result.item.id]
+        bm25_module._user_indices.pop(user.id, None)

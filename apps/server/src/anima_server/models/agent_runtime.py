@@ -253,6 +253,11 @@ class MemoryItem(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    evidence: Mapped[list[MemoryItemEvidence]] = relationship(
+        back_populates="memory_item",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class MemoryEpisode(Base):
@@ -329,6 +334,68 @@ class MemoryItemTag(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class MemoryItemEvidence(Base):
+    """Source evidence for a durable memory item."""
+
+    __tablename__ = "memory_item_evidence"
+    __table_args__ = (
+        Index("ix_memory_item_evidence_user_item", "user_id", "memory_item_id"),
+        Index("ix_memory_item_evidence_user_observed", "user_id", "observed_at"),
+        Index(
+            "ix_memory_item_evidence_source_observed",
+            "user_id",
+            "source_kind",
+            "observed_at",
+        ),
+        Index("ix_memory_item_evidence_runtime_message", "runtime_message_id"),
+        Index("ix_memory_item_evidence_transcript_ref", "transcript_ref"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    memory_item_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+    runtime_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_message_ids_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    transcript_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sequence_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    speaker: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    source_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    confidence: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=1.0,
+        server_default=text("1.0"),
+    )
+    extractor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evidence_text: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    memory_item: Mapped[MemoryItem] = relationship(back_populates="evidence")
 
 
 class MemoryClaim(Base):

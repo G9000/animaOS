@@ -11,6 +11,7 @@ from anima_server.services.agent import list_agent_history, run_agent
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.client_actions import ActionToolConnection, action_registry
 from anima_server.services.agent.compaction import compact_thread_context
+from anima_server.services.agent.evidence_retrieval import RetrievalMode, WideEvidenceResult
 from anima_server.services.agent.persistence import create_run, persist_agent_result
 from anima_server.services.agent.prompt_budget import (
     PromptBudgetBlockDecision,
@@ -229,6 +230,47 @@ async def test_run_agent_attaches_connected_animus_action_tools(
     assert isinstance(extra_tool_schemas, list)
     assert extra_tool_schemas[0]["function"]["name"] == "bash"
     assert runner.requests[0]["tool_executor"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_does_not_run_hidden_wide_evidence_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    calls: list[dict[str, object]] = []
+
+    async def fake_retrieve_wide_evidence(**kwargs: object) -> WideEvidenceResult:
+        calls.append(kwargs)
+        return WideEvidenceResult(mode=RetrievalMode.AGGREGATE)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "anima_server.services.agent.evidence_retrieval.retrieve_wide_evidence",
+        fake_retrieve_wide_evidence,
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="no-hidden-wide-retrieval",
+                password_hash="not-used",
+                display_name="No Hidden Wide Retrieval",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            await run_agent(
+                "How many model kits have I worked on or bought?",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert calls == []
 
 
 def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:

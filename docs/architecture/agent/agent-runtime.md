@@ -2,14 +2,14 @@
 title: Agent Runtime Deep Dive
 description: Cognitive loop mechanics, step execution, tool orchestration, compaction, approval flow, and security findings
 category: architecture
-updated: 2026-03-31
+updated: 2026-05-17
 ---
 
 # Agent Runtime Deep Dive
 
-[Back to Index](README.md)
+[Back to Index](../README.md)
 
-This document traces a user message through the agent runtime end-to-end, explaining every layer, data structure, and decision point. It complements [Data Flow](data-flow.md) (high-level call chain) and [Services](services.md) (file-level reference) with the _why_ behind each stage.
+This document traces a user message through the agent runtime end-to-end, explaining every layer, data structure, and decision point. It complements [Data Flow](../system/data-flow.md) (high-level call chain) and [Services](../system/services.md) (file-level reference) with the _why_ behind each stage.
 
 ---
 
@@ -273,7 +273,7 @@ sequenceDiagram
         rect rgb(255, 255, 240)
             note over S: Stage 4 — Post-Turn Hooks (fire-and-forget)
             S->>S: schedule_background_memory_consolidation()
-            note over S: regex + LLM extraction → MemoryCandidates (PG), episodes, daily log, corrections
+            note over S: regex + LLM extraction → MemoryCandidates (PG), source provenance, corrections
             S->>S: schedule_reflection()
             note over S: quick monologue + deep self-model reflection (delayed ~5min)
         end
@@ -537,7 +537,7 @@ If over `agent_max_tokens * agent_compaction_trigger_ratio`, runs `compact_threa
 ### Stage 4: Post-Turn Hooks (`_run_post_turn_hooks`)
 
 Schedules two fire-and-forget background tasks:
-- **Memory consolidation** -- extracts facts, preferences, emotions from the conversation; writes MemoryCandidates to runtime DB; applies memory corrections; episode creation with topic-based merging
+- **Memory consolidation** -- extracts facts, preferences, emotions from the conversation; writes `MemoryCandidate` rows to the runtime DB with source message IDs; preserves failed LLM extraction attempts as retryable work; applies memory corrections
 - **Reflection** -- delayed self-model update and inner monologue
 
 Inner thoughts extracted from the agent's `thinking` kwargs are prepended to the consolidation input so the extraction pipeline can learn from the agent's own reasoning:
@@ -1105,18 +1105,29 @@ create → active → closed → archived (JSONL)
 
 ## Dual Database Architecture
 
-The system splits data across two databases per user:
+Decision: keep embedded PostgreSQL as the runtime store and keep per-user SQLCipher as the durable soul store. The older "SQLite only" guidance is no longer accurate for runtime state; the shipped architecture is a dual-store local system with no Docker dependency.
+
+The system splits state across two local stores:
 
 | Database | Engine | Purpose | Data |
 |----------|--------|---------|------|
-| **Soul DB** | SQLCipher (per-user) | Permanent identity | MemoryItems, SelfModelBlocks, MemoryEpisodes, EmotionalSignals, Claims, Tasks, Intentions |
-| **Runtime DB** | PostgreSQL (shared) | Ephemeral runtime | RuntimeThreads, RuntimeRuns, RuntimeMessages, PendingMemoryOps, MemoryCandidates, PromotionJournal, SessionNotes |
+| **Soul DB** | SQLite + SQLCipher (per-user) | Durable, portable identity and long-term memory source of truth | MemoryItems, SelfModelBlocks, MemoryEpisodes, EmotionalSignals, Claims, Tasks, Intentions |
+| **Runtime DB** | Local PostgreSQL (embedded `pgserver` by default, or `ANIMA_RUNTIME_DATABASE_URL`) | High-churn runtime state, work queues, and rebuildable retrieval caches | RuntimeThreads, RuntimeRuns, RuntimeMessages, PendingMemoryOps, MemoryCandidates, PromotionJournal, SessionNotes, access logs, retrieval feedback, pgvector embeddings |
 
 ### Why the split?
 
-- **Portability**: The soul DB (`.anima/` directory) is the AI's entire being — copy to USB, move to another machine
+- **Portability**: The soul DB (`.anima/` directory) is the durable identity and memory payload that must survive transfer to another machine
 - **Performance**: PostgreSQL handles high-frequency message writes without SQLite locking contention
-- **Encryption boundary**: Soul data is encrypted at rest per-user; runtime data has lower sensitivity
+- **Retrieval**: pgvector gives the runtime a fast semantic search cache while `MemoryItem.embedding_json` remains the portable fallback
+- **Encryption boundary**: Soul data is encrypted at rest per-user; runtime data is lower-sensitivity operational state and should not be treated as the canonical memory record
+
+### Startup And Degraded Behavior
+
+- On startup, `main.py` starts embedded PostgreSQL through `EmbeddedPG` unless `ANIMA_RUNTIME_DATABASE_URL` is set.
+- The embedded data directory defaults to `settings.data_dir / "runtime" / "pg_data"` and can be overridden with `ANIMA_RUNTIME_PG_DATA_DIR`.
+- Runtime Alembic migrations run in `ensure_runtime_tables()`. `ensure_pgvector()` enables the vector extension when available.
+- If embedded PostgreSQL cannot start, server startup fails because chat, thread history, pending memory ops, and Soul Writer queues depend on the runtime store.
+- If pgvector is unavailable but PostgreSQL is running, vector search degrades to process-local fallback behavior; SQLCipher remains the durable memory source and embeddings can be synced back to runtime later.
 
 ### Write Boundary
 
@@ -1168,7 +1179,7 @@ The Soul Writer is a serialized, per-user promotion pipeline that moves data fro
      - **User-explicit** authority: always promote
      - **Correction**: supersede the target item
      - **Normal**: dry-run `store_memory_item()` for dedup — `duplicate` → reject, `superseded` → supersede old, `similar` → slot-match or append
-   - Upsert claims, suppress superseded items via `forgetting.suppress_memory()`
+   - Upsert claims, add `MemoryItemEvidence` from candidate source message IDs, and suppress superseded items via `forgetting.suppress_memory()`
    - Confirm journal entry
 
 3. **Phase 3: Access Sync** — `access_sync.sync_access_metadata()` syncs access counts and timestamps between runtime and soul DBs
@@ -1252,12 +1263,10 @@ After every successful turn, two background tasks are scheduled (fire-and-forget
 Runs immediately in a background task:
 1. **Regex extraction** -- pattern-based extraction of facts, preferences, focus
 2. **LLM extraction** -- sends conversation to LLM with `EXTRACTION_PROMPT` for deeper semantic understanding
-3. **Emotional signal extraction** -- detects emotions from the conversation
-4. **Write to MemoryCandidates** -- extracted memories are written as `MemoryCandidate` rows in the runtime DB (PostgreSQL), not directly to SQLCipher. The Soul Writer later promotes them.
-5. **Embedding generation** -- creates vector embeddings for new memory candidates
-6. **Episode creation** -- stores episodic memory with topic-based merging (see [Episode Merging](#episode-merging))
-7. **Daily log** -- records the turn in `memory_daily_logs`
-8. **Correction application** -- if the turn contained a correction signal, `apply_memory_correction()` searches for and supersedes contradicted memories (see [Memory Correction Mechanism](#memory-correction-mechanism))
+3. **Write to MemoryCandidates** -- extracted memories are written as `MemoryCandidate` rows in the runtime DB (PostgreSQL) with source message IDs; the Soul Writer later promotes them to SQLCipher
+4. **Failure preservation** -- failed LLM extraction records `memory_extraction_failures` retry work instead of silently dropping the turn
+5. **Emotional signal extraction** -- detects emotions from the conversation
+6. **Correction application** -- if the turn contained a correction signal, `apply_memory_correction()` searches for and supersedes contradicted memories (see [Memory Correction Mechanism](#memory-correction-mechanism))
 
 Inner thoughts from the agent's `thinking` kwargs are included in the consolidation input, so the extraction pipeline can learn from the agent's own reasoning.
 
@@ -1387,8 +1396,9 @@ The runtime emits structured health events via `health_emit(subsystem, event, le
 | `agent` | `turn_start` | Trace-level event at loop entry |
 | `llm` | `context_overflow`, `compaction` | Context management events |
 | `tool` | `timeout`, `error`, `excluded` | Tool execution issues |
+| `memory` | `extraction_failed`, promotion/index warnings | Memory pipeline degradation and retry signals |
 
-Health checks are registered in a `HealthCheckRegistry` and accessible via REST endpoints. The `check_system_health` tool allows the agent itself to run health checks during conversation.
+Health checks are registered in a `HealthCheckRegistry` and accessible via REST endpoints. The default registry includes `memory_pipeline`, which reports candidate backlog, failed/retry-exhausted candidates, pending memory operations, extraction failures, embedding coverage, stale access/retrieval-feedback sync, and dirty retrieval-index state. The `check_system_health` tool allows the agent itself to run health checks during conversation.
 
 ---
 
@@ -1570,6 +1580,8 @@ When streaming, the runtime emits these event types:
 | `transcript_archive.py` | Encrypted JSONL transcript export |
 | `transcript_search.py` | Transcript search (keyword-based) |
 | `conversation_search.py` | Conversation history search (semantic + keyword) |
+| `evidence_retrieval.py` | `search_long_memory` wide evidence retrieval using `MemoryItemEvidence` metadata |
+| `provenance.py` | Durable `MemoryItemEvidence` writes and legacy/eval provenance backfill |
 | `session_memory.py` | Session-scoped notes (PG), promotion to long-term memory |
 | `forgetting.py` | Memory suppression and intentional forgetting |
 | `batch_segmenter.py` | Batch conversation segmentation |
