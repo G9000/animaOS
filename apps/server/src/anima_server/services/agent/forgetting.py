@@ -21,6 +21,7 @@ from anima_server.models import (
     MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
+    MemoryItemEvidence,
 )
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.services.data_crypto import df
@@ -305,15 +306,24 @@ def forget_memory(
             )
         )
         db.delete(claim)
+    db.execute(
+        delete(MemoryItemEvidence).where(
+            MemoryItemEvidence.user_id == user_id,
+            MemoryItemEvidence.memory_item_id.in_(chain_ids),
+        )
+    )
 
     # 4. Hard-delete all items in the chain
+    all_removed = True
     try:
         from anima_server.services.agent.memory_store import remove_memory_item_from_retrieval_index
 
         for item in chain_items:
-            remove_memory_item_from_retrieval_index(item)
+            if not remove_memory_item_from_retrieval_index(item):
+                all_removed = False
     except Exception:
         logger.debug("Rust retrieval cleanup failed for chain %s", chain_ids)
+        all_removed = False
 
     for item in chain_items:
         db.delete(item)
@@ -332,7 +342,7 @@ def forget_memory(
     try:
         from anima_server.services.agent.memory_store import invalidate_memory_retrieval_indexes
 
-        invalidate_memory_retrieval_indexes(user_id)
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not all_removed)
     except Exception:
         logger.debug("Memory retrieval index invalidation failed for user %d", user_id)
 

@@ -570,6 +570,48 @@ def _rank_wide_candidates(
     else:
         scored.sort(key=lambda row: (-row[0], row[2]))
 
+    if intent.mode is RetrievalMode.AGGREGATE:
+        ranked_rows: list[
+            tuple[float, tuple[int, int, int, int, int, int], int, _WideCandidate]
+        ] = []
+        leftovers: list[
+            tuple[float, tuple[int, int, int, int, int, int], int, _WideCandidate]
+        ] = []
+        seen_dedupe: set[tuple[int, str, tuple[int, int, int, int, int, int], int | None]] = set()
+        seen_sessions: set[tuple[int, int, int]] = set()
+        target_distinct_sessions = min(
+            intent.max_evidence,
+            max(1, intent.min_distinct_sessions),
+        )
+
+        for row in scored:
+            _score, sort_key, _idx, candidate = row
+            dedupe_key = (
+                candidate.item_id,
+                candidate.text,
+                sort_key,
+                candidate.sequence_id,
+            )
+            if dedupe_key in seen_dedupe:
+                continue
+            seen_dedupe.add(dedupe_key)
+
+            session_key = sort_key[:3]
+            has_new_session = session_key == (0, 0, 0) or session_key not in seen_sessions
+            if has_new_session and len(ranked_rows) < target_distinct_sessions:
+                ranked_rows.append(row)
+                seen_sessions.add(session_key)
+            else:
+                leftovers.append(row)
+
+        if len(ranked_rows) < intent.max_evidence:
+            for row in leftovers:
+                ranked_rows.append(row)
+                if len(ranked_rows) >= intent.max_evidence:
+                    break
+
+        return [row[3] for row in ranked_rows]
+
     ranked: list[_WideCandidate] = []
     seen: set[tuple[int, str, tuple[int, int, int, int, int, int], int | None]] = set()
     for _score, sort_key, _idx, candidate in scored:

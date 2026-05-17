@@ -126,10 +126,21 @@ def backfill_memory_item_evidence(
 ) -> EvidenceBackfillResult:
     """Create provenance evidence for existing memory items that do not have it."""
 
+    existing_evidence = (
+        select(MemoryItemEvidence.id)
+        .where(
+            MemoryItemEvidence.user_id == user_id,
+            MemoryItemEvidence.memory_item_id == MemoryItem.id,
+        )
+        .exists()
+    )
     items = list(
         db.scalars(
             select(MemoryItem)
-            .where(MemoryItem.user_id == user_id)
+            .where(
+                MemoryItem.user_id == user_id,
+                ~existing_evidence,
+            )
             .order_by(MemoryItem.id)
             .limit(max(1, limit))
         ).all()
@@ -137,28 +148,12 @@ def backfill_memory_item_evidence(
     if not items:
         return EvidenceBackfillResult()
 
-    item_ids = [int(item.id) for item in items]
-    existing_item_ids = {
-        int(memory_item_id)
-        for memory_item_id in db.scalars(
-            select(MemoryItemEvidence.memory_item_id).where(
-                MemoryItemEvidence.user_id == user_id,
-                MemoryItemEvidence.memory_item_id.in_(item_ids),
-            )
-        ).all()
-    }
-
     result = EvidenceBackfillResult(scanned=len(items))
     created = 0
-    skipped_existing = 0
     skipped_empty = 0
 
     for item in items:
         item_id = int(item.id)
-        if item_id in existing_item_ids:
-            skipped_existing += 1
-            continue
-
         plaintext = df(user_id, item.content, table="memory_items", field="content").strip()
         if not plaintext:
             skipped_empty += 1
@@ -183,7 +178,7 @@ def backfill_memory_item_evidence(
     return EvidenceBackfillResult(
         scanned=result.scanned,
         created=created,
-        skipped_existing=skipped_existing,
+        skipped_existing=0,
         skipped_empty=skipped_empty,
     )
 

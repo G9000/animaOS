@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import User
+from anima_server.models import MemoryItem, MemoryItemEvidence, User
 from anima_server.services import vault as vault_module
+from anima_server.services.data_crypto import df, ef
 from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import decrypt_string, encrypt_string
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 
 
 def _register_user(
@@ -189,6 +192,108 @@ def test_import_vault_preserves_original_password_hash() -> None:
             json={"username": "vault-user", "password": "tampered-password"},
         )
         assert bad_login_response.status_code == 401
+
+
+def test_export_and_import_vault_restores_memory_item_evidence() -> None:
+    with managed_test_client("anima-vault-test-") as client:
+        user = _register_user(client, username="evidence-user", password="pw123456")
+        user_id = int(user["id"])
+        headers = {"x-anima-unlock": user["unlockToken"]}
+        observed_at = datetime(2026, 5, 17, 9, 30, tzinfo=UTC)
+
+        with get_user_session_factory(user_id)() as db:
+            item = MemoryItem(
+                user_id=user_id,
+                content=ef(user_id, "Likes oolong tea.", table="memory_items", field="content"),
+                category="preference",
+                importance=4,
+                source="test",
+            )
+            db.add(item)
+            db.flush()
+            evidence = MemoryItemEvidence(
+                user_id=user_id,
+                memory_item_id=item.id,
+                source_kind="explicit_save",
+                observed_at=observed_at,
+                confidence=0.8,
+                evidence_text=ef(
+                    user_id,
+                    "User: I like oolong tea.",
+                    table="memory_item_evidence",
+                    field="evidence_text",
+                ),
+                metadata_json={"source": "test"},
+            )
+            db.add(evidence)
+            db.commit()
+            item_id = item.id
+            evidence_id = evidence.id
+
+        export_response = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass"},
+        )
+        assert export_response.status_code == 200
+
+        envelope = json.loads(export_response.json()["vault"])
+        payload = json.loads(decrypt_string(envelope, "vault-pass"))
+        evidence_payload = payload["database"]["memoryItemEvidence"]
+        assert evidence_payload[0]["evidence_text"] == "User: I like oolong tea."
+
+        with get_user_session_factory(user_id)() as db:
+            db.execute(delete(MemoryItemEvidence).where(MemoryItemEvidence.id == evidence_id))
+            db.commit()
+
+        import_response = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={"passphrase": "vault-pass", "vault": export_response.json()["vault"]},
+        )
+        assert import_response.status_code == 200
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "evidence-user", "password": "pw123456"},
+        )
+        assert login_response.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            restored = db.get(MemoryItemEvidence, evidence_id)
+            assert restored is not None
+            assert restored.memory_item_id == item_id
+            assert restored.observed_at == observed_at.replace(tzinfo=None)
+            assert restored.metadata_json == {"source": "test"}
+            assert (
+                df(
+                    user_id,
+                    restored.evidence_text,
+                    table="memory_item_evidence",
+                    field="evidence_text",
+                )
+                == "User: I like oolong tea."
+            )
+
+
+def test_capsule_sections_include_memory_item_evidence() -> None:
+    payload = {
+        "version": 2,
+        "createdAt": "2026-05-17T00:00:00+00:00",
+        "scope": "memories",
+        "database": {
+            "users": [],
+            "userKeys": [],
+            "memoryItems": [],
+            "memoryItemEvidence": [{"id": 1, "memory_item_id": 10}],
+        },
+        "manifest": {},
+        "userFiles": {},
+    }
+
+    sections = vault_module._payload_to_capsule_sections(payload)
+    restored = vault_module._capsule_sections_to_payload(sections)
+
+    assert restored["database"]["memoryItemEvidence"] == [{"id": 1, "memory_item_id": 10}]
 
 
 def test_export_and_import_anima_capsule_restores_auth_and_files(

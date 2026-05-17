@@ -484,6 +484,7 @@ async def _import_raw_transcript_chunks(
         embeddings = [None] * len(items)
     embedded = 0
 
+    all_synced = True
     for (item, chunk), embedding in zip(items, embeddings, strict=False):
         add_memory_item_evidence(
             db,
@@ -507,11 +508,12 @@ async def _import_raw_transcript_chunks(
             item.embedding_json = embedding
             item.embedding_checksum = compute_embedding_checksum(embedding)
             embedded += 1
-        sync_memory_item_to_retrieval_index(item)
+        if not sync_memory_item_to_retrieval_index(item):
+            all_synced = False
         if embedding is not None:
             _try_upsert_runtime_embedding(item, chunk.text, embedding, errors)
 
-    invalidate_memory_retrieval_indexes(payload.userId)
+    invalidate_memory_retrieval_indexes(payload.userId, mark_dirty=not all_synced)
     db.commit()
     return {
         "memoryItemsImported": len(items),

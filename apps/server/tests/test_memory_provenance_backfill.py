@@ -94,9 +94,9 @@ def test_backfill_memory_item_evidence_creates_legacy_and_eval_rows() -> None:
         )
 
     assert result.created == 2
-    assert result.skipped_existing == 1
+    assert result.skipped_existing == 0
     assert second_result.created == 0
-    assert second_result.skipped_existing == 3
+    assert second_result.skipped_existing == 0
 
     by_item = {row.memory_item_id: row for row in rows}
     legacy = by_item[legacy_item.id]
@@ -120,4 +120,70 @@ def test_backfill_memory_item_evidence_creates_legacy_and_eval_rows() -> None:
     assert eval_evidence.metadata_json == {
         "source": "legacy_eval_raw_chunk",
         "session_date": "2023/05/29 (Mon) 20:29",
+    }
+
+
+def test_backfill_memory_item_evidence_progresses_past_existing_rows_with_limit() -> None:
+    from anima_server.services.agent.provenance import backfill_memory_item_evidence
+
+    created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
+    with _db_session() as db:
+        user = User(username="backfill-limit", password_hash="x", display_name="Backfill")
+        db.add(user)
+        db.flush()
+        covered_one = MemoryItem(
+            user_id=user.id,
+            content="Covered first.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+        )
+        covered_two = MemoryItem(
+            user_id=user.id,
+            content="Covered second.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+        )
+        uncovered = MemoryItem(
+            user_id=user.id,
+            content="Needs backfill.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+        )
+        db.add_all([covered_one, covered_two, uncovered])
+        db.flush()
+        db.add_all(
+            [
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=covered_one.id,
+                    source_kind="explicit_save",
+                    evidence_text="Covered first.",
+                ),
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=covered_two.id,
+                    source_kind="explicit_save",
+                    evidence_text="Covered second.",
+                ),
+            ]
+        )
+        db.flush()
+
+        result = backfill_memory_item_evidence(db, user_id=user.id, limit=2)
+        rows = list(
+            db.scalars(
+                select(MemoryItemEvidence)
+                .where(MemoryItemEvidence.user_id == user.id)
+                .order_by(MemoryItemEvidence.memory_item_id)
+            ).all()
+        )
+
+    assert result.created == 1
+    assert {row.memory_item_id for row in rows} == {
+        covered_one.id,
+        covered_two.id,
+        uncovered.id,
     }

@@ -286,9 +286,10 @@ def _cleanup_superseded_indexes(user_id: int, item_id: int, db: Any) -> None:
         logger.debug("Vector cleanup failed for superseded item %d", item_id)
     try:
         item = db.get(MemoryItem, item_id)
+        removed = True
         if item is not None:
-            remove_memory_item_from_retrieval_index(item)
-        invalidate_memory_retrieval_indexes(user_id)
+            removed = remove_memory_item_from_retrieval_index(item)
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not removed)
     except Exception:
         logger.debug("Retrieval index cleanup failed for user %d", user_id)
 

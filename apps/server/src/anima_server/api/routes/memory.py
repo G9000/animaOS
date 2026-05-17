@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
-from anima_server.models import MemoryEpisode, MemoryItem
+from anima_server.models import MemoryEpisode, MemoryItem, MemoryItemEvidence
 from anima_server.schemas.memory import (
     MemoryEpisodeResponse,
     MemoryItemCreateRequest,
@@ -183,8 +183,8 @@ async def update_memory_item(
     if payload.category is not None:
         existing.category = payload.category
     db.commit()
-    sync_memory_item_to_retrieval_index(existing)
-    invalidate_memory_retrieval_indexes(user_id)
+    synced = sync_memory_item_to_retrieval_index(existing)
+    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
     return _item_to_response(existing, user_id)
 
 
@@ -206,11 +206,17 @@ async def delete_memory_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Memory item not found",
         )
+    removed = remove_memory_item_from_retrieval_index(existing)
+    db.execute(
+        delete(MemoryItemEvidence).where(
+            MemoryItemEvidence.user_id == user_id,
+            MemoryItemEvidence.memory_item_id == item_id,
+        )
+    )
     db.delete(existing)
     db.commit()
     _remove_from_vector_store(user_id, item_id, db)
-    remove_memory_item_from_retrieval_index(existing)
-    invalidate_memory_retrieval_indexes(user_id)
+    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not removed)
     return {"deleted": True}
 
 

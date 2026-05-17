@@ -131,7 +131,7 @@ def sync_memory_item_to_retrieval_index(
         return False
 
 
-def remove_memory_item_from_retrieval_index(item: MemoryItem) -> None:
+def remove_memory_item_from_retrieval_index(item: MemoryItem) -> bool:
     root = anima_core_retrieval.get_retrieval_root()
     try:
         anima_core_retrieval.memory_index_delete(
@@ -139,8 +139,10 @@ def remove_memory_item_from_retrieval_index(item: MemoryItem) -> None:
             record_id=item.id,
             user_id=item.user_id,
         )
+        return True
     except RuntimeError:
         logger.debug("Rust memory index delete is unavailable for item %s", item.id)
+        return False
     except Exception:
         logger.warning(
             "Failed to delete memory item %s from the Rust retrieval index",
@@ -148,6 +150,7 @@ def remove_memory_item_from_retrieval_index(item: MemoryItem) -> None:
             exc_info=True,
         )
         _mark_memory_index_dirty(root=root)
+        return False
 
 
 def _mark_memory_index_dirty(*, root) -> None:
@@ -315,8 +318,8 @@ def add_memory_item(
     if tags:
         _sync_tags(db, item=memory_item, user_id=user_id, tags=tags)
 
-    sync_memory_item_to_retrieval_index(memory_item)
-    invalidate_memory_retrieval_indexes(user_id)
+    synced = sync_memory_item_to_retrieval_index(memory_item)
+    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
     return memory_item
 
 
@@ -451,8 +454,8 @@ def store_memory_item(
     if tags:
         _sync_tags(db, item=item, user_id=user_id, tags=tags)
 
-    sync_memory_item_to_retrieval_index(item)
-    invalidate_memory_retrieval_indexes(user_id)
+    synced = sync_memory_item_to_retrieval_index(item)
+    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
     return MemoryWriteResult(
         action="added",
         item=item,
@@ -667,9 +670,9 @@ def supersede_memory_item(
     except Exception:
         pass
 
-    remove_memory_item_from_retrieval_index(old_item)
-    sync_memory_item_to_retrieval_index(new_item)
-    invalidate_memory_retrieval_indexes(old_item.user_id)
+    removed = remove_memory_item_from_retrieval_index(old_item)
+    synced = sync_memory_item_to_retrieval_index(new_item)
+    invalidate_memory_retrieval_indexes(old_item.user_id, mark_dirty=not (removed and synced))
 
     return new_item
 
@@ -729,8 +732,8 @@ def set_current_focus(
     )
     db.add(item)
     db.flush()
-    sync_memory_item_to_retrieval_index(item)
-    invalidate_memory_retrieval_indexes(user_id)
+    synced = sync_memory_item_to_retrieval_index(item)
+    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
     return item
 
 

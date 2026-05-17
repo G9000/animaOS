@@ -80,6 +80,32 @@ def test_memory_rebuild_clears_dirty_manifest(tmp_path: Path) -> None:
         assert retrieval_module.is_retrieval_family_dirty(root=root, family="memory") is False
 
 
+def test_store_memory_item_keeps_successful_incremental_index_clean(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "indices"
+    monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: root)
+
+    with _db_session() as db:
+        user = User(username="incremental_clean", display_name="Tester", password_hash="x")
+        db.add(user)
+        db.flush()
+
+        result = store_memory_item(
+            db,
+            user_id=user.id,
+            content="user likes jasmine tea",
+            category="preference",
+            importance=4,
+            source="test",
+        )
+        db.commit()
+
+        assert result.item is not None
+        assert memory_retrieval_index_needs_rebuild(root=root) is False
+
+
 def test_memory_rebuild_preserves_other_users_index_entries(tmp_path: Path) -> None:
     with _db_session() as db:
         user_one = User(username="retrieval_tester_1", display_name="Tester 1", password_hash="x")

@@ -297,6 +297,103 @@ async def test_retrieve_wide_evidence_expands_distinct_evidence_rows_for_counts(
 
 
 @pytest.mark.asyncio
+async def test_retrieve_wide_evidence_preserves_distinct_sessions_for_aggregate(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(evidence_retrieval, "df", lambda user_id, value, **kwargs: value)
+    monkeypatch.setattr(
+        evidence_retrieval,
+        "intent_for_mode",
+        lambda mode: RetrievalIntent(
+            mode=RetrievalMode.AGGREGATE,
+            candidate_limit=20,
+            max_evidence=3,
+            min_distinct_sessions=3,
+        ),
+    )
+
+    with _db_session() as db:
+        user = User(username="aggregate-distinct", password_hash="x", display_name="Aggregate")
+        db.add(user)
+        db.flush()
+        item = MemoryItem(
+            user_id=user.id,
+            content="Model kit sessions.",
+            category="fact",
+            importance=4,
+        )
+        db.add(item)
+        db.flush()
+        db.add_all(
+            [
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=item.id,
+                    source_kind="eval_import",
+                    speaker="user",
+                    observed_at=datetime(2023, 5, 21, 10, 0, tzinfo=UTC),
+                    evidence_text="I worked on model kit 1/72 1/48 1/35.",
+                ),
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=item.id,
+                    source_kind="eval_import",
+                    speaker="user",
+                    observed_at=datetime(2023, 5, 21, 11, 0, tzinfo=UTC),
+                    evidence_text="I worked on another model kit 1/144 1/700.",
+                ),
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=item.id,
+                    source_kind="eval_import",
+                    speaker="user",
+                    observed_at=datetime(2023, 5, 21, 12, 0, tzinfo=UTC),
+                    evidence_text="I bought model kit decals 1/32 1/24.",
+                ),
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=item.id,
+                    source_kind="eval_import",
+                    speaker="user",
+                    observed_at=datetime(2023, 5, 22, 10, 0, tzinfo=UTC),
+                    evidence_text="I bought a tank kit.",
+                ),
+                MemoryItemEvidence(
+                    user_id=user.id,
+                    memory_item_id=item.id,
+                    source_kind="eval_import",
+                    speaker="user",
+                    observed_at=datetime(2023, 5, 23, 10, 0, tzinfo=UTC),
+                    evidence_text="I started a bomber kit.",
+                ),
+            ]
+        )
+        db.flush()
+
+        class FakeResult:
+            query_embedding: ClassVar[list[float]] = [0.1, 0.2]
+            items: ClassVar[list] = [(item, 0.8)]
+
+        async def fake_hybrid_search(db_arg, **kwargs):
+            del db_arg, kwargs
+            return FakeResult()
+
+        monkeypatch.setattr(evidence_retrieval, "hybrid_search", fake_hybrid_search)
+
+        result = await evidence_retrieval.retrieve_wide_evidence(
+            db=db,
+            user_id=user.id,
+            query="How many model kits have I worked on or bought?",
+            mode=RetrievalMode.AGGREGATE,
+        )
+
+    joined = "\n".join(text for _item_id, text, _score in result.semantic_results)
+    assert "2023-05-21" in joined
+    assert "2023-05-22" in joined
+    assert "2023-05-23" in joined
+
+
+@pytest.mark.asyncio
 async def test_retrieve_wide_evidence_orders_temporal_evidence_by_observed_at(
     monkeypatch,
 ) -> None:

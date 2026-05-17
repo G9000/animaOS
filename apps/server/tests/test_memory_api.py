@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import MemoryItemEvidence
 from anima_server.services import anima_core_retrieval as retrieval_module
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 
 def _register_user(client: TestClient) -> dict[str, object]:
@@ -84,6 +87,47 @@ def test_memory_crud_lifecycle() -> None:
 
         resp = client.get(f"/api/memory/{user_id}/items?category=fact", headers=headers)
         assert len(resp.json()) == 0
+
+
+def test_memory_delete_removes_item_evidence() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Keeps provenance", "category": "fact", "importance": 4},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+
+        with get_user_session_factory(user_id)() as db:
+            db.add(
+                MemoryItemEvidence(
+                    user_id=user_id,
+                    memory_item_id=item_id,
+                    source_kind="explicit_save",
+                    evidence_text="Keeps provenance",
+                )
+            )
+            db.commit()
+
+        resp = client.delete(
+            f"/api/memory/{user_id}/items/{item_id}",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        with get_user_session_factory(user_id)() as db:
+            remaining = db.scalar(
+                select(MemoryItemEvidence).where(
+                    MemoryItemEvidence.user_id == user_id,
+                    MemoryItemEvidence.memory_item_id == item_id,
+                )
+            )
+        assert remaining is None
 
 
 def test_memory_duplicate_rejected() -> None:
