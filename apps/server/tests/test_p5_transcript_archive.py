@@ -1274,6 +1274,79 @@ class TestTranscriptSearch:
         assert len(snippets) == 1
         assert "blue lantern" in snippets[0].text
 
+    def test_search_days_back_zero_sidecar_fallback_scans_past_max_transcripts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transcripts_dir: Path,
+        test_dek: bytes,
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from anima_server.services.agent import transcript_search
+        from anima_server.services.agent.transcript_archive import export_transcript
+        from anima_server.services.agent.transcript_search import search_transcripts
+
+        old_timestamp = datetime.now(UTC) - timedelta(days=420)
+        old_result = export_transcript(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "The exact old passphrase was silver comet.",
+                    "ts": old_timestamp.isoformat().replace("+00:00", "Z"),
+                    "seq": 1,
+                }
+            ],
+            thread_id=700,
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+        )
+        old_meta = json.loads(old_result.meta_path.read_text(encoding="utf-8"))
+        old_meta["keywords"] = []
+        old_result.meta_path.write_text(json.dumps(old_meta), encoding="utf-8")
+
+        recent_timestamp = datetime.now(UTC) - timedelta(days=1)
+        for offset in range(3):
+            result = export_transcript(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Recent unrelated archive note {offset}.",
+                        "ts": (recent_timestamp + timedelta(minutes=offset))
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        "seq": 1,
+                    }
+                ],
+                thread_id=710 + offset,
+                user_id=1,
+                dek=test_dek,
+                transcripts_dir=transcripts_dir,
+            )
+            meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+            meta["keywords"] = ["silver", "comet"]
+            result.meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+        monkeypatch.setattr(transcript_search, "_transcript_index_is_dirty", lambda _root: False)
+        monkeypatch.setattr(
+            retrieval_module,
+            "transcript_index_search",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("index unavailable")),
+        )
+
+        snippets = search_transcripts(
+            query="silver comet",
+            user_id=1,
+            dek=test_dek,
+            transcripts_dir=transcripts_dir,
+            days_back=0,
+            max_transcripts=2,
+        )
+
+        assert len(snippets) == 1
+        assert snippets[0].thread_id == 700
+        assert "silver comet" in snippets[0].text
+
     def test_search_finds_plaintext_transcript_without_dek(
         self,
         transcripts_dir: Path,

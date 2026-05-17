@@ -967,6 +967,108 @@ def test_eval_import_transcript_raw_chunks_avoids_llm_extraction(monkeypatch) ->
     assert evidence_plaintext[0] == plaintext[0]
 
 
+def test_eval_import_transcript_raw_chunks_ignores_invalid_session_date(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes.eval import _parse_session_observed_at
+
+    async def fail_run_background_extraction(**kwargs: object) -> None:
+        raise AssertionError(f"raw chunk import should not call extraction: {kwargs}")
+
+    async def fail_run_soul_writer(user_id: int) -> None:
+        raise AssertionError(f"raw chunk import should not call soul writer: {user_id}")
+
+    async def fail_generate_embeddings_batch(texts: list[str]) -> list[None]:
+        raise AssertionError(f"fast raw import should not embed by default: {texts}")
+
+    monkeypatch.setattr(
+        "anima_server.services.agent.consolidation.run_background_extraction",
+        fail_run_background_extraction,
+    )
+    monkeypatch.setattr(
+        "anima_server.services.agent.soul_writer.run_soul_writer",
+        fail_run_soul_writer,
+    )
+    monkeypatch.setattr(
+        "anima_server.services.agent.embeddings.generate_embeddings_batch",
+        fail_generate_embeddings_batch,
+    )
+
+    original_enabled = settings.eval_reset_enabled
+    settings.eval_reset_enabled = True
+    try:
+        with managed_test_client("eval-import-invalid-date-") as client:
+            register_response = client.post(
+                "/api/auth/register",
+                json={
+                    "username": "eval",
+                    "password": "eval-password",
+                    "name": "Eval User",
+                },
+            )
+            assert register_response.status_code == 201
+            user = register_response.json()
+            user_id = int(user["id"])
+
+            response = client.post(
+                "/api/eval/import-transcript",
+                json={
+                    "userId": user_id,
+                    "extractionMode": "raw_chunks",
+                    "sessions": [
+                        {
+                            "date": "2023/99/99",
+                            "turns": [
+                                {"role": "user", "content": "I had a GPS issue."},
+                                {"role": "assistant", "content": "The dealership fixed it."},
+                            ],
+                        }
+                    ],
+                },
+                headers={"x-anima-unlock": str(user["unlockToken"])},
+            )
+
+            from anima_server.db.session import get_user_session_factory
+            from anima_server.services.data_crypto import df
+
+            with get_user_session_factory(user_id)() as db:
+                memory_items = list(
+                    db.scalars(
+                        select(MemoryItem)
+                        .where(
+                            MemoryItem.user_id == user_id,
+                            MemoryItem.source == "eval_import_raw",
+                        )
+                        .order_by(MemoryItem.id)
+                    ).all()
+                )
+                plaintext = [
+                    df(user_id, item.content, table="memory_items", field="content")
+                    for item in memory_items
+                ]
+                evidence_rows = list(
+                    db.scalars(
+                        select(MemoryItemEvidence)
+                        .where(MemoryItemEvidence.user_id == user_id)
+                        .order_by(MemoryItemEvidence.id)
+                    ).all()
+                )
+    finally:
+        settings.eval_reset_enabled = original_enabled
+
+    assert response.status_code == 200
+    assert response.json()["memoryItemsImported"] == 1
+    assert response.json()["errors"] == []
+    assert plaintext == [
+        "Session date: 2023/99/99\n"
+        "User: I had a GPS issue.\n"
+        "Assistant: The dealership fixed it."
+    ]
+    assert len(evidence_rows) == 1
+    assert evidence_rows[0].observed_at is not None
+    assert _parse_session_observed_at("2023/99/99") is None
+
+
 def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
     from anima_server.services.eval_reset import reset_eval_user_state
 

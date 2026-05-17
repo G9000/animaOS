@@ -601,14 +601,17 @@ def _parse_session_observed_at(date: str | None) -> datetime | None:
     if match is None:
         return None
     groups = match.groupdict()
-    return datetime(
-        int(groups["year"]),
-        int(groups["month"]),
-        int(groups["day"]),
-        int(groups["hour"] or 0),
-        int(groups["minute"] or 0),
-        tzinfo=UTC,
-    )
+    try:
+        return datetime(
+            int(groups["year"]),
+            int(groups["month"]),
+            int(groups["day"]),
+            int(groups["hour"] or 0),
+            int(groups["minute"] or 0),
+            tzinfo=UTC,
+        )
+    except ValueError:
+        return None
 
 
 def _format_raw_memory_chunk(

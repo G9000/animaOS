@@ -179,9 +179,10 @@ def _candidate_transcripts_from_sidecars(
         candidates.append((score, enc_path, int(meta.get("thread_id", 0)), date_start_str[:10]))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
+    limited_candidates = candidates if cutoff is None else candidates[:max_transcripts]
     return [
         (enc_path, thread_id, date_str)
-        for _score, enc_path, thread_id, date_str in candidates[:max_transcripts]
+        for _score, enc_path, thread_id, date_str in limited_candidates
     ]
 
 
@@ -279,6 +280,7 @@ def search_transcripts(
 
     candidates: list[tuple[Path, int, str]] | None
     used_rust_candidates = False
+    used_sidecar_candidates = False
     root = anima_core_retrieval.get_retrieval_root()
     if _transcript_index_is_dirty(root):
         transcript_archive_module.rebuild_transcript_index(
@@ -308,14 +310,20 @@ def search_transcripts(
             days_back=days_back,
             max_transcripts=max_transcripts,
         )
+        used_sidecar_candidates = True
     if not candidates:
         return TranscriptSearchResults()
 
+    candidate_scan_limit = (
+        len(candidates)
+        if used_sidecar_candidates and days_back <= 0
+        else max_transcripts
+    )
     snippets, total_matches, had_rust_candidate_failures = _snippets_from_candidates(
         query=query,
         dek=dek,
         candidates=candidates,
-        max_transcripts=max_transcripts,
+        max_transcripts=candidate_scan_limit,
         max_snippets=max_snippets,
         snippet_context=snippet_context,
         budget_chars=budget_chars,
@@ -331,11 +339,12 @@ def search_transcripts(
             days_back=days_back,
             max_transcripts=max_transcripts,
         )
+        sidecar_scan_limit = len(sidecar_candidates) if days_back <= 0 else max_transcripts
         snippets, total_matches, _had_sidecar_failures = _snippets_from_candidates(
             query=query,
             dek=dek,
             candidates=sidecar_candidates,
-            max_transcripts=max_transcripts,
+            max_transcripts=sidecar_scan_limit,
             max_snippets=max_snippets,
             snippet_context=snippet_context,
             budget_chars=budget_chars,
