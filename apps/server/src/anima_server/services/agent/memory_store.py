@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryItem, MemoryItemTag
@@ -96,39 +97,77 @@ class MemoryWriteResult:
     reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class _MemoryRetrievalIndexPayload:
+    record_id: int
+    user_id: int
+    text: str
+    embedding: list[float] | None
+    source_type: str
+    category: str
+    importance: int
+    created_at: int
+
+
+def _memory_item_retrieval_index_payload(item: MemoryItem) -> _MemoryRetrievalIndexPayload:
+    created_at = item.created_at or datetime.now(UTC)
+    return _MemoryRetrievalIndexPayload(
+        record_id=item.id,
+        user_id=item.user_id,
+        text=df(item.user_id, item.content, table="memory_items", field="content"),
+        embedding=_memory_embedding_for_retrieval_index(item),
+        source_type="memory_item",
+        category=item.category,
+        importance=item.importance,
+        created_at=int(created_at.timestamp()),
+    )
+
+
+def _sync_retrieval_index_payload(
+    payload: _MemoryRetrievalIndexPayload,
+    *,
+    root: Path | None = None,
+    mark_dirty_on_failure: bool = True,
+) -> bool:
+    resolved_root = root or anima_core_retrieval.get_retrieval_root()
+    try:
+        anima_core_retrieval.memory_index_upsert(
+            root=resolved_root,
+            record_id=payload.record_id,
+            user_id=payload.user_id,
+            text=payload.text,
+            embedding=payload.embedding,
+            source_type=payload.source_type,
+            category=payload.category,
+            importance=payload.importance,
+            created_at=payload.created_at,
+        )
+        return True
+    except RuntimeError:
+        logger.debug("Rust memory index upsert is unavailable for item %s", payload.record_id)
+        return False
+    except Exception:
+        logger.warning(
+            "Failed to upsert memory item %s into the Rust retrieval index",
+            payload.record_id,
+            exc_info=True,
+        )
+        if mark_dirty_on_failure:
+            _mark_memory_index_dirty(root=resolved_root)
+        return False
+
+
 def sync_memory_item_to_retrieval_index(
     item: MemoryItem,
     *,
     root: Path | None = None,
     mark_dirty_on_failure: bool = True,
 ) -> bool:
-    created_at = item.created_at or datetime.now(UTC)
-    resolved_root = root or anima_core_retrieval.get_retrieval_root()
-    try:
-        anima_core_retrieval.memory_index_upsert(
-            root=resolved_root,
-            record_id=item.id,
-            user_id=item.user_id,
-            text=df(item.user_id, item.content, table="memory_items", field="content"),
-            embedding=_memory_embedding_for_retrieval_index(item),
-            source_type="memory_item",
-            category=item.category,
-            importance=item.importance,
-            created_at=int(created_at.timestamp()),
-        )
-        return True
-    except RuntimeError:
-        logger.debug("Rust memory index upsert is unavailable for item %s", item.id)
-        return False
-    except Exception:
-        logger.warning(
-            "Failed to upsert memory item %s into the Rust retrieval index",
-            item.id,
-            exc_info=True,
-        )
-        if mark_dirty_on_failure:
-            _mark_memory_index_dirty(root=resolved_root)
-        return False
+    return _sync_retrieval_index_payload(
+        _memory_item_retrieval_index_payload(item),
+        root=root,
+        mark_dirty_on_failure=mark_dirty_on_failure,
+    )
 
 
 def remove_memory_item_from_retrieval_index_by_id(
@@ -661,6 +700,49 @@ def touch_memory_items(
             pass
 
 
+def _schedule_supersede_external_index_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    old_item_id: int,
+    new_payload: _MemoryRetrievalIndexPayload,
+) -> None:
+    def _sync_external_indexes(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        try:
+            from anima_server.services.agent.vector_store import delete_memory
+
+            delete_memory(user_id, item_id=old_item_id)
+        except Exception:
+            logger.debug("Vector store cleanup failed for superseded item %s", old_item_id)
+
+        removed = False
+        synced = False
+        try:
+            removed = remove_memory_item_from_retrieval_index_by_id(
+                user_id=user_id,
+                item_id=old_item_id,
+            )
+            synced = _sync_retrieval_index_payload(new_payload)
+        except Exception:
+            logger.debug(
+                "Memory retrieval index sync failed for supersession %s -> %s",
+                old_item_id,
+                new_payload.record_id,
+                exc_info=True,
+            )
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not (removed and synced))
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _sync_external_indexes)
+
+    event.listen(db, "after_commit", _sync_external_indexes, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
+
+
 def supersede_memory_item(
     db: Session,
     *,
@@ -699,17 +781,12 @@ def supersede_memory_item(
             metadata=evidence_metadata,
         )
 
-    # Remove superseded item from vector store
-    try:
-        from anima_server.services.agent.vector_store import delete_memory
-
-        delete_memory(old_item.user_id, item_id=old_item_id, db=db)
-    except Exception:
-        pass
-
-    removed = remove_memory_item_from_retrieval_index(old_item)
-    synced = sync_memory_item_to_retrieval_index(new_item)
-    invalidate_memory_retrieval_indexes(old_item.user_id, mark_dirty=not (removed and synced))
+    _schedule_supersede_external_index_after_commit(
+        db,
+        user_id=old_item.user_id,
+        old_item_id=old_item.id,
+        new_payload=_memory_item_retrieval_index_payload(new_item),
+    )
 
     return new_item
 

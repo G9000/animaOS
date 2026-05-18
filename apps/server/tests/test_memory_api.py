@@ -218,6 +218,101 @@ def test_memory_update_records_replacement_evidence() -> None:
         )
 
 
+def test_memory_update_defers_retrieval_index_changes_until_after_commit(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    deletes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_delete",
+        lambda **kwargs: deletes.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Commit failure should keep old recall", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+        upserts.clear()
+        deletes.clear()
+
+        def fail_commit(self: Session) -> None:
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.put(
+                f"/api/memory/{user_id}/items/{item_id}",
+                headers=headers,
+                json={"content": "Uncommitted replacement"},
+            )
+
+    assert upserts == []
+    assert deletes == []
+
+
+def test_memory_supersede_drops_deferred_retrieval_index_changes_on_rollback(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    deletes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_delete",
+        lambda **kwargs: deletes.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Rollback should keep old recall", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+        upserts.clear()
+        deletes.clear()
+
+        from anima_server.services.agent.memory_store import supersede_memory_item
+
+        with get_user_session_factory(user_id)() as db:
+            supersede_memory_item(
+                db,
+                old_item_id=item_id,
+                new_content="Rolled back replacement",
+                evidence_text="Rolled back replacement",
+                evidence_source_kind="explicit_update",
+            )
+            db.rollback()
+            db.commit()
+
+    assert upserts == []
+    assert deletes == []
+
+
 def test_memory_delete_defers_retrieval_index_cleanup_until_after_commit(
     monkeypatch,
 ) -> None:
