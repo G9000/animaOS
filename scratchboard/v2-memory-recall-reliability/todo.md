@@ -107,3 +107,47 @@ created: 2026-05-17
 - [x] Run `bun run build`.
 - [x] Smoke-test auth, chat, memory, settings, and `GET /health`.
   - Note: Focused route smoke passed with `uv run pytest apps/server/tests/test_auth.py apps/server/tests/test_chat.py apps/server/tests/test_memory_api.py apps/server/tests/test_health.py apps/server/tests/test_health_api.py apps/server/tests/test_security_hardening.py::test_config_update_blocked_in_shared_mode apps/server/tests/test_security_hardening.py::test_config_update_allowed_in_sqlite_mode -q` (46 passed). Full server tests, lint, build, `bun run db:server:current`, and core Alembic head check passed; `db:server:current` needed sandbox escalation in an earlier pass after uv cache access was denied.
+
+## Phase 4: Agent Runtime Reliability
+
+plan: `docs/superpowers/plans/2026-05-18-agent-runtime-reliability.md`
+created: 2026-05-18
+
+- [x] AR-001: Isolate companion history per thread.
+  - Context: Agent turns are serialized per thread, but `AnimaCompanion` still keeps one mutable `thread_id` and one mutable history window per user.
+  - Outcome: Concurrent turns for different threads cannot clear, swap, or mutate each other's cached history.
+  - Note: `AnimaCompanion` now stores conversation windows by thread ID, returns defensive history copies, and refreshes explicit thread caches after persistence/compaction.
+
+- [x] AR-002: Serialize approval resume with the thread lock.
+  - Context: `approve_or_deny_turn()` resumes a pending run without taking the same per-thread lock used by normal turns.
+  - Outcome: Approval resume cannot interleave message sequence reservation or persistence with another turn in the same thread.
+  - Note: Approval re-entry now resolves the pending run, takes `get_thread_lock(run.thread_id)`, then reloads and mutates the checkpoint inside the locked path.
+
+- [x] AR-003: Preserve cancelled runs as terminal.
+  - Context: A cancel request can mark a run cancelled, but later persistence can still overwrite it as completed; stream disconnects can also leave partially-created runs running.
+  - Outcome: Cancelled runs stay cancelled, and streaming cancellation cleans up run state instead of leaving stale running rows.
+  - Note: `finalize_run()` no longer overwrites terminal cancelled/failed runs, and task cancellation during runtime invocation marks the active run cancelled before propagating cancellation.
+
+- [x] AR-004: Scope delegated action results to connection and user.
+  - Context: Delegated tool results are resolved from a global map keyed only by `tool_call_id`.
+  - Outcome: Duplicate or spoofed call IDs across connections/users cannot resolve another pending delegated tool call.
+  - Note: Pending delegated action calls are now keyed by connection identity plus call ID, and websocket `tool_result` handling resolves through the authenticated connection.
+
+- [x] AR-005: Preserve temperature through OpenAI-compatible tool binding.
+  - Context: `bind_tools()` carries max tokens but drops configured temperature.
+  - Outcome: Tool-enabled turns use the same configured temperature as unbound LLM calls.
+  - Note: `OpenAICompatibleChatClient.bind_tools()` now carries `_temperature` into the bound client.
+
+- [x] AR-006: Remove impossible required `thinking` prompt wording.
+  - Context: Prompts require a `thinking` argument while current schemas intentionally omit it and strict schemas reject extra properties.
+  - Outcome: Prompt guidance matches the schema contract while executor remains backward-compatible with old `thinking` args.
+  - Note: System prompt/rules now describe private reasoning without requiring a schema-invalid `thinking` argument; legacy `thinking` args remain accepted by executor tests.
+
+## Phase 4 Validation Gates
+
+- [x] Run focused runtime tests after each ticket.
+- [x] Run `bun run test:server` after service/persistence changes.
+- [x] Run `bun run lint`.
+- [x] Run `bun run build`.
+- [x] Smoke-test chat streaming, cancellation, approval resume, and delegated action tools.
+  - Note: Focused runtime suite passed with `uv run pytest -q tests/test_agent_service.py tests/test_approval_reentry.py tests/test_client_action_tools.py tests/test_agent_openai_compatible_client.py tests/test_agent_system_prompt.py tests/test_companion.py tests/test_cancellation.py tests/test_agent_runtime.py tests/test_agent_llm.py` (131 passed). Full `bun run test:server` passed (1397 passed, 1 skipped). `bun run lint` passed. `bun run build` passed. Automated smoke coverage includes chat, streaming, cancellation, approval re-entry, and delegated action websocket/tool tests.

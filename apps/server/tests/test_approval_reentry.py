@@ -774,6 +774,18 @@ class _ApproveResumeRunner:
         return self._canned
 
 
+class _RecordingAsyncLock:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def __aenter__(self) -> None:
+        self._events.append("enter")
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        del exc_type, exc, tb
+        self._events.append("exit")
+
+
 @pytest.mark.asyncio
 async def test_approve_or_deny_turn_persists_and_finalizes(
     monkeypatch: pytest.MonkeyPatch,
@@ -847,6 +859,60 @@ async def test_approve_or_deny_turn_persists_and_finalizes(
     assert result.stop_reason == "terminal_tool"
     assert runner.resume_calls, "resume_after_approval was not called"
     assert runner.resume_calls[0]["approved"] is True
+
+
+@pytest.mark.asyncio
+async def test_approve_or_deny_turn_uses_thread_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canned_result = AgentResult(
+        response="Approved.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="terminal_tool",
+        step_traces=[StepTrace(step_index=0, assistant_text="Approved.")],
+    )
+    runner = _ApproveResumeRunner(canned_result)
+    lock_events: list[str] = []
+    locked_thread_ids: list[int] = []
+
+    def fake_get_thread_lock(thread_id: int) -> _RecordingAsyncLock:
+        locked_thread_ids.append(thread_id)
+        return _RecordingAsyncLock(lock_events)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kw: None)
+    monkeypatch.setattr(agent_service, "get_thread_lock", fake_get_thread_lock)
+
+    with _db_session() as db:
+        thread, run, user = _setup_thread_and_run(db)
+        seq_id = reserve_message_sequences(db, thread_id=thread.id, count=1)
+        save_approval_checkpoint(
+            db,
+            thread=thread,
+            run=run,
+            tool_call=ToolCall(
+                id="call-1",
+                name="delete_file",
+                arguments={"path": "/tmp/data.txt"},
+            ),
+            step_id=None,
+            sequence_id=seq_id,
+        )
+        db.commit()
+
+        from anima_server.services.agent import approve_or_deny_turn
+
+        await approve_or_deny_turn(
+            run_id=run.id,
+            user_id=user.id,
+            approved=True,
+            db=db,
+            runtime_db=db,
+        )
+
+    assert locked_thread_ids == [thread.id]
+    assert lock_events == ["enter", "exit"]
 
 
 @pytest.mark.asyncio

@@ -63,7 +63,7 @@ class AnimaCompanion:
         self._cache_version: int = -1
         self._memory_cache: tuple[MemoryBlock, ...] | None = None
 
-        self._conversation_window: list[StoredMessage] = []
+        self._conversation_windows: dict[int | None, list[StoredMessage]] = {}
         self._system_prompt: str | None = None
         self._emotional_state: dict[str, object] | None = None
 
@@ -137,21 +137,35 @@ class AnimaCompanion:
 
     @property
     def conversation_window(self) -> list[StoredMessage]:
-        return self._conversation_window
+        return list(self._get_conversation_window())
 
-    def set_conversation_window(self, history: list[StoredMessage]) -> None:
+    def set_conversation_window(
+        self,
+        history: list[StoredMessage],
+        *,
+        thread_id: int | None = None,
+    ) -> None:
         """Replace the window (used at cold-start and after compaction)."""
+        key = self._conversation_window_key(thread_id)
         cap = self._keep_last_messages
         if len(history) > cap:
-            self._conversation_window = _trim_at_turn_boundary(history, cap)
+            self._conversation_windows[key] = _trim_at_turn_boundary(history, cap)
         else:
-            self._conversation_window = list(history)
+            self._conversation_windows[key] = list(history)
 
-    def append_to_window(self, messages: Sequence[StoredMessage]) -> None:
-        self._conversation_window.extend(messages)
+    def append_to_window(
+        self,
+        messages: Sequence[StoredMessage],
+        *,
+        thread_id: int | None = None,
+    ) -> None:
+        key = self._conversation_window_key(thread_id)
+        window = list(self._get_conversation_window(thread_id=thread_id))
+        window.extend(messages)
         cap = self._keep_last_messages
-        if len(self._conversation_window) > cap:
-            self._conversation_window = _trim_at_turn_boundary(self._conversation_window, cap)
+        if len(window) > cap:
+            window = _trim_at_turn_boundary(window, cap)
+        self._conversation_windows[key] = window
 
     # -- emotional state ----------------------------------------------
 
@@ -208,7 +222,7 @@ class AnimaCompanion:
         self._memory_cache = None
         self._cache_version = -1
         self._memory_version += 1
-        self._conversation_window.clear()
+        self._conversation_windows.clear()
         self._system_prompt = None
         self._emotional_state = None
         self._thread_id = new_thread_id
@@ -234,13 +248,13 @@ class AnimaCompanion:
 
         # Load conversation window
         history = load_thread_history(runtime_db, self._thread_id, user_id=self._user_id)
-        self.set_conversation_window(history)
+        self.set_conversation_window(history, thread_id=self._thread_id)
 
         logger.info(
             "Companion warmed for user %s: %d memory blocks, %d history messages",
             self._user_id,
             len(blocks),
-            len(self._conversation_window),
+            len(self.conversation_window),
         )
 
     def ensure_memory_loaded(
@@ -264,21 +278,40 @@ class AnimaCompanion:
         self.set_memory_cache(blocks)
         return blocks
 
-    def invalidate_history(self) -> None:
+    def invalidate_history(self, *, thread_id: int | None = None) -> None:
         """Clear the conversation window so the next call reloads from DB."""
-        self._conversation_window.clear()
+        key = self._conversation_window_key(thread_id)
+        self._conversation_windows.pop(key, None)
 
-    def ensure_history_loaded(self, db: Session) -> list[StoredMessage]:
+    def ensure_history_loaded(
+        self,
+        db: Session,
+        *,
+        thread_id: int | None = None,
+    ) -> list[StoredMessage]:
         """Return the conversation window, loading from DB if empty."""
-        if self._conversation_window:
-            return self._conversation_window
+        key = self._conversation_window_key(thread_id)
+        window = self._conversation_windows.get(key)
+        if window:
+            return list(window)
 
-        if self._thread_id is None:
+        if key is None:
             return []
 
-        history = load_thread_history(db, self._thread_id, user_id=self._user_id)
-        self.set_conversation_window(history)
-        return self._conversation_window
+        history = load_thread_history(db, key, user_id=self._user_id)
+        self.set_conversation_window(history, thread_id=key)
+        return list(self._conversation_windows.get(key, []))
+
+    def _conversation_window_key(self, thread_id: int | None = None) -> int | None:
+        return thread_id if thread_id is not None else self._thread_id
+
+    def _get_conversation_window(
+        self,
+        *,
+        thread_id: int | None = None,
+    ) -> list[StoredMessage]:
+        key = self._conversation_window_key(thread_id)
+        return self._conversation_windows.setdefault(key, [])
 
 
 def _trim_at_turn_boundary(

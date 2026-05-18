@@ -79,6 +79,7 @@ async def test_action_runtime_routes_tool_execute_to_registered_client() -> None
     ]
 
     resolved = registry.resolve_tool_result(
+        animus_conn,
         "call-1",
         {
             "tool_call_id": "call-1",
@@ -93,6 +94,78 @@ async def test_action_runtime_routes_tool_execute_to_registered_client() -> None
     assert result.name == "bash"
     assert result.output == "ok"
     runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_action_runtime_scopes_duplicate_call_ids_by_connection() -> None:
+    registry = ClientActionRegistry()
+    socket_one = FakeWebSocket()
+    socket_two = FakeWebSocket()
+    conn_one = _connection(
+        user_id=1,
+        username="one",
+        websocket=socket_one,
+        tools=[
+            {
+                "name": "bash",
+                "description": "Run shell commands",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+    conn_two = _connection(
+        user_id=2,
+        username="two",
+        websocket=socket_two,
+        tools=[
+            {
+                "name": "bash",
+                "description": "Run shell commands",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+    registry.add(conn_one)
+    registry.add(conn_two)
+
+    runtime_one = build_client_action_runtime(1, registry=registry)
+    runtime_two = build_client_action_runtime(2, registry=registry)
+    assert runtime_one is not None
+    assert runtime_two is not None
+
+    task_one = asyncio.create_task(
+        runtime_one.delegate("same-call-id", "bash", {"command": "one"})
+    )
+    task_two = asyncio.create_task(
+        runtime_two.delegate("same-call-id", "bash", {"command": "two"})
+    )
+    await asyncio.sleep(0)
+
+    assert registry.resolve_tool_result(
+        conn_one,
+        "same-call-id",
+        {
+            "tool_call_id": "same-call-id",
+            "tool_name": "bash",
+            "status": "success",
+            "result": "one-result",
+        },
+    )
+    assert registry.resolve_tool_result(
+        conn_two,
+        "same-call-id",
+        {
+            "tool_call_id": "same-call-id",
+            "tool_name": "bash",
+            "status": "success",
+            "result": "two-result",
+        },
+    )
+
+    result_one = await task_one
+    result_two = await task_two
+    assert result_one.output == "one-result"
+    assert result_two.output == "two-result"
 
 
 def test_action_runtime_is_absent_without_registered_tools() -> None:

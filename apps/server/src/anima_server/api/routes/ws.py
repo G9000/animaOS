@@ -217,7 +217,7 @@ async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
 
 
 def _handle_tool_result(conn: ClientConnection, data: dict) -> None:
-    registry.resolve_tool_result(data.get("tool_call_id", ""), data)
+    registry.resolve_tool_result(conn, data.get("tool_call_id", ""), data)
 
 
 async def _handle_approval_response(conn: ClientConnection, data: dict) -> None:

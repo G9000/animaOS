@@ -43,7 +43,7 @@ class ClientActionRegistry:
 
     def __init__(self) -> None:
         self._connections: dict[int, list[ActionToolConnection]] = {}
-        self._pending: dict[str, _PendingActionCall] = {}
+        self._pending: dict[tuple[int, str], _PendingActionCall] = {}
 
     def add(self, conn: ActionToolConnection) -> None:
         if conn.connected_at == 0.0:
@@ -127,7 +127,8 @@ class ClientActionRegistry:
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future[DelegatedToolResult] = loop.create_future()
-        self._pending[tool_call_id] = _PendingActionCall(
+        pending_key = (id(conn), tool_call_id)
+        self._pending[pending_key] = _PendingActionCall(
             connection=conn,
             future=future,
             tool_name=tool_name,
@@ -144,30 +145,40 @@ class ClientActionRegistry:
             )
             return await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as err:
-            self._pending.pop(tool_call_id, None)
+            self._pending.pop(pending_key, None)
             raise DelegationTimeout(
                 f"Tool {tool_name} (call_id={tool_call_id}) timed out after {timeout}s"
             ) from err
         except Exception:
-            self._pending.pop(tool_call_id, None)
+            self._pending.pop(pending_key, None)
             raise
 
     def resolve_tool_result(
         self,
+        conn: ActionToolConnection,
         tool_call_id: str,
         data: dict[str, Any],
     ) -> bool:
-        pending = self._pending.pop(tool_call_id, None)
+        pending = self._pending.pop((id(conn), tool_call_id), None)
         if pending is None:
             logger.warning("Received tool_result for unknown call_id: %s", tool_call_id)
             return False
         if pending.future.done():
             return True
+        result_tool_name = str(data.get("tool_name", ""))
+        if result_tool_name and result_tool_name != pending.tool_name:
+            pending.future.set_exception(
+                DelegationTimeout(
+                    f"Tool result name {result_tool_name!r} did not match "
+                    f"pending tool {pending.tool_name!r}"
+                )
+            )
+            return True
 
         pending.future.set_result(
             DelegatedToolResult(
                 call_id=tool_call_id,
-                name=str(data.get("tool_name", "")),
+                name=result_tool_name or pending.tool_name,
                 output=str(data.get("result", "")),
                 is_error=data.get("status") == "error",
                 stdout=data.get("stdout"),
@@ -181,10 +192,10 @@ class ClientActionRegistry:
         conn: ActionToolConnection,
         reason: str,
     ) -> None:
-        for call_id, pending in list(self._pending.items()):
+        for pending_key, pending in list(self._pending.items()):
             if pending.connection is not conn:
                 continue
-            self._pending.pop(call_id, None)
+            self._pending.pop(pending_key, None)
             if not pending.future.done():
                 pending.future.set_exception(DelegationTimeout(reason))
 

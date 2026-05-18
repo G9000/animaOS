@@ -519,6 +519,9 @@ def finalize_run(
     run: RuntimeRun,
     result: AgentResult,
 ) -> None:
+    if run.status in ("cancelled", "failed"):
+        return
+
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens = 0
