@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from anima_server.services.agent.delegation import (
     DelegatedToolResult,
@@ -36,6 +37,7 @@ class _PendingActionCall:
     connection: ActionToolConnection
     future: asyncio.Future[DelegatedToolResult]
     tool_name: str
+    tool_call_id: str
 
 
 class ClientActionRegistry:
@@ -127,18 +129,23 @@ class ClientActionRegistry:
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future[DelegatedToolResult] = loop.create_future()
-        pending_key = (id(conn), tool_call_id)
+        wire_tool_call_id = tool_call_id
+        pending_key = (id(conn), wire_tool_call_id)
+        while pending_key in self._pending:
+            wire_tool_call_id = f"{tool_call_id}:{uuid4().hex}"
+            pending_key = (id(conn), wire_tool_call_id)
         self._pending[pending_key] = _PendingActionCall(
             connection=conn,
             future=future,
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
         )
 
         try:
             await conn.websocket.send_json(
                 {
                     "type": "tool_execute",
-                    "tool_call_id": tool_call_id,
+                    "tool_call_id": wire_tool_call_id,
                     "tool_name": tool_name,
                     "args": args,
                 }
@@ -173,7 +180,7 @@ class ClientActionRegistry:
             )
             pending.future.set_result(
                 DelegatedToolResult(
-                    call_id=tool_call_id,
+                    call_id=pending.tool_call_id,
                     name=pending.tool_name,
                     output=message,
                     is_error=True,
@@ -184,7 +191,7 @@ class ClientActionRegistry:
 
         pending.future.set_result(
             DelegatedToolResult(
-                call_id=tool_call_id,
+                call_id=pending.tool_call_id,
                 name=result_tool_name or pending.tool_name,
                 output=str(data.get("result", "")),
                 is_error=data.get("status") == "error",

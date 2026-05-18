@@ -52,11 +52,13 @@ def _make_companion(
     runtime: AgentRuntime | None = None,
     user_id: int = 1,
     keep_last_messages: int = 50,
+    max_conversation_windows: int | None = None,
 ) -> AnimaCompanion:
     return AnimaCompanion(
         runtime=runtime or _make_runtime(),
         user_id=user_id,
         keep_last_messages=keep_last_messages,
+        max_conversation_windows=max_conversation_windows,
     )
 
 
@@ -213,6 +215,39 @@ class TestConversationWindow:
             assert companion.ensure_history_loaded(db, thread_id=123) == []
 
         assert load_history.call_count == 1
+
+    def test_thread_windows_are_lru_bounded(self) -> None:
+        companion = _make_companion(max_conversation_windows=2)
+        db = MagicMock(spec=Session)
+        companion.set_conversation_window(
+            [StoredMessage(role="user", content="one")],
+            thread_id=1,
+        )
+        companion.set_conversation_window(
+            [StoredMessage(role="user", content="two")],
+            thread_id=2,
+        )
+        assert [
+            message.content
+            for message in companion.ensure_history_loaded(db, thread_id=1)
+        ] == ["one"]
+
+        companion.set_conversation_window(
+            [StoredMessage(role="user", content="three")],
+            thread_id=3,
+        )
+
+        with patch(
+            "anima_server.services.agent.companion.load_thread_history",
+            return_value=[],
+        ) as load_history:
+            assert [
+                message.content
+                for message in companion.ensure_history_loaded(db, thread_id=1)
+            ] == ["one"]
+            assert companion.ensure_history_loaded(db, thread_id=2) == []
+
+        load_history.assert_called_once()
 
 
 # ------------------------------------------------------------------

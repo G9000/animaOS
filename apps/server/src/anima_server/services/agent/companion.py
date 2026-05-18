@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Sequence
 from threading import Lock
 
@@ -45,6 +46,7 @@ class AnimaCompanion:
         runtime: AgentRuntime,
         user_id: int,
         keep_last_messages: int | None = None,
+        max_conversation_windows: int | None = None,
     ) -> None:
         self._runtime = runtime
         self._user_id = user_id
@@ -54,6 +56,12 @@ class AnimaCompanion:
             if keep_last_messages is not None
             else max(1, settings.agent_compaction_keep_last_messages)
         )
+        self._max_conversation_windows = (
+            max_conversation_windows
+            if max_conversation_windows is not None
+            else 32
+        )
+        self._max_conversation_windows = max(1, self._max_conversation_windows)
 
         # Version-counter cache for static memory blocks.
         # _memory_version is bumped on every invalidation.
@@ -63,7 +71,9 @@ class AnimaCompanion:
         self._cache_version: int = -1
         self._memory_cache: tuple[MemoryBlock, ...] | None = None
 
-        self._conversation_windows: dict[int | None, list[StoredMessage]] = {}
+        self._conversation_windows: OrderedDict[int | None, list[StoredMessage]] = (
+            OrderedDict()
+        )
         self._system_prompt: str | None = None
         self._emotional_state: dict[str, object] | None = None
 
@@ -149,9 +159,12 @@ class AnimaCompanion:
         key = self._conversation_window_key(thread_id)
         cap = self._keep_last_messages
         if len(history) > cap:
-            self._conversation_windows[key] = _trim_at_turn_boundary(history, cap)
+            self._store_conversation_window(
+                key,
+                _trim_at_turn_boundary(history, cap),
+            )
         else:
-            self._conversation_windows[key] = list(history)
+            self._store_conversation_window(key, list(history))
 
     def append_to_window(
         self,
@@ -165,7 +178,7 @@ class AnimaCompanion:
         cap = self._keep_last_messages
         if len(window) > cap:
             window = _trim_at_turn_boundary(window, cap)
-        self._conversation_windows[key] = window
+        self._store_conversation_window(key, window)
 
     # -- emotional state ----------------------------------------------
 
@@ -293,6 +306,7 @@ class AnimaCompanion:
         key = self._conversation_window_key(thread_id)
         window = self._conversation_windows.get(key)
         if window is not None:
+            self._conversation_windows.move_to_end(key)
             return list(window)
 
         if key is None:
@@ -311,7 +325,23 @@ class AnimaCompanion:
         thread_id: int | None = None,
     ) -> list[StoredMessage]:
         key = self._conversation_window_key(thread_id)
-        return self._conversation_windows.setdefault(key, [])
+        window = self._conversation_windows.get(key)
+        if window is not None:
+            self._conversation_windows.move_to_end(key)
+            return window
+        window = []
+        self._store_conversation_window(key, window)
+        return window
+
+    def _store_conversation_window(
+        self,
+        key: int | None,
+        window: list[StoredMessage],
+    ) -> None:
+        self._conversation_windows[key] = window
+        self._conversation_windows.move_to_end(key)
+        while len(self._conversation_windows) > self._max_conversation_windows:
+            self._conversation_windows.popitem(last=False)
 
 
 def _trim_at_turn_boundary(

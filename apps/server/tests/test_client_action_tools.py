@@ -169,6 +169,69 @@ async def test_action_runtime_scopes_duplicate_call_ids_by_connection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_action_runtime_scopes_duplicate_call_ids_on_same_connection() -> None:
+    registry = ClientActionRegistry()
+    socket = FakeWebSocket()
+    conn = _connection(
+        user_id=1,
+        username="animus",
+        websocket=socket,
+        tools=[
+            {
+                "name": "bash",
+                "description": "Run shell commands",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+    registry.add(conn)
+
+    runtime = build_client_action_runtime(1, registry=registry)
+    assert runtime is not None
+
+    task_one = asyncio.create_task(
+        runtime.delegate("same-call-id", "bash", {"command": "one"})
+    )
+    task_two = asyncio.create_task(
+        runtime.delegate("same-call-id", "bash", {"command": "two"})
+    )
+    await asyncio.sleep(0)
+
+    assert len(socket.sent) == 2
+    wire_call_id_one = str(socket.sent[0]["tool_call_id"])
+    wire_call_id_two = str(socket.sent[1]["tool_call_id"])
+    assert wire_call_id_one != wire_call_id_two
+
+    assert registry.resolve_tool_result(
+        conn,
+        wire_call_id_one,
+        {
+            "tool_call_id": wire_call_id_one,
+            "tool_name": "bash",
+            "status": "success",
+            "result": "one-result",
+        },
+    )
+    assert registry.resolve_tool_result(
+        conn,
+        wire_call_id_two,
+        {
+            "tool_call_id": wire_call_id_two,
+            "tool_name": "bash",
+            "status": "success",
+            "result": "two-result",
+        },
+    )
+
+    result_one = await task_one
+    result_two = await task_two
+    assert result_one.call_id == "same-call-id"
+    assert result_two.call_id == "same-call-id"
+    assert result_one.output == "one-result"
+    assert result_two.output == "two-result"
+
+
+@pytest.mark.asyncio
 async def test_action_runtime_reports_mismatched_result_tool_as_error() -> None:
     registry = ClientActionRegistry()
     socket = FakeWebSocket()
