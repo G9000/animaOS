@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeMessage
 from anima_server.models.runtime_memory import MemoryRetrievalFeedback
 from anima_server.services.agent.persistence import (
     _deserialize_tool_calls,
     append_message,
     append_user_message,
+    cancel_run,
     clear_threads,
     count_messages_by_role,
     create_run,
@@ -32,7 +34,9 @@ from anima_server.services.agent.state import (
     AgentRetrievalTrace,
 )
 from conftest_runtime import runtime_db_session
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # --------------------------------------------------------------------------- #
 # In-memory database helper (runtime DB — persistence now uses RuntimeBase)
@@ -404,6 +408,75 @@ def test_finalize_run_no_usage() -> None:
         assert run.prompt_tokens is None
         assert run.completion_tokens is None
         assert run.total_tokens is None
+
+
+def test_persist_agent_result_respects_cross_session_cancel() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        echo=False,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_connection: object, connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
+        cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA busy_timeout = 30000")
+        cursor.close()
+
+    RuntimeBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    primary = factory()
+    secondary = factory()
+    try:
+        user = _make_user(primary)
+        thread = get_or_create_thread(primary, user.id)
+        run = create_run(
+            primary,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+        primary.commit()
+
+        cancelled = cancel_run(secondary, run.id)
+        assert cancelled is not None
+        secondary.commit()
+
+        result = AgentResult(
+            response="late reply",
+            model="test",
+            provider="test",
+            stop_reason="end_turn",
+            step_traces=[StepTrace(step_index=0, assistant_text="late reply")],
+        )
+        persist_agent_result(
+            primary,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+        primary.commit()
+
+        primary.refresh(run)
+        persisted_message_count = (
+            primary.query(RuntimeMessage)
+            .filter(RuntimeMessage.run_id == run.id)
+            .count()
+        )
+
+        assert run.status == "cancelled"
+        assert run.stop_reason == "cancelled"
+        assert persisted_message_count == 0
+    finally:
+        secondary.close()
+        primary.close()
+        RuntimeBase.metadata.drop_all(engine)
+        engine.dispose()
 
 
 # --------------------------------------------------------------------------- #
