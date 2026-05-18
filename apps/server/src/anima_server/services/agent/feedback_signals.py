@@ -564,6 +564,9 @@ def apply_memory_correction(
                     db,
                     old_item_id=best_match.id,
                     new_content=new_content,
+                    evidence_text=new_content,
+                    evidence_source_kind="correction",
+                    evidence_metadata={"memory_source": "feedback_correction"},
                 )
             applied.append(
                 {

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryItem, MemoryItemTag
@@ -96,34 +97,59 @@ class MemoryWriteResult:
     reason: str = ""
 
 
-def sync_memory_item_to_retrieval_index(
-    item: MemoryItem,
+@dataclass(frozen=True, slots=True)
+class _MemoryRetrievalIndexPayload:
+    record_id: int
+    user_id: int
+    text: str
+    embedding: list[float] | None
+    source_type: str
+    category: str
+    importance: int
+    created_at: int
+
+
+def _memory_item_retrieval_index_payload(item: MemoryItem) -> _MemoryRetrievalIndexPayload:
+    created_at = item.created_at or datetime.now(UTC)
+    return _MemoryRetrievalIndexPayload(
+        record_id=item.id,
+        user_id=item.user_id,
+        text=df(item.user_id, item.content, table="memory_items", field="content"),
+        embedding=_memory_embedding_for_retrieval_index(item),
+        source_type="memory_item",
+        category=item.category,
+        importance=item.importance,
+        created_at=int(created_at.timestamp()),
+    )
+
+
+def _sync_retrieval_index_payload(
+    payload: _MemoryRetrievalIndexPayload,
     *,
     root: Path | None = None,
     mark_dirty_on_failure: bool = True,
 ) -> bool:
-    created_at = item.created_at or datetime.now(UTC)
     resolved_root = root or anima_core_retrieval.get_retrieval_root()
     try:
         anima_core_retrieval.memory_index_upsert(
             root=resolved_root,
-            record_id=item.id,
-            user_id=item.user_id,
-            text=df(item.user_id, item.content, table="memory_items", field="content"),
-            embedding=_memory_embedding_for_retrieval_index(item),
-            source_type="memory_item",
-            category=item.category,
-            importance=item.importance,
-            created_at=int(created_at.timestamp()),
+            record_id=payload.record_id,
+            user_id=payload.user_id,
+            text=payload.text,
+            embedding=payload.embedding,
+            source_type=payload.source_type,
+            category=payload.category,
+            importance=payload.importance,
+            created_at=payload.created_at,
         )
         return True
     except RuntimeError:
-        logger.debug("Rust memory index upsert is unavailable for item %s", item.id)
+        logger.debug("Rust memory index upsert is unavailable for item %s", payload.record_id)
         return False
     except Exception:
         logger.warning(
             "Failed to upsert memory item %s into the Rust retrieval index",
-            item.id,
+            payload.record_id,
             exc_info=True,
         )
         if mark_dirty_on_failure:
@@ -131,23 +157,50 @@ def sync_memory_item_to_retrieval_index(
         return False
 
 
-def remove_memory_item_from_retrieval_index(item: MemoryItem) -> None:
+def sync_memory_item_to_retrieval_index(
+    item: MemoryItem,
+    *,
+    root: Path | None = None,
+    mark_dirty_on_failure: bool = True,
+) -> bool:
+    return _sync_retrieval_index_payload(
+        _memory_item_retrieval_index_payload(item),
+        root=root,
+        mark_dirty_on_failure=mark_dirty_on_failure,
+    )
+
+
+def remove_memory_item_from_retrieval_index_by_id(
+    *,
+    user_id: int,
+    item_id: int,
+) -> bool:
     root = anima_core_retrieval.get_retrieval_root()
     try:
         anima_core_retrieval.memory_index_delete(
             root=root,
-            record_id=item.id,
-            user_id=item.user_id,
+            record_id=item_id,
+            user_id=user_id,
         )
+        return True
     except RuntimeError:
-        logger.debug("Rust memory index delete is unavailable for item %s", item.id)
+        logger.debug("Rust memory index delete is unavailable for item %s", item_id)
+        return False
     except Exception:
         logger.warning(
             "Failed to delete memory item %s from the Rust retrieval index",
-            item.id,
+            item_id,
             exc_info=True,
         )
         _mark_memory_index_dirty(root=root)
+        return False
+
+
+def remove_memory_item_from_retrieval_index(item: MemoryItem) -> bool:
+    return remove_memory_item_from_retrieval_index_by_id(
+        user_id=item.user_id,
+        item_id=item.id,
+    )
 
 
 def _mark_memory_index_dirty(*, root) -> None:
@@ -162,6 +215,29 @@ def _clear_memory_index_dirty(*, root) -> None:
         anima_core_retrieval.clear_retrieval_index_dirty(root=root, family="memory")
     except Exception:
         logger.debug("Failed to clear memory retrieval index dirty state", exc_info=True)
+
+
+def invalidate_memory_retrieval_indexes(
+    user_id: int,
+    *,
+    root: Path | str | None = None,
+    mark_dirty: bool = True,
+) -> None:
+    try:
+        from anima_server.services.agent.bm25_index import invalidate_index
+
+        invalidate_index(user_id)
+    except Exception:
+        logger.debug("Failed to invalidate BM25 index for user %s", user_id, exc_info=True)
+
+    if not mark_dirty:
+        return
+
+    try:
+        resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
+        _mark_memory_index_dirty(root=resolved_root)
+    except Exception:
+        logger.debug("Failed to mark memory retrieval index dirty for user %s", user_id, exc_info=True)
 
 
 def _memory_embedding_for_retrieval_index(item: MemoryItem) -> list[float] | None:
@@ -292,7 +368,18 @@ def add_memory_item(
     if tags:
         _sync_tags(db, item=memory_item, user_id=user_id, tags=tags)
 
-    sync_memory_item_to_retrieval_index(memory_item)
+    _add_direct_memory_item_evidence(
+        db,
+        item=memory_item,
+        evidence_text=content,
+        source_kind=_direct_evidence_source_kind(source),
+        metadata={"memory_source": source},
+    )
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(memory_item),
+    )
     return memory_item
 
 
@@ -385,6 +472,13 @@ def store_memory_item(
             old_item_id=analysis.matched_item.id,
             new_content=cleaned_content,
             importance=importance,
+            evidence_text=cleaned_content if source != "extraction" else None,
+            evidence_source_kind=(
+                _direct_evidence_source_kind(source)
+                if source != "extraction"
+                else None
+            ),
+            evidence_metadata={"memory_source": source} if source != "extraction" else None,
         )
         if tags:
             _sync_tags(db, item=item, user_id=user_id, tags=tags)
@@ -427,7 +521,11 @@ def store_memory_item(
     if tags:
         _sync_tags(db, item=item, user_id=user_id, tags=tags)
 
-    sync_memory_item_to_retrieval_index(item)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
     return MemoryWriteResult(
         action="added",
         item=item,
@@ -608,12 +706,79 @@ def touch_memory_items(
             pass
 
 
+def _schedule_supersede_external_index_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    old_item_id: int,
+    new_payload: _MemoryRetrievalIndexPayload,
+) -> None:
+    def _sync_external_indexes(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        try:
+            from anima_server.services.agent.vector_store import delete_memory
+
+            delete_memory(user_id, item_id=old_item_id)
+        except Exception:
+            logger.debug("Vector store cleanup failed for superseded item %s", old_item_id)
+
+        removed = False
+        synced = False
+        try:
+            removed = remove_memory_item_from_retrieval_index_by_id(
+                user_id=user_id,
+                item_id=old_item_id,
+            )
+            synced = _sync_retrieval_index_payload(new_payload)
+        except Exception:
+            logger.debug(
+                "Memory retrieval index sync failed for supersession %s -> %s",
+                old_item_id,
+                new_payload.record_id,
+                exc_info=True,
+            )
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not (removed and synced))
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _sync_external_indexes)
+
+    event.listen(db, "after_commit", _sync_external_indexes, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
+
+
+def _schedule_memory_retrieval_upsert_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    payload: _MemoryRetrievalIndexPayload,
+) -> None:
+    def _sync_external_index(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        synced = _sync_retrieval_index_payload(payload)
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _sync_external_index)
+
+    event.listen(db, "after_commit", _sync_external_index, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
+
+
 def supersede_memory_item(
     db: Session,
     *,
     old_item_id: int,
     new_content: str,
     importance: int | None = None,
+    evidence_text: str | None = None,
+    evidence_source_kind: str | None = None,
+    evidence_metadata: dict[str, object] | None = None,
 ) -> MemoryItem:
     old_item = db.get(MemoryItem, old_item_id)
     if old_item is None:
@@ -634,16 +799,21 @@ def supersede_memory_item(
     db.add(old_item)
     db.flush()
 
-    # Remove superseded item from vector store
-    try:
-        from anima_server.services.agent.vector_store import delete_memory
+    if evidence_source_kind is not None:
+        _add_direct_memory_item_evidence(
+            db,
+            item=new_item,
+            evidence_text=evidence_text or new_content,
+            source_kind=evidence_source_kind,
+            metadata=evidence_metadata,
+        )
 
-        delete_memory(old_item.user_id, item_id=old_item_id, db=db)
-    except Exception:
-        pass
-
-    remove_memory_item_from_retrieval_index(old_item)
-    sync_memory_item_to_retrieval_index(new_item)
+    _schedule_supersede_external_index_after_commit(
+        db,
+        user_id=old_item.user_id,
+        old_item_id=old_item.id,
+        new_payload=_memory_item_retrieval_index_payload(new_item),
+    )
 
     return new_item
 
@@ -692,6 +862,9 @@ def set_current_focus(
             db,
             old_item_id=existing.id,
             new_content=focus,
+            evidence_text=focus,
+            evidence_source_kind="explicit_update",
+            evidence_metadata={"memory_source": "focus_update"},
         )
 
     item = MemoryItem(
@@ -703,8 +876,56 @@ def set_current_focus(
     )
     db.add(item)
     db.flush()
-    sync_memory_item_to_retrieval_index(item)
+    _add_direct_memory_item_evidence(
+        db,
+        item=item,
+        evidence_text=focus,
+        source_kind="explicit_save",
+        metadata={"memory_source": "focus"},
+    )
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
     return item
+
+
+def _direct_evidence_source_kind(source: str) -> str:
+    if source == "user":
+        return "explicit_save"
+    if source == "feedback":
+        return "correction"
+    return (source or "direct_write")[:32]
+
+
+def _add_direct_memory_item_evidence(
+    db: Session,
+    *,
+    item: MemoryItem,
+    evidence_text: str,
+    source_kind: str,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    try:
+        from anima_server.services.agent.provenance import add_memory_item_evidence
+
+        observed_at = item.created_at or datetime.now(UTC)
+        add_memory_item_evidence(
+            db,
+            user_id=item.user_id,
+            memory_item_id=item.id,
+            evidence_text=evidence_text,
+            source_kind=source_kind,
+            speaker="user" if source_kind in {"explicit_save", "explicit_update"} else "unknown",
+            observed_at=observed_at,
+            source_created_at=item.created_at,
+            confidence=1.0 if source_kind.startswith("explicit") else 0.7,
+            extractor="direct_memory_write",
+            metadata=metadata,
+        )
+    except Exception:
+        logger.debug("Failed to create direct memory evidence for item %s", item.id, exc_info=True)
 
 
 def find_similar_items(

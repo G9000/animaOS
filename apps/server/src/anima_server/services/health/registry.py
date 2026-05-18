@@ -23,12 +23,14 @@ def get_default_registry() -> HealthCheckRegistry:
         check_background_tasks,
         check_db_integrity,
         check_llm_connectivity,
+        check_memory_pipeline,
     )
 
     registry = HealthCheckRegistry()
     registry.register("db_integrity", check_db_integrity)
     registry.register("llm_connectivity", check_llm_connectivity)
     registry.register("background_tasks", check_background_tasks)
+    registry.register("memory_pipeline", check_memory_pipeline)
     return registry
 
 

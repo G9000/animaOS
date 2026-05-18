@@ -69,8 +69,9 @@ For every change:
 
 ## Database Workflow
 
-- Database is SQLite + SQLCipher (encrypted at rest). No PostgreSQL, no Docker required.
-- Alembic runs programmatically inside `ensure_user_database()` — migrations apply automatically on startup. Use `batch_alter_table` for any SQLite constraint changes.
+- Durable identity and memory state lives in per-user SQLite + SQLCipher databases under `.anima/`.
+- Runtime state uses local PostgreSQL by default through the embedded `pgserver` lifecycle, or `ANIMA_RUNTIME_DATABASE_URL` when explicitly configured. No Docker is required.
+- Soul Alembic runs programmatically inside `ensure_user_database()`; runtime Alembic runs inside `ensure_runtime_tables()`. Use `batch_alter_table` for SQLite constraint changes.
 - For schema changes, create a new revision with `bun run db:server:revision -- "<message>"` then let the server apply it.
 
 ## Commit & Pull Request Guidelines
@@ -87,4 +88,4 @@ PRs should include:
 
 - Do not commit provider API keys or local secrets.
 - Keep sensitive values in local environment/runtime config only.
-- All memory lives in the encrypted SQLite DB, not markdown files — do not create or commit memory markdown.
+- Canonical long-term memory lives in encrypted SQLCipher. Runtime PostgreSQL can contain lower-sensitivity operational state, candidates, message history, access logs, and retrieval caches. Do not create or commit memory markdown.

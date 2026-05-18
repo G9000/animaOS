@@ -948,6 +948,81 @@ class TestHybridSearchIntegration:
                 assert item.id in found_ids
 
     @pytest.mark.asyncio
+    async def test_hybrid_search_backfills_after_filtered_or_missing_candidates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Later merged candidates should fill the limit after filters drop early hits."""
+        from anima_server.services.agent import embeddings as embeddings_module
+        from anima_server.services.agent.embeddings import hybrid_search
+        from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+
+        with _db_session() as db:
+            user = _make_user(db)
+            cold = _make_item(
+                db,
+                user.id,
+                "cold memory that should stay hidden",
+                embedding=[1.0, 0.0, 0.0],
+            )
+            cold.heat = HEAT_VISIBILITY_FLOOR / 2
+            valid_one = _make_item(
+                db,
+                user.id,
+                "valid later memory one",
+                embedding=[0.9, 0.0, 0.0],
+            )
+            valid_two = _make_item(
+                db,
+                user.id,
+                "valid later memory two",
+                embedding=[0.8, 0.0, 0.0],
+            )
+            missing_id = 999_999
+            db.commit()
+
+            async def mock_embed(text: str) -> list[float] | None:
+                return [1.0, 0.0, 0.0]
+
+            monkeypatch.setattr(
+                embeddings_module,
+                "generate_embedding",
+                mock_embed,
+            )
+            monkeypatch.setattr(
+                embeddings_module,
+                "_semantic_ranked_ids",
+                lambda *args, **kwargs: [(cold.id, 0.99), (valid_one.id, 0.7)],
+            )
+            monkeypatch.setattr(
+                "anima_server.services.agent.bm25_index.bm25_search",
+                lambda *args, **kwargs: [(missing_id, 1.0), (valid_two.id, 0.8)],
+            )
+            monkeypatch.setattr(
+                embeddings_module,
+                "_reciprocal_rank_fusion",
+                lambda *args, **kwargs: [
+                    (cold.id, 1.0),
+                    (missing_id, 0.9),
+                    (valid_one.id, 0.8),
+                    (valid_two.id, 0.7),
+                ],
+            )
+
+            result = await hybrid_search(
+                db,
+                user_id=user.id,
+                query="valid memory",
+                limit=2,
+                similarity_threshold=0.0,
+            )
+
+            assert [item.id for item, _score in result.items] == [
+                valid_one.id,
+                valid_two.id,
+            ]
+
+    @pytest.mark.asyncio
     async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(self):
         """The live hybrid path should use the Rust memory index when it is clean."""
         from anima_server.services import anima_core_retrieval as retrieval_module

@@ -7,6 +7,7 @@ and invalidated on content mutations.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from threading import Lock
 
@@ -88,47 +89,24 @@ def get_or_build_index(
     """Lazy-load the BM25 index for a user.
 
     Data source priority:
-    1. RuntimeEmbedding in PG (primary)
-    2. InMemoryVectorStore (tests / degraded mode)
+    1. Canonical MemoryItem rows in SQLCipher
+    2. RuntimeEmbedding in PG
+    3. InMemoryVectorStore (tests / degraded mode)
 
-    MemoryVector (SQLCipher) is deprecated as of P6 and no longer queried.
+    MemoryItem is authoritative for keyword search so direct memory writes
+    remain searchable even before embeddings are generated.
     Thread-safe via _indices_lock.
     """
     with _indices_lock:
         if user_id in _user_indices:
             return _user_indices[user_id]
 
-    docs: list[tuple[int, str]] = []
+    docs: list[tuple[int, str]] = _load_canonical_memory_documents(user_id, db)
 
     # Try RuntimeEmbedding in PG
-    try:
-        from anima_server.models.runtime_embedding import RuntimeEmbedding
-
-        owned_runtime_db: Session | None = None
-        active_runtime_db = runtime_db
-        if active_runtime_db is None:
-            from anima_server.db.runtime import get_runtime_session_factory
-
-            owned_runtime_db = get_runtime_session_factory()()
-            active_runtime_db = owned_runtime_db
-        try:
-            rows = active_runtime_db.execute(
-                select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
-                    RuntimeEmbedding.user_id == user_id
-                )
-            ).all()
-            docs = [(row[0], row[1]) for row in rows]
-        finally:
-            if owned_runtime_db is not None:
-                # Commit before close so that closing a read-only session on a
-                # shared StaticPool connection (tests) does not issue ROLLBACK
-                # and undo pending writes from an outer session.  In production
-                # each session has its own PG connection so commit() is a
-                # harmless no-op.
-                owned_runtime_db.commit()
-                owned_runtime_db.close()
-    except Exception:
-        pass
+    if not docs:
+        with contextlib.suppress(Exception):
+            docs = _load_runtime_embedding_documents(user_id, runtime_db=runtime_db)
 
     # Fallback: in-memory vector store (tests / degraded mode)
     if not docs:
@@ -148,6 +126,69 @@ def get_or_build_index(
         _user_indices[user_id] = index
 
     return index
+
+
+def _load_canonical_memory_documents(user_id: int, db: Session) -> list[tuple[int, str]]:
+    try:
+        from anima_server.models import MemoryItem
+        from anima_server.services.data_crypto import df
+
+        items = list(
+            db.scalars(
+                select(MemoryItem)
+                .where(
+                    MemoryItem.user_id == user_id,
+                    MemoryItem.superseded_by.is_(None),
+                )
+                .order_by(MemoryItem.created_at.desc())
+            ).all()
+        )
+    except Exception:
+        return []
+
+    docs: list[tuple[int, str]] = []
+    for item in items:
+        try:
+            content = df(user_id, item.content, table="memory_items", field="content")
+        except Exception:
+            logger.debug("Failed to decrypt memory item %s for BM25 indexing", item.id)
+            continue
+        if content:
+            docs.append((item.id, content))
+    return docs
+
+
+def _load_runtime_embedding_documents(
+    user_id: int,
+    *,
+    runtime_db: Session | None = None,
+) -> list[tuple[int, str]]:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+    owned_runtime_db: Session | None = None
+    active_runtime_db = runtime_db
+    if active_runtime_db is None:
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        owned_runtime_db = get_runtime_session_factory()()
+        active_runtime_db = owned_runtime_db
+    try:
+        rows = active_runtime_db.execute(
+            select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
+                RuntimeEmbedding.user_id == user_id
+            )
+        ).all()
+        docs = [(row[0], row[1]) for row in rows]
+    finally:
+        if owned_runtime_db is not None:
+            # Commit before close so that closing a read-only session on a
+            # shared StaticPool connection (tests) does not issue ROLLBACK
+            # and undo pending writes from an outer session.  In production
+            # each session has its own PG connection so commit() is a
+            # harmless no-op.
+            owned_runtime_db.commit()
+            owned_runtime_db.close()
+    return docs
 
 
 def invalidate_index(user_id: int) -> None:

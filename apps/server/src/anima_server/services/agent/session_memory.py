@@ -115,6 +115,7 @@ def promote_session_note(
     category: str = "fact",
     importance: int = 3,
     tags: list[str] | None = None,
+    source_message_ids: list[int] | None = None,
     db: Session | None = None,
 ) -> bool:
     """Promote a session note to a memory candidate for Soul Writer promotion.
@@ -147,6 +148,7 @@ def promote_session_note(
         importance=importance,
         importance_source="user_explicit",
         source="tool",
+        source_message_ids=source_message_ids,
         tags=tags,
     )
 

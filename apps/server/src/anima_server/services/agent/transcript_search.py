@@ -84,6 +84,12 @@ def _transcript_index_is_dirty(root: Path) -> bool:
         return False
 
 
+def _cutoff_for_days_back(days_back: int) -> datetime | None:
+    if days_back <= 0:
+        return None
+    return datetime.now(UTC) - timedelta(days=days_back)
+
+
 def _candidate_transcripts_from_rust_index(
     *,
     query: str,
@@ -93,7 +99,7 @@ def _candidate_transcripts_from_rust_index(
     max_transcripts: int,
 ) -> list[tuple[Path, int, str]] | None:
     root = anima_core_retrieval.get_retrieval_root()
-    cutoff = datetime.now(UTC) - timedelta(days=days_back)
+    cutoff = _cutoff_for_days_back(days_back)
     try:
         hits = anima_core_retrieval.transcript_index_search(
             root=root,
@@ -125,7 +131,7 @@ def _candidate_transcripts_from_rust_index(
         if date_start <= 0:
             continue
         date_value = datetime.fromtimestamp(date_start, tz=UTC)
-        if date_value < cutoff:
+        if cutoff is not None and date_value < cutoff:
             continue
         date_str = date_value.date().isoformat()
         candidates.append((enc_path, thread_id, date_str))
@@ -140,7 +146,7 @@ def _candidate_transcripts_from_sidecars(
     days_back: int,
     max_transcripts: int,
 ) -> list[tuple[Path, int, str]]:
-    cutoff = datetime.now(UTC) - timedelta(days=days_back)
+    cutoff = _cutoff_for_days_back(days_back)
     candidates: list[tuple[float, Path, int, str]] = []
 
     for meta_path in transcripts_dir.glob("*.meta.json"):
@@ -156,7 +162,7 @@ def _candidate_transcripts_from_sidecars(
                 date_start_str.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if date_start < cutoff:
+        if cutoff is not None and date_start < cutoff:
             continue
 
         enc_path = meta_path.parent / \
@@ -173,9 +179,10 @@ def _candidate_transcripts_from_sidecars(
         candidates.append((score, enc_path, int(meta.get("thread_id", 0)), date_start_str[:10]))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
+    limited_candidates = candidates if cutoff is None else candidates[:max_transcripts]
     return [
         (enc_path, thread_id, date_str)
-        for _score, enc_path, thread_id, date_str in candidates[:max_transcripts]
+        for _score, enc_path, thread_id, date_str in limited_candidates
     ]
 
 
@@ -263,12 +270,17 @@ def search_transcripts(
     snippet_context: int = 2,
     budget_chars: int = 3000,
 ) -> list[TranscriptSnippet]:
-    """Search archived transcripts and return context-windowed snippets."""
+    """Search archived transcripts and return context-windowed snippets.
+
+    ``days_back`` values less than or equal to zero search all archived
+    transcripts.
+    """
     if not transcripts_dir.exists():
         return TranscriptSearchResults()
 
     candidates: list[tuple[Path, int, str]] | None
     used_rust_candidates = False
+    used_sidecar_candidates = False
     root = anima_core_retrieval.get_retrieval_root()
     if _transcript_index_is_dirty(root):
         transcript_archive_module.rebuild_transcript_index(
@@ -298,14 +310,20 @@ def search_transcripts(
             days_back=days_back,
             max_transcripts=max_transcripts,
         )
+        used_sidecar_candidates = True
     if not candidates:
         return TranscriptSearchResults()
 
+    candidate_scan_limit = (
+        len(candidates)
+        if used_sidecar_candidates and days_back <= 0
+        else max_transcripts
+    )
     snippets, total_matches, had_rust_candidate_failures = _snippets_from_candidates(
         query=query,
         dek=dek,
         candidates=candidates,
-        max_transcripts=max_transcripts,
+        max_transcripts=candidate_scan_limit,
         max_snippets=max_snippets,
         snippet_context=snippet_context,
         budget_chars=budget_chars,
@@ -321,11 +339,12 @@ def search_transcripts(
             days_back=days_back,
             max_transcripts=max_transcripts,
         )
+        sidecar_scan_limit = len(sidecar_candidates) if days_back <= 0 else max_transcripts
         snippets, total_matches, _had_sidecar_failures = _snippets_from_candidates(
             query=query,
             dek=dek,
             candidates=sidecar_candidates,
-            max_transcripts=max_transcripts,
+            max_transcripts=sidecar_scan_limit,
             max_snippets=max_snippets,
             snippet_context=snippet_context,
             budget_chars=budget_chars,

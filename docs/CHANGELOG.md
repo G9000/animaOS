@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-05-17
+
+- reconciled memory and agent runtime docs with the dual-store runtime architecture, `MemoryItemEvidence` provenance, tool-driven `search_long_memory` recall, metadata-aware latest/count/temporal retrieval, extraction failure preservation, and legacy/eval provenance backfill
+
 ## 2026-03-16
 
 - added `docs/architecture/core-ownership-model.md` documenting the single-owner provisioning model: manifest-based `owner_user_id` as the provisioning gate, UUID v7 `core_id` as the Core's permanent identity, user slot allocation starting at 0, and the distinction between new machine (new `data_dir`) vs. new user (new slot)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from anima_server.config import settings
@@ -10,11 +10,12 @@ from anima_server.db.base import Base
 from anima_server.models import User
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
 from anima_server.services.agent.consolidation import (
+    LLMExtractionResult,
     drain_background_memory_tasks,
     run_background_extraction,
 )
 from conftest_runtime import runtime_db_session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -123,6 +124,148 @@ async def test_run_background_extraction_normalizes_whitespace_before_regex() ->
         contents = [c.content for c in candidates]
         assert "Works at Acme Corp" in contents
         assert "Prefers green tea" in contents
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_run_background_extraction_attaches_source_ids_to_regex_candidates() -> None:
+    from anima_server.models.runtime_memory import MemoryCandidate
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "scaffold"
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="I prefer quiet cafes.",
+                assistant_response="Noted.",
+                runtime_db_factory=rt_factory,
+                source_message_ids=[101, 102],
+            )
+
+            with rt_factory() as rt_db:
+                candidates = list(
+                    rt_db.scalars(
+                        select(MemoryCandidate).where(MemoryCandidate.user_id == 1)
+                    ).all()
+                )
+
+        assert candidates
+        assert all(candidate.source_message_ids == [101, 102] for candidate in candidates)
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_run_background_extraction_attaches_source_ids_to_llm_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.models.runtime_memory import MemoryCandidate
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            memories=[
+                {
+                    "content": "Prefers traceable memory provenance",
+                    "category": "preference",
+                    "importance": 4,
+                }
+            ]
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="Please remember that provenance matters to me.",
+                assistant_response="I will remember that.",
+                runtime_db_factory=rt_factory,
+                source_message_ids=[201, 202],
+            )
+
+            with rt_factory() as rt_db:
+                candidate = rt_db.scalar(
+                    select(MemoryCandidate).where(MemoryCandidate.source == "llm")
+                )
+
+        assert candidate is not None
+        assert candidate.source_message_ids == [201, 202]
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_llm_extraction_failure_creates_retryable_work() -> None:
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+
+        failing_llm = MagicMock()
+        failing_llm.ainvoke = AsyncMock(side_effect=RuntimeError("LLM timed out"))
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            with patch(
+                "anima_server.services.agent.llm.create_llm",
+                return_value=failing_llm,
+            ):
+                await run_background_extraction(
+                    user_id=1,
+                    user_message="Remember that I prefer source-backed retries.",
+                    assistant_response="I will keep that in mind.",
+                    runtime_db_factory=rt_factory,
+                    source_message_ids=[101, 102],
+                )
+
+            with rt_factory() as rt_db:
+                failures = list(
+                    rt_db.scalars(select(MemoryExtractionFailure)).all()
+                )
+
+        assert len(failures) == 1
+        failure = failures[0]
+        assert failure.status == "failed"
+        assert failure.retry_count == 0
+        assert failure.source_message_ids == [101, 102]
+        assert "LLM timed out" in failure.failure_reason
     finally:
         settings.agent_provider = original_provider
 

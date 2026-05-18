@@ -14,6 +14,7 @@ from anima_server.models.agent_runtime import (
     MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
+    MemoryItemEvidence,
     MemoryItemTag,
     MemoryVector,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "MemoryClaimEvidence",
     "MemoryEpisode",
     "MemoryItem",
+    "MemoryItemEvidence",
     "MemoryItemTag",
     "MemoryVector",
     "PendingMemoryOp",

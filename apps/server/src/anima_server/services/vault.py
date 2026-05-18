@@ -25,6 +25,7 @@ from anima_server.models import (
     EmotionalSignal,
     MemoryEpisode,
     MemoryItem,
+    MemoryItemEvidence,
     SelfModelBlock,
     Task,
     User,
@@ -108,6 +109,7 @@ def _migrate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 _MEMORY_TABLES = frozenset(
     {
+        "memoryItemEvidence",
         "memoryItems",
         "memoryEpisodes",
         "selfModelBlocks",
@@ -142,6 +144,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "users",
         "userKeys",
         "memoryItems",
+        "memoryItemEvidence",
         "selfModelBlocks",
         "emotionalSignals",
     }
@@ -164,6 +167,8 @@ def _decrypt_field_value(
     deks: dict[str, bytes] | None,
     *,
     table: str = "",
+    field: str = "",
+    user_id: int | None = None,
 ) -> str | None:
     """Decrypt a field-level encrypted value for vault export.
 
@@ -176,7 +181,8 @@ def _decrypt_field_value(
     dek = deks.get(domain)
     if dek is None:
         return value
-    return decrypt_text_with_dek(value, dek)
+    aad = f"{table}:{user_id}:{field}".encode() if table and user_id is not None and field else None
+    return decrypt_text_with_dek(value, dek, aad=aad)
 
 
 def _re_encrypt_field_value(
@@ -475,6 +481,7 @@ def import_vault(
 
     # Rebuild vector index from imported embeddings
     _rebuild_vector_indices(db, database)
+    _invalidate_restored_memory_indexes(database, fallback_user_id=user_id)
 
     restored_memory_files = sum(
         1
@@ -489,6 +496,44 @@ def import_vault(
         "requiresReauth": True,
         "format": transfer_format,
     }
+
+
+def _invalidate_restored_memory_indexes(
+    database: dict[str, Any],
+    *,
+    fallback_user_id: int | None,
+) -> None:
+    memory_items = database.get("memoryItems", database.get("memory_items", []))
+    user_ids: set[int] = set()
+    if isinstance(memory_items, list):
+        for record in memory_items:
+            if not isinstance(record, dict):
+                continue
+            try:
+                user_ids.add(int(record["user_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    memory_item_evidence = database.get("memoryItemEvidence", [])
+    if isinstance(memory_item_evidence, list):
+        for record in memory_item_evidence:
+            if not isinstance(record, dict):
+                continue
+            try:
+                user_ids.add(int(record["user_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not user_ids and fallback_user_id is not None:
+        user_ids.add(fallback_user_id)
+    if not user_ids:
+        return
+
+    try:
+        from anima_server.services.agent.memory_store import invalidate_memory_retrieval_indexes
+
+        for restored_user_id in user_ids:
+            invalidate_memory_retrieval_indexes(restored_user_id)
+    except Exception:
+        vault_logger.debug("Memory retrieval invalidation skipped during vault import", exc_info=True)
 
 
 def encrypt_string(
@@ -651,6 +696,10 @@ def export_database_snapshot(
         serialize_memory_item_record(item, deks=deks)
         for item in db.scalars(_scoped(select(MemoryItem), MemoryItem)).all()
     ]
+    memory_item_evidence = [
+        serialize_memory_item_evidence_record(row, deks=deks)
+        for row in db.scalars(_scoped(select(MemoryItemEvidence), MemoryItemEvidence)).all()
+    ]
     memory_episodes = [
         serialize_memory_episode_record(ep, deks=deks)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
@@ -707,6 +756,7 @@ def export_database_snapshot(
         "users": users,
         "userKeys": user_keys,
         "memoryItems": memory_items,
+        "memoryItemEvidence": memory_item_evidence,
         "memoryEpisodes": memory_episodes,
         "tasks": tasks,
         "selfModelBlocks": self_model_blocks,
@@ -730,6 +780,7 @@ def restore_database_snapshot(
         raise ValueError("Vault database snapshot is missing users or userKeys.")
 
     memory_items_payload = snapshot.get("memoryItems", [])
+    memory_item_evidence_payload = snapshot.get("memoryItemEvidence", [])
     memory_episodes_payload = snapshot.get("memoryEpisodes", [])
     tasks_payload = snapshot.get("tasks", [])
     self_model_blocks_payload = snapshot.get("selfModelBlocks", [])
@@ -745,6 +796,7 @@ def restore_database_snapshot(
     try:
         db.query(EmotionalSignal).delete()
         db.query(SelfModelBlock).delete()
+        db.query(MemoryItemEvidence).delete()
         if is_full:
             db.query(AgentStep).delete()
             db.query(AgentMessage).delete()
@@ -812,6 +864,33 @@ def restore_database_snapshot(
                     embedding_checksum=coerce_optional_str(record.get("embedding_checksum")),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        db.flush()
+
+        for record in memory_item_evidence_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                MemoryItemEvidence(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    memory_item_id=int(record["memory_item_id"]),
+                    source_kind=str(record.get("source_kind", "legacy_backfill")),
+                    runtime_thread_id=coerce_optional_int(record.get("runtime_thread_id")),
+                    runtime_message_id=coerce_optional_int(record.get("runtime_message_id")),
+                    runtime_message_ids_json=record.get("runtime_message_ids_json"),
+                    transcript_ref=coerce_optional_str(record.get("transcript_ref")),
+                    sequence_id=coerce_optional_int(record.get("sequence_id")),
+                    speaker=coerce_optional_str(record.get("speaker")),
+                    observed_at=parse_optional_datetime(record.get("observed_at")),
+                    source_created_at=parse_optional_datetime(record.get("source_created_at")),
+                    confidence=float(record.get("confidence", 1.0)),
+                    extractor=coerce_optional_str(record.get("extractor")),
+                    evidence_text=str(record.get("evidence_text", "")),
+                    metadata_json=record.get("metadata_json"),
+                    created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
 
@@ -1120,7 +1199,13 @@ def serialize_memory_item_record(
     return {
         "id": item.id,
         "user_id": item.user_id,
-        "content": _decrypt_field_value(item.content, deks, table="memory_items"),
+        "content": _decrypt_field_value(
+            item.content,
+            deks,
+            table="memory_items",
+            field="content",
+            user_id=item.user_id,
+        ),
         "category": item.category,
         "importance": item.importance,
         "source": item.source,
@@ -1131,6 +1216,38 @@ def serialize_memory_item_record(
         "embedding_checksum": item.embedding_checksum,
         "created_at": serialize_optional_datetime(item.created_at),
         "updated_at": serialize_optional_datetime(item.updated_at),
+    }
+
+
+def serialize_memory_item_evidence_record(
+    evidence: MemoryItemEvidence,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": evidence.id,
+        "user_id": evidence.user_id,
+        "memory_item_id": evidence.memory_item_id,
+        "source_kind": evidence.source_kind,
+        "runtime_thread_id": evidence.runtime_thread_id,
+        "runtime_message_id": evidence.runtime_message_id,
+        "runtime_message_ids_json": evidence.runtime_message_ids_json,
+        "transcript_ref": evidence.transcript_ref,
+        "sequence_id": evidence.sequence_id,
+        "speaker": evidence.speaker,
+        "observed_at": serialize_optional_datetime(evidence.observed_at),
+        "source_created_at": serialize_optional_datetime(evidence.source_created_at),
+        "confidence": evidence.confidence,
+        "extractor": evidence.extractor,
+        "evidence_text": _decrypt_field_value(
+            evidence.evidence_text,
+            deks,
+            table="memory_item_evidence",
+            field="evidence_text",
+            user_id=evidence.user_id,
+        ),
+        "metadata_json": evidence.metadata_json,
+        "created_at": serialize_optional_datetime(evidence.created_at),
     }
 
 
@@ -1146,8 +1263,20 @@ def serialize_memory_episode_record(
         "date": ep.date,
         "time": ep.time,
         "topics_json": ep.topics_json,
-        "summary": _decrypt_field_value(ep.summary, deks, table="memory_episodes"),
-        "emotional_arc": _decrypt_field_value(ep.emotional_arc, deks, table="memory_episodes"),
+        "summary": _decrypt_field_value(
+            ep.summary,
+            deks,
+            table="memory_episodes",
+            field="summary",
+            user_id=ep.user_id,
+        ),
+        "emotional_arc": _decrypt_field_value(
+            ep.emotional_arc,
+            deks,
+            table="memory_episodes",
+            field="emotional_arc",
+            user_id=ep.user_id,
+        ),
         "significance_score": ep.significance_score,
         "turn_count": ep.turn_count,
         "created_at": serialize_optional_datetime(ep.created_at),
@@ -1222,6 +1351,7 @@ def serialize_agent_message_record(
     thread_user_map: dict[int, int] | None = None,
     deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
+    user_id = thread_user_map.get(m.thread_id) if thread_user_map is not None else None
     return {
         "id": m.id,
         "thread_id": m.thread_id,
@@ -1229,7 +1359,13 @@ def serialize_agent_message_record(
         "step_id": m.step_id,
         "sequence_id": m.sequence_id,
         "role": m.role,
-        "content_text": _decrypt_field_value(m.content_text, deks, table="agent_messages"),
+        "content_text": _decrypt_field_value(
+            m.content_text,
+            deks,
+            table="agent_messages",
+            field="content_text",
+            user_id=user_id,
+        ),
         "content_json": m.content_json,
         "tool_name": m.tool_name,
         "tool_call_id": m.tool_call_id,
@@ -1249,7 +1385,13 @@ def serialize_self_model_block_record(
         "id": block.id,
         "user_id": block.user_id,
         "section": block.section,
-        "content": _decrypt_field_value(block.content, deks, table="self_model_blocks"),
+        "content": _decrypt_field_value(
+            block.content,
+            deks,
+            table="self_model_blocks",
+            field="content",
+            user_id=block.user_id,
+        ),
         "version": block.version,
         "updated_by": block.updated_by,
         "metadata_json": block.metadata_json,
@@ -1270,10 +1412,22 @@ def serialize_emotional_signal_record(
         "emotion": signal.emotion,
         "confidence": signal.confidence,
         "evidence_type": signal.evidence_type,
-        "evidence": _decrypt_field_value(signal.evidence, deks, table="emotional_signals"),
+        "evidence": _decrypt_field_value(
+            signal.evidence,
+            deks,
+            table="emotional_signals",
+            field="evidence",
+            user_id=signal.user_id,
+        ),
         "trajectory": signal.trajectory,
         "previous_emotion": signal.previous_emotion,
-        "topic": _decrypt_field_value(signal.topic, deks, table="emotional_signals"),
+        "topic": _decrypt_field_value(
+            signal.topic,
+            deks,
+            table="emotional_signals",
+            field="topic",
+            user_id=signal.user_id,
+        ),
         "acted_on": signal.acted_on,
         "created_at": serialize_optional_datetime(signal.created_at),
     }
@@ -1314,6 +1468,7 @@ def reset_identity_sequences(db: Session) -> None:
         "users",
         "user_keys",
         "memory_items",
+        "memory_item_evidence",
         "memory_episodes",
         "tasks",
         "self_model_blocks",
@@ -1413,6 +1568,15 @@ def _re_encrypt_snapshot_fields(
         if isinstance(item, dict) and item.get("content"):
             item["content"] = _re_encrypt_field_value(
                 item["content"], user_id, table="memory_items", field="content"
+            )
+
+    for evidence in snapshot.get("memoryItemEvidence", []):
+        if isinstance(evidence, dict) and evidence.get("evidence_text"):
+            evidence["evidence_text"] = _re_encrypt_field_value(
+                evidence["evidence_text"],
+                user_id,
+                table="memory_item_evidence",
+                field="evidence_text",
             )
 
     for ep in snapshot.get("memoryEpisodes", []):

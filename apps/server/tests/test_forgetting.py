@@ -12,8 +12,10 @@ from anima_server.models import (
     MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
+    MemoryItemEvidence,
 )
 from anima_server.models.consciousness import SelfModelBlock
+from anima_server.services import anima_core_retrieval as retrieval_module
 from anima_server.services.agent.forgetting import (
     HEAT_VISIBILITY_FLOOR,
     SUPERSEDED_DECAY_MULTIPLIER,
@@ -24,7 +26,7 @@ from anima_server.services.agent.forgetting import (
     redact_derived_references,
     suppress_memory,
 )
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -299,6 +301,83 @@ class TestForgetMemory:
 
         assert db.get(MemoryClaim, claim_id) is None
         assert db.get(MemoryClaimEvidence, evidence_id) is None
+
+    def test_forget_deletes_memory_item_evidence_for_supersession_chain(self, db: Session):
+        old_item = _make_item(db, content="old secret")
+        current_item = _make_item(db, content="current secret")
+        old_item.superseded_by = current_item.id
+        db.add_all(
+            [
+                MemoryItemEvidence(
+                    user_id=1,
+                    memory_item_id=old_item.id,
+                    source_kind="explicit_save",
+                    evidence_text="old secret evidence",
+                ),
+                MemoryItemEvidence(
+                    user_id=1,
+                    memory_item_id=current_item.id,
+                    source_kind="explicit_save",
+                    evidence_text="current secret evidence",
+                ),
+            ]
+        )
+        db.flush()
+
+        forget_memory(db, memory_id=current_item.id, user_id=1)
+
+        remaining = db.scalar(
+            select(func.count())
+            .select_from(MemoryItemEvidence)
+            .where(MemoryItemEvidence.memory_item_id.in_([old_item.id, current_item.id]))
+        )
+        assert remaining == 0
+
+    def test_forget_defers_retrieval_index_cleanup_until_after_commit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+        item = _make_item(db, content="secret fact")
+        item_id = item.id
+
+        forget_memory(db, memory_id=item_id, user_id=1)
+
+        assert deletes == []
+        db.commit()
+        assert deletes == [
+            {
+                "root": retrieval_module.get_retrieval_root(),
+                "record_id": item_id,
+                "user_id": 1,
+            }
+        ]
+
+    def test_forget_drops_deferred_retrieval_cleanup_on_rollback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+        item = _make_item(db, content="secret fact")
+
+        forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert deletes == []
+        db.rollback()
+        db.commit()
+        assert deletes == []
 
     def test_forget_flags_derived_refs(self, db: Session):
         item = _make_item(db, content="Likes hiking")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -10,12 +11,14 @@ from datetime import UTC, datetime
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, MemoryItemEvidence, User
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.models.pending_memory_op import PendingMemoryOp
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
+    MemoryExtractionFailure,
     MemoryRetrievalFeedback,
     PromotionJournal,
 )
@@ -108,6 +111,50 @@ def _create_runtime_engine() -> Engine:
     return engine
 
 
+def _make_thread_bound_soul_factory(
+    engine: Engine,
+    cross_thread_accesses: list[tuple[str, int, int]],
+) -> sessionmaker[Session]:
+    class ThreadBoundSession(Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._owner_thread = threading.get_ident()
+
+        def _assert_owner_thread(self, operation: str) -> None:
+            current_thread = threading.get_ident()
+            if current_thread != self._owner_thread:
+                cross_thread_accesses.append(
+                    (operation, self._owner_thread, current_thread)
+                )
+                raise AssertionError(
+                    f"Session.{operation} used from thread {current_thread}; "
+                    f"owner thread is {self._owner_thread}"
+                )
+
+        def get(self, *args, **kwargs):
+            self._assert_owner_thread("get")
+            return super().get(*args, **kwargs)
+
+        def execute(self, *args, **kwargs):
+            self._assert_owner_thread("execute")
+            return super().execute(*args, **kwargs)
+
+        def flush(self, *args, **kwargs):
+            self._assert_owner_thread("flush")
+            return super().flush(*args, **kwargs)
+
+        def commit(self, *args, **kwargs):
+            self._assert_owner_thread("commit")
+            return super().commit(*args, **kwargs)
+
+    return sessionmaker(
+        bind=engine,
+        autoflush=False,
+        expire_on_commit=False,
+        class_=ThreadBoundSession,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 1: No work — access sync still runs, result has zero counts
 # ---------------------------------------------------------------------------
@@ -148,6 +195,187 @@ async def test_run_soul_writer_no_work() -> None:
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_run_soul_writer_retries_failed_extraction_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.data_crypto import df
+
+    class _FakeResponse:
+        content = (
+            '{"memories":[{"content":"Likes careful retries",'
+            '"category":"preference","importance":4}]}'
+        )
+
+    class _FakeLLM:
+        async def ainvoke(self, _messages):
+            return _FakeResponse()
+
+    original_provider = settings.agent_provider
+    settings.agent_provider = "openai"
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm.create_llm",
+        lambda: _FakeLLM(),
+    )
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    try:
+        with soul_factory() as soul_db:
+            user = User(username="retry-extraction", password_hash="x", display_name="Retry")
+            soul_db.add(user)
+            soul_db.commit()
+            user_id = user.id
+
+        with runtime_factory() as runtime_db:
+            runtime_db.add(
+                MemoryExtractionFailure(
+                    user_id=user_id,
+                    source_message_ids=[101, 102],
+                    user_message_preview="I like careful retries.",
+                    assistant_response_preview="Noted.",
+                    failure_reason="LLM timed out",
+                    status="failed",
+                    retry_count=0,
+                )
+            )
+            runtime_db.commit()
+
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+
+        with runtime_factory() as runtime_db:
+            failure = runtime_db.scalar(select(MemoryExtractionFailure))
+        with soul_factory() as soul_db:
+            item = soul_db.scalar(select(MemoryItem))
+            evidence = soul_db.scalar(select(MemoryItemEvidence))
+
+        assert result.extraction_failures_retried == 1
+        assert result.extraction_failures_resolved == 1
+        assert failure is not None
+        assert failure.status == "resolved"
+        assert failure.retry_count == 1
+        assert failure.resolved_at is not None
+        assert item is not None
+        assert df(user_id, item.content, table="memory_items", field="content") == (
+            "Likes careful retries"
+        )
+        assert evidence is not None
+        assert evidence.runtime_message_ids_json == [101, 102]
+    finally:
+        settings.agent_provider = original_provider
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_run_soul_writer_retries_failed_extraction_from_source_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.data_crypto import df
+
+    captured_prompts: list[str] = []
+
+    class _FakeResponse:
+        content = (
+            '{"memories":[{"content":"Keeps a rare mango marker",'
+            '"category":"fact","importance":4}]}'
+        )
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            prompt = "\n".join(str(getattr(message, "content", message)) for message in messages)
+            captured_prompts.append(prompt)
+            return _FakeResponse()
+
+    original_provider = settings.agent_provider
+    settings.agent_provider = "openai"
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm.create_llm",
+        lambda: _FakeLLM(),
+    )
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    try:
+        with soul_factory() as soul_db:
+            user = User(username="retry-source", password_hash="x", display_name="Retry Source")
+            soul_db.add(user)
+            soul_db.commit()
+            user_id = user.id
+
+        long_prefix = "context " * 40
+        full_user_message = (
+            f"{long_prefix}The important late fact is rare-mango-marker."
+        )
+        with runtime_factory() as runtime_db:
+            thread = RuntimeThread(user_id=user_id, status="closed", next_message_sequence=3)
+            runtime_db.add(thread)
+            runtime_db.flush()
+            user_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user_id,
+                sequence_id=1,
+                role="user",
+                content_text=full_user_message,
+            )
+            assistant_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user_id,
+                sequence_id=2,
+                role="assistant",
+                content_text="I will remember the rare mango marker.",
+            )
+            runtime_db.add_all([user_message, assistant_message])
+            runtime_db.flush()
+            runtime_db.add(
+                MemoryExtractionFailure(
+                    user_id=user_id,
+                    source_message_ids=[user_message.id, assistant_message.id],
+                    user_message_preview=full_user_message[:80],
+                    assistant_response_preview="preview without marker",
+                    failure_reason="LLM timed out",
+                    status="failed",
+                    retry_count=0,
+                )
+            )
+            runtime_db.commit()
+
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+
+        with soul_factory() as soul_db:
+            item = soul_db.scalar(select(MemoryItem))
+
+        assert result.extraction_failures_retried == 1
+        assert result.extraction_failures_resolved == 1
+        assert captured_prompts
+        assert "rare-mango-marker" in captured_prompts[0]
+        assert item is not None
+        assert (
+            df(user_id, item.content, table="memory_items", field="content")
+            == "Keeps a rare mango marker"
+        )
+    finally:
+        settings.agent_provider = original_provider
+        soul_engine.dispose()
+        runtime_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +441,231 @@ async def test_process_candidate_promote() -> None:
     with soul_factory() as soul_db:
         items = soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all()
         assert len(items) >= 1
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_candidate_promote_creates_memory_item_evidence() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="evidence-promote", password_hash="x", display_name="Evidence")
+        soul_db.add(user)
+        soul_db.commit()
+        user_id = user.id
+
+    with runtime_factory() as runtime_db:
+        thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=2)
+        runtime_db.add(thread)
+        runtime_db.flush()
+        message = RuntimeMessage(
+            thread_id=thread.id,
+            user_id=user_id,
+            sequence_id=1,
+            role="user",
+            content_text="I prefer green tea in the morning.",
+        )
+        runtime_db.add(message)
+        runtime_db.flush()
+        candidate = MemoryCandidate(
+            user_id=user_id,
+            content="Prefers green tea in the morning",
+            category="preference",
+            importance=4,
+            importance_source="llm",
+            source="llm",
+            source_message_ids=[message.id],
+            content_hash=_content_hash(
+                user_id,
+                "preference",
+                "llm",
+                "Prefers green tea in the morning",
+            ),
+            status="extracted",
+        )
+        runtime_db.add(candidate)
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.candidates_promoted == 1
+    with soul_factory() as soul_db:
+        evidence = soul_db.scalar(
+            select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == user_id)
+        )
+
+    assert evidence is not None
+    assert evidence.source_kind == "llm_extraction"
+    assert evidence.runtime_thread_id == thread.id
+    assert evidence.runtime_message_id == message.id
+    assert evidence.runtime_message_ids_json == [message.id]
+    assert evidence.speaker == "user"
+    assert evidence.evidence_text == "I prefer green tea in the morning."
+    assert evidence.confidence == 0.8
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_evidence_ignores_source_messages_from_other_users() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user_one = User(username="source-owner", password_hash="x", display_name="Source Owner")
+        user_two = User(username="candidate-owner", password_hash="x", display_name="Candidate")
+        soul_db.add_all([user_one, user_two])
+        soul_db.commit()
+        other_user_id = user_one.id
+        candidate_user_id = user_two.id
+
+    with runtime_factory() as runtime_db:
+        thread = RuntimeThread(user_id=other_user_id, status="active", next_message_sequence=2)
+        runtime_db.add(thread)
+        runtime_db.flush()
+        other_message = RuntimeMessage(
+            thread_id=thread.id,
+            user_id=other_user_id,
+            sequence_id=1,
+            role="user",
+            content_text="Other user's private source text.",
+        )
+        runtime_db.add(other_message)
+        runtime_db.flush()
+        candidate = MemoryCandidate(
+            user_id=candidate_user_id,
+            content="Candidate user's extracted memory",
+            category="fact",
+            importance=4,
+            importance_source="llm",
+            source="llm",
+            source_message_ids=[other_message.id],
+            content_hash=_content_hash(
+                candidate_user_id,
+                "fact",
+                "llm",
+                "Candidate user's extracted memory",
+            ),
+            status="extracted",
+        )
+        runtime_db.add(candidate)
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        candidate_user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.candidates_promoted == 1
+    with soul_factory() as soul_db:
+        evidence = soul_db.scalar(
+            select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == candidate_user_id)
+        )
+
+    assert evidence is not None
+    assert evidence.evidence_text == "Candidate user's extracted memory"
+    assert evidence.runtime_thread_id is None
+    assert evidence.runtime_message_id is None
+    assert evidence.speaker == "unknown"
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_inline_embedding_uses_event_loop_owned_soul_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    cross_thread_accesses: list[tuple[str, int, int]] = []
+    soul_factory = _make_thread_bound_soul_factory(
+        soul_engine,
+        cross_thread_accesses,
+    )
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    import anima_server.services.agent.bm25_index as bm25_module
+    import anima_server.services.agent.embeddings as embeddings_module
+    import anima_server.services.agent.memory_store as memory_store_module
+    import anima_server.services.agent.vector_store as vector_store_module
+
+    async def _fake_generate_embedding(_text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "generate_embedding",
+        _fake_generate_embedding,
+    )
+    monkeypatch.setattr(
+        memory_store_module,
+        "sync_memory_item_to_retrieval_index",
+        lambda _item: None,
+    )
+    monkeypatch.setattr(
+        vector_store_module,
+        "upsert_memory",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        bm25_module,
+        "invalidate_index",
+        lambda _user_id: None,
+    )
+
+    with soul_factory() as soul_db:
+        user = User(
+            username="inline-embed-thread",
+            password_hash="x",
+            display_name="Inline Embed Thread",
+        )
+        soul_db.add(user)
+        soul_db.commit()
+        user_id = user.id
+
+    with runtime_factory() as runtime_db:
+        candidate = MemoryCandidate(
+            user_id=user_id,
+            content="Likes jasmine tea",
+            category="preference",
+            importance=3,
+            importance_source="llm",
+            source="llm",
+            content_hash=_content_hash(user_id, "preference", "llm", "Likes jasmine tea"),
+            status="extracted",
+        )
+        runtime_db.add(candidate)
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.candidates_promoted == 1
+    assert result.errors == []
+    assert cross_thread_accesses == []
+
+    with soul_factory() as soul_db:
+        item = soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id))
+        assert item is not None
+        assert item.embedding_json == [0.1, 0.2, 0.3]
+        assert item.embedding_checksum is not None
 
     soul_engine.dispose()
     runtime_engine.dispose()

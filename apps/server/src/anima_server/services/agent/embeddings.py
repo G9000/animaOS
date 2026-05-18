@@ -1064,8 +1064,10 @@ async def hybrid_search(
         keyword_weight=keyword_weight,
     )
 
-    # Resolve item_ids to MemoryItem objects
-    merged_ids = [item_id for item_id, _ in merged[:limit]]
+    # Resolve the full merged candidate pool, then apply post-filters while
+    # walking the ranking. Early candidates may be missing, tag-filtered, or
+    # below the heat floor; later valid candidates should still backfill.
+    merged_ids = [item_id for item_id, _ in merged]
     items_by_id = (
         {
             item.id: item
@@ -1078,7 +1080,7 @@ async def hybrid_search(
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
     results: list[tuple[MemoryItem, float]] = []
-    for item_id, rrf_score in merged[:limit]:
+    for item_id, rrf_score in merged:
         if item_id in items_by_id:
             if allowed_ids is not None and item_id not in allowed_ids:
                 continue
@@ -1088,6 +1090,8 @@ async def hybrid_search(
             if item.heat not in (None, 0.0) and item.heat < HEAT_VISIBILITY_FLOOR:
                 continue
             results.append((item, rrf_score))
+            if len(results) >= limit:
+                break
 
     # --- BM25 rerank stage ---
     if results:

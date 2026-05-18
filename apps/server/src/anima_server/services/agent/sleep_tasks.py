@@ -21,6 +21,8 @@ from anima_server.models import MemoryItem
 from anima_server.services.agent.memory_store import (
     _similarity,
     get_memory_items,
+    invalidate_memory_retrieval_indexes,
+    remove_memory_item_from_retrieval_index,
     supersede_memory_item,
 )
 from anima_server.services.data_crypto import df
@@ -259,6 +261,9 @@ async def scan_contradictions(
                         old_item_id=item_a.id,
                         new_content=merged,
                         importance=max(item_a.importance, item_b.importance),
+                        evidence_text=merged,
+                        evidence_source_kind="maintenance_merge",
+                        evidence_metadata={"memory_source": "contradiction_merge"},
                     )
                     item_b.superseded_by = merged_item.id
                     item_b.updated_at = datetime.now(UTC)
@@ -275,7 +280,7 @@ async def scan_contradictions(
 
 
 def _cleanup_superseded_indexes(user_id: int, item_id: int, db: Any) -> None:
-    """Remove a superseded item from vector store and BM25 index."""
+    """Remove a superseded item from vector, keyword, and Rust retrieval indexes."""
     try:
         from anima_server.services.agent.vector_store import delete_memory
 
@@ -283,11 +288,13 @@ def _cleanup_superseded_indexes(user_id: int, item_id: int, db: Any) -> None:
     except Exception:
         logger.debug("Vector cleanup failed for superseded item %d", item_id)
     try:
-        from anima_server.services.agent.bm25_index import invalidate_index
-
-        invalidate_index(user_id)
+        item = db.get(MemoryItem, item_id)
+        removed = True
+        if item is not None:
+            removed = remove_memory_item_from_retrieval_index(item)
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not removed)
     except Exception:
-        logger.debug("BM25 invalidation failed for user %d", user_id)
+        logger.debug("Retrieval index cleanup failed for user %d", user_id)
 
 
 def _suppress_after_contradiction(
@@ -343,6 +350,9 @@ async def synthesize_profile(
                 old_item_id=merge_items[0].id,
                 new_content=merged_content,
                 importance=max_importance,
+                evidence_text=merged_content,
+                evidence_source_kind="maintenance_merge",
+                evidence_metadata={"memory_source": "profile_synthesis_merge"},
             )
             for item in merge_items[1:]:
                 item.superseded_by = merged_item.id

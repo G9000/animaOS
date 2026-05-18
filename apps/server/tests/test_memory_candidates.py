@@ -8,6 +8,7 @@ from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
+    MemoryExtractionFailure,
     PromotionJournal,
 )
 from sqlalchemy import create_engine, select
@@ -73,6 +74,23 @@ def test_create_memory_access_log(pg_session: Session) -> None:
     pg_session.flush()
     assert log.id is not None
     assert log.synced is False
+
+
+def test_create_memory_extraction_failure(pg_session: Session) -> None:
+    failure = MemoryExtractionFailure(
+        user_id=1,
+        source_message_ids=[101, 102],
+        failure_reason="LLM timeout",
+        user_message_preview="I prefer careful memory handling",
+        assistant_response_preview="Noted.",
+    )
+    pg_session.add(failure)
+    pg_session.flush()
+
+    assert failure.id is not None
+    assert failure.status == "failed"
+    assert failure.retry_count == 0
+    assert failure.source_message_ids == [101, 102]
 
 
 def test_candidate_status_lifecycle(pg_session: Session) -> None:

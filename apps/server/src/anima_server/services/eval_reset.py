@@ -20,6 +20,7 @@ from anima_server.models import (
     MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
+    MemoryItemEvidence,
     MemoryItemTag,
     MemoryVector,
     RuntimeBackgroundTaskRun,
@@ -62,6 +63,12 @@ def reset_eval_user_state(
 
     _reset_runtime_state(runtime_db, user_id=user_id, deleted=deleted)
     _reset_soul_state(soul_db, user_id=user_id, deleted=deleted)
+    try:
+        from anima_server.services.agent.memory_store import invalidate_memory_retrieval_indexes
+
+        invalidate_memory_retrieval_indexes(user_id)
+    except Exception:
+        pass
 
     runtime_db.commit()
     soul_db.commit()
@@ -123,6 +130,12 @@ def _reset_soul_state(
         deleted,
         "memory_claim_evidence",
         delete(MemoryClaimEvidence).where(MemoryClaimEvidence.claim_id.in_(memory_claim_ids)),
+    )
+    _delete(
+        db,
+        deleted,
+        "memory_item_evidence",
+        delete(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id.in_(memory_item_ids)),
     )
     _delete(db, deleted, "kg_relations", delete(KGRelation).where(KGRelation.user_id == user_id))
     _delete(db, deleted, "kg_entities", delete(KGEntity).where(KGEntity.user_id == user_id))

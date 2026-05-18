@@ -39,6 +39,9 @@ class SoulWriterResult:
     ops_processed: int = 0
     ops_skipped: int = 0
     ops_failed: int = 0
+    extraction_failures_retried: int = 0
+    extraction_failures_resolved: int = 0
+    extraction_failures_failed: int = 0
     candidates_promoted: int = 0
     candidates_rejected: int = 0
     candidates_superseded: int = 0
@@ -54,7 +57,7 @@ async def _embed_and_index_item(
     content: str,
     category: str,
     importance: int,
-    soul_db: Session,
+    soul_db_factory: Callable[..., Session],
 ) -> None:
     """Generate embedding for a newly promoted item and upsert into indexes."""
     try:
@@ -69,8 +72,11 @@ async def _embed_and_index_item(
         if embedding is None:
             return
 
-        item = soul_db.get(MemoryItem, item_id)
-        if item is not None:
+        with soul_db_factory() as soul_db:
+            item = soul_db.get(MemoryItem, item_id)
+            if item is None:
+                return
+
             item.embedding_json = embedding
             item.embedding_checksum = compute_embedding_checksum(embedding)
             soul_db.flush()
@@ -85,6 +91,7 @@ async def _embed_and_index_item(
                 importance=importance,
                 db=soul_db,
             )
+            soul_db.commit()
 
         invalidate_index(user_id)
         logger.debug(
@@ -131,6 +138,7 @@ async def run_soul_writer(
         result.ops_processed
         + result.ops_skipped
         + result.ops_failed
+        + result.extraction_failures_retried
         + result.candidates_promoted
         + result.candidates_rejected
         + result.candidates_superseded
@@ -138,11 +146,17 @@ async def run_soul_writer(
     )
     if total_work > 0 or result.errors:
         logger.info(
-            "Soul Writer user=%s: ops=%d/%d/%d cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d",
+            (
+                "Soul Writer user=%s: ops=%d/%d/%d extraction_retries=%d/%d/%d "
+                "cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d"
+            ),
             user_id,
             result.ops_processed,
             result.ops_skipped,
             result.ops_failed,
+            result.extraction_failures_retried,
+            result.extraction_failures_resolved,
+            result.extraction_failures_failed,
             result.candidates_promoted,
             result.candidates_rejected,
             result.candidates_superseded,
@@ -219,6 +233,16 @@ def _run_soul_writer_inner(
                 result.ops_failed += 1
                 result.errors.append(f"op {op.id}: {e}")
 
+        runtime_db.commit()
+
+    # Phase 1.5: Retry preserved turn-level extraction failures.
+    with rt_factory() as runtime_db:
+        _retry_memory_extraction_failures(
+            runtime_db,
+            user_id=user_id,
+            result=result,
+            event_loop=event_loop,
+        )
         runtime_db.commit()
 
     # Phase 2: Process MemoryCandidates
@@ -342,8 +366,155 @@ def _run_soul_writer_inner(
                     user_id,
                 )
     except Exception:
-        logger.debug("Emotional pattern promotion failed for user %s",
-                     user_id, exc_info=True)
+        logger.debug(
+            "Emotional pattern promotion failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+
+def _retry_memory_extraction_failures(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    result: SoulWriterResult,
+    event_loop: asyncio.AbstractEventLoop | None,
+) -> None:
+    if event_loop is None:
+        return
+
+    from anima_server.config import settings
+
+    if settings.agent_provider == "scaffold":
+        return
+
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+    from anima_server.services.agent.consolidation import extract_memories_via_llm
+
+    failures = list(
+        runtime_db.scalars(
+            select(MemoryExtractionFailure)
+            .where(
+                MemoryExtractionFailure.user_id == user_id,
+                MemoryExtractionFailure.status == "failed",
+                MemoryExtractionFailure.retry_count < MAX_RETRY_COUNT,
+            )
+            .order_by(MemoryExtractionFailure.created_at)
+            .limit(MAX_ITEMS_PER_RUN)
+        ).all()
+    )
+    if not failures:
+        return
+
+    for failure in failures:
+        now = datetime.now(UTC)
+        failure.retry_count = (failure.retry_count or 0) + 1
+        failure.last_attempt_at = now
+        failure.updated_at = now
+        result.extraction_failures_retried += 1
+
+        user_message, assistant_response = _memory_extraction_failure_retry_texts(
+            runtime_db,
+            user_id=user_id,
+            failure=failure,
+        )
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                extract_memories_via_llm(
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                ),
+                event_loop,
+            )
+            llm_result = future.result(timeout=30)
+        except Exception as exc:
+            failure.failure_reason = str(exc)[:2000]
+            result.extraction_failures_failed += 1
+            result.errors.append(f"extraction failure {failure.id}: {exc}")
+            continue
+
+        if llm_result.failed:
+            failure.failure_reason = (llm_result.error or "LLM memory extraction failed")[:2000]
+            result.extraction_failures_failed += 1
+            result.errors.append(f"extraction failure {failure.id}: {failure.failure_reason}")
+            continue
+
+        for item in llm_result.memories:
+            content = item.get("content", "")
+            if not content or not isinstance(content, str):
+                continue
+            create_memory_candidate(
+                runtime_db,
+                user_id=user_id,
+                content=content,
+                category=item.get("category", "fact"),
+                importance=item.get("importance", 3),
+                importance_source="llm",
+                source="llm",
+                source_message_ids=list(failure.source_message_ids or []),
+                extraction_model=failure.extraction_model,
+            )
+
+        failure.status = "resolved"
+        failure.resolved_at = now
+        failure.updated_at = now
+        result.extraction_failures_resolved += 1
+
+
+def _memory_extraction_failure_retry_texts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    failure,
+) -> tuple[str, str]:
+    source_message_ids = [int(message_id) for message_id in failure.source_message_ids or []]
+    if source_message_ids:
+        from anima_server.models.runtime import RuntimeMessage
+
+        message_position = {
+            message_id: index for index, message_id in enumerate(source_message_ids)
+        }
+        messages = list(
+            runtime_db.scalars(
+                select(RuntimeMessage).where(
+                    RuntimeMessage.user_id == user_id,
+                    RuntimeMessage.id.in_(source_message_ids),
+                )
+            ).all()
+        )
+        messages.sort(key=lambda message: message_position.get(int(message.id), len(messages)))
+        if messages:
+            user_parts: list[str] = []
+            assistant_parts: list[str] = []
+            for message in messages:
+                content = _runtime_message_text(message)
+                if not content:
+                    continue
+                if message.role == "user":
+                    user_parts.append(content)
+                elif message.role == "assistant":
+                    assistant_parts.append(content)
+
+            if user_parts or assistant_parts:
+                return (
+                    "\n\n".join(user_parts) or failure.user_message_preview or "",
+                    "\n\n".join(assistant_parts) or failure.assistant_response_preview or "",
+                )
+
+    return (
+        failure.user_message_preview or "",
+        failure.assistant_response_preview or "",
+    )
+
+
+def _runtime_message_text(message) -> str:
+    if message.content_text:
+        return str(message.content_text)
+    if message.content_json is not None:
+        return str(message.content_json)
+    return ""
 
 
 def _process_pending_op(
@@ -550,6 +721,17 @@ def _process_candidate(
                 logger.debug(
                     "upsert_claim failed for candidate %s", candidate.id)
 
+            from anima_server.services.agent.provenance import (
+                add_candidate_memory_item_evidence,
+            )
+
+            add_candidate_memory_item_evidence(
+                soul_db,
+                runtime_db=runtime_db,
+                candidate=candidate,
+                memory_item=new_item,
+            )
+
             soul_db.commit()
 
             # Embed immediately so the item is searchable right away
@@ -564,7 +746,7 @@ def _process_candidate(
                             candidate.content,
                             candidate.category,
                             candidate.importance,
-                            soul_db,
+                            soul_db_factory,
                         ),
                         event_loop,
                     ).result(timeout=15)
@@ -627,6 +809,17 @@ def _process_candidate(
                 logger.debug(
                     "upsert_claim failed for candidate %s", candidate.id)
 
+            from anima_server.services.agent.provenance import (
+                add_candidate_memory_item_evidence,
+            )
+
+            add_candidate_memory_item_evidence(
+                soul_db,
+                runtime_db=runtime_db,
+                candidate=candidate,
+                memory_item=new_item,
+            )
+
             # If store_memory_item did a supersession, suppress old item
             if write_result.action == "superseded" and write_result.matched_item:
                 try:
@@ -660,7 +853,7 @@ def _process_candidate(
                         candidate.content,
                         candidate.category,
                         candidate.importance,
-                        soul_db,
+                        soul_db_factory,
                     ),
                     event_loop,
                 ).result(timeout=15)

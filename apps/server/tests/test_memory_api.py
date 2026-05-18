@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import MemoryItemEvidence
 from anima_server.services import anima_core_retrieval as retrieval_module
+from anima_server.services.data_crypto import df
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 
 def _register_user(client: TestClient) -> dict[str, object]:
@@ -84,6 +90,299 @@ def test_memory_crud_lifecycle() -> None:
 
         resp = client.get(f"/api/memory/{user_id}/items?category=fact", headers=headers)
         assert len(resp.json()) == 0
+
+
+def test_memory_delete_removes_item_evidence() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Keeps provenance", "category": "fact", "importance": 4},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+
+        with get_user_session_factory(user_id)() as db:
+            db.add(
+                MemoryItemEvidence(
+                    user_id=user_id,
+                    memory_item_id=item_id,
+                    source_kind="explicit_save",
+                    evidence_text="Keeps provenance",
+                )
+            )
+            db.commit()
+
+        resp = client.delete(
+            f"/api/memory/{user_id}/items/{item_id}",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        with get_user_session_factory(user_id)() as db:
+            remaining = db.scalar(
+                select(MemoryItemEvidence).where(
+                    MemoryItemEvidence.user_id == user_id,
+                    MemoryItemEvidence.memory_item_id == item_id,
+                )
+            )
+        assert remaining is None
+
+
+def test_memory_create_records_item_evidence() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Keeps provenance automatically", "category": "fact"},
+        )
+
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+        with get_user_session_factory(user_id)() as db:
+            evidence_rows = list(
+                db.scalars(
+                    select(MemoryItemEvidence).where(
+                        MemoryItemEvidence.user_id == user_id,
+                        MemoryItemEvidence.memory_item_id == item_id,
+                    )
+                ).all()
+            )
+
+        assert len(evidence_rows) == 1
+        assert evidence_rows[0].source_kind == "explicit_save"
+        assert evidence_rows[0].speaker == "user"
+        assert evidence_rows[0].observed_at is not None
+        assert evidence_rows[0].source_created_at is not None
+        assert (
+            df(
+                user_id,
+                evidence_rows[0].evidence_text,
+                table="memory_item_evidence",
+                field="evidence_text",
+            )
+            == "Keeps provenance automatically"
+        )
+
+
+def test_memory_create_defers_retrieval_index_upsert_until_after_commit(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+        upserts.clear()
+
+        def fail_commit(self: Session) -> None:
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.post(
+                f"/api/memory/{user_id}/items",
+                headers=headers,
+                json={
+                    "content": "Uncommitted create should not reach recall",
+                    "category": "fact",
+                },
+            )
+
+    assert upserts == []
+
+
+def test_memory_update_records_replacement_evidence() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Works as a designer", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        original_id = int(resp.json()["id"])
+
+        resp = client.put(
+            f"/api/memory/{user_id}/items/{original_id}",
+            headers=headers,
+            json={"content": "Works as a product manager"},
+        )
+
+        assert resp.status_code == 200
+        replacement_id = int(resp.json()["id"])
+        with get_user_session_factory(user_id)() as db:
+            evidence = db.scalar(
+                select(MemoryItemEvidence).where(
+                    MemoryItemEvidence.user_id == user_id,
+                    MemoryItemEvidence.memory_item_id == replacement_id,
+                )
+            )
+
+        assert evidence is not None
+        assert evidence.source_kind == "explicit_update"
+        assert evidence.speaker == "user"
+        assert evidence.observed_at is not None
+        assert (
+            df(
+                user_id,
+                evidence.evidence_text,
+                table="memory_item_evidence",
+                field="evidence_text",
+            )
+            == "Works as a product manager"
+        )
+
+
+def test_memory_update_defers_retrieval_index_changes_until_after_commit(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    deletes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_delete",
+        lambda **kwargs: deletes.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Commit failure should keep old recall", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+        upserts.clear()
+        deletes.clear()
+
+        def fail_commit(self: Session) -> None:
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.put(
+                f"/api/memory/{user_id}/items/{item_id}",
+                headers=headers,
+                json={"content": "Uncommitted replacement"},
+            )
+
+    assert upserts == []
+    assert deletes == []
+
+
+def test_memory_supersede_drops_deferred_retrieval_index_changes_on_rollback(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    deletes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_delete",
+        lambda **kwargs: deletes.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Rollback should keep old recall", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+        upserts.clear()
+        deletes.clear()
+
+        from anima_server.services.agent.memory_store import supersede_memory_item
+
+        with get_user_session_factory(user_id)() as db:
+            supersede_memory_item(
+                db,
+                old_item_id=item_id,
+                new_content="Rolled back replacement",
+                evidence_text="Rolled back replacement",
+                evidence_source_kind="explicit_update",
+            )
+            db.rollback()
+            db.commit()
+
+    assert upserts == []
+    assert deletes == []
+
+
+def test_memory_delete_defers_retrieval_index_cleanup_until_after_commit(
+    monkeypatch,
+) -> None:
+    deletes: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_delete",
+        lambda **kwargs: deletes.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Commit failure should keep recall indexed", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+        deletes.clear()
+
+        def fail_commit(self: Session) -> None:
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.delete(
+                f"/api/memory/{user_id}/items/{item_id}",
+                headers=headers,
+            )
+
+    assert deletes == []
 
 
 def test_memory_duplicate_rejected() -> None:
