@@ -160,9 +160,10 @@ def test_system_prompt_contains_cognitive_loop() -> None:
 
     prompt = build_system_prompt()
     assert "Cognitive Loop:" in prompt
-    assert "thinking" in prompt
+    assert "reason privately" in prompt
     assert "send_message" in prompt
     assert "inner_thought" not in prompt
+    assert "`thinking` argument" not in prompt
 
 
 def test_system_prompt_contains_memory_architecture() -> None:

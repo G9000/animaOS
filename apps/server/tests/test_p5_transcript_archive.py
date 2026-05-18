@@ -1522,6 +1522,66 @@ class TestThreadCloseEndpoint:
 
 
 class TestEagerConsolidation:
+    def test_on_thread_close_uses_user_scoped_soul_factory_by_default(
+        self,
+        runtime_db: Session,
+    ) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        import anima_server.services.agent.eager_consolidation as eager_consolidation
+        from anima_server.models.runtime import RuntimeThread
+
+        thread = RuntimeThread(user_id=42, status="closed")
+        runtime_db.add(thread)
+        runtime_db.commit()
+
+        seen_user_ids: list[int] = []
+        factories = {}
+        captured = {}
+
+        def fake_soul_db_factory_for_user(user_id: int):
+            seen_user_ids.append(user_id)
+
+            def factory() -> None:
+                raise AssertionError("factory should only be passed through")
+
+            factories[user_id] = factory
+            return factory
+
+        async def fake_maybe_generate_episode(**kwargs: object) -> None:
+            captured["db_factory"] = kwargs["db_factory"]
+            return None
+
+        with (
+            patch.object(
+                eager_consolidation,
+                "_get_soul_db_factory",
+                side_effect=fake_soul_db_factory_for_user,
+            ),
+            patch.object(
+                eager_consolidation,
+                "run_soul_writer",
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                eager_consolidation,
+                "maybe_generate_episode",
+                side_effect=fake_maybe_generate_episode,
+            ),
+            patch.object(eager_consolidation, "get_active_dek", return_value=None),
+        ):
+            asyncio.run(
+                eager_consolidation.on_thread_close(
+                    thread_id=thread.id,
+                    user_id=42,
+                    runtime_db_factory=lambda: runtime_db,
+                )
+            )
+
+        assert seen_user_ids == [42]
+        assert captured["db_factory"] is factories[42]
+
     def test_on_thread_close_exports_transcript(
         self,
         runtime_db: Session,
@@ -1555,6 +1615,7 @@ class TestEagerConsolidation:
             patch(
                 "anima_server.services.agent.eager_consolidation.maybe_generate_episode",
                 new_callable=AsyncMock,
+                return_value=None,
             ),
             patch(
                 "anima_server.services.agent.eager_consolidation.get_active_dek",
@@ -1708,6 +1769,57 @@ class TestEagerConsolidation:
 
 
 class TestBackgroundSweeps:
+    def test_inactivity_sweep_uses_user_scoped_soul_factory_per_thread(
+        self,
+        runtime_db: Session,
+    ) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from anima_server.models.runtime import RuntimeThread
+        from anima_server.services.agent.eager_consolidation import inactivity_sweep
+
+        thread = RuntimeThread(user_id=42, status="closed", is_archived=False)
+        runtime_db.add(thread)
+        runtime_db.commit()
+
+        seen_user_ids: list[int] = []
+        factories = {}
+
+        def fake_soul_db_factory_for_user(user_id: int):
+            seen_user_ids.append(user_id)
+
+            def factory() -> None:
+                raise AssertionError("factory should only be passed through")
+
+            factories[user_id] = factory
+            return factory
+
+        def runtime_db_factory() -> Session:
+            return runtime_db
+
+        with (
+            patch(
+                "anima_server.services.agent.eager_consolidation._get_soul_db_factory",
+                side_effect=fake_soul_db_factory_for_user,
+            ),
+            patch(
+                "anima_server.services.agent.eager_consolidation.on_thread_close",
+                new_callable=AsyncMock,
+            ) as mock_on_thread_close,
+        ):
+            count = asyncio.run(
+                inactivity_sweep(
+                    runtime_db_factory=runtime_db_factory,
+                    inactivity_minutes=5,
+                )
+            )
+
+        assert count == 0
+        assert seen_user_ids == [42]
+        assert mock_on_thread_close.await_count == 1
+        assert mock_on_thread_close.await_args.kwargs["soul_db_factory"] is factories[42]
+
     def test_inactivity_sweep_closes_stale_threads(self, runtime_db: Session) -> None:
         import asyncio
         from datetime import UTC, datetime, timedelta

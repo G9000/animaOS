@@ -107,6 +107,36 @@ def _db_session() -> Generator[Session, None, None]:
         session.close()
         engine.dispose()
 
+
+@contextmanager
+def _db_session_pair() -> Generator[tuple[Session, Session], None, None]:
+    """Two sessions sharing one in-memory runtime database."""
+    from anima_server.db.runtime_base import RuntimeBase
+    from anima_server.models import runtime as _rm  # noqa: F401
+
+    engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    Base.metadata.create_all(bind=engine)
+    RuntimeBase.metadata.create_all(bind=engine)
+    session_one = factory()
+    session_two = factory()
+    try:
+        yield session_one, session_two
+    finally:
+        session_two.close()
+        session_one.close()
+        engine.dispose()
+
 _TEST_USER_COUNTER = 0
 
 
@@ -774,6 +804,18 @@ class _ApproveResumeRunner:
         return self._canned
 
 
+class _RecordingAsyncLock:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def __aenter__(self) -> None:
+        self._events.append("enter")
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        del exc_type, exc, tb
+        self._events.append("exit")
+
+
 @pytest.mark.asyncio
 async def test_approve_or_deny_turn_persists_and_finalizes(
     monkeypatch: pytest.MonkeyPatch,
@@ -847,6 +889,113 @@ async def test_approve_or_deny_turn_persists_and_finalizes(
     assert result.stop_reason == "terminal_tool"
     assert runner.resume_calls, "resume_after_approval was not called"
     assert runner.resume_calls[0]["approved"] is True
+
+
+@pytest.mark.asyncio
+async def test_approve_or_deny_turn_uses_thread_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canned_result = AgentResult(
+        response="Approved.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="terminal_tool",
+        step_traces=[StepTrace(step_index=0, assistant_text="Approved.")],
+    )
+    runner = _ApproveResumeRunner(canned_result)
+    lock_events: list[str] = []
+    locked_thread_ids: list[int] = []
+
+    def fake_get_thread_lock(thread_id: int) -> _RecordingAsyncLock:
+        locked_thread_ids.append(thread_id)
+        return _RecordingAsyncLock(lock_events)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kw: None)
+    monkeypatch.setattr(agent_service, "get_thread_lock", fake_get_thread_lock)
+
+    with _db_session() as db:
+        thread, run, user = _setup_thread_and_run(db)
+        seq_id = reserve_message_sequences(db, thread_id=thread.id, count=1)
+        save_approval_checkpoint(
+            db,
+            thread=thread,
+            run=run,
+            tool_call=ToolCall(
+                id="call-1",
+                name="delete_file",
+                arguments={"path": "/tmp/data.txt"},
+            ),
+            step_id=None,
+            sequence_id=seq_id,
+        )
+        db.commit()
+
+        from anima_server.services.agent import approve_or_deny_turn
+
+        await approve_or_deny_turn(
+            run_id=run.id,
+            user_id=user.id,
+            approved=True,
+            db=db,
+            runtime_db=db,
+        )
+
+    assert locked_thread_ids == [thread.id]
+    assert lock_events == ["enter", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_approve_or_deny_turn_reloads_stale_checkpoint_after_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canned_result = AgentResult(
+        response="Approved.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="terminal_tool",
+        step_traces=[StepTrace(step_index=0, assistant_text="Approved.")],
+    )
+    runner = _ApproveResumeRunner(canned_result)
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kw: None)
+
+    with _db_session_pair() as (fresh_db, stale_db):
+        thread, run, user = _setup_thread_and_run(fresh_db)
+        seq_id = reserve_message_sequences(fresh_db, thread_id=thread.id, count=1)
+        approval_msg = save_approval_checkpoint(
+            fresh_db,
+            thread=thread,
+            run=run,
+            tool_call=ToolCall(
+                id="call-1",
+                name="delete_file",
+                arguments={"path": "/tmp/data.txt"},
+            ),
+            step_id=None,
+            sequence_id=seq_id,
+        )
+        fresh_db.commit()
+
+        assert load_approval_checkpoint(stale_db, run.id) is not None
+
+        clear_approval_checkpoint(fresh_db, run, approval_msg)
+        run.status = "completed"
+        fresh_db.add(run)
+        fresh_db.commit()
+
+        from anima_server.services.agent import approve_or_deny_turn
+
+        with pytest.raises(ValueError, match="not awaiting approval"):
+            await approve_or_deny_turn(
+                run_id=run.id,
+                user_id=user.id,
+                approved=True,
+                db=stale_db,
+                runtime_db=stale_db,
+            )
+
+    assert runner.resume_calls == []
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 
@@ -12,7 +13,13 @@ from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.client_actions import ActionToolConnection, action_registry
 from anima_server.services.agent.compaction import compact_thread_context
 from anima_server.services.agent.evidence_retrieval import RetrievalMode, WideEvidenceResult
-from anima_server.services.agent.persistence import create_run, persist_agent_result
+from anima_server.services.agent.memory_blocks import MemoryBlock
+from anima_server.services.agent.persistence import (
+    append_message,
+    cancel_run,
+    create_run,
+    persist_agent_result,
+)
 from anima_server.services.agent.prompt_budget import (
     PromptBudgetBlockDecision,
     PromptBudgetTrace,
@@ -65,6 +72,11 @@ class RecordingRunner:
                 ],
                 "extra_tool_schemas": kwargs.get("extra_tool_schemas"),
                 "tool_executor": kwargs.get("tool_executor"),
+                "memory_blocks": [
+                    (block.label, block.value)
+                    for block in kwargs.get("memory_blocks", ())
+                    if isinstance(block, MemoryBlock)
+                ],
             }
         )
         reply = f"Reply to: {user_message}"
@@ -75,6 +87,17 @@ class RecordingRunner:
             stop_reason="end_turn",
             step_traces=[StepTrace(step_index=0, assistant_text=reply)],
         )
+
+
+class BlockingRunner:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def invoke(self, *args, **kwargs) -> AgentResult:
+        del args, kwargs
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("blocking runner should be cancelled")
 
 
 class FakeWebSocket:
@@ -273,6 +296,65 @@ async def test_run_agent_does_not_run_hidden_wide_evidence_retrieval(
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_run_agent_reloads_thread_scoped_memory_on_thread_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="thread-memory",
+                password_hash="not-used",
+                display_name="Thread Memory",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            thread_one = RuntimeThread(user_id=user.id, status="active")
+            thread_two = RuntimeThread(user_id=user.id, status="active")
+            runtime_session.add_all([thread_one, thread_two])
+            runtime_session.flush()
+
+            await run_agent(
+                "thread one turn",
+                user.id,
+                soul_session,
+                runtime_session,
+                thread_id=thread_one.id,
+            )
+            companion = agent_service._get_companion(user.id)
+            stale_thread_one_block = (
+                "thread_summary",
+                f"stale summary for thread {thread_one.id}",
+            )
+            companion.set_memory_cache(
+                (
+                    MemoryBlock(
+                        label=stale_thread_one_block[0],
+                        description="Thread-specific summary.",
+                        value=stale_thread_one_block[1],
+                    ),
+                )
+            )
+            await run_agent(
+                "thread two turn",
+                user.id,
+                soul_session,
+                runtime_session,
+                thread_id=thread_two.id,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert stale_thread_one_block not in runner.requests[1]["memory_blocks"]
+
+
 def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
     with runtime_db_session() as session:
         user_id = 42
@@ -379,3 +461,145 @@ def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
     assert result.reserved_prompt_tokens == 12
     assert summary.sequence_id == 3
     assert "Conversation summary:" in (summary.content_text or "")
+
+
+def test_companion_history_cache_is_scoped_by_thread() -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    try:
+        with runtime_db_session() as session:
+            user_id = 44
+            thread_one = RuntimeThread(
+                user_id=user_id,
+                status="active",
+                next_message_sequence=2,
+            )
+            thread_two = RuntimeThread(
+                user_id=user_id,
+                status="active",
+                next_message_sequence=2,
+            )
+            session.add_all([thread_one, thread_two])
+            session.flush()
+
+            append_message(
+                session,
+                thread=thread_one,
+                run_id=None,
+                step_id=None,
+                sequence_id=1,
+                role="user",
+                content_text="thread one history",
+            )
+            append_message(
+                session,
+                thread=thread_two,
+                run_id=None,
+                step_id=None,
+                sequence_id=1,
+                role="user",
+                content_text="thread two history",
+            )
+            session.commit()
+
+            companion = agent_service._get_companion(user_id)
+            history_one = companion.ensure_history_loaded(
+                session,
+                thread_id=thread_one.id,
+            )
+            history_two = companion.ensure_history_loaded(
+                session,
+                thread_id=thread_two.id,
+            )
+
+            history_one.clear()
+            history_one_again = companion.ensure_history_loaded(
+                session,
+                thread_id=thread_one.id,
+            )
+
+        assert [message.content for message in history_one_again] == [
+            "thread one history"
+        ]
+        assert [message.content for message in history_two] == [
+            "thread two history"
+        ]
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+
+def test_persist_agent_result_does_not_overwrite_cancelled_run() -> None:
+    with runtime_db_session() as session:
+        user_id = 45
+        thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=2)
+        session.add(thread)
+        session.flush()
+        run = create_run(
+            session,
+            thread_id=thread.id,
+            user_id=user_id,
+            provider="test-provider",
+            model="test-model",
+            mode="blocking",
+        )
+        cancel_run(session, run.id)
+        session.flush()
+
+        result = AgentResult(
+            response="late reply",
+            model="test-model",
+            provider="test-provider",
+            stop_reason="terminal_tool",
+            step_traces=[StepTrace(step_index=0, assistant_text="late reply")],
+        )
+
+        persist_agent_result(
+            session,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+        )
+        session.commit()
+
+        session.refresh(run)
+        persisted_message_count = (
+            session.query(RuntimeMessage)
+            .filter(RuntimeMessage.run_id == run.id)
+            .count()
+        )
+
+    assert run.status == "cancelled"
+    assert run.stop_reason == "cancelled"
+    assert persisted_message_count == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_agent_task_marks_running_run_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = BlockingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="cancel-stream",
+            password_hash="not-used",
+            display_name="Cancel Stream",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        task = asyncio.create_task(
+            run_agent("please wait", user.id, soul_session, runtime_session)
+        )
+        await asyncio.wait_for(runner.started.wait(), timeout=1)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        run = runtime_session.query(RuntimeRun).one()
+
+    assert run.status == "cancelled"
+    assert run.stop_reason == "cancelled"

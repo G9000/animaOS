@@ -84,6 +84,7 @@ class OpenAICompatibleChatClient:
             tools=tools,
             tool_choice=resolved_tool_choice,
             max_tokens=self._max_tokens,
+            temperature=self._temperature,
         )
         # Share the underlying httpx client for connection reuse
         new_client._shared_client = self._shared_client

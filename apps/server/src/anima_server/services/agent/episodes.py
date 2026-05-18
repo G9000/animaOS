@@ -28,9 +28,9 @@ async def maybe_generate_episode(
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> MemoryEpisode | None:
     """Check if there are enough un-episoded turns today and generate an episode if so."""
-    from anima_server.db.session import SessionLocal
+    from anima_server.db.session import get_user_session_factory
 
-    factory = db_factory or SessionLocal
+    factory = db_factory or get_user_session_factory(user_id)
 
     # ── Resolve runtime session factory ──────────────────────
     if runtime_db_factory is None:

@@ -19,6 +19,12 @@ from anima_server.services.agent.state import (
 )
 
 logger = logging.getLogger(__name__)
+TERMINAL_RUN_STATUSES = ("cancelled", "failed")
+
+
+def _refresh_run_status(db: Session, run: RuntimeRun) -> str:
+    db.refresh(run, attribute_names=["status"])
+    return run.status
 
 
 def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
@@ -189,6 +195,9 @@ def persist_agent_result(
     initial_sequence_id: int | None,
     record_feedback: bool = True,
 ) -> None:
+    if _refresh_run_status(db, run) in TERMINAL_RUN_STATUSES:
+        return
+
     sequence_id = initial_sequence_id
     serialized_retrieval = serialize_agent_retrieval(result.retrieval)
 
@@ -519,6 +528,9 @@ def finalize_run(
     run: RuntimeRun,
     result: AgentResult,
 ) -> None:
+    if _refresh_run_status(db, run) in TERMINAL_RUN_STATUSES:
+        return
+
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens = 0

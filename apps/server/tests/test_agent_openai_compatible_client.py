@@ -12,6 +12,19 @@ from anima_server.services.agent.openai_compatible_client import (
 from anima_server.services.agent.tools import send_message
 
 
+def test_openai_compatible_bind_tools_preserves_temperature() -> None:
+    client = OpenAICompatibleChatClient(
+        provider="ollama",
+        model="llama3.2",
+        base_url="http://ollama.local/v1",
+        temperature=0.2,
+    )
+
+    bound = client.bind_tools([send_message], tool_choice="required")
+
+    assert bound._temperature == 0.2
+
+
 @pytest.mark.asyncio
 async def test_openai_compatible_chat_client_serializes_messages_and_tools() -> None:
     captured_payload: dict[str, object] = {}

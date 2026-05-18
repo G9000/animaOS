@@ -171,7 +171,7 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
     memory_blocks: tuple[MemoryBlock, ...] = ()
     if thread is not None:
         companion.thread_id = thread.id
-        history = companion.ensure_history_loaded(runtime_db)
+        history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
         memory_blocks = companion.ensure_memory_loaded(
             db, runtime_db=runtime_db)
 
@@ -195,6 +195,44 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
 
 
 async def approve_or_deny_turn(
+    run_id: int,
+    user_id: int,
+    approved: bool,
+    db: Session,
+    runtime_db: Session,
+    *,
+    denial_reason: str | None = None,
+    event_callback: Callable[[AgentStreamEvent],
+                             Awaitable[None]] | None = None,
+) -> AgentResult:
+    row = runtime_db.execute(
+        select(RuntimeRun.thread_id, RuntimeRun.user_id, RuntimeRun.status).where(
+            RuntimeRun.id == run_id
+        )
+    ).one_or_none()
+    if row is None:
+        raise ValueError(f"Run {run_id} is not awaiting approval")
+
+    thread_id, run_user_id, status = row
+    if run_user_id != user_id:
+        raise PermissionError("Not authorized for this run")
+    if status != "awaiting_approval":
+        raise ValueError(f"Run {run_id} is not awaiting approval")
+
+    async with get_thread_lock(thread_id):
+        runtime_db.expire_all()
+        return await _approve_or_deny_turn_locked(
+            run_id=run_id,
+            user_id=user_id,
+            approved=approved,
+            db=db,
+            runtime_db=runtime_db,
+            denial_reason=denial_reason,
+            event_callback=event_callback,
+        )
+
+
+async def _approve_or_deny_turn_locked(
     run_id: int,
     user_id: int,
     approved: bool,
@@ -238,7 +276,7 @@ async def approve_or_deny_turn(
         raise ValueError("Thread not found")
     companion.thread_id = thread.id
 
-    history = companion.ensure_history_loaded(runtime_db)
+    history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
     memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
     conversation_turn_count = count_messages_by_role(
         runtime_db, thread.id, "user")
@@ -327,7 +365,11 @@ async def approve_or_deny_turn(
         ),
     )
     runtime_db.commit()
-    _refresh_companion_history(user_id=user_id, runtime_db=runtime_db)
+    _refresh_companion_history(
+        user_id=user_id,
+        runtime_db=runtime_db,
+        thread_id=thread.id,
+    )
 
     # Post-turn hooks
     _run_post_turn_hooks(
@@ -523,6 +565,11 @@ async def _execute_agent_turn_locked(
             delegated_tool_names=delegated_tool_names,
             extra_tool_schemas=extra_tool_schemas,
         )
+    except asyncio.CancelledError:
+        companion.set_cancel(run.id)
+        cancel_run(runtime_db, run.id)
+        runtime_db.commit()
+        raise
     finally:
         companion.clear_cancel_event(run.id)
 
@@ -545,7 +592,11 @@ async def _execute_agent_turn_locked(
             result=result,
             initial_sequence_id=initial_sequence_id,
         )
-        _refresh_companion_history(user_id=user_id, runtime_db=runtime_db)
+        _refresh_companion_history(
+            user_id=user_id,
+            runtime_db=runtime_db,
+            thread_id=thread.id,
+        )
         if event_callback is not None:
             if pending_tc is not None:
                 await event_callback(
@@ -574,7 +625,11 @@ async def _execute_agent_turn_locked(
         result=result,
         initial_sequence_id=initial_sequence_id,
     )
-    _refresh_companion_history(user_id=user_id, runtime_db=runtime_db)
+    _refresh_companion_history(
+        user_id=user_id,
+        runtime_db=runtime_db,
+        thread_id=thread.id,
+    )
 
     # Stage 4: Post-turn hooks
     source_message_ids = _source_message_ids_for_extraction(
@@ -654,10 +709,10 @@ async def _prepare_turn_context(
     prev_thread_id = companion.thread_id
     companion.thread_id = thread.id
     if prev_thread_id != thread.id:
-        companion.invalidate_history()
+        companion.invalidate_history(thread_id=thread.id)
 
     # Use cached conversation history when available, otherwise load from DB.
-    history = companion.ensure_history_loaded(runtime_db)
+    history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
 
     run = create_run(
         runtime_db,
@@ -1161,8 +1216,8 @@ def _rebuild_turn_context_after_compaction(
 ) -> _TurnContext:
     """Reload history and memory after emergency compaction."""
     companion = _get_companion(user_id)
-    companion.invalidate_history()
-    history = companion.ensure_history_loaded(runtime_db)
+    companion.invalidate_history(thread_id=thread.id)
+    history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
     conversation_turn_count = count_messages_by_role(
         runtime_db, thread.id, "user")
     return _TurnContext(
@@ -1177,13 +1232,18 @@ def _memory_item_uri(memory_item_id: int) -> str:
     return f"memory://items/{memory_item_id}"
 
 
-def _refresh_companion_history(*, user_id: int, runtime_db: Session) -> None:
+def _refresh_companion_history(
+    *,
+    user_id: int,
+    runtime_db: Session,
+    thread_id: int,
+) -> None:
     """Reload the cached conversation window from persisted in-context history."""
     companion = get_companion(user_id)
     if companion is None:
         return
-    companion.invalidate_history()
-    companion.ensure_history_loaded(runtime_db)
+    companion.invalidate_history(thread_id=thread_id)
+    companion.ensure_history_loaded(runtime_db, thread_id=thread_id)
 
 
 def _handle_step_failure(
