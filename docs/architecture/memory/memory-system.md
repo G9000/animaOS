@@ -894,8 +894,8 @@ df(user_id, content, table="memory_items", field="content")  # decrypt
 ```
 
 - **Encrypted fields**: `MemoryItem.content`, `MemoryItemEvidence.evidence_text`, `EmotionalSignal.evidence`, `RuntimeSessionNote.value`, `MemoryEpisode.summary`, `SelfModelBlock.content`, etc.
-- **Vector content**: stored in plaintext in `MemoryVector.content` for search (not the actual memory content, just the searchable representation)
-- **Embeddings**: stored as float32 blobs -- numerical, not sensitive
+- **Runtime vector cache**: active semantic search uses the runtime PostgreSQL `embeddings` table (`RuntimeEmbedding`) with pgvector. It stores embedding vectors, integrity checksums, content hashes, and a short plaintext `content_preview` for debugging/BM25 cache rebuilds. `MemoryVector` remains a legacy SQLCipher schema table and is not the active search backend.
+- **Embeddings**: stored as numeric vectors/checksummed payloads derived from decrypted memory content
 
 Portability guarantee: copy `.anima/` directory, enter passphrase on new machine, all memory decrypts and the AI wakes up intact.
 
@@ -911,7 +911,7 @@ Portability guarantee: copy `.anima/` directory, enter passphrase on new machine
 | `evidence_retrieval.py` | Tool-driven wide evidence retrieval for aggregate/latest/temporal/preference recall |
 | `consolidation.py` | Post-turn extraction (predict-calibrate F3 + emotional signals), orchestrator routing (F5) |
 | `embeddings.py` | Embedding generation, hybrid search (BM25 F1 + semantic), heat floor, adaptive filter |
-| `vector_store.py` | ORM-backed vector storage and cosine similarity search |
+| `vector_store.py` | VectorStore facade that uses runtime PostgreSQL/pgvector via `pgvec_store.py` when available, with an in-memory degraded fallback |
 | `bm25_index.py` | **F1** — BM25Okapi lexical search index (per-user, in-memory) |
 | `heat_scoring.py` | **F2** — Heat formula, exponential decay, visibility floor |
 | `predict_calibrate.py` | **F3** — Two-stage extraction with quality gate |
