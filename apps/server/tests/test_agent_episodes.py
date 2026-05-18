@@ -123,6 +123,46 @@ def _create_runtime_messages(
 
 
 @pytest.mark.asyncio
+async def test_maybe_generate_episode_uses_user_scoped_soul_factory_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _dual_db_sessions() as (soul_session, soul_factory, _rt_session, rt_factory):
+        user = User(
+            username="episode-default-factory",
+            password_hash="not-used",
+            display_name="Episode Default Factory",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        seen_user_ids: list[int] = []
+
+        def fake_get_user_session_factory(user_id: int) -> sessionmaker[Session]:
+            seen_user_ids.append(user_id)
+            return soul_factory
+
+        def fail_global_session() -> Session:
+            raise AssertionError("global SessionLocal should not be used")
+
+        import anima_server.db.session as session_module
+
+        monkeypatch.setattr(
+            session_module,
+            "get_user_session_factory",
+            fake_get_user_session_factory,
+        )
+        monkeypatch.setattr(session_module, "SessionLocal", fail_global_session)
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is None
+        assert seen_user_ids == [user.id]
+
+
+@pytest.mark.asyncio
 async def test_maybe_generate_episode_requires_minimum_turns() -> None:
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
         user = User(
