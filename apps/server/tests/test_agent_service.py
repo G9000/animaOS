@@ -13,6 +13,7 @@ from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.client_actions import ActionToolConnection, action_registry
 from anima_server.services.agent.compaction import compact_thread_context
 from anima_server.services.agent.evidence_retrieval import RetrievalMode, WideEvidenceResult
+from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.persistence import (
     append_message,
     cancel_run,
@@ -71,6 +72,11 @@ class RecordingRunner:
                 ],
                 "extra_tool_schemas": kwargs.get("extra_tool_schemas"),
                 "tool_executor": kwargs.get("tool_executor"),
+                "memory_blocks": [
+                    (block.label, block.value)
+                    for block in kwargs.get("memory_blocks", ())
+                    if isinstance(block, MemoryBlock)
+                ],
             }
         )
         reply = f"Reply to: {user_message}"
@@ -288,6 +294,65 @@ async def test_run_agent_does_not_run_hidden_wide_evidence_retrieval(
         agent_service.invalidate_agent_runtime_cache()
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_reloads_thread_scoped_memory_on_thread_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="thread-memory",
+                password_hash="not-used",
+                display_name="Thread Memory",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            thread_one = RuntimeThread(user_id=user.id, status="active")
+            thread_two = RuntimeThread(user_id=user.id, status="active")
+            runtime_session.add_all([thread_one, thread_two])
+            runtime_session.flush()
+
+            await run_agent(
+                "thread one turn",
+                user.id,
+                soul_session,
+                runtime_session,
+                thread_id=thread_one.id,
+            )
+            companion = agent_service._get_companion(user.id)
+            stale_thread_one_block = (
+                "thread_summary",
+                f"stale summary for thread {thread_one.id}",
+            )
+            companion.set_memory_cache(
+                (
+                    MemoryBlock(
+                        label=stale_thread_one_block[0],
+                        description="Thread-specific summary.",
+                        value=stale_thread_one_block[1],
+                    ),
+                )
+            )
+            await run_agent(
+                "thread two turn",
+                user.id,
+                soul_session,
+                runtime_session,
+                thread_id=thread_two.id,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert stale_thread_one_block not in runner.requests[1]["memory_blocks"]
 
 
 def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:

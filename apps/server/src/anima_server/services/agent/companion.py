@@ -98,6 +98,8 @@ class AnimaCompanion:
 
     @thread_id.setter
     def thread_id(self, value: int | None) -> None:
+        if self._thread_id is not None and self._thread_id != value:
+            self.invalidate_memory()
         self._thread_id = value
 
     @property

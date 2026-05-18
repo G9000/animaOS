@@ -125,6 +125,17 @@ class TestMemoryCache:
         companion.set_memory_cache((PERSONA_BLOCK,))
         assert companion.memory_stale is False
 
+    def test_thread_switch_invalidates_memory_and_system_prompt(self) -> None:
+        companion = _make_companion()
+        companion.thread_id = 1
+        companion.set_memory_cache((SOUL_BLOCK,))
+        companion.set_system_prompt("prompt for thread one")
+
+        companion.thread_id = 2
+
+        assert companion.get_cached_memory_blocks() is None
+        assert companion.get_cached_system_prompt() is None
+
 
 # ------------------------------------------------------------------
 # System prompt cache
