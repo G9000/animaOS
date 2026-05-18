@@ -277,6 +277,107 @@ async def test_run_soul_writer_retries_failed_extraction_work(
         runtime_engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_run_soul_writer_retries_failed_extraction_from_source_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.data_crypto import df
+
+    captured_prompts: list[str] = []
+
+    class _FakeResponse:
+        content = (
+            '{"memories":[{"content":"Keeps a rare mango marker",'
+            '"category":"fact","importance":4}]}'
+        )
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            prompt = "\n".join(str(getattr(message, "content", message)) for message in messages)
+            captured_prompts.append(prompt)
+            return _FakeResponse()
+
+    original_provider = settings.agent_provider
+    settings.agent_provider = "openai"
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm.create_llm",
+        lambda: _FakeLLM(),
+    )
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    try:
+        with soul_factory() as soul_db:
+            user = User(username="retry-source", password_hash="x", display_name="Retry Source")
+            soul_db.add(user)
+            soul_db.commit()
+            user_id = user.id
+
+        long_prefix = "context " * 40
+        full_user_message = (
+            f"{long_prefix}The important late fact is rare-mango-marker."
+        )
+        with runtime_factory() as runtime_db:
+            thread = RuntimeThread(user_id=user_id, status="closed", next_message_sequence=3)
+            runtime_db.add(thread)
+            runtime_db.flush()
+            user_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user_id,
+                sequence_id=1,
+                role="user",
+                content_text=full_user_message,
+            )
+            assistant_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user_id,
+                sequence_id=2,
+                role="assistant",
+                content_text="I will remember the rare mango marker.",
+            )
+            runtime_db.add_all([user_message, assistant_message])
+            runtime_db.flush()
+            runtime_db.add(
+                MemoryExtractionFailure(
+                    user_id=user_id,
+                    source_message_ids=[user_message.id, assistant_message.id],
+                    user_message_preview=full_user_message[:80],
+                    assistant_response_preview="preview without marker",
+                    failure_reason="LLM timed out",
+                    status="failed",
+                    retry_count=0,
+                )
+            )
+            runtime_db.commit()
+
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+
+        with soul_factory() as soul_db:
+            item = soul_db.scalar(select(MemoryItem))
+
+        assert result.extraction_failures_retried == 1
+        assert result.extraction_failures_resolved == 1
+        assert captured_prompts
+        assert "rare-mango-marker" in captured_prompts[0]
+        assert item is not None
+        assert (
+            df(user_id, item.content, table="memory_items", field="content")
+            == "Keeps a rare mango marker"
+        )
+    finally:
+        settings.agent_provider = original_provider
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Test 2: Candidate gets promoted, journal entry created
 # ---------------------------------------------------------------------------

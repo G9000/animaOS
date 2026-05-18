@@ -414,11 +414,17 @@ def _retry_memory_extraction_failures(
         failure.updated_at = now
         result.extraction_failures_retried += 1
 
+        user_message, assistant_response = _memory_extraction_failure_retry_texts(
+            runtime_db,
+            user_id=user_id,
+            failure=failure,
+        )
+
         try:
             future = asyncio.run_coroutine_threadsafe(
                 extract_memories_via_llm(
-                    user_message=failure.user_message_preview or "",
-                    assistant_response=failure.assistant_response_preview or "",
+                    user_message=user_message,
+                    assistant_response=assistant_response,
                 ),
                 event_loop,
             )
@@ -455,6 +461,60 @@ def _retry_memory_extraction_failures(
         failure.resolved_at = now
         failure.updated_at = now
         result.extraction_failures_resolved += 1
+
+
+def _memory_extraction_failure_retry_texts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    failure,
+) -> tuple[str, str]:
+    source_message_ids = [int(message_id) for message_id in failure.source_message_ids or []]
+    if source_message_ids:
+        from anima_server.models.runtime import RuntimeMessage
+
+        message_position = {
+            message_id: index for index, message_id in enumerate(source_message_ids)
+        }
+        messages = list(
+            runtime_db.scalars(
+                select(RuntimeMessage).where(
+                    RuntimeMessage.user_id == user_id,
+                    RuntimeMessage.id.in_(source_message_ids),
+                )
+            ).all()
+        )
+        messages.sort(key=lambda message: message_position.get(int(message.id), len(messages)))
+        if messages:
+            user_parts: list[str] = []
+            assistant_parts: list[str] = []
+            for message in messages:
+                content = _runtime_message_text(message)
+                if not content:
+                    continue
+                if message.role == "user":
+                    user_parts.append(content)
+                elif message.role == "assistant":
+                    assistant_parts.append(content)
+
+            if user_parts or assistant_parts:
+                return (
+                    "\n\n".join(user_parts) or failure.user_message_preview or "",
+                    "\n\n".join(assistant_parts) or failure.assistant_response_preview or "",
+                )
+
+    return (
+        failure.user_message_preview or "",
+        failure.assistant_response_preview or "",
+    )
+
+
+def _runtime_message_text(message) -> str:
+    if message.content_text:
+        return str(message.content_text)
+    if message.content_json is not None:
+        return str(message.content_json)
+    return ""
 
 
 def _process_pending_op(
