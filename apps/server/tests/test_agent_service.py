@@ -497,9 +497,15 @@ def test_persist_agent_result_does_not_overwrite_cancelled_run() -> None:
         session.commit()
 
         session.refresh(run)
+        persisted_message_count = (
+            session.query(RuntimeMessage)
+            .filter(RuntimeMessage.run_id == run.id)
+            .count()
+        )
 
     assert run.status == "cancelled"
     assert run.stop_reason == "cancelled"
+    assert persisted_message_count == 0
 
 
 @pytest.mark.asyncio

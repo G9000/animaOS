@@ -168,6 +168,49 @@ async def test_action_runtime_scopes_duplicate_call_ids_by_connection() -> None:
     assert result_two.output == "two-result"
 
 
+@pytest.mark.asyncio
+async def test_action_runtime_reports_mismatched_result_tool_as_error() -> None:
+    registry = ClientActionRegistry()
+    socket = FakeWebSocket()
+    conn = _connection(
+        user_id=1,
+        username="animus",
+        websocket=socket,
+        tools=[
+            {
+                "name": "bash",
+                "description": "Run shell commands",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+    registry.add(conn)
+
+    runtime = build_client_action_runtime(1, registry=registry)
+    assert runtime is not None
+
+    task = asyncio.create_task(
+        runtime.delegate("call-1", "bash", {"command": "pwd"})
+    )
+    await asyncio.sleep(0)
+
+    assert registry.resolve_tool_result(
+        conn,
+        "call-1",
+        {
+            "tool_call_id": "call-1",
+            "tool_name": "python",
+            "status": "success",
+            "result": "wrong tool",
+        },
+    )
+
+    result = await task
+    assert result.name == "bash"
+    assert result.is_error is True
+    assert "did not match" in result.output
+
+
 def test_action_runtime_is_absent_without_registered_tools() -> None:
     registry = ClientActionRegistry()
     registry.add(

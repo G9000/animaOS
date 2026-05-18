@@ -200,6 +200,20 @@ class TestConversationWindow:
         assert companion.conversation_window[-1].content == "d"
         assert companion.conversation_window[0].content == "b"
 
+    def test_empty_loaded_history_is_cached(self) -> None:
+        companion = _make_companion()
+        companion.thread_id = 123
+        db = MagicMock(spec=Session)
+
+        with patch(
+            "anima_server.services.agent.companion.load_thread_history",
+            return_value=[],
+        ) as load_history:
+            assert companion.ensure_history_loaded(db, thread_id=123) == []
+            assert companion.ensure_history_loaded(db, thread_id=123) == []
+
+        assert load_history.call_count == 1
+
 
 # ------------------------------------------------------------------
 # Reset

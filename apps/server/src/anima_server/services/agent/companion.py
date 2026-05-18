@@ -292,7 +292,7 @@ class AnimaCompanion:
         """Return the conversation window, loading from DB if empty."""
         key = self._conversation_window_key(thread_id)
         window = self._conversation_windows.get(key)
-        if window:
+        if window is not None:
             return list(window)
 
         if key is None:

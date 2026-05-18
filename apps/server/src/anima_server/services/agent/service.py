@@ -205,15 +205,22 @@ async def approve_or_deny_turn(
     event_callback: Callable[[AgentStreamEvent],
                              Awaitable[None]] | None = None,
 ) -> AgentResult:
-    checkpoint = load_approval_checkpoint(runtime_db, run_id)
-    if checkpoint is None:
+    row = runtime_db.execute(
+        select(RuntimeRun.thread_id, RuntimeRun.user_id, RuntimeRun.status).where(
+            RuntimeRun.id == run_id
+        )
+    ).one_or_none()
+    if row is None:
         raise ValueError(f"Run {run_id} is not awaiting approval")
 
-    run, _approval_msg = checkpoint
-    if run.user_id != user_id:
+    thread_id, run_user_id, status = row
+    if run_user_id != user_id:
         raise PermissionError("Not authorized for this run")
+    if status != "awaiting_approval":
+        raise ValueError(f"Run {run_id} is not awaiting approval")
 
-    async with get_thread_lock(run.thread_id):
+    async with get_thread_lock(thread_id):
+        runtime_db.expire_all()
         return await _approve_or_deny_turn_locked(
             run_id=run_id,
             user_id=user_id,

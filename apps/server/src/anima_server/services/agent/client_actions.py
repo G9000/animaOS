@@ -167,10 +167,17 @@ class ClientActionRegistry:
             return True
         result_tool_name = str(data.get("tool_name", ""))
         if result_tool_name and result_tool_name != pending.tool_name:
-            pending.future.set_exception(
-                DelegationTimeout(
-                    f"Tool result name {result_tool_name!r} did not match "
-                    f"pending tool {pending.tool_name!r}"
+            message = (
+                f"Tool result name {result_tool_name!r} did not match "
+                f"pending tool {pending.tool_name!r}"
+            )
+            pending.future.set_result(
+                DelegatedToolResult(
+                    call_id=tool_call_id,
+                    name=pending.tool_name,
+                    output=message,
+                    is_error=True,
+                    stderr=[message],
                 )
             )
             return True

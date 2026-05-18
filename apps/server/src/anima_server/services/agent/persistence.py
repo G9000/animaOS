@@ -189,6 +189,9 @@ def persist_agent_result(
     initial_sequence_id: int | None,
     record_feedback: bool = True,
 ) -> None:
+    if run.status in ("cancelled", "failed"):
+        return
+
     sequence_id = initial_sequence_id
     serialized_retrieval = serialize_agent_retrieval(result.retrieval)
 
