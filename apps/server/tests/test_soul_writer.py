@@ -517,6 +517,75 @@ async def test_process_candidate_promote_creates_memory_item_evidence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_evidence_ignores_source_messages_from_other_users() -> None:
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user_one = User(username="source-owner", password_hash="x", display_name="Source Owner")
+        user_two = User(username="candidate-owner", password_hash="x", display_name="Candidate")
+        soul_db.add_all([user_one, user_two])
+        soul_db.commit()
+        other_user_id = user_one.id
+        candidate_user_id = user_two.id
+
+    with runtime_factory() as runtime_db:
+        thread = RuntimeThread(user_id=other_user_id, status="active", next_message_sequence=2)
+        runtime_db.add(thread)
+        runtime_db.flush()
+        other_message = RuntimeMessage(
+            thread_id=thread.id,
+            user_id=other_user_id,
+            sequence_id=1,
+            role="user",
+            content_text="Other user's private source text.",
+        )
+        runtime_db.add(other_message)
+        runtime_db.flush()
+        candidate = MemoryCandidate(
+            user_id=candidate_user_id,
+            content="Candidate user's extracted memory",
+            category="fact",
+            importance=4,
+            importance_source="llm",
+            source="llm",
+            source_message_ids=[other_message.id],
+            content_hash=_content_hash(
+                candidate_user_id,
+                "fact",
+                "llm",
+                "Candidate user's extracted memory",
+            ),
+            status="extracted",
+        )
+        runtime_db.add(candidate)
+        runtime_db.commit()
+
+    result = await run_soul_writer(
+        candidate_user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=runtime_factory,
+    )
+
+    assert result.candidates_promoted == 1
+    with soul_factory() as soul_db:
+        evidence = soul_db.scalar(
+            select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == candidate_user_id)
+        )
+
+    assert evidence is not None
+    assert evidence.evidence_text == "Candidate user's extracted memory"
+    assert evidence.runtime_thread_id is None
+    assert evidence.runtime_message_id is None
+    assert evidence.speaker == "unknown"
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_inline_embedding_uses_event_loop_owned_soul_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

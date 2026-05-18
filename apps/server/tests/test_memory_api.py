@@ -173,6 +173,40 @@ def test_memory_create_records_item_evidence() -> None:
         )
 
 
+def test_memory_create_defers_retrieval_index_upsert_until_after_commit(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+        upserts.clear()
+
+        def fail_commit(self: Session) -> None:
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.post(
+                f"/api/memory/{user_id}/items",
+                headers=headers,
+                json={
+                    "content": "Uncommitted create should not reach recall",
+                    "category": "fact",
+                },
+            )
+
+    assert upserts == []
+
+
 def test_memory_update_records_replacement_evidence() -> None:
     with managed_test_client("anima-memory-test-") as client:
         reg = _register_user(client)

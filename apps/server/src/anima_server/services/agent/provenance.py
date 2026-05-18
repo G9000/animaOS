@@ -92,7 +92,7 @@ def add_candidate_memory_item_evidence(
     memory_item: MemoryItem,
 ) -> MemoryItemEvidence | None:
     message_ids = _normalize_source_message_ids(candidate.source_message_ids)
-    messages = _load_source_messages(runtime_db, message_ids)
+    messages = _load_source_messages(runtime_db, user_id=candidate.user_id, message_ids=message_ids)
     primary = _primary_source_message(messages)
 
     evidence_text = _candidate_evidence_text(candidate, primary)
@@ -266,13 +266,18 @@ def _normalize_source_message_ids(raw: object) -> list[int]:
 
 def _load_source_messages(
     runtime_db: Session,
+    *,
+    user_id: int,
     message_ids: list[int],
 ) -> list[RuntimeMessage]:
     if not message_ids:
         return []
     rows = list(
         runtime_db.scalars(
-            select(RuntimeMessage).where(RuntimeMessage.id.in_(message_ids))
+            select(RuntimeMessage).where(
+                RuntimeMessage.user_id == user_id,
+                RuntimeMessage.id.in_(message_ids),
+            )
         ).all()
     )
     position = {message_id: index for index, message_id in enumerate(message_ids)}

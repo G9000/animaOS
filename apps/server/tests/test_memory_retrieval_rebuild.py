@@ -106,6 +106,37 @@ def test_store_memory_item_keeps_successful_incremental_index_clean(
         assert memory_retrieval_index_needs_rebuild(root=root) is False
 
 
+def test_store_memory_item_drops_deferred_retrieval_upsert_on_rollback(
+    monkeypatch,
+) -> None:
+    upserts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "memory_index_upsert",
+        lambda **kwargs: upserts.append(kwargs) or True,
+    )
+
+    with _db_session() as db:
+        user = User(username="rollback_add", display_name="Tester", password_hash="x")
+        db.add(user)
+        db.flush()
+
+        result = store_memory_item(
+            db,
+            user_id=user.id,
+            content="rollback should not index this add",
+            category="fact",
+            importance=4,
+            source="test",
+        )
+        assert result.item is not None
+
+        db.rollback()
+        db.commit()
+
+    assert upserts == []
+
+
 def test_memory_rebuild_preserves_other_users_index_entries(tmp_path: Path) -> None:
     with _db_session() as db:
         user_one = User(username="retrieval_tester_1", display_name="Tester 1", password_hash="x")

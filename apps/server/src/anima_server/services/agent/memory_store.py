@@ -375,8 +375,11 @@ def add_memory_item(
         source_kind=_direct_evidence_source_kind(source),
         metadata={"memory_source": source},
     )
-    synced = sync_memory_item_to_retrieval_index(memory_item)
-    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(memory_item),
+    )
     return memory_item
 
 
@@ -518,8 +521,11 @@ def store_memory_item(
     if tags:
         _sync_tags(db, item=item, user_id=user_id, tags=tags)
 
-    synced = sync_memory_item_to_retrieval_index(item)
-    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
     return MemoryWriteResult(
         action="added",
         item=item,
@@ -743,6 +749,27 @@ def _schedule_supersede_external_index_after_commit(
     event.listen(db, "after_rollback", _discard, once=True)
 
 
+def _schedule_memory_retrieval_upsert_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    payload: _MemoryRetrievalIndexPayload,
+) -> None:
+    def _sync_external_index(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        synced = _sync_retrieval_index_payload(payload)
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _sync_external_index)
+
+    event.listen(db, "after_commit", _sync_external_index, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
+
+
 def supersede_memory_item(
     db: Session,
     *,
@@ -856,8 +883,11 @@ def set_current_focus(
         source_kind="explicit_save",
         metadata={"memory_source": "focus"},
     )
-    synced = sync_memory_item_to_retrieval_index(item)
-    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
     return item
 
 
