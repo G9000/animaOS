@@ -522,6 +522,7 @@ def finalize_run(
     run: RuntimeRun,
     result: AgentResult,
 ) -> None:
+    db.refresh(run)
     if run.status in ("cancelled", "failed"):
         return
 
