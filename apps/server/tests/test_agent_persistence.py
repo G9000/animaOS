@@ -419,7 +419,7 @@ def test_persist_agent_result_respects_cross_session_cancel() -> None:
     )
 
     @event.listens_for(engine, "connect")
-    def _set_pragmas(dbapi_connection: object, connection_record: object) -> None:
+    def _set_pragmas(dbapi_connection: object, _connection_record: object) -> None:
         cursor = dbapi_connection.cursor()  # type: ignore[union-attr]
         cursor.execute("PRAGMA journal_mode = WAL")
         cursor.execute("PRAGMA busy_timeout = 30000")
