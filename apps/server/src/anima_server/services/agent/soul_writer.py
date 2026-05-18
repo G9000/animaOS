@@ -39,6 +39,9 @@ class SoulWriterResult:
     ops_processed: int = 0
     ops_skipped: int = 0
     ops_failed: int = 0
+    extraction_failures_retried: int = 0
+    extraction_failures_resolved: int = 0
+    extraction_failures_failed: int = 0
     candidates_promoted: int = 0
     candidates_rejected: int = 0
     candidates_superseded: int = 0
@@ -135,6 +138,7 @@ async def run_soul_writer(
         result.ops_processed
         + result.ops_skipped
         + result.ops_failed
+        + result.extraction_failures_retried
         + result.candidates_promoted
         + result.candidates_rejected
         + result.candidates_superseded
@@ -142,11 +146,17 @@ async def run_soul_writer(
     )
     if total_work > 0 or result.errors:
         logger.info(
-            "Soul Writer user=%s: ops=%d/%d/%d cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d",
+            (
+                "Soul Writer user=%s: ops=%d/%d/%d extraction_retries=%d/%d/%d "
+                "cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d"
+            ),
             user_id,
             result.ops_processed,
             result.ops_skipped,
             result.ops_failed,
+            result.extraction_failures_retried,
+            result.extraction_failures_resolved,
+            result.extraction_failures_failed,
             result.candidates_promoted,
             result.candidates_rejected,
             result.candidates_superseded,
@@ -223,6 +233,16 @@ def _run_soul_writer_inner(
                 result.ops_failed += 1
                 result.errors.append(f"op {op.id}: {e}")
 
+        runtime_db.commit()
+
+    # Phase 1.5: Retry preserved turn-level extraction failures.
+    with rt_factory() as runtime_db:
+        _retry_memory_extraction_failures(
+            runtime_db,
+            user_id=user_id,
+            result=result,
+            event_loop=event_loop,
+        )
         runtime_db.commit()
 
     # Phase 2: Process MemoryCandidates
@@ -346,8 +366,95 @@ def _run_soul_writer_inner(
                     user_id,
                 )
     except Exception:
-        logger.debug("Emotional pattern promotion failed for user %s",
-                     user_id, exc_info=True)
+        logger.debug(
+            "Emotional pattern promotion failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+
+def _retry_memory_extraction_failures(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    result: SoulWriterResult,
+    event_loop: asyncio.AbstractEventLoop | None,
+) -> None:
+    if event_loop is None:
+        return
+
+    from anima_server.config import settings
+
+    if settings.agent_provider == "scaffold":
+        return
+
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+    from anima_server.services.agent.consolidation import extract_memories_via_llm
+
+    failures = list(
+        runtime_db.scalars(
+            select(MemoryExtractionFailure)
+            .where(
+                MemoryExtractionFailure.user_id == user_id,
+                MemoryExtractionFailure.status == "failed",
+                MemoryExtractionFailure.retry_count < MAX_RETRY_COUNT,
+            )
+            .order_by(MemoryExtractionFailure.created_at)
+            .limit(MAX_ITEMS_PER_RUN)
+        ).all()
+    )
+    if not failures:
+        return
+
+    for failure in failures:
+        now = datetime.now(UTC)
+        failure.retry_count = (failure.retry_count or 0) + 1
+        failure.last_attempt_at = now
+        failure.updated_at = now
+        result.extraction_failures_retried += 1
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                extract_memories_via_llm(
+                    user_message=failure.user_message_preview or "",
+                    assistant_response=failure.assistant_response_preview or "",
+                ),
+                event_loop,
+            )
+            llm_result = future.result(timeout=30)
+        except Exception as exc:
+            failure.failure_reason = str(exc)[:2000]
+            result.extraction_failures_failed += 1
+            result.errors.append(f"extraction failure {failure.id}: {exc}")
+            continue
+
+        if llm_result.failed:
+            failure.failure_reason = (llm_result.error or "LLM memory extraction failed")[:2000]
+            result.extraction_failures_failed += 1
+            result.errors.append(f"extraction failure {failure.id}: {failure.failure_reason}")
+            continue
+
+        for item in llm_result.memories:
+            content = item.get("content", "")
+            if not content or not isinstance(content, str):
+                continue
+            create_memory_candidate(
+                runtime_db,
+                user_id=user_id,
+                content=content,
+                category=item.get("category", "fact"),
+                importance=item.get("importance", 3),
+                importance_source="llm",
+                source="llm",
+                source_message_ids=list(failure.source_message_ids or []),
+                extraction_model=failure.extraction_model,
+            )
+
+        failure.status = "resolved"
+        failure.resolved_at = now
+        failure.updated_at = now
+        result.extraction_failures_resolved += 1
 
 
 def _process_pending_op(

@@ -32,7 +32,7 @@ Last audited: 2026-05-17
 | F14 | [Multi-User & Group Memory](F14-multi-user-group-memory.md) | NOT STARTED | 0% | 0 | P2 | F10 |
 | F15 | [Memory Provenance And Event Evidence](provenance-and-event-memory.md) | PARTIAL | ~75% | 15 | P0 | F1, F10 |
 
-**Total dedicated tests across shipped features: 189**
+**Total dedicated tests across shipped features: 204**
 
 ---
 

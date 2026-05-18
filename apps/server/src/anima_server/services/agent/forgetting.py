@@ -9,10 +9,11 @@ Three mechanisms:
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import (
@@ -314,37 +315,17 @@ def forget_memory(
     )
 
     # 4. Hard-delete all items in the chain
-    all_removed = True
-    try:
-        from anima_server.services.agent.memory_store import remove_memory_item_from_retrieval_index
-
-        for item in chain_items:
-            if not remove_memory_item_from_retrieval_index(item):
-                all_removed = False
-    except Exception:
-        logger.debug("Rust retrieval cleanup failed for chain %s", chain_ids)
-        all_removed = False
-
     for item in chain_items:
         db.delete(item)
     db.flush()
     result.items_forgotten = len(chain_items)
 
-    # 5. Remove ALL chain items from vector store and invalidate BM25
-    try:
-        from anima_server.services.agent.vector_store import delete_memory
-
-        for item_id in chain_ids:
-            delete_memory(user_id, item_id=item_id, db=db)
-    except Exception:
-        logger.debug("Vector store cleanup failed for chain %s", chain_ids)
-
-    try:
-        from anima_server.services.agent.memory_store import invalidate_memory_retrieval_indexes
-
-        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not all_removed)
-    except Exception:
-        logger.debug("Memory retrieval index invalidation failed for user %d", user_id)
+    # 5. Remove external indexes only after the SQLCipher transaction commits.
+    _schedule_forget_external_cleanup_after_commit(
+        db,
+        user_id=user_id,
+        item_ids=chain_ids,
+    )
 
     # 7. Record audit log (no content stored)
     log = ForgetAuditLog(
@@ -360,6 +341,53 @@ def forget_memory(
     result.audit_log_id = log.id
 
     return result
+
+
+def _schedule_forget_external_cleanup_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    item_ids: list[int],
+) -> None:
+    cleanup_ids = tuple(int(item_id) for item_id in item_ids)
+    if not cleanup_ids:
+        return
+
+    def _cleanup(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        all_removed = True
+        try:
+            from anima_server.services.agent.memory_store import (
+                invalidate_memory_retrieval_indexes,
+                remove_memory_item_from_retrieval_index_by_id,
+            )
+
+            for item_id in cleanup_ids:
+                if not remove_memory_item_from_retrieval_index_by_id(
+                    user_id=user_id,
+                    item_id=item_id,
+                ):
+                    all_removed = False
+            invalidate_memory_retrieval_indexes(user_id, mark_dirty=not all_removed)
+        except Exception:
+            logger.debug("Memory retrieval index cleanup failed for chain %s", cleanup_ids)
+
+        try:
+            from anima_server.services.agent.vector_store import delete_memory
+
+            for item_id in cleanup_ids:
+                delete_memory(user_id, item_id=item_id)
+        except Exception:
+            logger.debug("Vector store cleanup failed for chain %s", cleanup_ids)
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _cleanup)
+
+    event.listen(db, "after_commit", _cleanup, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
 
 
 def forget_by_topic(

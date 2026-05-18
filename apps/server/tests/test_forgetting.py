@@ -15,6 +15,7 @@ from anima_server.models import (
     MemoryItemEvidence,
 )
 from anima_server.models.consciousness import SelfModelBlock
+from anima_server.services import anima_core_retrieval as retrieval_module
 from anima_server.services.agent.forgetting import (
     HEAT_VISIBILITY_FLOOR,
     SUPERSEDED_DECAY_MULTIPLIER,
@@ -331,6 +332,52 @@ class TestForgetMemory:
             .where(MemoryItemEvidence.memory_item_id.in_([old_item.id, current_item.id]))
         )
         assert remaining == 0
+
+    def test_forget_defers_retrieval_index_cleanup_until_after_commit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+        item = _make_item(db, content="secret fact")
+        item_id = item.id
+
+        forget_memory(db, memory_id=item_id, user_id=1)
+
+        assert deletes == []
+        db.commit()
+        assert deletes == [
+            {
+                "root": retrieval_module.get_retrieval_root(),
+                "record_id": item_id,
+                "user_id": 1,
+            }
+        ]
+
+    def test_forget_drops_deferred_retrieval_cleanup_on_rollback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+        item = _make_item(db, content="secret fact")
+
+        forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert deletes == []
+        db.rollback()
+        db.commit()
+        assert deletes == []
 
     def test_forget_flags_derived_refs(self, db: Session):
         item = _make_item(db, content="Likes hiking")

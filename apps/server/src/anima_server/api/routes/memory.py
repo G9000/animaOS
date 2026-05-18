@@ -21,7 +21,7 @@ from anima_server.services.agent.memory_store import (
     get_current_focus,
     get_memory_items,
     invalidate_memory_retrieval_indexes,
-    remove_memory_item_from_retrieval_index,
+    remove_memory_item_from_retrieval_index_by_id,
     supersede_memory_item,
     sync_memory_item_to_retrieval_index,
 )
@@ -174,6 +174,9 @@ async def update_memory_item(
             importance=payload.importance
             if payload.importance is not None
             else existing.importance,
+            evidence_text=payload.content,
+            evidence_source_kind="explicit_update",
+            evidence_metadata={"memory_source": "memory_api_update"},
         )
         db.commit()
         return _item_to_response(new_item, user_id)
@@ -206,7 +209,6 @@ async def delete_memory_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Memory item not found",
         )
-    removed = remove_memory_item_from_retrieval_index(existing)
     db.execute(
         delete(MemoryItemEvidence).where(
             MemoryItemEvidence.user_id == user_id,
@@ -216,6 +218,10 @@ async def delete_memory_item(
     db.delete(existing)
     db.commit()
     _remove_from_vector_store(user_id, item_id, db)
+    removed = remove_memory_item_from_retrieval_index_by_id(
+        user_id=user_id,
+        item_id=item_id,
+    )
     invalidate_memory_retrieval_indexes(user_id, mark_dirty=not removed)
     return {"deleted": True}
 

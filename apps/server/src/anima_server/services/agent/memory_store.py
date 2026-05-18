@@ -131,26 +131,37 @@ def sync_memory_item_to_retrieval_index(
         return False
 
 
-def remove_memory_item_from_retrieval_index(item: MemoryItem) -> bool:
+def remove_memory_item_from_retrieval_index_by_id(
+    *,
+    user_id: int,
+    item_id: int,
+) -> bool:
     root = anima_core_retrieval.get_retrieval_root()
     try:
         anima_core_retrieval.memory_index_delete(
             root=root,
-            record_id=item.id,
-            user_id=item.user_id,
+            record_id=item_id,
+            user_id=user_id,
         )
         return True
     except RuntimeError:
-        logger.debug("Rust memory index delete is unavailable for item %s", item.id)
+        logger.debug("Rust memory index delete is unavailable for item %s", item_id)
         return False
     except Exception:
         logger.warning(
             "Failed to delete memory item %s from the Rust retrieval index",
-            item.id,
+            item_id,
             exc_info=True,
         )
         _mark_memory_index_dirty(root=root)
         return False
+
+
+def remove_memory_item_from_retrieval_index(item: MemoryItem) -> bool:
+    return remove_memory_item_from_retrieval_index_by_id(
+        user_id=item.user_id,
+        item_id=item.id,
+    )
 
 
 def _mark_memory_index_dirty(*, root) -> None:
@@ -318,6 +329,13 @@ def add_memory_item(
     if tags:
         _sync_tags(db, item=memory_item, user_id=user_id, tags=tags)
 
+    _add_direct_memory_item_evidence(
+        db,
+        item=memory_item,
+        evidence_text=content,
+        source_kind=_direct_evidence_source_kind(source),
+        metadata={"memory_source": source},
+    )
     synced = sync_memory_item_to_retrieval_index(memory_item)
     invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
     return memory_item
@@ -412,6 +430,13 @@ def store_memory_item(
             old_item_id=analysis.matched_item.id,
             new_content=cleaned_content,
             importance=importance,
+            evidence_text=cleaned_content if source != "extraction" else None,
+            evidence_source_kind=(
+                _direct_evidence_source_kind(source)
+                if source != "extraction"
+                else None
+            ),
+            evidence_metadata={"memory_source": source} if source != "extraction" else None,
         )
         if tags:
             _sync_tags(db, item=item, user_id=user_id, tags=tags)
@@ -642,6 +667,9 @@ def supersede_memory_item(
     old_item_id: int,
     new_content: str,
     importance: int | None = None,
+    evidence_text: str | None = None,
+    evidence_source_kind: str | None = None,
+    evidence_metadata: dict[str, object] | None = None,
 ) -> MemoryItem:
     old_item = db.get(MemoryItem, old_item_id)
     if old_item is None:
@@ -661,6 +689,15 @@ def supersede_memory_item(
     old_item.updated_at = datetime.now(UTC)
     db.add(old_item)
     db.flush()
+
+    if evidence_source_kind is not None:
+        _add_direct_memory_item_evidence(
+            db,
+            item=new_item,
+            evidence_text=evidence_text or new_content,
+            source_kind=evidence_source_kind,
+            metadata=evidence_metadata,
+        )
 
     # Remove superseded item from vector store
     try:
@@ -721,6 +758,9 @@ def set_current_focus(
             db,
             old_item_id=existing.id,
             new_content=focus,
+            evidence_text=focus,
+            evidence_source_kind="explicit_update",
+            evidence_metadata={"memory_source": "focus_update"},
         )
 
     item = MemoryItem(
@@ -732,9 +772,53 @@ def set_current_focus(
     )
     db.add(item)
     db.flush()
+    _add_direct_memory_item_evidence(
+        db,
+        item=item,
+        evidence_text=focus,
+        source_kind="explicit_save",
+        metadata={"memory_source": "focus"},
+    )
     synced = sync_memory_item_to_retrieval_index(item)
     invalidate_memory_retrieval_indexes(user_id, mark_dirty=not synced)
     return item
+
+
+def _direct_evidence_source_kind(source: str) -> str:
+    if source == "user":
+        return "explicit_save"
+    if source == "feedback":
+        return "correction"
+    return (source or "direct_write")[:32]
+
+
+def _add_direct_memory_item_evidence(
+    db: Session,
+    *,
+    item: MemoryItem,
+    evidence_text: str,
+    source_kind: str,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    try:
+        from anima_server.services.agent.provenance import add_memory_item_evidence
+
+        observed_at = item.created_at or datetime.now(UTC)
+        add_memory_item_evidence(
+            db,
+            user_id=item.user_id,
+            memory_item_id=item.id,
+            evidence_text=evidence_text,
+            source_kind=source_kind,
+            speaker="user" if source_kind in {"explicit_save", "explicit_update"} else "unknown",
+            observed_at=observed_at,
+            source_created_at=item.created_at,
+            confidence=1.0 if source_kind.startswith("explicit") else 0.7,
+            extractor="direct_memory_write",
+            metadata=metadata,
+        )
+    except Exception:
+        logger.debug("Failed to create direct memory evidence for item %s", item.id, exc_info=True)
 
 
 def find_similar_items(

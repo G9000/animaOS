@@ -261,6 +261,9 @@ async def scan_contradictions(
                         old_item_id=item_a.id,
                         new_content=merged,
                         importance=max(item_a.importance, item_b.importance),
+                        evidence_text=merged,
+                        evidence_source_kind="maintenance_merge",
+                        evidence_metadata={"memory_source": "contradiction_merge"},
                     )
                     item_b.superseded_by = merged_item.id
                     item_b.updated_at = datetime.now(UTC)
@@ -347,6 +350,9 @@ async def synthesize_profile(
                 old_item_id=merge_items[0].id,
                 new_content=merged_content,
                 importance=max_importance,
+                evidence_text=merged_content,
+                evidence_source_kind="maintenance_merge",
+                evidence_metadata={"memory_source": "profile_synthesis_merge"},
             )
             for item in merge_items[1:]:
                 item.superseded_by = merged_item.id

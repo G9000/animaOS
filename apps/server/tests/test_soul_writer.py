@@ -18,6 +18,7 @@ from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
+    MemoryExtractionFailure,
     MemoryRetrievalFeedback,
     PromotionJournal,
 )
@@ -194,6 +195,86 @@ async def test_run_soul_writer_no_work() -> None:
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_run_soul_writer_retries_failed_extraction_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.data_crypto import df
+
+    class _FakeResponse:
+        content = (
+            '{"memories":[{"content":"Likes careful retries",'
+            '"category":"preference","importance":4}]}'
+        )
+
+    class _FakeLLM:
+        async def ainvoke(self, _messages):
+            return _FakeResponse()
+
+    original_provider = settings.agent_provider
+    settings.agent_provider = "openai"
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm.create_llm",
+        lambda: _FakeLLM(),
+    )
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    try:
+        with soul_factory() as soul_db:
+            user = User(username="retry-extraction", password_hash="x", display_name="Retry")
+            soul_db.add(user)
+            soul_db.commit()
+            user_id = user.id
+
+        with runtime_factory() as runtime_db:
+            runtime_db.add(
+                MemoryExtractionFailure(
+                    user_id=user_id,
+                    source_message_ids=[101, 102],
+                    user_message_preview="I like careful retries.",
+                    assistant_response_preview="Noted.",
+                    failure_reason="LLM timed out",
+                    status="failed",
+                    retry_count=0,
+                )
+            )
+            runtime_db.commit()
+
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+
+        with runtime_factory() as runtime_db:
+            failure = runtime_db.scalar(select(MemoryExtractionFailure))
+        with soul_factory() as soul_db:
+            item = soul_db.scalar(select(MemoryItem))
+            evidence = soul_db.scalar(select(MemoryItemEvidence))
+
+        assert result.extraction_failures_retried == 1
+        assert result.extraction_failures_resolved == 1
+        assert failure is not None
+        assert failure.status == "resolved"
+        assert failure.retry_count == 1
+        assert failure.resolved_at is not None
+        assert item is not None
+        assert df(user_id, item.content, table="memory_items", field="content") == (
+            "Likes careful retries"
+        )
+        assert evidence is not None
+        assert evidence.runtime_message_ids_json == [101, 102]
+    finally:
+        settings.agent_provider = original_provider
+        soul_engine.dispose()
+        runtime_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
