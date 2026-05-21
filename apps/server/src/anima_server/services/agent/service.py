@@ -131,7 +131,11 @@ def ensure_image_attachments_supported(
 ) -> None:
     if not attachments:
         return
-    if supports_image_input(settings.agent_provider, settings.agent_model):
+    if supports_image_input(
+        settings.agent_provider,
+        settings.agent_model,
+        base_url=settings.agent_base_url,
+    ):
         return
     raise LLMConfigError(
         "The selected model cannot process image attachments. "

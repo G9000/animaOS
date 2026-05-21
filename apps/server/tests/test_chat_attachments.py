@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from anima_server.api.routes import chat as chat_routes
@@ -236,14 +238,120 @@ def test_prepare_chat_attachments_rejects_too_many(
         )
 
 
-def test_model_capability_helper_recognizes_vision_models() -> None:
+def test_model_capability_helper_recognizes_vision_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
     from anima_server.services.agent.model_capabilities import supports_image_input
+
+    def unavailable_ollama(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise OSError("offline")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable_ollama)
 
     assert supports_image_input("openai", "gpt-4o-mini") is True
     assert supports_image_input("openrouter", "openai/gpt-4.1") is True
     assert supports_image_input("ollama", "llama3.2-vision:11b") is True
     assert supports_image_input("ollama", "qwen2.5-vl:7b") is True
     assert supports_image_input("ollama", "llama3.2") is False
+
+
+def test_ollama_model_capability_helper_reads_native_vision_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    from anima_server.services.agent.model_capabilities import supports_image_input
+
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"capabilities":["completion","vision","tools"]}'
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> FakeResponse:
+        assert request.data is not None
+        calls.append(
+            (
+                request.full_url,
+                json.loads(request.data.decode("utf-8")),
+            )
+        )
+        assert timeout <= 2.0
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert (
+        supports_image_input(
+            "ollama",
+            "vaultbox/qwen3.5-uncensored:35b",
+            base_url="http://ollama.test",
+        )
+        is True
+    )
+    assert calls == [
+        (
+            "http://ollama.test/api/show",
+            {"name": "vaultbox/qwen3.5-uncensored:35b"},
+        )
+    ]
+
+
+def test_image_attachment_support_uses_configured_agent_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.service import ensure_image_attachments_supported
+
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_base_url = settings.agent_base_url
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_supports_image_input(provider: str, model: str, *, base_url: str = "") -> bool:
+        calls.append((provider, model, base_url))
+        return True
+
+    monkeypatch.setattr(
+        "anima_server.services.agent.service.supports_image_input",
+        fake_supports_image_input,
+    )
+
+    try:
+        settings.agent_provider = "ollama"
+        settings.agent_model = "vaultbox/qwen3.5-uncensored:35b"
+        settings.agent_base_url = "http://ollama.test"
+
+        ensure_image_attachments_supported(
+            [
+                ChatRequestAttachment(
+                    kind="image",
+                    filename="pixel.png",
+                    mimeType="image/png",
+                    data=_b64(PNG_BYTES),
+                )
+            ]
+        )
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_model = original_model
+        settings.agent_base_url = original_base_url
+
+    assert calls == [
+        (
+            "ollama",
+            "vaultbox/qwen3.5-uncensored:35b",
+            "http://ollama.test",
+        )
+    ]
 
 
 def test_unsupported_model_rejects_images_before_message_persistence() -> None:
