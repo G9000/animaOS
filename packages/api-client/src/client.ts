@@ -6,6 +6,7 @@ import type {
   AuthResponse,
   ChangePasswordResponse,
   ChatMessage,
+  ChatRequestAttachment,
   CreateThreadResponse,
   DailyBrief,
   DbQueryResult,
@@ -126,6 +127,30 @@ function parseSseEvent(
   }
 }
 
+function extractErrorMessage(data: unknown, fallback: string): string {
+  if (!data || typeof data !== "object") return fallback;
+
+  const payload = data as {
+    error?: unknown;
+    message?: unknown;
+    detail?: unknown;
+  };
+  for (const value of [payload.error, payload.message, payload.detail]) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  if (Array.isArray(payload.detail)) {
+    const details = payload.detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const msg = (item as { msg?: unknown }).msg;
+        return typeof msg === "string" && msg.trim() ? msg : null;
+      })
+      .filter((msg): msg is string => msg !== null);
+    if (details.length > 0) return details.join("; ");
+  }
+  return fallback;
+}
+
 export function createApiClient(options: ApiClientOptions) {
   const {
     baseUrl,
@@ -165,11 +190,7 @@ export function createApiClient(options: ApiClientOptions) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const message =
-        (data as { error?: string; message?: string }).error ||
-        (data as { error?: string; message?: string }).message ||
-        "Something went wrong";
-      throw new Error(message);
+      throw new Error(extractErrorMessage(data, "Something went wrong"));
     }
 
     return data as T;
@@ -202,11 +223,7 @@ export function createApiClient(options: ApiClientOptions) {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message =
-        (data as { error?: string; message?: string }).error ||
-        (data as { error?: string; message?: string }).message ||
-        "Something went wrong";
-      throw new Error(message);
+      throw new Error(extractErrorMessage(data, "Something went wrong"));
     }
     return data as T;
   }
@@ -215,6 +232,7 @@ export function createApiClient(options: ApiClientOptions) {
     message: string,
     userId: number,
     threadId?: number,
+    attachments: ChatRequestAttachment[] = [],
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
     const streamNonce = getNonce?.() || null;
@@ -231,12 +249,15 @@ export function createApiClient(options: ApiClientOptions) {
         userId,
         stream: true,
         ...(threadId !== undefined ? { threadId } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
       }),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText);
+      const data = await response.json().catch(() => ({}));
+      throw new Error(
+        extractErrorMessage(data, response.statusText || "Something went wrong"),
+      );
     }
 
     const reader = response.body?.getReader();
@@ -490,7 +511,12 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
     },
     chat: {
-      send: (message: string, userId: number, threadId?: number) =>
+      send: (
+        message: string,
+        userId: number,
+        threadId?: number,
+        attachments: ChatRequestAttachment[] = [],
+      ) =>
         request<AgentResponse>("/chat", {
           method: "POST",
           body: {
@@ -498,10 +524,15 @@ export function createApiClient(options: ApiClientOptions) {
             userId,
             stream: false,
             ...(threadId !== undefined ? { threadId } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
           },
         }),
-      stream: (message: string, userId: number, threadId?: number) =>
-        streamChat(message, userId, threadId),
+      stream: (
+        message: string,
+        userId: number,
+        threadId?: number,
+        attachments: ChatRequestAttachment[] = [],
+      ) => streamChat(message, userId, threadId, attachments),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
       clearHistory: (userId: number) =>

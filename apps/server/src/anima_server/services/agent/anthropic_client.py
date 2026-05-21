@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -185,7 +187,7 @@ def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, ob
 
         if message_type == "human":
             serialized.append(
-                {"role": "user", "content": _serialize_text(getattr(message, "content", ""))}
+                {"role": "user", "content": _serialize_human_content(message)}
             )
             continue
 
@@ -233,6 +235,42 @@ def _serialize_assistant_content(message: Any) -> str | list[dict[str, object]]:
         }
         for tool_call in tool_calls
     )
+    return blocks
+
+
+def _serialize_human_content(message: Any) -> str | list[dict[str, object]]:
+    content = getattr(message, "content", "")
+    if not isinstance(content, list):
+        return _serialize_text(content)
+
+    blocks: list[dict[str, object]] = []
+    for item in content:
+        if isinstance(item, str):
+            if item:
+                blocks.append({"type": "text", "text": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                blocks.append({"type": "text", "text": text})
+            continue
+        if item.get("type") == "image":
+            path = item.get("path")
+            mime_type = item.get("mime_type")
+            if not isinstance(path, str) or not isinstance(mime_type, str):
+                continue
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": base64.b64encode(Path(path).read_bytes()).decode("ascii"),
+                    },
+                }
+            )
     return blocks
 
 

@@ -99,6 +99,7 @@ export {
   type TracePanelProps,
   type ChatInputProps,
   type ChatMessage,
+  type ChatAttachment,
   type MessageRole,
   type RetrievalCitation,
   type RetrievalContextFragment,

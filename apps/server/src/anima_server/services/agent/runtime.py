@@ -47,7 +47,7 @@ from anima_server.services.agent.runtime_types import (
     ToolCall,
     ToolExecutionResult,
 )
-from anima_server.services.agent.state import AgentResult, StoredMessage
+from anima_server.services.agent.state import AgentResult, StoredAttachment, StoredMessage
 from anima_server.services.agent.streaming import (
     AgentStreamEvent,
     build_chunk_event,
@@ -206,6 +206,7 @@ class AgentRuntime:
         memory_refresher: MemoryRefresher | None = None,
         extra_tool_schemas: Sequence[dict[str, Any]] = (),
         tool_executor: ToolExecutor | None = None,
+        user_attachments: Sequence[StoredAttachment] = (),
     ) -> AgentResult | DryRunResult:
         executor = tool_executor or self._tool_executor
         system_prompt, prompt_budget = self.build_system_prompt_with_budget(
@@ -227,6 +228,7 @@ class AgentRuntime:
             history,
             user_message,
             system_prompt=system_prompt,
+            user_attachments=user_attachments,
         )
 
         rules_solver = ToolRulesSolver(self._tool_rules)

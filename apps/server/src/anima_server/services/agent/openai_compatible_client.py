@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -242,12 +244,49 @@ def _serialize_message(message: Any) -> dict[str, object]:
     return payload
 
 
-def _serialize_content(content: object) -> str | None:
+def _serialize_content(content: object) -> str | list[dict[str, object]] | None:
     if isinstance(content, str):
         return content
+    if isinstance(content, list):
+        return _serialize_content_blocks(content)
     if content is None:
         return None
     return str(content)
+
+
+def _serialize_content_blocks(content: list[object]) -> list[dict[str, object]]:
+    blocks: list[dict[str, object]] = []
+    for item in content:
+        if isinstance(item, str):
+            if item:
+                blocks.append({"type": "text", "text": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        block_type = item.get("type")
+        if block_type == "text":
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                blocks.append({"type": "text", "text": text})
+            continue
+        if block_type == "image_url":
+            blocks.append(dict(item))
+            continue
+        if block_type == "image":
+            path = item.get("path")
+            mime_type = item.get("mime_type")
+            if not isinstance(path, str) or not isinstance(mime_type, str):
+                continue
+            data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+            blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{data}",
+                    },
+                }
+            )
+    return blocks
 
 
 def _coerce_response_content(content: object) -> str:

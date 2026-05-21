@@ -135,6 +135,55 @@ def test_append_user_message() -> None:
         assert msg.token_estimate is not None
 
 
+def test_append_user_message_stores_attachment_metadata() -> None:
+    from anima_server.services.agent.state import StoredAttachment
+
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+        msg = append_user_message(
+            db,
+            thread=thread,
+            run_id=run.id,
+            content="Look at this",
+            sequence_id=1,
+            attachments=(
+                StoredAttachment(
+                    id="img_test",
+                    kind="image",
+                    mime_type="image/png",
+                    path="/tmp/pixel.png",
+                    storage_path="users/1/attachments/chat/img_test.png",
+                    filename="pixel.png",
+                    size_bytes=24,
+                    sha256="abc123",
+                ),
+            ),
+        )
+
+        assert msg.content_json == {
+            "attachments": [
+                {
+                    "id": "img_test",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "filename": "pixel.png",
+                    "sizeBytes": 24,
+                    "sha256": "abc123",
+                    "storagePath": "users/1/attachments/chat/img_test.png",
+                }
+            ]
+        }
+
+
 def test_append_message_tool() -> None:
     with _db_session() as db:
         user = _make_user(db)
@@ -217,6 +266,44 @@ def test_load_thread_history_with_messages() -> None:
         assert history[0].content == "Hello"
         assert history[1].role == "assistant"
         assert history[1].content == "Hi back"
+
+
+def test_load_thread_history_deserializes_attachments() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+
+        append_message(
+            db,
+            thread=thread,
+            run_id=None,
+            step_id=None,
+            sequence_id=1,
+            role="user",
+            content_text="Look at this",
+            content_json={
+                "attachments": [
+                    {
+                        "id": "img_test",
+                        "kind": "image",
+                        "mimeType": "image/png",
+                        "filename": "pixel.png",
+                        "sizeBytes": 24,
+                        "sha256": "abc123",
+                        "storagePath": "users/1/attachments/chat/img_test.png",
+                    }
+                ]
+            },
+        )
+        db.commit()
+
+        history = load_thread_history(db, thread.id)
+
+        assert len(history) == 1
+        assert history[0].attachments[0].id == "img_test"
+        assert history[0].attachments[0].mime_type == "image/png"
+        assert history[0].attachments[0].filename == "pixel.png"
+        assert history[0].attachments[0].storage_path == "users/1/attachments/chat/img_test.png"
 
 
 def test_load_thread_history_excludes_out_of_context() -> None:

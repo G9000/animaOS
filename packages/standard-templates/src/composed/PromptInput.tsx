@@ -15,6 +15,8 @@ export interface PromptInputProps {
   showAttach?: boolean;
   showMic?: boolean;
   size?: "default" | "lg";
+  canSubmit?: boolean;
+  onAttach?: (type: string) => void;
 }
 
 const MAX_ROWS = 6;
@@ -30,6 +32,8 @@ export function PromptInput({
   showAttach = true,
   showMic = true,
   size = "default",
+  canSubmit = false,
+  onAttach,
 }: PromptInputProps) {
   const [internalValue, setInternalValue] = useState("");
   const isControlled = controlledValue !== undefined;
@@ -54,7 +58,7 @@ export function PromptInput({
 
   const submit = () => {
     const v = value.trim();
-    if (!v || disabled) return;
+    if ((!v && !canSubmit) || disabled) return;
     onSubmit(v);
     if (!isControlled) {
       setInternalValue("");
@@ -75,7 +79,7 @@ export function PromptInput({
         "flex items-end gap-2 bg-input border border-border rounded-none transition-all focus-within:border-muted-foreground/40",
         size === "lg" ? "px-4 py-3.5" : "px-3 py-2.5"
       )}>
-        {showAttach && <AttachMenu />}
+        {showAttach && <AttachMenu onAttach={onAttach} />}
 
         <textarea
           ref={textareaRef}
@@ -102,14 +106,14 @@ export function PromptInput({
               className="opacity-30 hover:opacity-70"
             />
           )}
-          {(value.trim() || disabled) && (
+          {(value.trim() || canSubmit || disabled) && (
             <Button
               type="submit"
               variant="accent"
               size="sm"
               iconOnly
               icon={<SendIcon />}
-              disabled={disabled || !value.trim()}
+              disabled={disabled || (!value.trim() && !canSubmit)}
               className="animate-fade-in disabled:opacity-20"
             />
           )}

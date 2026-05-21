@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class ChatRequestAttachment(BaseModel):
+    kind: Literal["image"]
+    filename: str | None = None
+    mimeType: str
+    data: str = Field(min_length=1)
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
+    message: str = ""
     userId: int = Field(ge=0)
     threadId: int | None = Field(default=None, ge=1)
     stream: bool = False
     source: str | None = None
-    threadId: int | None = None
+    attachments: list[ChatRequestAttachment] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_text_or_attachment(self) -> ChatRequest:
+        if not self.message.strip() and not self.attachments:
+            raise ValueError("Message text or at least one attachment is required.")
+        return self
 
 
 class RetrievalCitation(BaseModel):
@@ -74,6 +88,15 @@ class ChatResetResponse(BaseModel):
     status: str
 
 
+class ChatMessageAttachment(BaseModel):
+    id: str
+    kind: Literal["image"]
+    mimeType: str
+    filename: str | None = None
+    sizeBytes: int | None = None
+    url: str
+
+
 class ChatHistoryMessage(BaseModel):
     id: int
     userId: int
@@ -84,6 +107,7 @@ class ChatHistoryMessage(BaseModel):
     createdAt: datetime | None = None
     source: str | None = None
     retrieval: RetrievalTrace | None = None
+    attachments: list[ChatMessageAttachment] = Field(default_factory=list)
 
 
 class ChatHistoryClearResponse(BaseModel):

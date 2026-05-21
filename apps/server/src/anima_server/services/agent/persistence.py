@@ -13,8 +13,11 @@ from anima_server.services.agent.retrieval_feedback import record_retrieval_feed
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
 from anima_server.services.agent.state import (
     AgentResult,
+    StoredAttachment,
     StoredMessage,
+    attach_serialized_attachments,
     attach_serialized_retrieval,
+    deserialize_stored_attachments,
     serialize_agent_retrieval,
 )
 
@@ -67,6 +70,9 @@ def load_thread_history(
             StoredMessage(
                 role=row.role,
                 content=content,
+                attachments=deserialize_stored_attachments(row.content_json)
+                if row.role == "user"
+                else (),
                 tool_name=row.tool_name,
                 tool_call_id=row.tool_call_id,
                 tool_calls=_deserialize_tool_calls(row.content_json),
@@ -173,6 +179,7 @@ def append_user_message(
     content: str,
     sequence_id: int,
     source: str | None = None,
+    attachments: tuple[StoredAttachment, ...] = (),
 ) -> RuntimeMessage:
     return append_message(
         db,
@@ -182,6 +189,7 @@ def append_user_message(
         sequence_id=sequence_id,
         role="user",
         content_text=content,
+        content_json=attach_serialized_attachments(None, attachments),
         source=source,
     )
 
