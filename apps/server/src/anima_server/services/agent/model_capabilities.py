@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from typing import Any
 
@@ -11,16 +12,17 @@ _VISION_MODEL_PATTERNS = (
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
-    "vision",
     "llava",
     "qwen-vl",
     "qwen2.5-vl",
     "qwen2.5vl",
     "llama3.2-vision",
     "claude-3",
+    "claude-haiku-4",
     "claude-sonnet-4",
     "claude-opus-4",
 )
+_VISION_TOKEN_RE = re.compile(r"(^|[/:._-])vision($|[/:._-])")
 
 
 def supports_image_input(provider: str, model: str, *, base_url: str = "") -> bool:
@@ -30,11 +32,17 @@ def supports_image_input(provider: str, model: str, *, base_url: str = "") -> bo
         return False
     if normalized_provider == "scaffold":
         return False
-    if any(pattern in normalized_model for pattern in _VISION_MODEL_PATTERNS):
+    if _model_name_matches_vision_pattern(normalized_model):
         return True
     if normalized_provider == "ollama":
         return _ollama_model_reports_vision(model.strip(), base_url=base_url)
     return False
+
+
+def _model_name_matches_vision_pattern(model: str) -> bool:
+    return any(pattern in model for pattern in _VISION_MODEL_PATTERNS) or bool(
+        _VISION_TOKEN_RE.search(model)
+    )
 
 
 def _ollama_model_reports_vision(model: str, *, base_url: str) -> bool:
@@ -79,6 +87,6 @@ def _payload_has_vision_capability(payload: Any) -> bool:
 
     model_info = payload.get("model_info")
     if isinstance(model_info, dict):
-        return any("vision" in str(key).lower() for key in model_info)
+        return any(_VISION_TOKEN_RE.search(str(key).lower()) for key in model_info)
 
     return False

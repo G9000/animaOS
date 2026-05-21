@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+from anima_server.config import settings
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeMessage
 from anima_server.models.runtime_memory import MemoryRetrievalFeedback
@@ -304,6 +308,45 @@ def test_load_thread_history_deserializes_attachments() -> None:
         assert history[0].attachments[0].mime_type == "image/png"
         assert history[0].attachments[0].filename == "pixel.png"
         assert history[0].attachments[0].storage_path == "users/1/attachments/chat/img_test.png"
+
+
+def test_deserialize_stored_attachments_rejects_paths_outside_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.state import deserialize_stored_attachments
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+    attachments = deserialize_stored_attachments(
+        {
+            "attachments": [
+                {
+                    "id": "img_safe",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "storagePath": "users/1/attachments/chat/img_safe.png",
+                },
+                {
+                    "id": "img_traversal",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "storagePath": "../outside.png",
+                },
+                {
+                    "id": "img_absolute",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "storagePath": str(tmp_path.parent / "outside.png"),
+                },
+            ]
+        }
+    )
+
+    assert [attachment.id for attachment in attachments] == ["img_safe"]
+    assert Path(attachments[0].path).resolve() == (
+        tmp_path / "users/1/attachments/chat/img_safe.png"
+    ).resolve()
 
 
 def test_load_thread_history_excludes_out_of_context() -> None:

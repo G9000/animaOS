@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from anima_server.config import settings
@@ -223,12 +224,16 @@ def deserialize_stored_attachments(
         ):
             continue
 
+        resolved_path = _resolve_stored_attachment_path(storage_path)
+        if resolved_path is None:
+            continue
+
         attachments.append(
             StoredAttachment(
                 id=attachment_id,
                 kind="image",
                 mime_type=mime_type,
-                path=str(settings.data_dir / storage_path),
+                path=str(resolved_path),
                 storage_path=storage_path,
                 filename=raw_attachment.get("filename")
                 if isinstance(raw_attachment.get("filename"), str)
@@ -241,6 +246,21 @@ def deserialize_stored_attachments(
         )
 
     return tuple(attachments)
+
+
+def _resolve_stored_attachment_path(storage_path: str) -> Path | None:
+    path = Path(storage_path)
+    if path.is_absolute():
+        return None
+
+    try:
+        data_root = settings.data_dir.resolve()
+        resolved_path = (data_root / path).resolve()
+        resolved_path.relative_to(data_root)
+    except (OSError, ValueError):
+        return None
+
+    return resolved_path
 
 
 def serialize_public_attachments(
