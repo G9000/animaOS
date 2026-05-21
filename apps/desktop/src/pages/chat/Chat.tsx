@@ -214,6 +214,29 @@ function dedupeThreads(threads: Thread[]): Thread[] {
   return sortThreads(Array.from(unique.values()));
 }
 
+function mapThreadMessages(
+  messages: Array<{
+    role: string;
+    content: string;
+    ts?: string | null;
+    retrieval?: ChatMessage["retrieval"];
+    attachments?: ChatAttachment[];
+  }>,
+  userId: number,
+): ChatMessage[] {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message, index) => ({
+      id: index,
+      userId,
+      role: message.role as "user" | "assistant",
+      content: message.content,
+      createdAt: message.ts ?? undefined,
+      retrieval: message.retrieval ?? undefined,
+      attachments: message.attachments ?? [],
+    }));
+}
+
 // Translate handler
 async function translateText(text: string, lang: string): Promise<string> {
   return await api.translate(text, lang);
@@ -265,6 +288,13 @@ export default function Chat() {
       }
       objectUrlsRef.current.clear();
     };
+  }, []);
+
+  const revokeImagePreviews = useCallback((images: PendingImageAttachment[]) => {
+    for (const image of images) {
+      URL.revokeObjectURL(image.previewUrl);
+      objectUrlsRef.current.delete(image.previewUrl);
+    }
   }, []);
 
   // ===== CONSOLIDATED: Initial data loading =====
@@ -381,24 +411,20 @@ export default function Chat() {
   }, [user?.id]);
 
   // Thread actions
+  const loadThreadMessages = useCallback(
+    async (threadId: number) => {
+      const res = await api.threads.messages(threadId);
+      setMessages(mapThreadMessages(res.messages, user?.id ?? 0));
+    },
+    [user?.id],
+  );
+
   const handleSelectThread = async (threadId: number) => {
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
     try {
-      const res = await api.threads.messages(threadId);
-      const mapped: ChatMessage[] = res.messages
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m, i) => ({
-          id: i,
-          userId: user?.id ?? 0,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          createdAt: m.ts ?? undefined,
-          retrieval: m.retrieval ?? undefined,
-          attachments: m.attachments ?? [],
-        }));
-      setMessages(mapped);
+      await loadThreadMessages(threadId);
     } catch {
       setCurrentThreadId(null);
       currentThreadIdRef.current = null;
@@ -471,12 +497,11 @@ export default function Chat() {
     setSelectedImages((prev) => {
       const removed = prev.find((image) => image.id === id);
       if (removed) {
-        URL.revokeObjectURL(removed.previewUrl);
-        objectUrlsRef.current.delete(removed.previewUrl);
+        revokeImagePreviews([removed]);
       }
       return prev.filter((image) => image.id !== id);
     });
-  }, []);
+  }, [revokeImagePreviews]);
 
   // Send message
   const sendMessage = async (text: string) => {
@@ -575,8 +600,17 @@ export default function Chat() {
         traceEvents: collectedTraces.length > 0 ? collectedTraces : undefined,
       };
       setMessages((prev) => [...prev, assistantMsg]);
+      const resolvedThreadId = currentThreadIdRef.current ?? currentThreadId;
+      if (imagesForTurn.length > 0 && resolvedThreadId != null) {
+        try {
+          await loadThreadMessages(resolvedThreadId);
+        } catch {
+          // Keep the optimistic message if the refresh fails.
+        }
+      }
       setStreamBuffer("");
       setReasoningBuffer("");
+      revokeImagePreviews(imagesForTurn);
       setSelectedImages([]);
     } catch (err: any) {
       setError(err.message || "Connection failed");

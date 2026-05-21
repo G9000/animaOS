@@ -254,7 +254,9 @@ def _bulk_insert_archived_history(
             if isinstance(raw_attachments, list)
             else ()
         )
-        if not content and role in ("user", "assistant"):
+        if not content and (
+            role == "assistant" or (role == "user" and not attachments)
+        ):
             continue
         db.add(
             RuntimeMessage(
@@ -355,7 +357,7 @@ def get_thread_messages_for_display(
             "ts": m.get("ts"),
             "isArchivedHistory": True,
             "retrieval": m.get("retrieval") if isinstance(m.get("retrieval"), dict) else None,
-            "attachments": m.get("attachments") if isinstance(m.get("attachments"), list) else [],
+            "attachments": [],
         }
         for m in messages
         if m.get("role") in ("user", "assistant")

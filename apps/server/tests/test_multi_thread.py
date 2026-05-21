@@ -304,10 +304,27 @@ def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
     messages = [
         {"role": "user", "content": "old user message", "ts": "2026-01-01T00:00:00Z", "seq": 1},
         {
+            "role": "user",
+            "content": "",
+            "ts": "2026-01-01T00:00:30Z",
+            "seq": 2,
+            "attachments": [
+                {
+                    "id": "img_archive",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "filename": "archive.png",
+                    "sizeBytes": 68,
+                    "sha256": "abc123",
+                    "storagePath": "users/1/attachments/chat/img_archive.png",
+                }
+            ],
+        },
+        {
             "role": "assistant",
             "content": "old reply",
             "ts": "2026-01-01T00:01:00Z",
-            "seq": 2,
+            "seq": 3,
             "retrieval": {
                 "retriever": "hybrid",
                 "citations": [],
@@ -344,14 +361,32 @@ def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
         .order_by(RuntimeMessage.sequence_id)
     ).all()
 
-    # 2 archived history + 1 summary system message
-    assert len(all_msgs) == 3
+    # 3 archived history rows (including image-only user row) + 1 summary system message
+    assert len(all_msgs) == 4
     archived = [m for m in all_msgs if m.is_archived_history]
     summary_msg = [m for m in all_msgs if not m.is_archived_history]
-    assert len(archived) == 2
+    assert len(archived) == 3
     assert len(summary_msg) == 1
     assert summary_msg[0].role == "system"
     assert "Talked about old stuff" in (summary_msg[0].content_text or "")
+    archived_image_user = next(
+        message
+        for message in archived
+        if message.role == "user" and not message.content_text
+    )
+    assert archived_image_user.content_json == {
+        "attachments": [
+            {
+                "id": "img_archive",
+                "kind": "image",
+                "mimeType": "image/png",
+                "filename": "archive.png",
+                "sizeBytes": 68,
+                "sha256": "abc123",
+                "storagePath": "users/1/attachments/chat/img_archive.png",
+            }
+        ]
+    }
     archived_assistant = next(message for message in archived if message.role == "assistant")
     assert archived_assistant.content_json == {
         "retrieval": {
@@ -386,7 +421,20 @@ def test_display_messages_include_retrieval_from_archive(db: Session, tmp_path) 
     meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
 
     messages = [
-        {"role": "user", "content": "old user message", "ts": "2026-01-01T00:00:00Z", "seq": 1},
+        {
+            "role": "user",
+            "content": "old user message",
+            "ts": "2026-01-01T00:00:00Z",
+            "seq": 1,
+            "attachments": [
+                {
+                    "id": "img_archive",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "storagePath": "users/1/attachments/chat/img_archive.png",
+                }
+            ],
+        },
         {
             "role": "assistant",
             "content": "old reply",
@@ -432,3 +480,4 @@ def test_display_messages_include_retrieval_from_archive(db: Session, tmp_path) 
         ],
         "stats": None,
     }
+    assert result[0]["attachments"] == []
