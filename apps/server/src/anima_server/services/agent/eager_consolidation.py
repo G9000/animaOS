@@ -38,10 +38,10 @@ def _get_runtime_db_factory() -> Callable[..., Session]:
     return get_runtime_session_factory()
 
 
-def _get_soul_db_factory() -> Callable[..., object]:
-    from anima_server.db.session import SessionLocal
+def _get_soul_db_factory(user_id: int) -> Callable[..., object]:
+    from anima_server.db.session import get_user_session_factory
 
-    return SessionLocal
+    return get_user_session_factory(user_id)
 
 
 async def on_thread_close(
@@ -53,7 +53,7 @@ async def on_thread_close(
 ) -> None:
     """Run consolidation and archival after a thread is closed."""
     resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
-    resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory()
+    resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory(user_id)
 
     try:
         await run_soul_writer(user_id)
@@ -161,7 +161,6 @@ async def inactivity_sweep(
 ) -> int:
     """Close stale active threads and trigger archival."""
     resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
-    resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory()
     cutoff = datetime.now(UTC) - timedelta(minutes=inactivity_minutes)
 
     stale_threads: list[tuple[int, int]] = []
@@ -210,7 +209,7 @@ async def inactivity_sweep(
                 thread_id=thread_id,
                 user_id=user_id,
                 runtime_db_factory=resolved_runtime_db_factory,
-                soul_db_factory=resolved_soul_db_factory,
+                soul_db_factory=soul_db_factory or _get_soul_db_factory(user_id),
             )
         except Exception:
             logger.warning(
