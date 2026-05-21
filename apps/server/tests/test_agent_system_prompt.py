@@ -67,6 +67,8 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert "counts, latest values, temporal ordering, or preference-driven recommendations" in prompt
     assert "use `recall_conversation` for active history" in prompt
     assert "use `recall_transcript(query, days_back=0)`" in prompt
+    assert "thinking argument" not in prompt
+    assert "`thinking` argument" not in prompt
     assert "<human>" in prompt
     assert "Display name: Alice" in prompt
     # Tool names no longer appear in prompt — they're in the API tools payload
