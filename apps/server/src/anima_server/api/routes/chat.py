@@ -5,11 +5,11 @@ import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models import MemoryItem, Task
@@ -33,11 +33,18 @@ from anima_server.services.agent import (
     cancel_agent_run,
     dry_run_agent,
     ensure_agent_ready,
+    ensure_image_attachments_supported,
     list_agent_history,
     reset_agent_thread,
     run_agent,
     stream_agent,
     stream_approve_or_deny,
+)
+from anima_server.services.agent.attachments import (
+    AttachmentTooLargeError,
+    AttachmentValidationError,
+    resolve_message_attachment_path,
+    validate_chat_attachment_inputs,
 )
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
@@ -45,6 +52,7 @@ from anima_server.services.agent.runtime_types import UsageStats
 from anima_server.services.agent.state import (
     extract_stored_retrieval,
     serialize_agent_retrieval,
+    serialize_public_attachments,
 )
 from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
@@ -69,7 +77,15 @@ async def send_message(
                 payload.message, payload.userId, db, runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
+                attachments=payload.attachments,
             )
+        except AttachmentTooLargeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=str(exc),
+            ) from exc
+        except AttachmentValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -88,6 +104,15 @@ async def send_message(
 
     try:
         ensure_agent_ready()
+        ensure_image_attachments_supported(payload.attachments)
+        validate_chat_attachment_inputs(payload.attachments)
+    except AttachmentTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except AttachmentValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -100,6 +125,7 @@ async def send_message(
                 payload.message, payload.userId, db, runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
+                attachments=payload.attachments,
             ):
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client
@@ -142,9 +168,45 @@ async def get_chat_history(
             createdAt=row.created_at,
             source=getattr(row, "source", None),
             retrieval=extract_stored_retrieval(row.content_json),
+            attachments=serialize_public_attachments(
+                row.content_json,
+                message_id=row.id,
+            )
+            if row.role == "user"
+            else [],
         )
         for row in rows
     ]
+
+
+@router.get("/messages/{message_id}/attachments/{attachment_id}")
+async def get_message_attachment(
+    message_id: int,
+    attachment_id: str,
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> FileResponse:
+    unlock_session = require_unlocked_session(request)
+    message = runtime_db.get(RuntimeMessage, message_id)
+    if (
+        message is None
+        or message.user_id != unlock_session.user_id
+        or message.role != "user"
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+
+    resolved = resolve_message_attachment_path(
+        message.content_json,
+        attachment_id=attachment_id,
+    )
+    if resolved is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+
+    path, mime_type = resolved
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+
+    return FileResponse(path, media_type=mime_type)
 
 
 @router.delete("/history", response_model=ChatHistoryClearResponse)

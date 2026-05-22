@@ -7,6 +7,9 @@ interface ChatLayoutProps {
   onInputChange: (value: string) => void;
   onSubmit: () => void;
   streaming: boolean;
+  canSubmit?: boolean;
+  inputAccessory?: ReactNode;
+  onAttach?: (type: string) => void;
   sidebar?: ReactNode;
   showSidebar: boolean;
   onToggleSidebar: () => void;
@@ -20,6 +23,9 @@ export function ChatLayout({
   onInputChange,
   onSubmit,
   streaming,
+  canSubmit = false,
+  inputAccessory,
+  onAttach,
   sidebar,
   showSidebar,
   onToggleSidebar,
@@ -62,6 +68,7 @@ export function ChatLayout({
         {/* Floating Input — chunky hardware bar */}
         <div className="absolute bottom-0 left-0 right-0 z-10 px-4 py-4 bg-gradient-to-t from-background via-background to-transparent pointer-events-none">
           <div className="max-w-3xl mx-auto w-full pointer-events-auto">
+            {inputAccessory}
             <PromptInput
               value={input}
               onChange={onInputChange}
@@ -69,6 +76,8 @@ export function ChatLayout({
               disabled={streaming}
               placeholder="type something..."
               showMic={false}
+              canSubmit={canSubmit}
+              onAttach={onAttach}
             />
             <div className="mt-2 flex items-center justify-center gap-4">
               <span className="font-mono text-[8px] text-muted-foreground/25 tracking-[0.2em] uppercase">

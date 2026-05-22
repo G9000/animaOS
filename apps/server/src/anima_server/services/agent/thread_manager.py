@@ -11,7 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
-from anima_server.services.agent.state import attach_serialized_retrieval, extract_stored_retrieval
+from anima_server.services.agent.state import (
+    attach_serialized_attachments,
+    attach_serialized_retrieval,
+    deserialize_stored_attachments,
+    extract_stored_retrieval,
+    serialize_public_attachments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +248,15 @@ def _bulk_insert_archived_history(
         role = str(msg.get("role", "user"))
         content = str(msg.get("content", ""))
         retrieval = msg.get("retrieval")
-        if not content and role in ("user", "assistant"):
+        raw_attachments = msg.get("attachments")
+        attachments = (
+            tuple(deserialize_stored_attachments({"attachments": raw_attachments}))
+            if isinstance(raw_attachments, list)
+            else ()
+        )
+        if not content and (
+            role == "assistant" or (role == "user" and not attachments)
+        ):
             continue
         db.add(
             RuntimeMessage(
@@ -251,9 +265,12 @@ def _bulk_insert_archived_history(
                 sequence_id=max_seq + inserted_count,
                 role=role,
                 content_text=content,
-                content_json=attach_serialized_retrieval(
-                    content_json=None,
-                    retrieval=retrieval if isinstance(retrieval, dict) else None,
+                content_json=attach_serialized_attachments(
+                    attach_serialized_retrieval(
+                        content_json=None,
+                        retrieval=retrieval if isinstance(retrieval, dict) else None,
+                    ),
+                    attachments,
                 ),
                 is_in_context=False,
                 is_archived_history=True,
@@ -318,6 +335,12 @@ def get_thread_messages_for_display(
                 "ts": m.created_at.isoformat() if m.created_at else None,
                 "isArchivedHistory": m.is_archived_history,
                 "retrieval": extract_stored_retrieval(m.content_json),
+                "attachments": serialize_public_attachments(
+                    m.content_json,
+                    message_id=m.id,
+                )
+                if m.role == "user"
+                else [],
             }
             for m in pg_messages
             if not m.is_internal
@@ -334,6 +357,7 @@ def get_thread_messages_for_display(
             "ts": m.get("ts"),
             "isArchivedHistory": True,
             "retrieval": m.get("retrieval") if isinstance(m.get("retrieval"), dict) else None,
+            "attachments": [],
         }
         for m in messages
         if m.get("role") in ("user", "assistant")

@@ -31,7 +31,11 @@ export interface ChatBubbleProps {
   onTranslate?: (text: string) => Promise<string>;
   className?: string;
   // Optional: custom renderers
-  renderContent?: (content: string, role: string) => React.ReactNode;
+  renderContent?: (
+    content: string,
+    role: string,
+    message: ChatMessage,
+  ) => React.ReactNode;
 }
 
 export function ChatBubble({
@@ -81,7 +85,7 @@ export function ChatBubble({
   const fullTimestamp = formatFullTimestamp(message.createdAt);
 
   const bubbleContent = renderContent ? (
-    renderContent(message.content, message.role)
+    renderContent(message.content, message.role, message)
   ) : isUser ? (
     <p className="text-sm whitespace-pre-wrap break-words leading-relaxed pr-6">
       {message.content}

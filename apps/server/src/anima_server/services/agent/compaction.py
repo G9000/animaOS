@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.sequencing import reserve_message_sequences
-from anima_server.services.agent.state import RETRIEVAL_CONTENT_KEY
+from anima_server.services.agent.state import (
+    ATTACHMENTS_CONTENT_KEY,
+    RETRIEVAL_CONTENT_KEY,
+    deserialize_stored_attachments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +72,7 @@ def estimate_message_tokens(
             filtered_content_json = {
                 key: value
                 for key, value in content_json.items()
-                if key != RETRIEVAL_CONTENT_KEY
+                if key not in {RETRIEVAL_CONTENT_KEY, ATTACHMENTS_CONTENT_KEY}
             }
             if filtered_content_json:
                 text_parts.append(json.dumps(filtered_content_json, sort_keys=True))
@@ -229,6 +233,9 @@ def _summarize_row(row: RuntimeMessage, *, user_id: int = 0) -> str:
         role_label = f"Tool {row.tool_name}"
 
     content = _trim_summary_text(row.content_text or "")
+    placeholders = _attachment_placeholders(row)
+    if placeholders:
+        content = " ".join(part for part in (content, placeholders) if part)
     if not content:
         return f"{role_label}: [empty]"
     return f"{role_label}: {content}"
@@ -255,6 +262,9 @@ def _build_transcript(rows: list[RuntimeMessage], *, clamp_tools: bool = False) 
             role_label = f"Tool({row.tool_name})"
 
         content = (row.content_text or "").strip()
+        placeholders = _attachment_placeholders(row)
+        if placeholders:
+            content = " ".join(part for part in (content, placeholders) if part)
 
         # Skip tool-call wrapper assistant messages (these have tool_calls
         # in content_json and may have empty or minimal text).
@@ -273,6 +283,16 @@ def _build_transcript(rows: list[RuntimeMessage], *, clamp_tools: bool = False) 
 
         lines.append(f"{role_label}: {content}")
     return "\n".join(lines)
+
+
+def _attachment_placeholders(row: RuntimeMessage) -> str:
+    if row.role != "user":
+        return ""
+    placeholders: list[str] = []
+    for attachment in deserialize_stored_attachments(row.content_json):
+        label = attachment.filename or attachment.id
+        placeholders.append(f"[image: {label}]")
+    return " ".join(placeholders)
 
 
 async def summarize_with_llm(

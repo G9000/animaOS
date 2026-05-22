@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -126,6 +127,92 @@ async def test_anthropic_chat_client_serializes_messages_tools_and_usage() -> No
         "output_tokens": 7,
         "total_tokens": 18,
     }
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_client_serializes_image_content_blocks(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "pixel.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes")
+    captured_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5-20251001",
+                "content": [{"type": "text", "text": "done"}],
+            },
+        )
+
+    client = AnthropicChatClient(
+        model="claude-haiku-4-5-20251001",
+        base_url="https://anthropic.test/v1",
+        headers={"x-api-key": "test-key"},
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.ainvoke(
+        [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image",
+                        "mime_type": "image/png",
+                        "path": str(image_path),
+                    },
+                ]
+            )
+        ]
+    )
+
+    assert captured_payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgppbWFnZS1ieXRlcw==",
+                    },
+                },
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_client_reports_unreadable_image_attachment() -> None:
+    client = AnthropicChatClient(
+        model="claude-haiku-4-5-20251001",
+        base_url="https://anthropic.test/v1",
+        headers={"x-api-key": "test-key"},
+    )
+
+    with pytest.raises(RuntimeError, match="Unable to read image attachment"):
+        await client.ainvoke(
+            [
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "image",
+                            "mime_type": "image/png",
+                            "path": "missing-image.png",
+                        },
+                    ]
+                )
+            ]
+        )
 
 
 @pytest.mark.asyncio

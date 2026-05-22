@@ -1,6 +1,7 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 export type {
   ChatMessage,
+  ChatAttachment,
   MessageRole,
   RetrievalCitation,
   RetrievalContextFragment,

@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     agent_tool_timeout: float = 30.0
     agent_stream_queue_max_size: int = 256
     agent_background_memory_enabled: bool = True
+    chat_image_max_size_bytes: int = 10 * 1024 * 1024
+    chat_image_max_count: int = 4
     core_passphrase: str = ""
     core_require_encryption: bool = True
     agent_extraction_model: str = ""
