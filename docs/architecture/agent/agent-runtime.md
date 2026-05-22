@@ -2,7 +2,7 @@
 title: Agent Runtime Deep Dive
 description: Cognitive loop mechanics, step execution, tool orchestration, compaction, approval flow, and security findings
 category: architecture
-updated: 2026-05-17
+updated: 2026-05-21
 ---
 
 # Agent Runtime Deep Dive
@@ -391,15 +391,16 @@ Two modes:
 - **`stream=false`**: Calls `run_agent()`, blocks until complete, returns `ChatResponse` with `response`, `model`, `provider`, `toolsUsed`.
 - **`stream=true`**: Calls `ensure_agent_ready()` (validates LLM config), then opens an SSE stream via `stream_agent()`. Each event is formatted as `event: <type>\ndata: <json>\n\n`.
 
-The chat endpoint now accepts an optional `thread_id` parameter to route messages to a specific conversation thread.
+The chat endpoint accepts an optional `thread_id` parameter to route messages to a specific conversation thread. It also accepts optional image attachments on user messages. Attachments are base64 request payloads, not staged uploads, so the route validates readiness, model vision support, MIME type, magic bytes, size, and count before the SSE response begins.
 
-Error handling at this layer catches `LLMConfigError`, `LLMInvocationError`, and `PromptTemplateError`, returning HTTP 503.
+Error handling at this layer catches `LLMConfigError`, `LLMInvocationError`, and `PromptTemplateError`, returning HTTP 503. Attachment validation errors return HTTP 400, and oversized images return HTTP 413.
 
 ### Other Chat Endpoints
 
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/chat/history` | Load past messages (decrypted) |
+| `GET /api/chat/messages/{message_id}/attachments/{attachment_id}` | Return an authenticated chat image attachment for the owning unlocked user |
 | `DELETE /api/chat/history` | Clear thread |
 | `POST /api/chat/reset` | Close current thread, rotate to a new one |
 | `POST /api/chat/dry-run` | Assemble full prompt without calling LLM |
@@ -477,21 +478,23 @@ Both functions now accept dual DB sessions: `db` (soul/SQLCipher) and `runtime_d
 
 This is the most complex preparation stage. It assembles everything the runtime needs:
 
-1. **Get AnimaCompanion** -- `_get_companion(user_id)` returns the cached companion or creates one
-2. **Resolve thread** -- if `thread_id` is provided, look it up; if thread is archived/closed, `reactivate_thread_if_needed()` rehydrates from JSONL archive. Otherwise, `get_or_create_thread(runtime_db, user_id)` creates a new thread.
-3. **Set thread title** -- `maybe_set_thread_title(thread, user_message)` sets from first message if not already set (truncated to 60 chars)
-4. **Track thread switch** -- if companion's thread_id changed, invalidate history cache
-5. **Load history** -- `companion.ensure_history_loaded(runtime_db)` returns cached conversation window or loads from runtime DB (PostgreSQL)
-6. **Create run record** -- `persistence.create_run()` writes a `RuntimeRun` row (status, provider, model, mode)
-7. **Reserve sequences** -- `sequencing.reserve_message_sequences()` allocates monotonic message IDs
-8. **Persist user message** -- `persistence.append_user_message()` writes to `runtime_messages`
-9. **Pre-turn Soul Writer** -- `count_eligible_candidates()` checks for pending promotions; if any, `run_soul_writer(user_id)` promotes PendingMemoryOps and MemoryCandidates from PG to SQLCipher before building memory blocks
-10. **Semantic retrieval** -- `embeddings.hybrid_search()`:
+1. **Validate attachment inputs** -- reject unsupported image model settings, invalid MIME/magic-byte pairs, oversized files, and excess image counts before any run or message is created
+2. **Get AnimaCompanion** -- `_get_companion(user_id)` returns the cached companion or creates one
+3. **Resolve thread** -- if `thread_id` is provided, look it up; if thread is archived/closed, `reactivate_thread_if_needed()` rehydrates from JSONL archive. Otherwise, `get_or_create_thread(runtime_db, user_id)` creates a new thread.
+4. **Set thread title** -- `maybe_set_thread_title(thread, user_message)` sets from first message if not already set (truncated to 60 chars)
+5. **Track thread switch** -- if companion's thread_id changed, invalidate history cache
+6. **Load history** -- `companion.ensure_history_loaded(runtime_db)` returns cached conversation window or loads from runtime DB (PostgreSQL)
+7. **Save attachments** -- `attachments.prepare_chat_attachments()` writes validated image files under `{data_dir}/users/{user_id}/attachments/chat/` and returns `StoredAttachment` metadata
+8. **Create run record** -- `persistence.create_run()` writes a `RuntimeRun` row (status, provider, model, mode)
+9. **Reserve sequences** -- `sequencing.reserve_message_sequences()` allocates monotonic message IDs
+10. **Persist user message** -- `persistence.append_user_message()` writes to `runtime_messages`; image metadata is stored in `content_json.attachments`, while `content_text` remains the text prompt
+11. **Pre-turn Soul Writer** -- `count_eligible_candidates()` checks for pending promotions; if any, `run_soul_writer(user_id)` promotes PendingMemoryOps and MemoryCandidates from PG to SQLCipher before building memory blocks
+12. **Semantic retrieval** -- `embeddings.hybrid_search()`:
     - Embeds the user message
     - Cosine similarity search against stored `MemoryItem.embedding_json`
     - Similarity threshold 0.25, limit 15 results
     - `adaptive_filter()` further ranks/filters results
-11. **Build memory blocks** -- uses companion-cached static blocks, rebuilds with semantic results if available. `build_runtime_memory_blocks()` assembles 15+ block types:
+13. **Build memory blocks** -- uses companion-cached static blocks, rebuilds with semantic results if available. `build_runtime_memory_blocks()` assembles 15+ block types:
     - Soul biography, persona, human core, user directive
     - Self-model (5 sections: identity, values, inner_state, working_memory, growth_log)
     - Emotional context
@@ -499,10 +502,12 @@ This is the most complex preparation stage. It assembles everything the runtime 
     - Facts, preferences, goals, tasks, relationships
     - Current focus, thread summary, episodes, session notes
     - Merged blocks read from both soul DB and runtime DB pending ops
-12. **Feedback signals** -- `feedback_signals.collect_feedback_signals()` detects re-asks and corrections
-13. **Memory pressure warning** -- injects a warning block if estimated tokens exceed 80% of context window
+14. **Feedback signals** -- `feedback_signals.collect_feedback_signals()` detects re-asks and corrections
+15. **Memory pressure warning** -- injects a warning block if estimated tokens exceed 80% of context window
 
-Returns a `_TurnContext(history, conversation_turn_count, memory_blocks)`.
+Returns a `_TurnContext(history, conversation_turn_count, memory_blocks, attachments)`.
+
+Image attachments are runtime conversation artifacts. They are available to the active thread history and thread-message APIs, but are not embedded, searched, summarized into soul memory, or promoted by the Soul Writer. If a user image message remains in the context window, the saved image is sent to the provider again; if compaction removes it from active context, only a text placeholder such as `[image: board.jpg]` remains in summaries and transcripts.
 
 ### Stage 1b: Proactive Compaction (`_proactive_compact_if_needed`)
 
@@ -645,8 +650,9 @@ async def invoke(self, user_message, user_id, history, *,
    - Renders Jinja2 templates: `system_prompt.md.j2`, `system_rules.md.j2`, `guardrails.md.j2`
    - Injects: persona, dynamic identity (from self-model), tool summaries, serialized memory blocks
 2. If `extra_tool_schemas` provided (client action tools), append their descriptions to the system prompt
-3. `build_conversation_messages(history, user_message, system_prompt)`:
+3. `build_conversation_messages(history, user_message, system_prompt, user_attachments=...)`:
    - Builds the message array: `[system, ...history, user_message]`
+   - User messages with images become provider-neutral content blocks: text plus image blocks containing MIME type and saved file path
 
 **Phase 2: Step Loop**
 
@@ -806,6 +812,12 @@ When models (e.g. Qwen 3.5 via Ollama) receive `tool_choice="required"` but retu
 | Already streamed content | No (would cause duplicate output) |
 
 Retry limit and backoff are configurable via `agent_llm_retry_limit`, `agent_llm_retry_backoff_factor`, `agent_llm_retry_max_delay`.
+
+### Image Attachment Serialization
+
+The runtime keeps image input provider-neutral until the adapter boundary. `StoredMessage.attachments` and the current turn's `user_attachments` become `HumanMessage.content` blocks in `messages.py`; adapters then read the saved file bytes while constructing provider payloads.
+
+OpenAI-compatible adapters emit mixed content arrays with text blocks and `image_url` data URIs. Anthropic-compatible adapters emit text blocks and base64 image source blocks. Base64 is never stored in the runtime database; the database stores only metadata and a data-dir-relative storage path. The authenticated attachment endpoint resolves that path under the configured data directory and verifies message ownership before returning the file.
 
 ---
 

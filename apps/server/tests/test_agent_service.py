@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import User
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
+from anima_server.schemas.chat import ChatRequestAttachment
 from anima_server.services.agent import list_agent_history, run_agent
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.client_actions import ActionToolConnection, action_registry
@@ -105,6 +108,18 @@ class FakeWebSocket:
         del message
 
 
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+    b"\x90wS\xde"
+)
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
 @contextmanager
 def _soul_db_session() -> Generator[Session, None, None]:
     """Soul DB session (for User model)."""
@@ -128,6 +143,62 @@ def _soul_db_session() -> Generator[Session, None, None]:
         session.close()
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prepare_turn_context_deletes_attachment_files_on_persistence_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCompanion:
+        thread_id: int | None = None
+
+        def invalidate_history(self, *, thread_id: int) -> None:
+            del thread_id
+
+        def ensure_history_loaded(
+            self,
+            runtime_db: Session,
+            *,
+            thread_id: int,
+        ) -> list[agent_service.StoredMessage]:
+            del runtime_db, thread_id
+            return []
+
+    def fail_create_run(*args: object, **kwargs: object) -> RuntimeRun:
+        del args, kwargs
+        raise RuntimeError("runtime insert failed")
+
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+    monkeypatch.setattr(agent_service, "_get_companion", lambda user_id: FakeCompanion())
+    monkeypatch.setattr(agent_service, "create_run", fail_create_run)
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="pixel.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
+
+    with (
+        _soul_db_session() as soul_session,
+        runtime_db_session() as runtime_session,
+        pytest.raises(RuntimeError, match="runtime insert failed"),
+    ):
+        await agent_service._prepare_turn_context(
+            "look",
+            1,
+            soul_session,
+            runtime_session,
+            attachments=[attachment],
+        )
+
+    attachment_files = [
+        path for path in (tmp_path / "users").rglob("*") if path.is_file()
+    ]
+    assert attachment_files == []
 
 
 @pytest.mark.asyncio

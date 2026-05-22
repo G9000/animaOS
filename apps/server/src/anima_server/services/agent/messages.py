@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from anima_server.services.agent.runtime_types import ToolCall
-from anima_server.services.agent.state import StoredMessage
+from anima_server.services.agent.state import StoredAttachment, StoredMessage
 
 _TOOL_RULE_VIOLATION_PREFIX = "Tool rule violation:"
 
@@ -18,7 +18,7 @@ class SystemMessage:
 
 @dataclass
 class HumanMessage:
-    content: str
+    content: Any
     type: str = "human"
 
 
@@ -44,6 +44,7 @@ def build_conversation_messages(
     user_message: str | None,
     *,
     system_prompt: str,
+    user_attachments: Sequence[StoredAttachment] = (),
 ) -> list[Any]:
     messages: list[Any] = [make_system_message(system_prompt)]
     messages.extend(
@@ -52,7 +53,7 @@ def build_conversation_messages(
         if not _is_stale_tool_rule_violation_message(message)
     )
     if user_message is not None:
-        messages.append(make_user_message(user_message))
+        messages.append(make_user_message(user_message, attachments=user_attachments))
     return _sanitize_tool_message_ordering(messages)
 
 
@@ -116,7 +117,7 @@ def to_runtime_message(message: StoredMessage) -> Any:
             tool_call_id=message.tool_call_id or message.tool_name or "tool",
             name=message.tool_name,
         )
-    return make_user_message(message.content)
+    return make_user_message(message.content, attachments=message.attachments)
 
 
 def make_system_message(content: str) -> Any:
@@ -127,8 +128,26 @@ def make_summary_message(content: str) -> Any:
     return SystemMessage(content=content)
 
 
-def make_user_message(content: str) -> Any:
-    return HumanMessage(content=content)
+def make_user_message(
+    content: str,
+    *,
+    attachments: Sequence[StoredAttachment] = (),
+) -> Any:
+    if not attachments:
+        return HumanMessage(content=content)
+
+    blocks: list[dict[str, object]] = []
+    if content.strip():
+        blocks.append({"type": "text", "text": content})
+    for attachment in attachments:
+        blocks.append(
+            {
+                "type": "image",
+                "mime_type": attachment.mime_type,
+                "path": attachment.path,
+            }
+        )
+    return HumanMessage(content=blocks)
 
 
 def make_assistant_message(
@@ -197,7 +216,22 @@ def extract_tools_used(messages: list[Any]) -> list[str]:
 
 def message_content(message: Any) -> str:
     content = getattr(message, "content", "")
-    return content if isinstance(content, str) else str(content)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append(str(item["text"]))
+            elif item.get("type") == "image":
+                parts.append("[image]")
+        return " ".join(part for part in parts if part)
+    return str(content)
 
 
 def message_tool_calls(message: Any) -> Sequence[Any]:

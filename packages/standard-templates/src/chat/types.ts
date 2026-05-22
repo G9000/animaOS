@@ -11,6 +11,7 @@ export interface ChatMessage {
   reasoning?: string;
   traceEvents?: TraceEvent[];
   retrieval?: RetrievalTrace | null;
+  attachments?: ChatAttachment[];
   source?: string | null;
 }
 
@@ -59,6 +60,15 @@ export interface RetrievalTrace {
   citations: RetrievalCitation[];
   contextFragments: RetrievalContextFragment[];
   stats?: RetrievalStats | null;
+}
+
+export interface ChatAttachment {
+  id: string;
+  kind: "image";
+  mimeType: string;
+  filename?: string | null;
+  sizeBytes?: number | null;
+  url: string;
 }
 
 export interface TraceEvent {

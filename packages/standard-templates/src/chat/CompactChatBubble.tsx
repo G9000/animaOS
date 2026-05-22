@@ -27,7 +27,11 @@ export interface CompactChatBubbleProps {
   isGrouped?: boolean;
   onTranslate?: (text: string) => Promise<string>;
   className?: string;
-  renderContent?: (content: string, role: string) => React.ReactNode;
+  renderContent?: (
+    content: string,
+    role: string,
+    message: ChatMessage,
+  ) => React.ReactNode;
 }
 
 export function CompactChatBubble({
@@ -78,7 +82,7 @@ export function CompactChatBubble({
   const displayName = isUser ? "You" : isSystem ? "System" : "Anima";
 
   const bubbleContent = renderContent ? (
-    renderContent(message.content, message.role)
+    renderContent(message.content, message.role, message)
   ) : (
     <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
       {message.content}

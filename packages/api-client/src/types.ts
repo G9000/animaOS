@@ -111,6 +111,22 @@ export interface RetrievalTrace {
   stats?: RetrievalStats | null;
 }
 
+export interface ChatRequestAttachment {
+  kind: "image";
+  filename?: string | null;
+  mimeType: string;
+  data: string;
+}
+
+export interface ChatAttachment {
+  id: string;
+  kind: "image";
+  mimeType: string;
+  filename?: string | null;
+  sizeBytes?: number | null;
+  url: string;
+}
+
 export interface TraceEvent {
   type:
     | "step_state"
@@ -173,6 +189,7 @@ export interface ChatMessage {
   reasoning?: string;
   traceEvents?: TraceEvent[];
   retrieval?: RetrievalTrace | null;
+  attachments?: ChatAttachment[];
   source?: string | null;
 }
 
@@ -461,6 +478,7 @@ export interface ThreadMessage {
   ts: string | null;
   isArchivedHistory: boolean;
   retrieval?: RetrievalTrace | null;
+  attachments?: ChatAttachment[];
 }
 
 export interface ThreadMessagesResponse {

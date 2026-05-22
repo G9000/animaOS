@@ -1,17 +1,63 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
 
+from anima_server.config import settings
 from anima_server.services.agent.prompt_budget import PromptBudgetTrace
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall
 
 RETRIEVAL_CONTENT_KEY = "retrieval"
+ATTACHMENTS_CONTENT_KEY = "attachments"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredAttachment:
+    id: str
+    kind: Literal["image"]
+    mime_type: str
+    path: str
+    filename: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    storage_path: str | None = None
+
+    def to_content_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": self.id,
+            "kind": self.kind,
+            "mimeType": self.mime_type,
+        }
+        if self.filename is not None:
+            payload["filename"] = self.filename
+        if self.size_bytes is not None:
+            payload["sizeBytes"] = self.size_bytes
+        if self.sha256 is not None:
+            payload["sha256"] = self.sha256
+        if self.storage_path is not None:
+            payload["storagePath"] = self.storage_path
+        return payload
+
+    def to_public_dict(self, *, message_id: int) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": self.id,
+            "kind": self.kind,
+            "mimeType": self.mime_type,
+            "url": f"/api/chat/messages/{message_id}/attachments/{self.id}",
+        }
+        if self.filename is not None:
+            payload["filename"] = self.filename
+        if self.size_bytes is not None:
+            payload["sizeBytes"] = self.size_bytes
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
 class StoredMessage:
     role: str
     content: str
+    attachments: tuple[StoredAttachment, ...] = field(default_factory=tuple)
     tool_name: str | None = None
     tool_call_id: str | None = None
     tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
@@ -125,6 +171,107 @@ def extract_stored_retrieval(
 
     retrieval = content_json.get(RETRIEVAL_CONTENT_KEY)
     return retrieval if isinstance(retrieval, dict) else None
+
+
+def attach_serialized_attachments(
+    content_json: dict[str, object] | None,
+    attachments: tuple[StoredAttachment, ...],
+) -> dict[str, object] | None:
+    if not attachments:
+        return content_json
+
+    payload = dict(content_json or {})
+    payload[ATTACHMENTS_CONTENT_KEY] = [
+        attachment.to_content_dict() for attachment in attachments
+    ]
+    return payload
+
+
+def extract_stored_attachment_metadata(
+    content_json: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    if not isinstance(content_json, dict):
+        return []
+
+    raw_attachments = content_json.get(ATTACHMENTS_CONTENT_KEY)
+    if not isinstance(raw_attachments, list):
+        return []
+
+    return [
+        dict(raw_attachment)
+        for raw_attachment in raw_attachments
+        if isinstance(raw_attachment, dict)
+    ]
+
+
+def deserialize_stored_attachments(
+    content_json: dict[str, object] | None,
+) -> tuple[StoredAttachment, ...]:
+    attachments: list[StoredAttachment] = []
+    for raw_attachment in extract_stored_attachment_metadata(content_json):
+        attachment_id = raw_attachment.get("id")
+        kind = raw_attachment.get("kind")
+        mime_type = raw_attachment.get("mimeType")
+        storage_path = raw_attachment.get("storagePath")
+        if (
+            not isinstance(attachment_id, str)
+            or not attachment_id
+            or kind != "image"
+            or not isinstance(mime_type, str)
+            or not mime_type
+            or not isinstance(storage_path, str)
+            or not storage_path
+        ):
+            continue
+
+        resolved_path = _resolve_stored_attachment_path(storage_path)
+        if resolved_path is None:
+            continue
+
+        attachments.append(
+            StoredAttachment(
+                id=attachment_id,
+                kind="image",
+                mime_type=mime_type,
+                path=str(resolved_path),
+                storage_path=storage_path,
+                filename=raw_attachment.get("filename")
+                if isinstance(raw_attachment.get("filename"), str)
+                else None,
+                size_bytes=_coerce_int(raw_attachment.get("sizeBytes")),
+                sha256=raw_attachment.get("sha256")
+                if isinstance(raw_attachment.get("sha256"), str)
+                else None,
+            )
+        )
+
+    return tuple(attachments)
+
+
+def _resolve_stored_attachment_path(storage_path: str) -> Path | None:
+    path = Path(storage_path)
+    if path.is_absolute():
+        return None
+
+    try:
+        data_root = settings.data_dir.resolve()
+        resolved_path = (data_root / path).resolve()
+        resolved_path.relative_to(data_root)
+    except (OSError, ValueError):
+        return None
+
+    return resolved_path
+
+
+def serialize_public_attachments(
+    content_json: dict[str, object] | None,
+    *,
+    message_id: int,
+) -> list[dict[str, object]]:
+    return [
+        attachment.to_public_dict(message_id=message_id)
+        for attachment in deserialize_stored_attachments(content_json)
+    ]
 
 
 def deserialize_agent_retrieval(

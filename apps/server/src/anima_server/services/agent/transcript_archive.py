@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from anima_server.services import anima_core_retrieval
-from anima_server.services.agent.state import extract_stored_retrieval
+from anima_server.services.agent.state import (
+    extract_stored_attachment_metadata,
+    extract_stored_retrieval,
+)
 from anima_server.services.crypto import decrypt_blob, encrypt_blob
 
 if TYPE_CHECKING:
@@ -46,6 +49,9 @@ def messages_to_transcript_dicts(messages: list[RuntimeMessage]) -> list[dict[st
         retrieval = extract_stored_retrieval(message.content_json)
         if role == "assistant" and retrieval is not None:
             payload["retrieval"] = retrieval
+        attachments = extract_stored_attachment_metadata(message.content_json)
+        if role == "user" and attachments:
+            payload["attachments"] = attachments
         if message.role == "assistant":
             tool_calls = message.content_json.get("tool_calls") if isinstance(message.content_json, dict) else None
             if isinstance(tool_calls, list):
