@@ -118,6 +118,12 @@ export interface ChatRequestAttachment {
   data: string;
 }
 
+export interface ChatContextMessage {
+  role: "assistant";
+  content: string;
+  source?: string | null;
+}
+
 export interface ChatAttachment {
   id: string;
   kind: "image";
@@ -237,6 +243,36 @@ export interface Nudge {
   message: string;
   priority: number;
 }
+
+export interface ProactiveNotice {
+  id: string;
+  message: string;
+  source: string;
+  llmGenerated: boolean;
+  context: {
+    currentFocus: string | null;
+    openTaskCount: number;
+    overdueTasks: number;
+    daysSinceLastChat: number | null;
+    upcomingDeadlines: string[];
+  };
+  contextMessages: ChatContextMessage[];
+}
+
+export interface ProactivityConfig {
+  userId: number;
+  enabled: boolean;
+  mainChatEnabled: boolean;
+  homeGreetingContextEnabled: boolean;
+  taskNudgesEnabled: boolean;
+  memoryNudgesEnabled: boolean;
+  checkInNudgesEnabled: boolean;
+  customInstruction?: string | null;
+}
+
+export type ProactivityConfigUpdate = Partial<
+  Omit<ProactivityConfig, "userId">
+>;
 
 export interface TaskItem {
   id: number;

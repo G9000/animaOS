@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type {
   ChatAttachment,
+  ChatContextMessage,
   ChatMessage,
   ChatRequestAttachment,
+  ProactiveNotice,
   Thread,
   TraceEvent,
 } from "@anima/api-client";
@@ -41,6 +43,10 @@ const ACCEPTED_IMAGE_TYPES = new Set([
   "image/gif",
 ]);
 const MAX_SELECTED_IMAGES = 4;
+
+interface ChatLocationState {
+  contextMessages?: ChatContextMessage[];
+}
 
 interface PendingImageAttachment {
   id: string;
@@ -192,6 +198,55 @@ function SelectedImagePreviews({
   );
 }
 
+function ProactiveNoticeCard({
+  notice,
+  draft,
+  loading,
+  onDraftChange,
+  onRegenerate,
+  onDismiss,
+}: {
+  notice: ProactiveNotice;
+  draft: string;
+  loading: boolean;
+  onDraftChange: (value: string) => void;
+  onRegenerate: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="mb-2 border border-border bg-card px-3 py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {notice.message}
+        </p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
+        >
+          DISMISS
+        </button>
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <input
+          value={draft}
+          onChange={(event) => onDraftChange(event.currentTarget.value)}
+          placeholder="customize notice..."
+          className="min-w-0 flex-1 bg-background border border-border px-2 py-1.5 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+        />
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={loading}
+          className="shrink-0 border border-border px-2.5 py-1.5 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
+        >
+          {loading ? "..." : "REGEN"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
   return [...threads].sort((left, right) => {
@@ -244,8 +299,13 @@ async function translateText(text: string, lang: string): Promise<string> {
 
 export default function Chat() {
   const { user } = useAuth();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const locationState = location.state as ChatLocationState | null;
   const pendingMsgRef = useRef<string | null>(searchParams.get("msg"));
+  const pendingContextRef = useRef<ChatContextMessage[]>(
+    locationState?.contextMessages ?? [],
+  );
 
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -264,6 +324,10 @@ export default function Chat() {
   const [reasoningBuffer, setReasoningBuffer] = useState("");
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [showTrace] = useState(false);
+  const [proactiveNotice, setProactiveNotice] =
+    useState<ProactiveNotice | null>(null);
+  const [proactiveDraft, setProactiveDraft] = useState("");
+  const [proactiveLoading, setProactiveLoading] = useState(false);
 
   // Thread state
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -296,6 +360,22 @@ export default function Chat() {
       objectUrlsRef.current.delete(image.previewUrl);
     }
   }, []);
+
+  const loadProactiveNotice = useCallback(
+    async (instruction?: string) => {
+      if (user?.id == null) return;
+      setProactiveLoading(true);
+      try {
+        const result = await api.chat.proactiveNotice(user.id, instruction);
+        setProactiveNotice(result.notice);
+      } catch {
+        setProactiveNotice(null);
+      } finally {
+        setProactiveLoading(false);
+      }
+    },
+    [user?.id],
+  );
 
   // ===== CONSOLIDATED: Initial data loading =====
   useEffect(() => {
@@ -331,9 +411,11 @@ export default function Chat() {
           setMessages(hist);
           const pending = pendingMsgRef.current;
           if (pending) {
+            const pendingContext = pendingContextRef.current;
             pendingMsgRef.current = null;
+            pendingContextRef.current = [];
             setSearchParams({}, { replace: true });
-            setTimeout(() => sendMessage(pending), 100);
+            setTimeout(() => sendMessage(pending, pendingContext), 100);
           }
         })
         .catch(console.error),
@@ -354,10 +436,14 @@ export default function Chat() {
         .catch(() => {}),
     ]);
 
+    if (!pendingMsgRef.current) {
+      void loadProactiveNotice();
+    }
+
     return () => {
       revoked = true;
     };
-  }, [user?.id]);
+  }, [loadProactiveNotice, user?.id]);
 
   // ===== CONSOLIDATED: Polling for updates =====
   useEffect(() => {
@@ -504,12 +590,22 @@ export default function Chat() {
   }, [revokeImagePreviews]);
 
   // Send message
-  const sendMessage = async (text: string) => {
+  const sendMessage = async (
+    text: string,
+    contextMessages: ChatContextMessage[] = [],
+  ) => {
     if ((!text.trim() && selectedImages.length === 0) || user?.id == null || streaming) {
       return;
     }
 
     const userMsg = text.trim();
+    const implicitContextMessages =
+      contextMessages.length > 0
+        ? contextMessages
+        : proactiveNotice?.contextMessages ?? [];
+    const turnContextMessages = implicitContextMessages.filter((message) =>
+      message.content.trim(),
+    );
     const imagesForTurn = selectedImages;
     let requestAttachments: ChatRequestAttachment[] = [];
     try {
@@ -523,15 +619,28 @@ export default function Chat() {
 
     setInput("");
     setError("");
+    if (turnContextMessages.length > 0) {
+      setProactiveNotice(null);
+    }
 
+    const now = Date.now();
+    const optimisticContextMessages: ChatMessage[] = turnContextMessages.map(
+      (message, index) => ({
+        id: now + index,
+        userId: user.id,
+        role: "assistant",
+        content: message.content.trim(),
+        source: message.source ?? null,
+      }),
+    );
     const tempUserMsg: ChatMessage = {
-      id: Date.now(),
+      id: now + optimisticContextMessages.length + 1,
       userId: user.id,
       role: "user",
       content: userMsg,
       attachments: imagesForTurn.map((image) => toPreviewAttachment(image)),
     };
-    setMessages((prev) => [...prev, tempUserMsg]);
+    setMessages((prev) => [...prev, ...optimisticContextMessages, tempUserMsg]);
     setStreaming(true);
     setStreamBuffer("");
     setReasoningBuffer("");
@@ -551,6 +660,7 @@ export default function Chat() {
         user.id,
         currentThreadId ?? undefined,
         requestAttachments,
+        turnContextMessages,
       )) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
@@ -696,10 +806,22 @@ export default function Chat() {
         canSubmit={Boolean(input.trim()) || selectedImages.length > 0}
         onAttach={handleAttach}
         inputAccessory={
-          <SelectedImagePreviews
-            images={selectedImages}
-            onRemove={removeSelectedImage}
-          />
+          <>
+            {proactiveNotice && (
+              <ProactiveNoticeCard
+                notice={proactiveNotice}
+                draft={proactiveDraft}
+                loading={proactiveLoading}
+                onDraftChange={setProactiveDraft}
+                onRegenerate={() => loadProactiveNotice(proactiveDraft)}
+                onDismiss={() => setProactiveNotice(null)}
+              />
+            )}
+            <SelectedImagePreviews
+              images={selectedImages}
+              onRemove={removeSelectedImage}
+            />
+          </>
         }
         showSidebar={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}

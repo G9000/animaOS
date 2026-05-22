@@ -7,6 +7,7 @@ import Dashboard from "./pages/dashboard/Dashboard";
 import Profile from "./pages/Profile";
 import Chat from "./pages/chat/Chat";
 import Memory from "./pages/memory/Memory";
+import Proactivity from "./pages/Proactivity";
 import Settings from "./pages/settings/Settings";
 import AiSettings from "./pages/settings/AiSettings";
 import SecuritySettings from "./pages/settings/SecuritySettings";
@@ -68,6 +69,7 @@ function AppRoutes() {
       <Route path="/" element={withLayout(<Dashboard />)} />
       <Route path="/chat" element={withLayout(<Chat />)} />
       <Route path="/memory" element={withLayout(<Memory />)} />
+      <Route path="/proactivity" element={withLayout(<Proactivity />)} />
       <Route path="/profile" element={withLayout(<Profile />)} />
       <Route path="/settings" element={withLayout(<Settings />)}>
         <Route index element={<Navigate to="ai" replace />} />

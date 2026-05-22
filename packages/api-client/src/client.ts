@@ -6,6 +6,7 @@ import type {
   AuthResponse,
   ChangePasswordResponse,
   ChatMessage,
+  ChatContextMessage,
   ChatRequestAttachment,
   CreateThreadResponse,
   DailyBrief,
@@ -31,6 +32,9 @@ import type {
   PendingMemoryOpsResponse,
   PersonaTemplate,
   PersonaTemplateInfo,
+  ProactivityConfig,
+  ProactivityConfigUpdate,
+  ProactiveNotice,
   ProviderInfo,
   SelfModelData,
   SelfModelSection,
@@ -245,6 +249,7 @@ export function createApiClient(options: ApiClientOptions) {
     userId: number,
     threadId?: number,
     attachments: ChatRequestAttachment[] = [],
+    contextMessages: ChatContextMessage[] = [],
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
     const streamNonce = getNonce?.() || null;
@@ -262,6 +267,7 @@ export function createApiClient(options: ApiClientOptions) {
         stream: true,
         ...(threadId !== undefined ? { threadId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(contextMessages.length > 0 ? { contextMessages } : {}),
       }),
     });
 
@@ -528,6 +534,7 @@ export function createApiClient(options: ApiClientOptions) {
         userId: number,
         threadId?: number,
         attachments: ChatRequestAttachment[] = [],
+        contextMessages: ChatContextMessage[] = [],
       ) =>
         request<AgentResponse>("/chat", {
           method: "POST",
@@ -537,6 +544,7 @@ export function createApiClient(options: ApiClientOptions) {
             stream: false,
             ...(threadId !== undefined ? { threadId } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
+            ...(contextMessages.length > 0 ? { contextMessages } : {}),
           },
         }),
       stream: (
@@ -544,7 +552,8 @@ export function createApiClient(options: ApiClientOptions) {
         userId: number,
         threadId?: number,
         attachments: ChatRequestAttachment[] = [],
-      ) => streamChat(message, userId, threadId, attachments),
+        contextMessages: ChatContextMessage[] = [],
+      ) => streamChat(message, userId, threadId, attachments, contextMessages),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
       clearHistory: (userId: number) =>
@@ -558,6 +567,14 @@ export function createApiClient(options: ApiClientOptions) {
         request<Greeting>(`/chat/greeting?userId=${userId}`),
       nudges: (userId: number) =>
         request<{ nudges: Nudge[] }>(`/chat/nudges?userId=${userId}`),
+      proactiveNotice: (userId: number, instruction?: string) => {
+        const params = new URLSearchParams({ userId: String(userId) });
+        const trimmed = instruction?.trim();
+        if (trimmed) params.set("instruction", trimmed);
+        return request<{ notice: ProactiveNotice | null }>(
+          `/chat/proactive-notice?${params.toString()}`,
+        );
+      },
       home: (userId: number) =>
         request<HomeData>(`/chat/home?userId=${userId}`),
       consolidate: (userId: number) =>
@@ -600,6 +617,15 @@ export function createApiClient(options: ApiClientOptions) {
         },
       ) =>
         request<{ status: string }>(`/config/${userId}`, {
+          method: "PUT",
+          body: data,
+        }),
+    },
+    proactivity: {
+      get: (userId: number) =>
+        request<ProactivityConfig>(`/proactivity/${userId}`),
+      update: (userId: number, data: ProactivityConfigUpdate) =>
+        request<ProactivityConfig>(`/proactivity/${userId}`, {
           method: "PUT",
           body: data,
         }),

@@ -20,6 +20,10 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
 from anima_server.services.data_crypto import df
+from anima_server.services.proactivity_config import (
+    ProactivityConfigValues,
+    get_proactivity_config_values,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,16 @@ class GreetingContext:
 class GreetingResult:
     message: str
     context: GreetingContext
+    llm_generated: bool = False
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProactiveNoticeResult:
+    id: str
+    message: str
+    context: GreetingContext
+    source: str = "proactive_notice"
     llm_generated: bool = False
     errors: list[str] = field(default_factory=list)
 
@@ -194,6 +208,37 @@ def build_static_greeting(ctx: GreetingContext) -> str:
     return " ".join(parts)
 
 
+def build_static_proactive_notice(
+    ctx: GreetingContext,
+    *,
+    instruction: str | None = None,
+    config: ProactivityConfigValues | None = None,
+) -> str | None:
+    """Build a quiet in-chat proactive notice without requiring an LLM."""
+    allow_tasks = config.task_nudges_enabled if config is not None else True
+    allow_memory = config.memory_nudges_enabled if config is not None else True
+    allow_checkins = config.checkin_nudges_enabled if config is not None else True
+
+    custom = (instruction or "").strip()
+    if custom:
+        return f"{custom[:1].upper()}{custom[1:]}. Want to start there?"
+
+    if allow_tasks and ctx.overdue_task_count:
+        s = "s" if ctx.overdue_task_count != 1 else ""
+        return f"You have {ctx.overdue_task_count} overdue task{s}. Want to sort them together?"
+
+    if allow_tasks and ctx.upcoming_deadlines:
+        return f"{ctx.upcoming_deadlines[0]} is coming up soon. Want to look at it together?"
+
+    if allow_checkins and ctx.days_since_last_chat and ctx.days_since_last_chat > 0:
+        return "There is a thread from last time we can pick back up if you want."
+
+    if allow_memory and ctx.working_memory_summary:
+        return "I am holding a few open threads for you. Want to choose one?"
+
+    return None
+
+
 async def generate_greeting(
     db: Session,
     *,
@@ -293,3 +338,85 @@ async def generate_greeting(
 
     # Fallback to static
     return GreetingResult(message=build_static_greeting(ctx), context=ctx, errors=errors)
+
+
+async def generate_proactive_notice(
+    db: Session,
+    *,
+    user_id: int,
+    instruction: str | None = None,
+) -> ProactiveNoticeResult | None:
+    """Generate a quiet proactive notice for the main chat surface."""
+    from anima_server.services.agent.prompt_loader import get_prompt_loader
+
+    config = get_proactivity_config_values(db, user_id)
+    if not config.enabled or not config.main_chat_enabled:
+        return None
+
+    effective_instruction = (instruction or "").strip() or config.custom_instruction
+    ctx = gather_greeting_context(db, user_id=user_id)
+    fallback = build_static_proactive_notice(
+        ctx,
+        instruction=effective_instruction,
+        config=config,
+    )
+    if fallback is None:
+        return None
+
+    if settings.agent_provider == "scaffold":
+        return ProactiveNoticeResult(id="proactive_notice", message=fallback, context=ctx)
+
+    prompt_loader = get_prompt_loader(db, user_id)
+    prompt_parts = [
+        "Write one short, quiet proactive notice for the main chat.",
+        "It should feel like an optional thread, not a command or interruption.",
+        "Do not mention that you are generating a notification.",
+    ]
+    if effective_instruction:
+        prompt_parts.append(f"User customization: {effective_instruction}")
+    if config.task_nudges_enabled and ctx.overdue_task_count:
+        prompt_parts.append(f"Overdue tasks: {ctx.overdue_task_count}")
+    if config.task_nudges_enabled and ctx.upcoming_deadlines:
+        prompt_parts.append(f"Upcoming deadlines: {', '.join(ctx.upcoming_deadlines[:3])}")
+    if config.checkin_nudges_enabled and ctx.days_since_last_chat is not None:
+        prompt_parts.append(f"Days since last chat: {ctx.days_since_last_chat}")
+    if config.memory_nudges_enabled and ctx.recent_episode_summary:
+        prompt_parts.append(f"Recent conversation: {ctx.recent_episode_summary}")
+    if config.memory_nudges_enabled and ctx.working_memory_summary:
+        prompt_parts.append(f"Working memory: {ctx.working_memory_summary}")
+
+    errors: list[str] = []
+    try:
+        from anima_server.services.agent.llm import create_llm
+        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+
+        llm = create_llm()
+        response = await llm.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        f"You are {prompt_loader.agent_name}. Respond with ONLY the proactive "
+                        "notice text, one sentence."
+                    )
+                ),
+                HumanMessage(content="\n".join(prompt_parts)),
+            ]
+        )
+        content = getattr(response, "content", "")
+        if isinstance(content, str) and content.strip():
+            return ProactiveNoticeResult(
+                id="proactive_notice",
+                message=content.strip(),
+                context=ctx,
+                llm_generated=True,
+            )
+    except Exception as e:
+        logger.debug("LLM proactive notice generation failed: %s", e)
+        errors.append(str(e))
+
+    return ProactiveNoticeResult(
+        id="proactive_notice",
+        message=fallback,
+        context=ctx,
+        errors=errors,
+    )

@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import type { Greeting, TaskItem, MemoryEpisodeData, EmotionalContextData } from "@anima/api-client";
+import type {
+  ChatContextMessage,
+  Greeting,
+  ProactivityConfig,
+  TaskItem,
+  MemoryEpisodeData,
+  EmotionalContextData,
+} from "@anima/api-client";
 import { api } from "../../lib/api";
 import { PromptInput } from "@anima/standard-templates";
 import { DashboardGreeting } from "./DashboardGreeting";
@@ -49,6 +56,8 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [episodes, setEpisodes] = useState<MemoryEpisodeData[]>([]);
   const [mood, setMood] = useState<EmotionalContextData | null>(null);
+  const [proactivityConfig, setProactivityConfig] =
+    useState<ProactivityConfig | null>(null);
 
   // Check if agent setup is needed
   useEffect(() => {
@@ -60,6 +69,22 @@ export default function Dashboard() {
         if (profile.agentName) setAgentName(profile.agentName);
       })
       .catch(() => setNeedsSetup(true));
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user?.id == null) return;
+    let active = true;
+
+    api.proactivity
+      .get(user.id)
+      .then((config) => {
+        if (active) setProactivityConfig(config);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
   }, [user?.id]);
 
   // Load greeting (cached)
@@ -161,7 +186,25 @@ export default function Dashboard() {
   }, [user?.id, needsSetup]);
 
   const handlePromptSubmit = (value: string) => {
-    navigate(`/chat?msg=${encodeURIComponent(value)}`);
+    const firstName = user?.name?.split(" ")[0];
+    const fallbackGreeting = `Hi${firstName ? ` ${firstName}` : ""}, how can I help you today?`;
+    const currentGreeting = briefLoading ? null : brief?.message ?? fallbackGreeting;
+    const canIncludeGreetingContext =
+      proactivityConfig?.enabled !== false &&
+      proactivityConfig?.homeGreetingContextEnabled !== false;
+    const contextMessages: ChatContextMessage[] = currentGreeting && canIncludeGreetingContext
+      ? [
+          {
+            role: "assistant",
+            content: currentGreeting,
+            source: "home_greeting",
+          },
+        ]
+      : [];
+
+    navigate(`/chat?msg=${encodeURIComponent(value)}`, {
+      state: { contextMessages },
+    });
   };
 
   // Agent setup incomplete → send to Init flow

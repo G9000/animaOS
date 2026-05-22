@@ -65,6 +65,123 @@ def test_nudges_endpoint() -> None:
         assert isinstance(data["nudges"], list)
 
 
+def test_proactive_notice_endpoint_accepts_custom_instruction() -> None:
+    with managed_test_client("anima-dashboard-test-") as client:
+        reg = _register_user(client)
+        user_id = reg["id"]
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.get(
+            f"/api/chat/proactive-notice?userId={user_id}&instruction=mention%20Tappy",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["notice"] is not None
+        notice = data["notice"]
+        assert notice["source"] == "proactive_notice"
+        assert "Tappy" in notice["message"]
+        assert notice["contextMessages"] == [
+            {
+                "role": "assistant",
+                "content": notice["message"],
+                "source": "proactive_notice",
+            }
+        ]
+
+
+def test_proactivity_config_defaults_and_update() -> None:
+    with managed_test_client("anima-dashboard-test-") as client:
+        reg = _register_user(client)
+        user_id = reg["id"]
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.get(f"/api/proactivity/{user_id}", headers=headers)
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "userId": user_id,
+            "enabled": True,
+            "mainChatEnabled": True,
+            "homeGreetingContextEnabled": True,
+            "taskNudgesEnabled": True,
+            "memoryNudgesEnabled": True,
+            "checkInNudgesEnabled": True,
+            "customInstruction": None,
+        }
+
+        resp = client.put(
+            f"/api/proactivity/{user_id}",
+            headers=headers,
+            json={
+                "enabled": True,
+                "mainChatEnabled": False,
+                "homeGreetingContextEnabled": False,
+                "taskNudgesEnabled": False,
+                "memoryNudgesEnabled": True,
+                "checkInNudgesEnabled": False,
+                "customInstruction": "mention Tappy gently",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "userId": user_id,
+            "enabled": True,
+            "mainChatEnabled": False,
+            "homeGreetingContextEnabled": False,
+            "taskNudgesEnabled": False,
+            "memoryNudgesEnabled": True,
+            "checkInNudgesEnabled": False,
+            "customInstruction": "mention Tappy gently",
+        }
+
+
+def test_proactive_notice_respects_disabled_main_chat_config() -> None:
+    with managed_test_client("anima-dashboard-test-") as client:
+        reg = _register_user(client)
+        user_id = reg["id"]
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        client.put(
+            f"/api/proactivity/{user_id}",
+            headers=headers,
+            json={"mainChatEnabled": False},
+        )
+
+        resp = client.get(
+            f"/api/chat/proactive-notice?userId={user_id}&instruction=mention%20Tappy",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"notice": None}
+
+
+def test_proactive_notice_uses_saved_custom_instruction() -> None:
+    with managed_test_client("anima-dashboard-test-") as client:
+        reg = _register_user(client)
+        user_id = reg["id"]
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        client.put(
+            f"/api/proactivity/{user_id}",
+            headers=headers,
+            json={"customInstruction": "mention Tappy gently"},
+        )
+
+        resp = client.get(
+            f"/api/chat/proactive-notice?userId={user_id}",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        notice = resp.json()["notice"]
+        assert notice is not None
+        assert "Tappy" in notice["message"]
+
+
 def test_home_endpoint() -> None:
     with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)

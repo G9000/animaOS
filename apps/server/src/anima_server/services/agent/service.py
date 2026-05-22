@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
-from anima_server.schemas.chat import ChatRequestAttachment
+from anima_server.schemas.chat import ChatContextMessage, ChatRequestAttachment
 from anima_server.services.agent.attachments import (
     prepare_chat_attachments,
     validate_chat_attachment_inputs,
@@ -41,6 +41,7 @@ from anima_server.services.agent.llm import (
 from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
 from anima_server.services.agent.model_capabilities import supports_image_input
 from anima_server.services.agent.persistence import (
+    append_message,
     append_user_message,
     cancel_run,
     clear_approval_checkpoint,
@@ -183,6 +184,7 @@ async def run_agent(
     source: str | None = None,
     thread_id: int | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    context_messages: Sequence[ChatContextMessage] = (),
 ) -> AgentResult:
     return await _execute_agent_turn(
         user_message,
@@ -192,6 +194,7 @@ async def run_agent(
         source=source,
         thread_id=thread_id,
         attachments=attachments,
+        context_messages=context_messages,
     )
 
 
@@ -514,6 +517,7 @@ async def _execute_agent_turn(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    context_messages: Sequence[ChatContextMessage] = (),
 ) -> AgentResult:
     client_action_runtime = None
     if tool_delegate is None:
@@ -539,6 +543,7 @@ async def _execute_agent_turn(
                     delegated_tool_names=delegated_tool_names,
                     extra_tool_schemas=extra_tool_schemas,
                     attachments=attachments,
+                    context_messages=context_messages,
                 )
         else:
             # Hold the creation lock through thread lock acquisition so that
@@ -559,6 +564,7 @@ async def _execute_agent_turn(
                         delegated_tool_names=delegated_tool_names,
                         extra_tool_schemas=extra_tool_schemas,
                         attachments=attachments,
+                        context_messages=context_messages,
                     )
     finally:
         if client_action_runtime is not None:
@@ -585,6 +591,7 @@ async def _execute_agent_turn_locked(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    context_messages: Sequence[ChatContextMessage] = (),
 ) -> AgentResult:
     # Stage 1: Prepare turn context
     thread, run, user_msg, initial_sequence_id, turn_ctx = await _prepare_turn_context(
@@ -596,6 +603,7 @@ async def _execute_agent_turn_locked(
         event_callback=event_callback,
         source=source,
         attachments=attachments,
+        context_messages=context_messages,
     )
 
     # Stage 1b: Proactive context management — compact before the LLM call
@@ -724,6 +732,7 @@ class _TurnContext:
     conversation_turn_count: int
     memory_blocks: tuple[MemoryBlock, ...]
     attachments: tuple[StoredAttachment, ...] = ()
+    context_messages: tuple[RuntimeMessage, ...] = ()
     retrieval: AgentRetrievalTrace | None = None
 
 
@@ -738,6 +747,7 @@ async def _prepare_turn_context(
                              Awaitable[None]] | None = None,
     source: str | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    context_messages: Sequence[ChatContextMessage] = (),
 ) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
@@ -777,12 +787,17 @@ async def _prepare_turn_context(
         companion.invalidate_history(thread_id=thread.id)
 
     # Use cached conversation history when available, otherwise load from DB.
-    history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
+    history = list(companion.ensure_history_loaded(runtime_db, thread_id=thread.id))
 
     prepared_attachments = _prepare_image_attachments(
         user_id=user_id,
         attachments=attachments,
     )
+    cleaned_context_messages = [
+        (message, message.content.strip())
+        for message in context_messages
+        if message.content.strip()
+    ]
     try:
         run = create_run(
             runtime_db,
@@ -792,17 +807,39 @@ async def _prepare_turn_context(
             model=settings.agent_model,
             mode="streaming" if event_callback is not None else "blocking",
         )
+        context_sequence_count = len(cleaned_context_messages)
         initial_sequence_id = reserve_message_sequences(
             runtime_db,
             thread_id=thread.id,
-            count=1,
+            count=context_sequence_count + 1,
         )
+        persisted_context_messages: list[RuntimeMessage] = []
+        for offset, (context_message, cleaned_content) in enumerate(
+            cleaned_context_messages
+        ):
+            persisted = append_message(
+                runtime_db,
+                thread=thread,
+                run_id=None,
+                step_id=None,
+                sequence_id=initial_sequence_id + offset,
+                role=context_message.role,
+                content_text=cleaned_content,
+                source=context_message.source,
+            )
+            persisted_context_messages.append(persisted)
+            history.append(
+                StoredMessage(
+                    role=context_message.role,
+                    content=cleaned_content,
+                )
+            )
         user_msg = append_user_message(
             runtime_db,
             thread=thread,
             run_id=run.id,
             content=user_message,
-            sequence_id=initial_sequence_id,
+            sequence_id=initial_sequence_id + context_sequence_count,
             source=source,
             attachments=prepared_attachments,
         )
@@ -994,6 +1031,7 @@ async def _prepare_turn_context(
         conversation_turn_count=conversation_turn_count,
         memory_blocks=memory_blocks,
         attachments=prepared_attachments,
+        context_messages=tuple(persisted_context_messages),
         retrieval=retrieval_trace,
     )
     return thread, run, user_msg, initial_sequence_id, turn_ctx
@@ -1172,13 +1210,22 @@ async def _invoke_turn_runtime(
                 user_attachments=turn_ctx.attachments,
             )
     except StepFailedError as exc:
-        _handle_step_failure(runtime_db, run=run, user_msg=user_msg, err=exc)
+        _handle_step_failure(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            err=exc,
+            context_messages=turn_ctx.context_messages,
+        )
         raise exc.cause from exc
     except Exception as exc:
         # Remove orphaned user message from active context so it doesn't
         # replay as valid history on the next turn.
         user_msg.is_in_context = False
         runtime_db.add(user_msg)
+        for context_message in turn_ctx.context_messages:
+            context_message.is_in_context = False
+            runtime_db.add(context_message)
         mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
         raise
@@ -1302,6 +1349,7 @@ def _rebuild_turn_context_after_compaction(
         conversation_turn_count=conversation_turn_count,
         memory_blocks=turn_ctx.memory_blocks,
         attachments=turn_ctx.attachments,
+        context_messages=turn_ctx.context_messages,
         retrieval=turn_ctx.retrieval,
     )
 
@@ -1330,6 +1378,7 @@ def _handle_step_failure(
     run: RuntimeRun,
     user_msg: RuntimeMessage,
     err: StepFailedError,
+    context_messages: Sequence[RuntimeMessage] = (),
 ) -> None:
     """Progression-aware cleanup after a step failure.
 
@@ -1345,6 +1394,9 @@ def _handle_step_failure(
     # committed atomically with the run-failure record below.
     user_msg.is_in_context = False
     runtime_db.add(user_msg)
+    for context_message in context_messages:
+        context_message.is_in_context = False
+        runtime_db.add(context_message)
 
     detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
     mark_run_failed(runtime_db, run, detail)
@@ -1593,6 +1645,7 @@ async def stream_agent(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    context_messages: Sequence[ChatContextMessage] = (),
 ) -> AsyncGenerator[AgentStreamEvent, None]:
     queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
         maxsize=settings.agent_stream_queue_max_size,
@@ -1615,6 +1668,7 @@ async def stream_agent(
                 delegated_tool_names=delegated_tool_names,
                 extra_tool_schemas=extra_tool_schemas,
                 attachments=attachments,
+                context_messages=context_messages,
             )
         except Exception as exc:
             await queue.put(build_error_event(str(exc)))

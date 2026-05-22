@@ -278,6 +278,70 @@ async def test_run_agent_passes_only_prior_turns_in_history(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_includes_home_greeting_context_in_current_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="home-greeting",
+                password_hash="not-used",
+                display_name="Home Greeting",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            await run_agent(
+                "That sounds right.",
+                user.id,
+                soul_session,
+                runtime_session,
+                context_messages=[
+                    agent_service.ChatContextMessage(
+                        role="assistant",
+                        content="Hello there. I hope you and Tappy are having a peaceful start.",
+                        source="home_greeting",
+                    )
+                ],
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+            thread = runtime_session.query(RuntimeThread).one()
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert runner.requests[0]["user_message"] == "That sounds right."
+    assert runner.requests[0]["history"] == [
+        (
+            "assistant",
+            "Hello there. I hope you and Tappy are having a peaceful start.",
+            None,
+            None,
+        )
+    ]
+    assert [(message.role, message.content_text, message.source) for message in messages] == [
+        (
+            "assistant",
+            "Hello there. I hope you and Tappy are having a peaceful start.",
+            "home_greeting",
+        ),
+        ("user", "That sounds right.", None),
+        ("assistant", "Reply to: That sounds right.", None),
+    ]
+    assert [message.sequence_id for message in messages] == [1, 2, 3]
+    assert thread.next_message_sequence == 4
+
+
+@pytest.mark.asyncio
 async def test_run_agent_attaches_connected_animus_action_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

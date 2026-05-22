@@ -78,6 +78,7 @@ async def send_message(
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
+                context_messages=payload.contextMessages,
             )
         except AttachmentTooLargeError as exc:
             raise HTTPException(
@@ -126,6 +127,7 @@ async def send_message(
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
+                context_messages=payload.contextMessages,
             ):
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client
@@ -317,6 +319,49 @@ async def get_nudges(
         )
 
     return {"nudges": nudges}
+
+
+@router.get("/proactive-notice")
+async def get_proactive_notice(
+    request: Request,
+    userId: int = Query(ge=0),
+    instruction: str | None = Query(default=None, max_length=500),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    require_unlocked_user(request, userId)
+
+    from anima_server.services.agent.proactive import generate_proactive_notice
+
+    result = await generate_proactive_notice(
+        db,
+        user_id=userId,
+        instruction=instruction,
+    )
+    if result is None:
+        return {"notice": None}
+
+    return {
+        "notice": {
+            "id": result.id,
+            "message": result.message,
+            "source": result.source,
+            "llmGenerated": result.llm_generated,
+            "context": {
+                "currentFocus": result.context.current_focus,
+                "openTaskCount": result.context.open_task_count,
+                "overdueTasks": result.context.overdue_task_count,
+                "daysSinceLastChat": result.context.days_since_last_chat,
+                "upcomingDeadlines": list(result.context.upcoming_deadlines),
+            },
+            "contextMessages": [
+                {
+                    "role": "assistant",
+                    "content": result.message,
+                    "source": result.source,
+                }
+            ],
+        }
+    }
 
 
 @router.get("/home")

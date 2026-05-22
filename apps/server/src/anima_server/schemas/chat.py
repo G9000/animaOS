@@ -13,6 +13,12 @@ class ChatRequestAttachment(BaseModel):
     data: str = Field(min_length=1)
 
 
+class ChatContextMessage(BaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: str = Field(min_length=1, max_length=4000)
+    source: str | None = Field(default=None, max_length=64)
+
+
 class ChatRequest(BaseModel):
     message: str = ""
     userId: int = Field(ge=0)
@@ -20,6 +26,7 @@ class ChatRequest(BaseModel):
     stream: bool = False
     source: str | None = None
     attachments: list[ChatRequestAttachment] = Field(default_factory=list)
+    contextMessages: list[ChatContextMessage] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_text_or_attachment(self) -> ChatRequest:

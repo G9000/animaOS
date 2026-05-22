@@ -56,6 +56,7 @@ export {
   TasksIcon,
   ChatIcon,
   MemoryIcon,
+  ProactivityIcon,
   MindIcon,
   ModsIcon,
   ConfigIcon,

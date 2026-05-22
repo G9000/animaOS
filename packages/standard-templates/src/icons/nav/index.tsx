@@ -46,6 +46,20 @@ export function MemoryIcon(props: IconProps) {
   );
 }
 
+// PROACTIVE - outgoing pulse / attention signal
+export function ProactivityIcon(props: IconProps) {
+  return (
+    <BaseIcon {...props} strokeWidth={1.5}>
+      <circle cx="7" cy="12" r="2" />
+      <path d="M11,8 C14,10 14,14 11,16" />
+      <path d="M15,5 C19,9 19,15 15,19" />
+      <line x1="3" y1="12" x2="5" y2="12" />
+      <line x1="7" y1="8" x2="7" y2="5" />
+      <line x1="7" y1="19" x2="7" y2="16" />
+    </BaseIcon>
+  );
+}
+
 // MIND — fractured circle / consciousness rings
 export function MindIcon(props: IconProps) {
   return (
