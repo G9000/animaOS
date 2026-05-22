@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import type { Greeting, TaskItem } from "@anima/api-client";
+import type { Greeting, TaskItem, MemoryEpisodeData, EmotionalContextData } from "@anima/api-client";
 import { api } from "../../lib/api";
 import { PromptInput } from "@anima/standard-templates";
 import { DashboardGreeting } from "./DashboardGreeting";
+import { DashboardDiary } from "./DashboardDiary";
+import { DashboardMood } from "./DashboardMood";
 
 const GREETING_CACHE_KEY = "anima_dashboard_greeting";
 const GREETING_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -45,6 +47,8 @@ export default function Dashboard() {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [agentName, setAgentName] = useState("Anima");
   const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [episodes, setEpisodes] = useState<MemoryEpisodeData[]>([]);
+  const [mood, setMood] = useState<EmotionalContextData | null>(null);
 
   // Check if agent setup is needed
   useEffect(() => {
@@ -122,6 +126,40 @@ export default function Dashboard() {
     };
   }, [user?.id, needsSetup]);
 
+  // Load recent diary episodes
+  useEffect(() => {
+    if (user?.id == null || needsSetup !== false) return;
+    let active = true;
+
+    api.memory.listEpisodes(user.id, 5)
+      .then((data) => {
+        if (!active) return;
+        setEpisodes(data);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, needsSetup]);
+
+  // Load companion mood
+  useEffect(() => {
+    if (user?.id == null || needsSetup !== false) return;
+    let active = true;
+
+    api.consciousness.getEmotions(user.id, 5)
+      .then((data) => {
+        if (!active) return;
+        setMood(data);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, needsSetup]);
+
   const handlePromptSubmit = (value: string) => {
     navigate(`/chat?msg=${encodeURIComponent(value)}`);
   };
@@ -140,34 +178,47 @@ export default function Dashboard() {
   const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).toLowerCase();
 
   return (
-    <div className="h-full flex flex-col items-center justify-center px-6">
-      <div className="w-full max-w-xl space-y-8">
-        {/* Greeting */}
-        <DashboardGreeting
-          userName={user?.name}
-          agentName={agentName}
-          briefLoading={briefLoading}
-          brief={brief}
-        />
+    <div className="h-full overflow-y-auto">
+      {/* Hero — greeting + input, vertically centered */}
+      <div className="min-h-[50vh] flex flex-col items-center justify-center px-6 py-10">
+        <div className="w-full max-w-xl space-y-8">
+          {/* Greeting */}
+          <DashboardGreeting
+            userName={user?.name}
+            agentName={agentName}
+            briefLoading={briefLoading}
+            brief={brief}
+          />
 
-        {/* Input */}
-        <PromptInput
-          agentName={agentName}
-          onSubmit={handlePromptSubmit}
-          size="lg"
-        />
+          {/* Mood */}
+          <DashboardMood mood={mood} agentName={agentName} />
 
-        {/* Status strip */}
-        <div className="flex items-center justify-between border-t border-border pt-3">
-          <span className="font-mono text-[9px] tracking-[0.22em] uppercase text-muted-foreground/40">
-            {timeStr}
-          </span>
-          <button
-            onClick={() => navigate("/tasks")}
-            className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40 hover:text-foreground transition-colors"
-          >
-            {openCount > 0 ? `${openCount} pending` : "all caught up"}
-          </button>
+          {/* Input */}
+          <PromptInput
+            agentName={agentName}
+            onSubmit={handlePromptSubmit}
+            size="lg"
+          />
+
+          {/* Status strip */}
+          <div className="flex items-center justify-between border-t border-border pt-3">
+            <span className="font-mono text-[9px] tracking-[0.22em] uppercase text-muted-foreground/40">
+              {timeStr}
+            </span>
+            <button
+              onClick={() => navigate("/tasks")}
+              className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40 hover:text-foreground transition-colors"
+            >
+              {openCount > 0 ? `${openCount} pending` : "all caught up"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Diary — pushed below the fold */}
+      <div className="px-6 py-10">
+        <div className="w-full max-w-xl mx-auto">
+          <DashboardDiary episodes={episodes} agentName={agentName} />
         </div>
       </div>
     </div>

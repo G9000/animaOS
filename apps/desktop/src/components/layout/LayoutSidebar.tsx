@@ -104,24 +104,27 @@ export function LayoutSidebar() {
       className={cn(
         "relative flex-shrink-0 flex flex-col border-r border-border bg-sidebar overflow-hidden",
         "transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-        collapsed ? "w-14" : "w-52",
+        collapsed ? "w-14" : "w-60",
       )}
     >
       {/* Agent header — full-width avatar */}
-      <div className="flex-shrink-0 border-b border-border">
+      <div className={cn("flex-shrink-0 border-b border-border", !collapsed && "p-2")}>
         <button
           onClick={handleAgentClick}
           title={collapsed ? agentName : `${agentName} — click to edit`}
-          className="relative w-full overflow-hidden bg-card hover:opacity-90 transition-opacity"
+          className={cn(
+            "relative w-full overflow-hidden bg-card hover:opacity-90 transition-opacity",
+            !collapsed && "rounded-md",
+          )}
         >
           <img
             src={avatarUrl}
             alt={agentName}
-            className={cn("w-full object-cover", collapsed ? "aspect-square" : "aspect-[1.1]")}
+            className={cn("w-full object-cover", collapsed ? "aspect-square" : "aspect-[4/3] rounded-md")}
           />
           {!collapsed && (
-            <div className="absolute bottom-0 left-0 pb-0 pl-0">
-              <span className="inline-block bg-sidebar border border-border border-l-0 px-2.5 py-1 text-caption font-mono tracking-[0.18em] uppercase text-foreground">
+            <div className="absolute bottom-0 left-0 right-0 p-2">
+              <span className="inline-block bg-sidebar/90 backdrop-blur-sm border border-border px-2.5 py-1 text-caption font-mono tracking-[0.18em] uppercase text-foreground rounded-sm">
                 {agentName}
               </span>
             </div>
@@ -130,7 +133,7 @@ export function LayoutSidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2">
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-1.5 space-y-0.5">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
@@ -139,14 +142,11 @@ export function LayoutSidebar() {
             title={collapsed ? `${item.label} — ${item.description}` : undefined}
             className={({ isActive }) =>
               cn(
-                "group flex items-center transition-colors duration-100",
-                collapsed ? "justify-center px-0 py-2.5 mx-2" : "gap-3 px-3 py-2",
+                "group flex items-center transition-colors duration-100 rounded-md",
+                collapsed ? "justify-center px-0 py-2.5 mx-1" : "gap-3 px-3 py-2.5",
                 isActive
-                  ? "bg-secondary text-foreground border-l-2 border-primary"
-                  : cn(
-                      "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
-                      !collapsed && "border-l-2 border-transparent",
-                    ),
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
               )
             }
           >
@@ -155,7 +155,7 @@ export function LayoutSidebar() {
                 <span
                   className={cn(
                     "flex-shrink-0 flex items-center justify-center transition-colors",
-                    collapsed ? "w-5 h-5" : "w-4 h-4",
+                    collapsed ? "w-5 h-5" : "w-[18px] h-[18px]",
                     isActive
                       ? "text-foreground"
                       : "text-muted-foreground group-hover:text-foreground",
@@ -164,7 +164,7 @@ export function LayoutSidebar() {
                   <item.Icon size="sm" />
                 </span>
                 {!collapsed && (
-                  <span className="text-body leading-none">{item.label}</span>
+                  <span className="text-ui leading-none font-medium">{item.label}</span>
                 )}
               </>
             )}
@@ -175,12 +175,12 @@ export function LayoutSidebar() {
       {/* Footer controls */}
       <div className="flex-shrink-0 border-t border-border">
         {/* Theme + Collapse row */}
-        <div className={cn("flex border-b border-border/50", collapsed ? "flex-col" : "flex-row")}>
+        <div className={cn("flex gap-1 p-1.5", collapsed ? "flex-col" : "flex-row")}>
           <button
             onClick={() => setTheme(toggleTheme())}
             title={theme === "dark" ? "Switch to light" : "Switch to dark"}
             className={cn(
-              "flex items-center justify-center gap-2 py-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors",
+              "flex items-center justify-center gap-2 py-2 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors rounded-md",
               collapsed ? "w-full" : "flex-1",
             )}
           >
@@ -196,10 +196,8 @@ export function LayoutSidebar() {
             onClick={toggleCollapsed}
             title={collapsed ? "Expand (Ctrl+/)" : "Collapse (Ctrl+/)"}
             className={cn(
-              "flex items-center justify-center gap-2 py-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors",
-              collapsed
-                ? "w-full border-t border-border/50"
-                : "flex-1 border-l border-border/50",
+              "flex items-center justify-center gap-2 py-2 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors rounded-md",
+              collapsed ? "w-full" : "flex-1",
             )}
           >
             <span className="text-xs leading-none font-mono">{collapsed ? "→" : "←"}</span>
@@ -210,19 +208,19 @@ export function LayoutSidebar() {
         </div>
 
         {/* User */}
-        <div className="relative">
+        <div className={cn("relative", !collapsed && "px-1.5 pb-1.5")}>
           <button
             onClick={() => setShowUser((v) => !v)}
             className={cn(
-              "w-full flex items-center gap-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors",
-              collapsed ? "justify-center px-0 py-2.5" : "px-3 py-2.5",
+              "w-full flex items-center gap-2.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors rounded-md",
+              collapsed ? "justify-center px-0 py-2.5 mx-1" : "px-3 py-2",
             )}
           >
-            <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 border border-border/60 bg-card font-mono text-caption font-bold uppercase">
+            <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 border border-border/60 bg-card font-mono text-caption font-bold uppercase rounded-sm">
               {user?.name?.charAt(0) || "?"}
             </span>
             {!collapsed && (
-              <span className="text-body truncate flex-1 text-left">
+              <span className="text-ui truncate flex-1 text-left">
                 {user?.name || "User"}
               </span>
             )}
