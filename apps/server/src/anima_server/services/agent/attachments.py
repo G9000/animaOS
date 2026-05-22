@@ -28,6 +28,19 @@ class AttachmentTooLargeError(AttachmentValidationError):
     status_code = 413
 
 
+class AttachmentReadError(RuntimeError):
+    """Raised when a persisted attachment file cannot be read for provider input."""
+
+
+def read_attachment_bytes(path: str) -> bytes:
+    try:
+        return Path(path).read_bytes()
+    except OSError as exc:
+        raise AttachmentReadError(
+            "Unable to read image attachment; the saved file is missing or unreadable."
+        ) from exc
+
+
 def validate_chat_attachment_inputs(
     attachments: Sequence[ChatRequestAttachment],
 ) -> None:
@@ -162,4 +175,4 @@ def _sanitize_filename(filename: str | None) -> str | None:
 
 
 def _new_attachment_id() -> str:
-    return f"img_{secrets.token_hex(4)}"
+    return f"img_{secrets.token_hex(8)}"

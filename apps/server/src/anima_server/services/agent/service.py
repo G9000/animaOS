@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -149,6 +150,12 @@ def _prepare_image_attachments(
     attachments: Sequence[ChatRequestAttachment],
 ) -> tuple[StoredAttachment, ...]:
     return prepare_chat_attachments(user_id=user_id, attachments=attachments)
+
+
+def _delete_prepared_attachments(attachments: Sequence[StoredAttachment]) -> None:
+    for attachment in attachments:
+        with contextlib.suppress(OSError):
+            Path(attachment.path).unlink(missing_ok=True)
 
 
 def _validate_image_attachment_inputs(
@@ -776,30 +783,34 @@ async def _prepare_turn_context(
         user_id=user_id,
         attachments=attachments,
     )
-    run = create_run(
-        runtime_db,
-        thread_id=thread.id,
-        user_id=user_id,
-        provider=settings.agent_provider,
-        model=settings.agent_model,
-        mode="streaming" if event_callback is not None else "blocking",
-    )
-    initial_sequence_id = reserve_message_sequences(
-        runtime_db,
-        thread_id=thread.id,
-        count=1,
-    )
-    user_msg = append_user_message(
-        runtime_db,
-        thread=thread,
-        run_id=run.id,
-        content=user_message,
-        sequence_id=initial_sequence_id,
-        source=source,
-        attachments=prepared_attachments,
-    )
-    conversation_turn_count = count_messages_by_role(
-        runtime_db, thread.id, "user")
+    try:
+        run = create_run(
+            runtime_db,
+            thread_id=thread.id,
+            user_id=user_id,
+            provider=settings.agent_provider,
+            model=settings.agent_model,
+            mode="streaming" if event_callback is not None else "blocking",
+        )
+        initial_sequence_id = reserve_message_sequences(
+            runtime_db,
+            thread_id=thread.id,
+            count=1,
+        )
+        user_msg = append_user_message(
+            runtime_db,
+            thread=thread,
+            run_id=run.id,
+            content=user_message,
+            sequence_id=initial_sequence_id,
+            source=source,
+            attachments=prepared_attachments,
+        )
+        conversation_turn_count = count_messages_by_role(
+            runtime_db, thread.id, "user")
+    except Exception:
+        _delete_prepared_attachments(prepared_attachments)
+        raise
 
     # Pre-turn Soul Writer check: if eligible candidates or unconsolidated
     # pending ops exist, promote them before building memory blocks so the

@@ -130,6 +130,37 @@ def test_prepare_chat_attachments_saves_metadata_and_file(
     assert (tmp_path / attachment.storage_path).read_bytes() == PNG_BYTES
 
 
+def test_prepare_chat_attachments_uses_high_entropy_attachment_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import attachments as attachments_module
+
+    requested_bytes: list[int] = []
+
+    def fake_token_hex(num_bytes: int) -> str:
+        requested_bytes.append(num_bytes)
+        return "a" * (num_bytes * 2)
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(attachments_module.secrets, "token_hex", fake_token_hex)
+
+    prepared = attachments_module.prepare_chat_attachments(
+        user_id=7,
+        attachments=[
+            ChatRequestAttachment(
+                kind="image",
+                filename="pixel.png",
+                mimeType="image/png",
+                data=_b64(PNG_BYTES),
+            )
+        ],
+    )
+
+    assert requested_bytes == [8]
+    assert prepared[0].id == "img_" + ("a" * 16)
+
+
 def test_prepare_chat_attachments_rejects_mime_spoofing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

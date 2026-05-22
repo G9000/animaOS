@@ -134,12 +134,24 @@ function extractErrorMessage(data: unknown, fallback: string): string {
     error?: unknown;
     message?: unknown;
     detail?: unknown;
+    details?: unknown;
   };
+  const normalizedDetails = extractDetailMessages(payload.details);
+  if (normalizedDetails) return normalizedDetails;
+
   for (const value of [payload.error, payload.message, payload.detail]) {
     if (typeof value === "string" && value.trim()) return value;
   }
-  if (Array.isArray(payload.detail)) {
-    const details = payload.detail
+  const detailMessages = extractDetailMessages(payload.detail);
+  if (detailMessages) return detailMessages;
+
+  return fallback;
+}
+
+function extractDetailMessages(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const details = value
       .map((item) => {
         if (!item || typeof item !== "object") return null;
         const msg = (item as { msg?: unknown }).msg;
@@ -148,7 +160,7 @@ function extractErrorMessage(data: unknown, fallback: string): string {
       .filter((msg): msg is string => msg !== null);
     if (details.length > 0) return details.join("; ");
   }
-  return fallback;
+  return null;
 }
 
 export function createApiClient(options: ApiClientOptions) {

@@ -4,10 +4,11 @@ import base64
 import json
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
+
+from anima_server.services.agent.attachments import read_attachment_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +278,7 @@ def _serialize_content_blocks(content: list[object]) -> list[dict[str, object]]:
             mime_type = item.get("mime_type")
             if not isinstance(path, str) or not isinstance(mime_type, str):
                 continue
-            data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+            data = base64.b64encode(read_attachment_bytes(path)).decode("ascii")
             blocks.append(
                 {
                     "type": "image_url",

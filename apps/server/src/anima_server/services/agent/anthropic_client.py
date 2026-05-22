@@ -4,11 +4,11 @@ import base64
 import json
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
 
+from anima_server.services.agent.attachments import read_attachment_bytes
 from anima_server.services.agent.openai_compatible_client import _serialize_tool
 
 _ANTHROPIC_VERSION = "2023-06-01"
@@ -267,7 +267,7 @@ def _serialize_human_content(message: Any) -> str | list[dict[str, object]]:
                     "source": {
                         "type": "base64",
                         "media_type": mime_type,
-                        "data": base64.b64encode(Path(path).read_bytes()).decode("ascii"),
+                        "data": base64.b64encode(read_attachment_bytes(path)).decode("ascii"),
                     },
                 }
             )

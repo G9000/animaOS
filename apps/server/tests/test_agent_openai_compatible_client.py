@@ -202,6 +202,30 @@ async def test_openai_compatible_chat_client_serializes_image_content_blocks(
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_chat_client_reports_unreadable_image_attachment() -> None:
+    client = OpenAICompatibleChatClient(
+        provider="openai",
+        model="gpt-4o-mini",
+        base_url="https://openai.test/v1",
+    )
+
+    with pytest.raises(RuntimeError, match="Unable to read image attachment"):
+        await client.ainvoke(
+            [
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "image",
+                            "mime_type": "image/png",
+                            "path": "missing-image.png",
+                        },
+                    ]
+                )
+            ]
+        )
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_chat_client_streams_sse_chunks() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content.decode("utf-8"))
