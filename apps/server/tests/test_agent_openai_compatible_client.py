@@ -140,6 +140,30 @@ async def test_openai_compatible_chat_client_serializes_messages_and_tools() -> 
 
 
 @pytest.mark.asyncio
+async def test_doubleword_chat_client_enables_parallel_tool_calls() -> None:
+    captured_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "done"}}]},
+        )
+
+    client = OpenAICompatibleChatClient(
+        provider="doubleword",
+        model="Qwen/Qwen3.6-35B-A3B-FP8",
+        base_url="https://api.doubleword.ai/v1",
+        transport=httpx.MockTransport(handler),
+    ).bind_tools([send_message])
+
+    await client.ainvoke([HumanMessage(content="hello")])
+
+    assert captured_payload["parallel_tool_calls"] is True
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_chat_client_serializes_image_content_blocks(
     tmp_path: Path,
 ) -> None:

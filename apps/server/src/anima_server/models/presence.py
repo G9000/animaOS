@@ -17,10 +17,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from anima_server.db.base import Base
 
 
-class ProactivityConfig(Base):
-    __tablename__ = "proactivity_configs"
+class PresenceConfig(Base):
+    __tablename__ = "presence_configs"
     __table_args__ = (
-        UniqueConstraint("user_id", name="uq_proactivity_configs_user_id"),
+        UniqueConstraint("user_id", name="uq_presence_configs_user_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

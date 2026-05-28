@@ -285,6 +285,9 @@ def test_model_capability_helper_recognizes_vision_models(
     assert supports_image_input("openai", "gpt-4o-mini") is True
     assert supports_image_input("openrouter", "openai/gpt-4.1") is True
     assert supports_image_input("anthropic", "claude-haiku-4-5-20251001") is True
+    assert supports_image_input("doubleword", "Qwen/Qwen3.6-35B-A3B-FP8") is True
+    assert supports_image_input("doubleword", "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8") is True
+    assert supports_image_input("doubleword", "moonshotai/Kimi-K2.6") is True
     assert supports_image_input("ollama", "llama3.2-vision:11b") is True
     assert supports_image_input("ollama", "qwen2.5-vl:7b") is True
     assert supports_image_input("openai", "my-revision-model") is False

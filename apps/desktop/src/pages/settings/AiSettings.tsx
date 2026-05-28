@@ -33,6 +33,10 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
     "google/gemini-3-flash-preview",
     "google/gemini-3.1-flash-lite-preview",
   ],
+  doubleword: [
+    "Qwen/Qwen3.6-35B-A3B-FP8",
+    "Qwen/Qwen3.5-35B-A3B-FP8",
+  ],
 };
 
 const FALLBACK_PROVIDERS: ProviderInfo[] = [
@@ -43,6 +47,11 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
   },
   { name: "vllm", defaultModel: "default", requiresApiKey: false },
   { name: "openrouter", defaultModel: "openrouter/free", requiresApiKey: true },
+  {
+    name: "doubleword",
+    defaultModel: "Qwen/Qwen3.6-35B-A3B-FP8",
+    requiresApiKey: true,
+  },
   { name: "openai", defaultModel: "gpt-4o", requiresApiKey: true },
   {
     name: "anthropic",

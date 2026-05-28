@@ -1,4 +1,4 @@
-"""create proactivity config table
+"""create presence config table
 
 Revision ID: 20260522_0001
 Revises: 20260517_0001
@@ -18,7 +18,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.create_table(
-        "proactivity_configs",
+        "presence_configs",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("enabled", sa.Boolean(), server_default=sa.text("1"), nullable=False),
@@ -68,20 +68,20 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["user_id"],
             ["users.id"],
-            name=op.f("fk_proactivity_configs_user_id_users"),
+            name=op.f("fk_presence_configs_user_id_users"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_proactivity_configs")),
-        sa.UniqueConstraint("user_id", name="uq_proactivity_configs_user_id"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_presence_configs")),
+        sa.UniqueConstraint("user_id", name="uq_presence_configs_user_id"),
     )
     op.create_index(
-        op.f("ix_proactivity_configs_user_id"),
-        "proactivity_configs",
+        op.f("ix_presence_configs_user_id"),
+        "presence_configs",
         ["user_id"],
         unique=False,
     )
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_proactivity_configs_user_id"), table_name="proactivity_configs")
-    op.drop_table("proactivity_configs")
+    op.drop_index(op.f("ix_presence_configs_user_id"), table_name="presence_configs")
+    op.drop_table("presence_configs")

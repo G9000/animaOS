@@ -14,6 +14,8 @@ _VISION_MODEL_PATTERNS = (
     "gpt-5",
     "llava",
     "qwen-vl",
+    "qwen3-vl",
+    "qwen3vl",
     "qwen2.5-vl",
     "qwen2.5vl",
     "llama3.2-vision",
@@ -22,6 +24,10 @@ _VISION_MODEL_PATTERNS = (
     "claude-sonnet-4",
     "claude-opus-4",
 )
+_VISION_MODEL_NAMES = {
+    "qwen/qwen3.6-35b-a3b-fp8",
+    "moonshotai/kimi-k2.6",
+}
 _VISION_TOKEN_RE = re.compile(r"(^|[/:._-])vision($|[/:._-])")
 
 
@@ -40,8 +46,10 @@ def supports_image_input(provider: str, model: str, *, base_url: str = "") -> bo
 
 
 def _model_name_matches_vision_pattern(model: str) -> bool:
-    return any(pattern in model for pattern in _VISION_MODEL_PATTERNS) or bool(
-        _VISION_TOKEN_RE.search(model)
+    return (
+        model in _VISION_MODEL_NAMES
+        or any(pattern in model for pattern in _VISION_MODEL_PATTERNS)
+        or bool(_VISION_TOKEN_RE.search(model))
     )
 
 

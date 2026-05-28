@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator
 
 
-class ProactivityConfigResponse(BaseModel):
+class PresenceConfigResponse(BaseModel):
     userId: int
     enabled: bool
     mainChatEnabled: bool
@@ -14,7 +14,7 @@ class ProactivityConfigResponse(BaseModel):
     customInstruction: str | None = None
 
 
-class ProactivityConfigUpdateRequest(BaseModel):
+class PresenceConfigUpdateRequest(BaseModel):
     enabled: bool | None = None
     mainChatEnabled: bool | None = None
     homeGreetingContextEnabled: bool | None = None

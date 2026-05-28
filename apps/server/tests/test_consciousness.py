@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import AgentThread, User
@@ -885,6 +889,260 @@ def test_static_greeting_empty_context() -> None:
     ctx = GreetingContext()
     greeting = build_static_greeting(ctx)
     assert len(greeting) > 0  # some greeting is always returned
+
+
+def test_greeting_context_uses_runtime_last_chat() -> None:
+    from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+    from anima_server.services.agent.proactive import gather_greeting_context
+    from conftest_runtime import runtime_db_session
+
+    with _db_session() as db, runtime_db_session() as runtime_db:
+        user, _thread = _setup(db)
+        db.commit()
+
+        last_chat_at = datetime.now(UTC) - timedelta(days=1, minutes=5)
+        runtime_thread = RuntimeThread(
+            user_id=user.id,
+            status="active",
+            created_at=last_chat_at,
+            updated_at=last_chat_at,
+            last_message_at=last_chat_at,
+        )
+        runtime_db.add(runtime_thread)
+        runtime_db.flush()
+        runtime_db.add(
+            RuntimeMessage(
+                thread_id=runtime_thread.id,
+                user_id=user.id,
+                sequence_id=1,
+                role="user",
+                content_text="hello from runtime history",
+                created_at=last_chat_at,
+            )
+        )
+        runtime_db.commit()
+
+        ctx = gather_greeting_context(db, user_id=user.id, runtime_db=runtime_db)
+
+        assert ctx.days_since_last_chat == 1
+
+
+@pytest.mark.asyncio
+async def test_ollama_native_plain_text_disables_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import proactive
+
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        payload = json.loads(request.content.decode("utf-8"))
+        captured["payload"] = payload
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!",
+                },
+                "done": True,
+            },
+        )
+
+    monkeypatch.setattr(settings, "agent_base_url", "http://ollama.local/v1")
+    monkeypatch.setattr(settings, "agent_model", "test-model")
+
+    result = await proactive._invoke_ollama_native_chat(
+        [
+            {"role": "system", "content": "Reply with a greeting."},
+            {"role": "user", "content": "Hello"},
+        ],
+        timeout=1.0,
+        max_tokens=32,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result == "Hello!"
+    assert captured["url"] == "http://ollama.local/api/chat"
+    assert captured["payload"] == {
+        "model": "test-model",
+        "messages": [
+            {"role": "system", "content": "Reply with a greeting."},
+            {"role": "user", "content": "Hello"},
+        ],
+        "stream": False,
+        "think": False,
+        "keep_alive": "10m",
+        "options": {
+            "num_predict": 32,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_generate_greeting_uses_ollama_native_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import llm as llm_module
+    from anima_server.services.agent import proactive
+
+    async def native_text(
+        _messages: list[dict[str, str]],
+        *,
+        timeout: float,
+        max_tokens: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> str:
+        assert timeout == proactive._GREETING_LLM_TIMEOUT_SECONDS
+        assert max_tokens == proactive._GREETING_LLM_MAX_TOKENS
+        assert transport is None
+        return "Native greeting."
+
+    def unexpected_generic_llm() -> object:
+        raise AssertionError("generic Ollama client should not be used")
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(proactive, "_invoke_ollama_native_chat", native_text, raising=False)
+    monkeypatch.setattr(llm_module, "create_llm", unexpected_generic_llm)
+
+    with _db_session() as db:
+        user, _thread = _setup(db)
+        db.commit()
+
+        result = await proactive.generate_greeting(db, user_id=user.id)
+
+    assert result.llm_generated is True
+    assert result.message == "Native greeting."
+
+
+@pytest.mark.asyncio
+async def test_generate_proactive_notice_uses_ollama_native_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import llm as llm_module
+    from anima_server.services.agent import proactive
+
+    async def native_text(
+        _messages: list[dict[str, str]],
+        *,
+        timeout: float,
+        max_tokens: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> str:
+        assert timeout == proactive._PROACTIVE_NOTICE_LLM_TIMEOUT_SECONDS
+        assert max_tokens == proactive._PROACTIVE_NOTICE_LLM_MAX_TOKENS
+        assert transport is None
+        return "Native notice."
+
+    def unexpected_generic_llm() -> object:
+        raise AssertionError("generic Ollama client should not be used")
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(proactive, "_invoke_ollama_native_chat", native_text, raising=False)
+    monkeypatch.setattr(llm_module, "create_llm", unexpected_generic_llm)
+
+    with _db_session() as db:
+        user, _thread = _setup(db)
+        db.commit()
+
+        result = await proactive.generate_proactive_notice(
+            db,
+            user_id=user.id,
+            instruction="mention the native path",
+        )
+
+    assert result is not None
+    assert result.llm_generated is True
+    assert result.message == "Native notice."
+
+
+@pytest.mark.asyncio
+async def test_generate_greeting_falls_back_when_llm_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import llm as llm_module
+    from anima_server.services.agent import proactive
+
+    class NeverReturnsLLM:
+        async def ainvoke(self, _messages: object) -> object:
+            await asyncio.sleep(60)
+            return object()
+
+    async def never_returns_native(
+        _messages: list[dict[str, str]],
+        *,
+        timeout: float,
+        max_tokens: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(proactive, "_GREETING_LLM_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(proactive, "_invoke_ollama_native_chat", never_returns_native)
+    monkeypatch.setattr(llm_module, "create_llm", lambda: NeverReturnsLLM())
+
+    with _db_session() as db:
+        user, _thread = _setup(db)
+        db.commit()
+
+        result = await asyncio.wait_for(
+            proactive.generate_greeting(db, user_id=user.id),
+            timeout=0.2,
+        )
+
+        assert result.llm_generated is False
+        assert result.message
+
+
+@pytest.mark.asyncio
+async def test_generate_proactive_notice_falls_back_when_llm_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import llm as llm_module
+    from anima_server.services.agent import proactive
+
+    class NeverReturnsLLM:
+        async def ainvoke(self, _messages: object) -> object:
+            await asyncio.sleep(60)
+            return object()
+
+    async def never_returns_native(
+        _messages: list[dict[str, str]],
+        *,
+        timeout: float,
+        max_tokens: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(proactive, "_PROACTIVE_NOTICE_LLM_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(proactive, "_invoke_ollama_native_chat", never_returns_native)
+    monkeypatch.setattr(llm_module, "create_llm", lambda: NeverReturnsLLM())
+
+    with _db_session() as db:
+        user, _thread = _setup(db)
+        db.commit()
+
+        result = await asyncio.wait_for(
+            proactive.generate_proactive_notice(
+                db,
+                user_id=user.id,
+                instruction="mention the latency fix",
+            ),
+            timeout=0.2,
+        )
+
+        assert result is not None
+        assert result.llm_generated is False
+        assert "latency" in result.message.lower()
 
 
 def test_system_prompt_without_identity_has_no_dynamic_section() -> None:

@@ -192,6 +192,7 @@ KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "text-embedding-ada-002": 1536,
     "openai/text-embedding-3-small": 1536,
     "openai/text-embedding-3-large": 3072,
+    "Qwen/Qwen3-Embedding-8B": 4096,
 }
 
 _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
@@ -199,6 +200,7 @@ _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openrouter": "openai/text-embedding-3-small",
     "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
+    "doubleword": "Qwen/Qwen3-Embedding-8B",
 }
 
 _detected_embedding_dim: int | None = None

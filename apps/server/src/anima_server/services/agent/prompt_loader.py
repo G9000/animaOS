@@ -164,11 +164,12 @@ class PromptLoader:
             messages=messages,
         )
 
-    def episode_generation(self, *, turns: str) -> str:
+    def episode_generation(self, *, turns: str, user_name: str = "the user") -> str:
         """Render the episode generation prompt."""
         return self.render(
             "episode_generation",
             turns=turns,
+            user_name=user_name,
         )
 
     # -----------------------------------------------------------------------

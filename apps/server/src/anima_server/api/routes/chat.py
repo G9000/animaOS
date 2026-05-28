@@ -240,6 +240,7 @@ async def get_brief(
     request: Request,
     userId: int = Query(ge=0),
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Quick context brief (static, no LLM). Use /greeting for personalized greetings."""
     require_unlocked_user(request, userId)
@@ -249,7 +250,7 @@ async def get_brief(
         gather_greeting_context,
     )
 
-    ctx = gather_greeting_context(db, user_id=userId)
+    ctx = gather_greeting_context(db, user_id=userId, runtime_db=runtime_db)
     return {
         "message": build_static_greeting(ctx),
         "context": {
@@ -265,6 +266,7 @@ async def get_greeting(
     request: Request,
     userId: int = Query(ge=0),
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Generate a personalized greeting using the agent's self-model and context.
 
@@ -274,7 +276,7 @@ async def get_greeting(
 
     from anima_server.services.agent.proactive import generate_greeting
 
-    result = await generate_greeting(db, user_id=userId)
+    result = await generate_greeting(db, user_id=userId, runtime_db=runtime_db)
     return {
         "message": result.message,
         "llmGenerated": result.llm_generated,
@@ -327,6 +329,7 @@ async def get_proactive_notice(
     userId: int = Query(ge=0),
     instruction: str | None = Query(default=None, max_length=500),
     db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     require_unlocked_user(request, userId)
 
@@ -336,6 +339,7 @@ async def get_proactive_notice(
         db,
         user_id=userId,
         instruction=instruction,
+        runtime_db=runtime_db,
     )
     if result is None:
         return {"notice": None}

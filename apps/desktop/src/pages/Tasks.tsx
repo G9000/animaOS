@@ -189,7 +189,7 @@ export default function Tasks() {
   ).length;
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto pt-16">
       <div className="max-w-2xl mx-auto px-6 py-10 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">

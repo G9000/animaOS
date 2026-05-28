@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from anima_server import config as config_module
 from anima_server.config import settings
@@ -51,6 +53,54 @@ def test_greeting_endpoint() -> None:
         assert isinstance(data["llmGenerated"], bool)
 
 
+def test_greeting_endpoint_uses_runtime_history_for_days_since(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        last_chat_at = datetime.now(UTC) - timedelta(days=1, minutes=5)
+        runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            runtime_thread = RuntimeThread(
+                user_id=user_id,
+                status="active",
+                created_at=last_chat_at,
+                updated_at=last_chat_at,
+                last_message_at=last_chat_at,
+            )
+            runtime_db.add(runtime_thread)
+            runtime_db.flush()
+            runtime_db.add(
+                RuntimeMessage(
+                    thread_id=runtime_thread.id,
+                    user_id=user_id,
+                    sequence_id=1,
+                    role="user",
+                    content_text="hello from runtime history",
+                    created_at=last_chat_at,
+                )
+            )
+            runtime_db.commit()
+
+        resp = client.get(
+            f"/api/chat/greeting?userId={user_id}",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["context"]["daysSinceLastChat"] == 1
+        assert data["message"] == "Good to see you today."
+
+
 def test_nudges_endpoint() -> None:
     with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
@@ -91,13 +141,13 @@ def test_proactive_notice_endpoint_accepts_custom_instruction() -> None:
         ]
 
 
-def test_proactivity_config_defaults_and_update() -> None:
+def test_presence_config_defaults_and_update() -> None:
     with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        resp = client.get(f"/api/proactivity/{user_id}", headers=headers)
+        resp = client.get(f"/api/presence/{user_id}", headers=headers)
 
         assert resp.status_code == 200
         assert resp.json() == {
@@ -112,7 +162,7 @@ def test_proactivity_config_defaults_and_update() -> None:
         }
 
         resp = client.put(
-            f"/api/proactivity/{user_id}",
+            f"/api/presence/{user_id}",
             headers=headers,
             json={
                 "enabled": True,
@@ -145,7 +195,7 @@ def test_proactive_notice_respects_disabled_main_chat_config() -> None:
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
         client.put(
-            f"/api/proactivity/{user_id}",
+            f"/api/presence/{user_id}",
             headers=headers,
             json={"mainChatEnabled": False},
         )
@@ -166,7 +216,7 @@ def test_proactive_notice_uses_saved_custom_instruction() -> None:
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
         client.put(
-            f"/api/proactivity/{user_id}",
+            f"/api/presence/{user_id}",
             headers=headers,
             json={"customInstruction": "mention Tappy gently"},
         )
@@ -209,6 +259,12 @@ def test_config_providers() -> None:
         assert "scaffold" in names
         assert "ollama" in names
         assert "anthropic" in names
+        doubleword = next(p for p in providers if p["name"] == "doubleword")
+        assert doubleword == {
+            "name": "doubleword",
+            "defaultModel": "Qwen/Qwen3.6-35B-A3B-FP8",
+            "requiresApiKey": True,
+        }
 
 
 def test_config_ollama_models(monkeypatch) -> None:
@@ -339,6 +395,44 @@ def test_config_get_update() -> None:
         finally:
             settings.agent_provider = original_provider
             settings.agent_model = original_model
+            settings.agent_api_key = original_api_key
+            settings.agent_base_url = original_base_url
+
+
+def test_config_update_accepts_doubleword_and_clears_endpoint() -> None:
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_extraction_model = settings.agent_extraction_model
+    original_api_key = settings.agent_api_key
+    original_base_url = settings.agent_base_url
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+            settings.agent_base_url = "http://127.0.0.1:8000/v1"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "doubleword",
+                    "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+                    "apiKey": "test-doubleword-key",
+                    "ollamaUrl": "http://should-not-stick.local/v1",
+                },
+            )
+
+            assert resp.status_code == 200
+            assert settings.agent_provider == "doubleword"
+            assert settings.agent_model == "Qwen/Qwen3.6-35B-A3B-FP8"
+            assert settings.agent_api_key == "test-doubleword-key"
+            assert settings.agent_base_url == ""
+        finally:
+            settings.agent_provider = original_provider
+            settings.agent_model = original_model
+            settings.agent_extraction_model = original_extraction_model
             settings.agent_api_key = original_api_key
             settings.agent_base_url = original_base_url
 

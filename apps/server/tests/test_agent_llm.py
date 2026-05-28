@@ -11,6 +11,7 @@ from anima_server.services.agent.llm import (
     LLMConfigError,
     build_provider_headers,
     create_llm,
+    create_provider_chat_client,
     invalidate_llm_cache,
     resolve_base_url,
 )
@@ -182,6 +183,138 @@ def test_build_provider_headers_rejects_anthropic_without_api_key() -> None:
         settings.agent_api_key = original_api_key
 
 
+def test_doubleword_resolves_default_base_url_and_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_api_key = settings.agent_api_key
+    original_base_url = settings.agent_base_url
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+
+    try:
+        settings.agent_api_key = "test-doubleword-key"
+        settings.agent_base_url = ""
+
+        assert resolve_base_url("doubleword") == "https://api.doubleword.ai/v1"
+        assert build_provider_headers("doubleword") == {
+            "Authorization": "Bearer test-doubleword-key"
+        }
+    finally:
+        settings.agent_api_key = original_api_key
+        settings.agent_base_url = original_base_url
+
+
+def test_doubleword_uses_provider_specific_env_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_api_key = settings.agent_api_key
+    monkeypatch.setenv("DOUBLEWORD_API_KEY", "env-doubleword-key")
+
+    try:
+        settings.agent_api_key = ""
+
+        assert build_provider_headers("doubleword") == {
+            "Authorization": "Bearer env-doubleword-key"
+        }
+    finally:
+        settings.agent_api_key = original_api_key
+
+
+def test_doubleword_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_api_key = settings.agent_api_key
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+
+    try:
+        settings.agent_api_key = ""
+        with pytest.raises(
+            LLMConfigError,
+            match="DOUBLEWORD_API_KEY",
+        ):
+            build_provider_headers("doubleword")
+    finally:
+        settings.agent_api_key = original_api_key
+
+
+def test_create_llm_uses_openai_compatible_client_for_doubleword() -> None:
+    from anima_server.services.agent.openai_compatible_client import (
+        OpenAICompatibleChatClient,
+    )
+
+    original_api_key = settings.agent_api_key
+    original_base_url = settings.agent_base_url
+
+    try:
+        settings.agent_api_key = "test-doubleword-key"
+        settings.agent_base_url = ""
+
+        client = create_provider_chat_client(
+            provider="doubleword",
+            model="Qwen/Qwen3.6-35B-A3B-FP8",
+            timeout=12.0,
+        )
+    finally:
+        settings.agent_api_key = original_api_key
+        settings.agent_base_url = original_base_url
+
+    assert isinstance(client, OpenAICompatibleChatClient)
+    assert client.provider == "doubleword"
+    assert client.model == "Qwen/Qwen3.6-35B-A3B-FP8"
+    assert client.base_url == "https://api.doubleword.ai/v1"
+
+
+def test_doubleword_embedding_defaults_and_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="doubleword",
+            agent_base_url="",
+            agent_api_key="test-doubleword-key",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+
+    assert embeddings_module.resolve_base_url() == "https://api.doubleword.ai/v1"
+    assert embeddings_module._resolve_embedding_model() == "Qwen/Qwen3-Embedding-8B"
+    assert embeddings_module.build_provider_headers("doubleword") == {
+        "Authorization": "Bearer test-doubleword-key"
+    }
+
+
+def test_doubleword_embedding_uses_provider_specific_env_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setenv("DOUBLEWORD_API_KEY", "env-doubleword-key")
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="doubleword",
+            agent_base_url="",
+            agent_api_key="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+
+    assert embeddings_module.build_provider_headers("doubleword") == {
+        "Authorization": "Bearer env-doubleword-key"
+    }
+
+
 def test_create_llm_uses_anthropic_client() -> None:
     from anima_server.services.agent.anthropic_client import AnthropicChatClient
 
@@ -260,6 +393,27 @@ def test_resolve_embedding_dim_normalizes_tagged_model(
     config_module.clear_detected_embedding_dim()
 
     assert config_module.resolve_embedding_dim() == 384
+
+
+def test_resolve_embedding_dim_uses_doubleword_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="",
+            agent_extraction_model="",
+            agent_embedding_provider="",
+            agent_provider="doubleword",
+            agent_embedding_dim=768,
+        ),
+    )
+    config_module.clear_detected_embedding_dim()
+
+    assert config_module.resolve_embedding_dim() == 4096
 
 
 @pytest.mark.asyncio

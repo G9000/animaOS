@@ -148,7 +148,7 @@ export default function Memory() {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full pt-16">
       {/* Header */}
       <div className="px-5 py-2.5 border-b border-border bg-card/40">
         <div className="flex items-center justify-between">

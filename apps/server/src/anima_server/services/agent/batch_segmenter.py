@@ -60,6 +60,8 @@ async def segment_messages_batch(
     messages: list[tuple[str, str]],
     *,
     user_id: int = 0,
+    user_name: str = "the user",
+    agent_name: str = "Anima",
 ) -> list[list[int]]:
     """Use LLM to group messages into topic-coherent episodes.
 
@@ -75,7 +77,11 @@ async def segment_messages_batch(
     total = len(messages)
 
     try:
-        groups = await _call_llm_for_segmentation(messages)
+        groups = await _call_llm_for_segmentation(
+            messages,
+            user_name=user_name,
+            agent_name=agent_name,
+        )
     except Exception as exc:
         logger.warning(
             "LLM batch segmentation failed, using sequential fallback: %s", exc)
@@ -111,6 +117,9 @@ async def segment_messages_batch(
 
 async def _call_llm_for_segmentation(
     messages: list[tuple[str, str]],
+    *,
+    user_name: str = "the user",
+    agent_name: str = "Anima",
 ) -> list[list[int]]:
     """Call LLM to segment messages by topic coherence."""
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
@@ -118,12 +127,12 @@ async def _call_llm_for_segmentation(
     # Format messages for the prompt
     lines: list[str] = []
     for i, (user_msg, assistant_resp) in enumerate(messages, start=1):
-        lines.append(f"[{i}] User: {user_msg}")
-        lines.append(f"[{i}] Assistant: {assistant_resp}")
+        lines.append(f"[{i}] {user_name}: {user_msg}")
+        lines.append(f"[{i}] {agent_name}: {assistant_resp}")
 
     from anima_server.services.agent.prompt_loader import PromptLoader
 
-    prompt_loader = PromptLoader(agent_name="Anima")
+    prompt_loader = PromptLoader(agent_name=agent_name)
     prompt = prompt_loader.batch_segmentation(messages="\n".join(lines))
     timeout = min(settings.agent_llm_timeout,
                   _BATCH_SEGMENTATION_TIMEOUT_SECONDS)
@@ -217,6 +226,8 @@ async def generate_episodes_from_segments(
     pairs: list[tuple[str, str]],
     segments: list[list[int]],
     today: str,
+    user_name: str = "the user",
+    agent_name: str = "Anima",
 ) -> list[MemoryEpisode]:
     """Generate one episode per segment group.
 
@@ -251,7 +262,12 @@ async def generate_episodes_from_segments(
                 today=today,
             )
         else:
-            parsed = await _call_llm_for_episode_safe(segment_pairs, user_id=user_id)
+            parsed = await _call_llm_for_episode_safe(
+                segment_pairs,
+                user_id=user_id,
+                user_name=user_name,
+                agent_name=agent_name,
+            )
             episode = _build_episode_from_parsed(
                 db,
                 parsed=parsed,

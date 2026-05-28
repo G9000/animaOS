@@ -266,6 +266,15 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             command.upgrade(cfg, "head")
             logger.info("Alembic upgrade complete.")
 
+        if has_app_tables:
+            # Repair legacy or previously mis-stamped DBs that are missing
+            # tables added after their initial create_all bootstrap. This is
+            # additive only; existing tables and columns are left untouched.
+            from anima_server.models import Base
+
+            Base.metadata.create_all(bind=connection)
+            logger.info("Ensured metadata tables exist.")
+
 
 def get_user_session_factory(user_id: int) -> sessionmaker[Session]:
     return ensure_user_database(user_id)

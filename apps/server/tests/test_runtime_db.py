@@ -22,7 +22,7 @@ from anima_server.db.runtime import (
     init_runtime_engine,
 )
 from anima_server.db.session import get_db
-from sqlalchemy import text
+from sqlalchemy import create_engine, inspect, text
 from starlette.requests import Request
 
 HAS_PGSERVER = importlib.util.find_spec("pgserver") is not None
@@ -166,6 +166,69 @@ def test_embedded_pg_database_url_raises_when_not_running(managed_tmp_path: Path
 
     with pytest.raises(RuntimeError, match="Embedded PG is not running"):
         _ = pg.database_url
+
+
+def test_legacy_soul_database_migration_creates_missing_new_tables(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.db.session import _run_alembic_upgrade
+
+    legacy_db = managed_tmp_path / "legacy-soul.db"
+    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+
+    _run_alembic_upgrade(engine)
+
+    inspector = inspect(engine)
+    assert inspector.has_table("alembic_version")
+    assert inspector.has_table("presence_configs")
+
+
+def test_stamped_soul_database_migration_repairs_missing_new_tables(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.db.session import _run_alembic_upgrade
+
+    legacy_db = managed_tmp_path / "stamped-soul.db"
+    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE alembic_version (
+                    version_num VARCHAR(32) NOT NULL,
+                    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text("INSERT INTO alembic_version (version_num) VALUES ('20260522_0001')")
+        )
+
+    _run_alembic_upgrade(engine)
+
+    assert inspect(engine).has_table("presence_configs")
 
 
 def test_embedded_pg_recovers_stale_lockfile(managed_tmp_path: Path) -> None:

@@ -49,7 +49,7 @@ export function ChatLayout({
         )}
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto overscroll-contain px-3 md:px-5 lg:px-8 py-5 md:py-8 pb-36 scroll-smooth">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-3 md:px-5 lg:px-8 pt-20 pb-36 scroll-smooth">
           <div className="max-w-5xl mx-auto w-full space-y-2">
             {children}
           </div>
@@ -65,8 +65,8 @@ export function ChatLayout({
           </button>
         )}
 
-        {/* Floating Input — chunky hardware bar */}
-        <div className="absolute bottom-0 left-0 right-0 z-10 px-4 py-4 bg-gradient-to-t from-background via-background to-transparent pointer-events-none">
+        {/* Floating input */}
+        <div className="absolute bottom-0 left-0 right-0 z-10 px-4 pt-8 pb-5 bg-gradient-to-t from-background via-background/95 to-transparent pointer-events-none">
           <div className="max-w-3xl mx-auto w-full pointer-events-auto">
             {inputAccessory}
             <PromptInput
@@ -79,13 +79,10 @@ export function ChatLayout({
               canSubmit={canSubmit}
               onAttach={onAttach}
             />
-            <div className="mt-2 flex items-center justify-center gap-4">
-              <span className="font-mono text-[8px] text-muted-foreground/25 tracking-[0.2em] uppercase">
-                ENTER to send · SHIFT+ENTER for newline
-              </span>
+            <div className="mt-2 h-4 flex items-center justify-center">
               {streaming && (
-                <span className="font-mono text-[8px] text-accent/60 tracking-[0.2em] uppercase animate-pulse">
-                  PROCESSING...
+                <span className="font-mono text-[8px] text-accent/50 tracking-[0.2em] uppercase animate-pulse">
+                  processing...
                 </span>
               )}
             </div>

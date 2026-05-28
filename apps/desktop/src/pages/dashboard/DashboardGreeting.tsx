@@ -25,7 +25,7 @@ export function DashboardGreeting({
         <DotLoader />
       ) : (
         <div className="space-y-1 animate-fade-in">
-          <h1 className="text-2xl font-sans text-foreground leading-tight">
+          <h1 className="text-3xl font-sans text-foreground leading-tight">
             {message}
           </h1>
           {brief?.llmGenerated && (

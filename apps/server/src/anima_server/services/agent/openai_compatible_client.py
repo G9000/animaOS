@@ -192,7 +192,12 @@ class OpenAICompatibleChatClient:
             ]
         if self._tool_choice is not None:
             payload["tool_choice"] = self._tool_choice
-        if self._tools and self.provider in ("openai", "openrouter", "vllm"):
+        if self._tools and self.provider in (
+            "openai",
+            "openrouter",
+            "vllm",
+            "doubleword",
+        ):
             payload["parallel_tool_calls"] = True
         if self._temperature is not None:
             payload["temperature"] = self._temperature

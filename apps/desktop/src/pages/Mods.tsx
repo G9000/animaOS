@@ -113,7 +113,7 @@ export default function Mods() {
   }
 
   return (
-    <div className="h-full overflow-auto p-6">
+    <div className="h-full overflow-auto pt-16 p-6">
       <div className="max-w-5xl mx-auto">
         <div className="flex flex-col gap-4 mb-6">
           <div className="flex items-center gap-3">

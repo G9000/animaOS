@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import ProactivityConfig
+from anima_server.models import PresenceConfig
 
 
 @dataclass(frozen=True)
-class ProactivityConfigValues:
+class PresenceConfigValues:
     user_id: int
     enabled: bool = True
     main_chat_enabled: bool = True
@@ -20,34 +20,34 @@ class ProactivityConfigValues:
     custom_instruction: str | None = None
 
 
-def get_proactivity_config_values(db: Session, user_id: int) -> ProactivityConfigValues:
+def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
     row = db.scalar(
-        select(ProactivityConfig).where(ProactivityConfig.user_id == user_id)
+        select(PresenceConfig).where(PresenceConfig.user_id == user_id)
     )
     if row is None:
-        return ProactivityConfigValues(user_id=user_id)
+        return PresenceConfigValues(user_id=user_id)
     return _to_values(row)
 
 
-def get_or_create_proactivity_config(db: Session, user_id: int) -> ProactivityConfig:
+def get_or_create_presence_config(db: Session, user_id: int) -> PresenceConfig:
     row = db.scalar(
-        select(ProactivityConfig).where(ProactivityConfig.user_id == user_id)
+        select(PresenceConfig).where(PresenceConfig.user_id == user_id)
     )
     if row is not None:
         return row
 
-    row = ProactivityConfig(user_id=user_id)
+    row = PresenceConfig(user_id=user_id)
     db.add(row)
     db.flush()
     return row
 
 
-def update_proactivity_config(
+def update_presence_config(
     db: Session,
     user_id: int,
     updates: dict[str, object],
-) -> ProactivityConfigValues:
-    row = get_or_create_proactivity_config(db, user_id)
+) -> PresenceConfigValues:
+    row = get_or_create_presence_config(db, user_id)
     field_map = {
         "enabled": "enabled",
         "mainChatEnabled": "main_chat_enabled",
@@ -77,8 +77,8 @@ def _normalize_instruction(value: object) -> str | None:
     return stripped or None
 
 
-def _to_values(row: ProactivityConfig) -> ProactivityConfigValues:
-    return ProactivityConfigValues(
+def _to_values(row: PresenceConfig) -> PresenceConfigValues:
+    return PresenceConfigValues(
         user_id=row.user_id,
         enabled=row.enabled,
         main_chat_enabled=row.main_chat_enabled,

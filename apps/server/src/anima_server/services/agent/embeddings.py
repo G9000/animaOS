@@ -15,6 +15,7 @@ import contextlib
 import hashlib
 import logging
 import math
+import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openrouter": "openai/text-embedding-3-small",
     "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
+    "doubleword": "Qwen/Qwen3-Embedding-8B",
 }
 
 _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
@@ -64,6 +66,11 @@ _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
     "vllm": "http://127.0.0.1:8000/v1",
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
+    "doubleword": "https://api.doubleword.ai/v1",
+}
+
+_EMBEDDING_API_KEY_ENV: dict[str, str] = {
+    "doubleword": "DOUBLEWORD_API_KEY",
 }
 
 
@@ -78,11 +85,18 @@ def _resolve_embedding_provider() -> str:
     return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
 
 
-def _resolve_embedding_api_key() -> str:
+def _resolve_embedding_api_key(provider: str | None = None) -> str:
     configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
         return configured
-    return _setting_text(getattr(settings, "agent_api_key", ""))
+    configured = _setting_text(getattr(settings, "agent_api_key", ""))
+    if configured:
+        return configured
+    resolved_provider = provider or _resolve_embedding_provider()
+    env_name = _EMBEDDING_API_KEY_ENV.get(resolved_provider)
+    if env_name is not None:
+        return os.getenv(env_name, "").strip()
+    return ""
 
 
 def _resolve_embedding_model() -> str:
@@ -114,10 +128,21 @@ def _resolve_embedding_base_url() -> str:
 
 def _validate_embedding_provider_configuration(provider: str) -> None:
     validate_provider(provider)
-    if provider in ("openrouter", "moonshot", "openai") and not _resolve_embedding_api_key():
+    if provider in (
+        "openrouter",
+        "moonshot",
+        "openai",
+        "doubleword",
+    ) and not _resolve_embedding_api_key(provider):
+        key_hint = "ANIMA_AGENT_EMBEDDING_API_KEY (or ANIMA_AGENT_API_KEY)"
+        env_name = _EMBEDDING_API_KEY_ENV.get(provider)
+        if env_name is not None:
+            key_hint = (
+                "ANIMA_AGENT_EMBEDDING_API_KEY, "
+                f"ANIMA_AGENT_API_KEY, or {env_name}"
+            )
         raise LLMConfigError(
-            f"ANIMA_AGENT_EMBEDDING_API_KEY (or ANIMA_AGENT_API_KEY) is required "
-            f"when embedding_provider='{provider}'"
+            f"{key_hint} is required when embedding_provider='{provider}'"
         )
 
 
@@ -127,7 +152,7 @@ def validate_provider_configuration(provider: str) -> None:
 
 def _build_embedding_headers(provider: str) -> dict[str, str]:
     headers: dict[str, str] = {}
-    api_key = _resolve_embedding_api_key()
+    api_key = _resolve_embedding_api_key(provider)
 
     if provider == "openrouter":
         headers["Authorization"] = f"Bearer {api_key}"
@@ -140,7 +165,7 @@ def _build_embedding_headers(provider: str) -> dict[str, str]:
         headers["Content-Type"] = "application/json"
         return headers
 
-    if provider == "openai":
+    if provider in ("openai", "doubleword"):
         headers["Authorization"] = f"Bearer {api_key}"
         return headers
 

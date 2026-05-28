@@ -71,6 +71,11 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
     ),
     ProviderInfo(name="openrouter",
                  defaultModel="google/gemma-3-27b-it", requiresApiKey=True),
+    ProviderInfo(
+        name="doubleword",
+        defaultModel="Qwen/Qwen3.6-35B-A3B-FP8",
+        requiresApiKey=True,
+    ),
     ProviderInfo(name="moonshot", defaultModel="kimi-k2-5",
                  requiresApiKey=True),
     ProviderInfo(name="vllm", defaultModel="default", requiresApiKey=False),
@@ -249,13 +254,13 @@ async def update_config(
     settings.agent_extraction_model = (payload.extractionModel or "").strip()
     if payload.apiKey is not None:
         settings.agent_api_key = payload.apiKey
-    # Only set base_url for ollama/vllm; clear for providers with fixed endpoints
+    # Only set base_url for ollama/vllm; clear for providers with fixed endpoints.
     if (payload.provider == "ollama" and payload.ollamaUrl is not None) or (
         payload.provider == "vllm" and payload.ollamaUrl is not None
     ):
         settings.agent_base_url = payload.ollamaUrl
     else:
-        # Clear base_url for providers with fixed endpoints (openrouter, moonshot)
+        # Clear base_url for providers with fixed endpoints.
         settings.agent_base_url = ""
 
     try:

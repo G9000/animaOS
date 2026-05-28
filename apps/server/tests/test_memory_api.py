@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import MemoryItemEvidence
+from anima_server.models import MemoryEpisode, MemoryItemEvidence
 from anima_server.services import anima_core_retrieval as retrieval_module
 from anima_server.services.data_crypto import df
 from conftest import managed_test_client
@@ -421,6 +421,52 @@ def test_memory_episodes_empty() -> None:
         resp = client.get(f"/api/memory/{user_id}/episodes", headers=headers)
         assert resp.status_code == 200
         assert resp.json() == []
+
+
+def test_memory_episodes_return_stored_summary_without_display_rewrite() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "username": "episodevoice",
+                "password": "pw123456",
+                "name": "Leo",
+                "agentName": "Alo",
+            },
+        )
+        assert response.status_code == 201
+        reg = response.json()
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        stored_summary = (
+            "The user initiated the session with 'alo' and repeatedly "
+            "prompted the assistant with 'try again' following empty "
+            "responses. The user then expressed curiosity and asked "
+            "the assistant to describe the user in its own words. "
+            "The user inquired if the assistant 'Alo' has eaten. "
+            "The assistant noted the user's soft blonde hair."
+        )
+        with get_user_session_factory(user_id)() as db:
+            db.add(
+                MemoryEpisode(
+                    user_id=user_id,
+                    date="2026-05-22",
+                    time="13:18:00",
+                    summary=stored_summary,
+                    topics_json=["curiosity", "interaction"],
+                    emotional_arc="confused -> curious",
+                    significance_score=3,
+                    turn_count=4,
+                )
+            )
+            db.commit()
+
+        resp = client.get(f"/api/memory/{user_id}/episodes", headers=headers)
+
+        assert resp.status_code == 200
+        summary = resp.json()[0]["summary"]
+        assert summary == stored_summary
 
 
 def test_memory_writes_update_rust_index(monkeypatch) -> None:

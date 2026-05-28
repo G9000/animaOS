@@ -5,38 +5,38 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
-from anima_server.schemas.proactivity import (
-    ProactivityConfigResponse,
-    ProactivityConfigUpdateRequest,
+from anima_server.schemas.presence import (
+    PresenceConfigResponse,
+    PresenceConfigUpdateRequest,
 )
-from anima_server.services.proactivity_config import (
-    ProactivityConfigValues,
-    get_proactivity_config_values,
-    update_proactivity_config,
+from anima_server.services.presence_config import (
+    PresenceConfigValues,
+    get_presence_config_values,
+    update_presence_config,
 )
 
-router = APIRouter(prefix="/api/proactivity", tags=["proactivity"])
+router = APIRouter(prefix="/api/presence", tags=["presence"])
 
 
-@router.get("/{user_id}", response_model=ProactivityConfigResponse)
+@router.get("/{user_id}", response_model=PresenceConfigResponse)
 def get_config(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
-) -> ProactivityConfigResponse:
+) -> PresenceConfigResponse:
     require_unlocked_user(request, user_id)
-    return _serialize(get_proactivity_config_values(db, user_id))
+    return _serialize(get_presence_config_values(db, user_id))
 
 
-@router.put("/{user_id}", response_model=ProactivityConfigResponse)
+@router.put("/{user_id}", response_model=PresenceConfigResponse)
 def put_config(
     user_id: int,
-    payload: ProactivityConfigUpdateRequest,
+    payload: PresenceConfigUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
-) -> ProactivityConfigResponse:
+) -> PresenceConfigResponse:
     require_unlocked_user(request, user_id)
-    values = update_proactivity_config(
+    values = update_presence_config(
         db,
         user_id,
         payload.model_dump(exclude_unset=True),
@@ -45,8 +45,8 @@ def put_config(
     return _serialize(values)
 
 
-def _serialize(values: ProactivityConfigValues) -> ProactivityConfigResponse:
-    return ProactivityConfigResponse(
+def _serialize(values: PresenceConfigValues) -> PresenceConfigResponse:
+    return PresenceConfigResponse(
         userId=values.user_id,
         enabled=values.enabled,
         mainChatEnabled=values.main_chat_enabled,

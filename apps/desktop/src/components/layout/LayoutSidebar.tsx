@@ -1,23 +1,43 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   HomeIcon,
   TasksIcon,
   ChatIcon,
   MemoryIcon,
-  ProactivityIcon,
+  PresenceIcon,
   MindIcon,
   ModsIcon,
   ConfigIcon,
   DatabaseIcon,
+  ChevronRightIcon,
   cn,
   type IconProps,
 } from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
+import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
 import { getDbViewerEnabled } from "../../lib/preferences";
 import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+
+
+const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
+const NEGATIVE_MOODS = new Set(["sad", "lonely", "tired", "angry", "frustrated", "anxious", "worried"]);
+
+function moodBadgeClass(emotion: string): string {
+  const e = emotion.toLowerCase().trim();
+  if (POSITIVE_MOODS.has(e)) return "bg-accent/30 text-accent border border-accent/30";
+  if (NEGATIVE_MOODS.has(e)) return "bg-destructive/20 text-destructive border border-destructive/20";
+  return "bg-border text-foreground/70 border border-border";
+}
+
+function moodDotClass(emotion: string): string {
+  const e = emotion.toLowerCase().trim();
+  if (POSITIVE_MOODS.has(e)) return "bg-accent ring-2 ring-sidebar ring-offset-0";
+  if (NEGATIVE_MOODS.has(e)) return "bg-destructive ring-2 ring-sidebar ring-offset-0";
+  return "bg-muted-foreground ring-2 ring-sidebar ring-offset-0";
+}
 
 interface NavItem {
   to: string;
@@ -31,7 +51,7 @@ const STATIC_NAV_ITEMS: NavItem[] = [
   { to: "/tasks", label: "Tasks", Icon: TasksIcon, description: "queue" },
   { to: "/chat", label: "Chat", Icon: ChatIcon, description: "console" },
   { to: "/memory", label: "Memory", Icon: MemoryIcon, description: "archive" },
-  { to: "/proactivity", label: "Proactivity", Icon: ProactivityIcon, description: "signals" },
+  { to: "/presence", label: "Presence", Icon: PresenceIcon, description: "signals" },
   { to: "/consciousness", label: "Mind", Icon: MindIcon, description: "consciousness" },
   { to: "/mods", label: "Mods", Icon: ModsIcon, description: "extensions" },
   { to: "/settings", label: "Settings", Icon: ConfigIcon, description: "system" },
@@ -69,7 +89,9 @@ export function LayoutSidebar() {
   const [collapsed, setCollapsed] = useState(readCollapsedState);
   const [showUser, setShowUser] = useState(false);
   const [theme, setTheme] = useState<Theme>(getTheme);
-  const { agentName, avatarUrl } = useAgentProfile(user?.id);
+  const { agentName, avatarUrl, relationship } = useAgentProfile(user?.id);
+  const [dominantEmotion, setDominantEmotion] = useState<string | null>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const handleAgentClick = useCallback(() => navigate("/agent"), [navigate]);
 
@@ -99,6 +121,26 @@ export function LayoutSidebar() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [toggleCollapsed]);
 
+  useEffect(() => {
+    if (user?.id == null) return;
+    let active = true;
+    api.consciousness.getEmotions(user.id, 1)
+      .then((data) => { if (active) setDominantEmotion(data.dominantEmotion); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!showUser) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setShowUser(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showUser]);
+
   const navItems = dbEnabled ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM] : STATIC_NAV_ITEMS;
 
   return (
@@ -109,29 +151,50 @@ export function LayoutSidebar() {
         collapsed ? "w-14" : "w-60",
       )}
     >
-      {/* Agent header — full-width avatar */}
-      <div className={cn("flex-shrink-0 border-b border-border", !collapsed && "p-2")}>
-        <button
-          onClick={handleAgentClick}
-          title={collapsed ? agentName : `${agentName} — click to edit`}
-          className={cn(
-            "relative w-full overflow-hidden bg-card hover:opacity-90 transition-opacity",
-            !collapsed && "rounded-md",
-          )}
-        >
-          <img
-            src={avatarUrl}
-            alt={agentName}
-            className={cn("w-full object-cover", collapsed ? "aspect-square" : "aspect-[4/3] rounded-md")}
-          />
-          {!collapsed && (
-            <div className="absolute bottom-0 left-0 right-0 p-2">
-              <span className="inline-block bg-sidebar/90 backdrop-blur-sm border border-border px-2.5 py-1 text-caption font-mono tracking-[0.18em] uppercase text-foreground rounded-sm">
-                {agentName}
-              </span>
+      {/* Agent header */}
+      <div className="flex-shrink-0 border-b border-border">
+        {collapsed ? (
+          <button
+            onClick={handleAgentClick}
+            title={dominantEmotion ? `${agentName} · ${dominantEmotion}` : agentName}
+            className="relative w-full overflow-hidden hover:opacity-90 transition-opacity"
+          >
+            <img src={avatarUrl} alt={agentName} className="w-full aspect-square object-cover" />
+            {dominantEmotion && (
+              <span className={cn("absolute bottom-2 right-2 w-2 h-2 rounded-full", moodDotClass(dominantEmotion))} />
+            )}
+          </button>
+        ) : (
+          <div className="p-2 space-y-2">
+            <button
+              onClick={handleAgentClick}
+              title={`${agentName} — click to edit`}
+              className="relative w-full overflow-hidden rounded-sm ring-1 ring-border/50 hover:ring-border transition-all"
+            >
+              <img src={avatarUrl} alt={agentName} className="w-full aspect-[4/3] object-cover" />
+            </button>
+            <div className="flex items-center justify-between px-0.5">
+              <div className="flex flex-col gap-1 min-w-0">
+                <span className="text-body font-medium text-foreground leading-none truncate">
+                  {agentName}
+                </span>
+                {relationship && (
+                  <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-muted-foreground/40 leading-none">
+                    {relationship}
+                  </span>
+                )}
+              </div>
+              {dominantEmotion && (
+                <span className={cn(
+                  "flex-shrink-0 font-mono text-[8px] tracking-[0.12em] uppercase px-1.5 py-0.5 rounded-sm ml-2",
+                  moodBadgeClass(dominantEmotion),
+                )}>
+                  {dominantEmotion}
+                </span>
+              )}
             </div>
-          )}
-        </button>
+          </div>
+        )}
       </div>
 
       {/* Navigation */}
@@ -147,7 +210,7 @@ export function LayoutSidebar() {
                 "group flex items-center transition-colors duration-100 rounded-md",
                 collapsed ? "justify-center px-0 py-2.5 mx-1" : "gap-3 px-3 py-2.5",
                 isActive
-                  ? "bg-secondary text-foreground"
+                  ? "bg-foreground/[0.12] text-foreground"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
               )
             }
@@ -157,10 +220,7 @@ export function LayoutSidebar() {
                 <span
                   className={cn(
                     "flex-shrink-0 flex items-center justify-center transition-colors",
-                    collapsed ? "w-5 h-5" : "w-[18px] h-[18px]",
-                    isActive
-                      ? "text-foreground"
-                      : "text-muted-foreground group-hover:text-foreground",
+                    isActive ? "text-foreground" : "text-muted-foreground group-hover:text-foreground",
                   )}
                 >
                   <item.Icon size="sm" />
@@ -186,7 +246,7 @@ export function LayoutSidebar() {
               collapsed ? "w-full" : "flex-1",
             )}
           >
-            <span className="text-xs leading-none">{theme === "dark" ? "☀" : "☾"}</span>
+            <span className="text-xs leading-none select-none">{theme === "dark" ? "☀" : "☾"}</span>
             {!collapsed && (
               <span className="text-caption font-mono tracking-[0.16em] uppercase">
                 {theme === "dark" ? "Light" : "Dark"}
@@ -202,7 +262,10 @@ export function LayoutSidebar() {
               collapsed ? "w-full" : "flex-1",
             )}
           >
-            <span className="text-xs leading-none font-mono">{collapsed ? "→" : "←"}</span>
+            <ChevronRightIcon
+              size="sm"
+              className={cn("transition-transform duration-200", !collapsed && "rotate-180")}
+            />
             {!collapsed && (
               <span className="text-caption font-mono tracking-[0.16em] uppercase">Collapse</span>
             )}
@@ -210,7 +273,7 @@ export function LayoutSidebar() {
         </div>
 
         {/* User */}
-        <div className={cn("relative", !collapsed && "px-1.5 pb-1.5")}>
+        <div ref={userMenuRef} className={cn("relative", !collapsed && "px-1.5 pb-1.5")}>
           <button
             onClick={() => setShowUser((v) => !v)}
             className={cn(
@@ -231,10 +294,9 @@ export function LayoutSidebar() {
           {showUser && (
             <div
               className={cn(
-                "absolute bottom-full border border-border bg-sidebar z-50 overflow-hidden shadow-lg",
+                "absolute bottom-full border border-border bg-sidebar z-50 overflow-hidden shadow-lg rounded-md",
                 collapsed ? "left-full ml-1 min-w-[148px]" : "left-0 right-0",
               )}
-              onMouseLeave={() => setShowUser(false)}
             >
               <div className="px-3 py-2 border-b border-border">
                 <div className="text-caption text-muted-foreground truncate">

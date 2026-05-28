@@ -1,11 +1,15 @@
 import type { ReactNode } from "react";
-import { LayoutSidebar } from "./layout/LayoutSidebar";
+import { LayoutTopNav } from "./layout/LayoutTopNav";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden">
-      <LayoutSidebar />
-      <main className="flex-1 h-full overflow-hidden min-w-0 bg-background">{children}</main>
+    <div className="relative h-screen bg-background text-foreground overflow-hidden">
+      {/* Nav floats above everything */}
+      <div className="absolute top-3 left-3 right-3 z-30">
+        <LayoutTopNav />
+      </div>
+      {/* Content fills full height — banner goes behind the nav */}
+      <main className="h-full overflow-hidden min-w-0">{children}</main>
     </div>
   );
 }

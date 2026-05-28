@@ -46,8 +46,8 @@ export function MemoryIcon(props: IconProps) {
   );
 }
 
-// PROACTIVE - outgoing pulse / attention signal
-export function ProactivityIcon(props: IconProps) {
+// PRESENCE - outgoing pulse / attention signal
+export function PresenceIcon(props: IconProps) {
   return (
     <BaseIcon {...props} strokeWidth={1.5}>
       <circle cx="7" cy="12" r="2" />

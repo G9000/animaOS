@@ -79,7 +79,7 @@ describe("createApiClient error handling", () => {
     );
   });
 
-  test("gets and updates proactivity configuration", async () => {
+  test("gets and updates presence configuration", async () => {
     const requests: Array<{ url: string; method: string; body?: unknown }> = [];
     const api = createApiClient({
       baseUrl: "https://api.test/api",
@@ -104,8 +104,8 @@ describe("createApiClient error handling", () => {
       },
     });
 
-    await api.proactivity.get(7);
-    await api.proactivity.update(7, {
+    await api.presence.get(7);
+    await api.presence.update(7, {
       mainChatEnabled: false,
       checkInNudgesEnabled: false,
       customInstruction: "mention Tappy",
@@ -113,11 +113,11 @@ describe("createApiClient error handling", () => {
 
     expect(requests).toEqual([
       {
-        url: "https://api.test/api/proactivity/7",
+        url: "https://api.test/api/presence/7",
         method: "GET",
       },
       {
-        url: "https://api.test/api/proactivity/7",
+        url: "https://api.test/api/presence/7",
         method: "PUT",
         body: {
           mainChatEnabled: false,

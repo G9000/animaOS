@@ -259,7 +259,7 @@ export interface ProactiveNotice {
   contextMessages: ChatContextMessage[];
 }
 
-export interface ProactivityConfig {
+export interface PresenceConfig {
   userId: number;
   enabled: boolean;
   mainChatEnabled: boolean;
@@ -270,8 +270,8 @@ export interface ProactivityConfig {
   customInstruction?: string | null;
 }
 
-export type ProactivityConfigUpdate = Partial<
-  Omit<ProactivityConfig, "userId">
+export type PresenceConfigUpdate = Partial<
+  Omit<PresenceConfig, "userId">
 >;
 
 export interface TaskItem {

@@ -7,7 +7,7 @@ import Dashboard from "./pages/dashboard/Dashboard";
 import Profile from "./pages/Profile";
 import Chat from "./pages/chat/Chat";
 import Memory from "./pages/memory/Memory";
-import Proactivity from "./pages/Proactivity";
+import Presence from "./pages/Presence";
 import Settings from "./pages/settings/Settings";
 import AiSettings from "./pages/settings/AiSettings";
 import SecuritySettings from "./pages/settings/SecuritySettings";
@@ -22,6 +22,7 @@ import Database from "./pages/Database";
 import KnowledgeGraph from "./pages/memory/KnowledgeGraph";
 import Mods from "./pages/Mods";
 import ModDetail from "./pages/ModDetail";
+import Journal from "./pages/Journal";
 import Login from "./pages/auth/Login";
 import Init from "./pages/init/Init";
 import "./index.css";
@@ -69,7 +70,7 @@ function AppRoutes() {
       <Route path="/" element={withLayout(<Dashboard />)} />
       <Route path="/chat" element={withLayout(<Chat />)} />
       <Route path="/memory" element={withLayout(<Memory />)} />
-      <Route path="/proactivity" element={withLayout(<Proactivity />)} />
+      <Route path="/presence" element={withLayout(<Presence />)} />
       <Route path="/profile" element={withLayout(<Profile />)} />
       <Route path="/settings" element={withLayout(<Settings />)}>
         <Route index element={<Navigate to="ai" replace />} />
@@ -87,6 +88,7 @@ function AppRoutes() {
       <Route path="/graph" element={withLayout(<KnowledgeGraph />)} />
       <Route path="/login" element={<Login />} />
       <Route path="/init" element={<Init />} />
+      <Route path="/journal" element={withLayout(<Journal />)} />
       <Route path="/mods" element={withLayout(<Mods />)} />
       <Route path="/mods/:id" element={withLayout(<ModDetail />)} />
       <Route path="*" element={<Navigate to="/" replace />} />

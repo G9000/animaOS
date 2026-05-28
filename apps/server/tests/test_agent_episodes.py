@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from anima_server.db.base import Base
@@ -280,3 +282,47 @@ async def test_maybe_generate_episode_skips_already_episoded_turns() -> None:
             runtime_db_factory=rt_factory,
         )
         assert second is None
+
+
+@pytest.mark.asyncio
+async def test_episode_generation_prompt_uses_names_and_agent_perspective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+
+    captured_prompt = ""
+
+    class FakeLLM:
+        async def ainvoke(self, messages: list[object]) -> SimpleNamespace:
+            nonlocal captured_prompt
+            captured_prompt = str(getattr(messages[1], "content", ""))
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "summary": "Leo showed me a photo and I noticed the style.",
+                        "topics": ["appearance", "style"],
+                        "emotional_arc": "curious -> reflective",
+                        "significance": 3,
+                    }
+                )
+            )
+
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm.create_llm",
+        lambda: FakeLLM(),
+    )
+
+    parsed = await episodes_module._call_llm_for_episode(
+        [("I sent a photo.", "I noticed your softer style.")],
+        user_id=1,
+        user_name="Leo",
+        agent_name="Alo",
+    )
+
+    assert parsed["summary"] == "Leo showed me a photo and I noticed the style."
+    assert "Leo: I sent a photo." in captured_prompt
+    assert "Alo: I noticed your softer style." in captured_prompt
+    assert "Use first person for Alo" in captured_prompt
+    assert "Use Leo's name" in captured_prompt
+    assert '"the user"' in captured_prompt
+    assert '"the assistant"' in captured_prompt

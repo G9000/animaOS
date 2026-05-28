@@ -51,7 +51,7 @@ export default function Profile() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto pt-16">
       <div className="max-w-[520px] mx-auto px-8 py-8">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">

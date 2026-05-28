@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings  # noqa: F401 — tests patch this attribute
-from anima_server.models import MemoryEpisode
+from anima_server.models import AgentProfile, MemoryEpisode, User
 from anima_server.models.runtime import RuntimeMessage
 from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef
@@ -18,6 +18,27 @@ logger = logging.getLogger(__name__)
 
 EPISODE_MIN_TURNS = 3
 EPISODE_SEQUENTIAL_MAX_TURNS = 6
+
+
+def _clean_participant_name(value: str | None, *, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    cleaned = " ".join(value.strip().split())
+    return cleaned or fallback
+
+
+def _resolve_episode_participants(db: Session, *, user_id: int) -> tuple[str, str]:
+    user = db.get(User, user_id)
+    user_name = _clean_participant_name(
+        user.display_name if user is not None else None,
+        fallback="the person I'm talking with",
+    )
+    profile = db.scalar(select(AgentProfile).where(AgentProfile.user_id == user_id))
+    agent_name = _clean_participant_name(
+        profile.agent_name if profile is not None else None,
+        fallback="Anima",
+    )
+    return user_name, agent_name
 
 
 async def maybe_generate_episode(
@@ -54,6 +75,7 @@ async def maybe_generate_episode(
             )
             or 0
         )
+        user_name, agent_name = _resolve_episode_participants(db, user_id=user_id)
 
     # Fetch user/assistant messages from the last 24 hours via RuntimeMessage
     with runtime_db_factory() as rt_db:
@@ -91,7 +113,12 @@ async def maybe_generate_episode(
     if _bs.should_batch_segment(len(available_pairs)):
         # Batch path: LLM groups messages into topic-coherent segments.
         try:
-            groups_1based = await _bs.segment_messages_batch(available_pairs, user_id=user_id)
+            groups_1based = await _bs.segment_messages_batch(
+                available_pairs,
+                user_id=user_id,
+                user_name=user_name,
+                agent_name=agent_name,
+            )
             segments_0based = _bs.indices_to_0based(groups_1based)
         except Exception:
             segments_0based = []
@@ -105,13 +132,20 @@ async def maybe_generate_episode(
                     pairs=available_pairs,
                     segments=segments_0based,
                     today=today,
+                    user_name=user_name,
+                    agent_name=agent_name,
                 )
                 db.commit()
                 return episodes[-1] if episodes else None
 
     # Sequential path (below BATCH_THRESHOLD or batch segmentation failed).
     sequential_pairs = available_pairs[:EPISODE_SEQUENTIAL_MAX_TURNS]
-    parsed = await _call_llm_for_episode_safe(sequential_pairs, user_id=user_id)
+    parsed = await _call_llm_for_episode_safe(
+        sequential_pairs,
+        user_id=user_id,
+        user_name=user_name,
+        agent_name=agent_name,
+    )
 
     # ── Phase 3: Write — short-lived session for DB updates ──
     with factory() as db:
@@ -285,7 +319,11 @@ def _build_episode_from_parsed(
 
 
 async def _call_llm_for_episode(
-    pairs: list[tuple[str, str]], *, user_id: int = 0, agent_name: str = "Anima"
+    pairs: list[tuple[str, str]],
+    *,
+    user_id: int = 0,
+    user_name: str = "the user",
+    agent_name: str = "Anima",
 ) -> dict[str, Any]:
     from anima_server.services.agent.llm import create_llm
     from anima_server.services.agent.messages import HumanMessage, SystemMessage
@@ -295,12 +333,12 @@ async def _call_llm_for_episode(
     prompt_loader = PromptLoader(agent_name=agent_name)
 
     turns_text = "\n".join(
-        f"User: {user_msg}\nAssistant: {assistant_msg}"
+        f"{user_name}: {user_msg}\n{agent_name}: {assistant_msg}"
         for user_msg, assistant_msg in pairs
     )
 
     # Use templated prompt
-    prompt = prompt_loader.episode_generation(turns=turns_text)
+    prompt = prompt_loader.episode_generation(turns=turns_text, user_name=user_name)
 
     llm = create_llm()
     response = await llm.ainvoke(
@@ -320,13 +358,20 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 
 async def _call_llm_for_episode_safe(
-    pairs: list[tuple[str, str]], *, user_id: int = 0
+    pairs: list[tuple[str, str]],
+    *,
+    user_id: int = 0,
+    user_name: str = "the user",
+    agent_name: str = "Anima",
 ) -> dict[str, Any] | None:
     """Call LLM for episode generation, returning None on failure."""
     try:
-        # Try to get agent name from first pair's user, but fallback to default
-        agent_name = "Anima"
-        return await _call_llm_for_episode(pairs, user_id=user_id, agent_name=agent_name)
+        return await _call_llm_for_episode(
+            pairs,
+            user_id=user_id,
+            user_name=user_name,
+            agent_name=agent_name,
+        )
     except Exception:
         logger.exception("LLM episode generation failed, using fallback")
         return None

@@ -30,7 +30,7 @@ const SETTINGS_SECTIONS = [
 
 export default function Settings() {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto pt-16">
       <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
         <header className="space-y-2">
           <h1 className="font-mono text-sm tracking-[0.18em] uppercase">CONFIG</h1>

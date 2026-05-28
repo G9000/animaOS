@@ -32,8 +32,8 @@ import type {
   PendingMemoryOpsResponse,
   PersonaTemplate,
   PersonaTemplateInfo,
-  ProactivityConfig,
-  ProactivityConfigUpdate,
+  PresenceConfig,
+  PresenceConfigUpdate,
   ProactiveNotice,
   ProviderInfo,
   SelfModelData,
@@ -621,11 +621,11 @@ export function createApiClient(options: ApiClientOptions) {
           body: data,
         }),
     },
-    proactivity: {
+    presence: {
       get: (userId: number) =>
-        request<ProactivityConfig>(`/proactivity/${userId}`),
-      update: (userId: number, data: ProactivityConfigUpdate) =>
-        request<ProactivityConfig>(`/proactivity/${userId}`, {
+        request<PresenceConfig>(`/presence/${userId}`),
+      update: (userId: number, data: PresenceConfigUpdate) =>
+        request<PresenceConfig>(`/presence/${userId}`, {
           method: "PUT",
           body: data,
         }),

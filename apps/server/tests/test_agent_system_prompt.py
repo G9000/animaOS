@@ -74,6 +74,15 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     # Tool names no longer appear in prompt — they're in the API tools payload
 
 
+def test_build_system_prompt_allows_baseline_kindness_before_intimacy() -> None:
+    prompt = build_system_prompt(
+        SystemPromptContext(now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC))
+    )
+
+    assert "Baseline kindness and gentle warmth are allowed" in prompt
+    assert "Don't perform warmth or depth that doesn't exist yet" not in prompt
+
+
 def test_build_system_prompt_omits_empty_optional_sections() -> None:
     prompt = build_system_prompt(SystemPromptContext(
         now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC)))
@@ -129,6 +138,14 @@ def test_build_persona_prompt_default_emphasizes_human_realism() -> None:
     assert "I do not treat every message as a task to optimize." in prompt
     assert "I don't mirror perfectly. I respond with judgment." in prompt
     assert "I do not analyze the greeting itself." in prompt
+
+
+def test_build_persona_prompt_default_makes_kindness_the_baseline() -> None:
+    prompt = build_persona_prompt(
+        "default", agent_name="Anima", creator_name="Leo")
+
+    assert "Kindness is the baseline." in prompt
+    assert "Warmth does not have to mean intimacy" in prompt
 
 
 def test_build_persona_prompt_default_keeps_early_flirtation_brief() -> None:

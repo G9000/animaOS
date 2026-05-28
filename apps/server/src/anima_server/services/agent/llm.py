@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator, Sequence
 from functools import lru_cache
 from typing import Any, Final, Protocol
@@ -13,7 +14,13 @@ from anima_server.services.agent.openai_compatible_client import (
 )
 
 SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = (
-    "ollama", "openrouter", "moonshot", "vllm", "openai", "anthropic",
+    "ollama",
+    "openrouter",
+    "moonshot",
+    "vllm",
+    "openai",
+    "anthropic",
+    "doubleword",
 )
 DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "ollama": "http://127.0.0.1:11434/v1",
@@ -22,7 +29,18 @@ DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "vllm": "http://127.0.0.1:8000/v1",
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
+    "doubleword": "https://api.doubleword.ai/v1",
 }
+PROVIDER_API_KEY_ENV: Final[dict[str, str]] = {
+    "doubleword": "DOUBLEWORD_API_KEY",
+}
+REQUIRED_API_KEY_PROVIDERS: Final[tuple[str, ...]] = (
+    "openrouter",
+    "moonshot",
+    "openai",
+    "anthropic",
+    "doubleword",
+)
 
 
 class LLMConfigError(RuntimeError):
@@ -123,7 +141,7 @@ def build_provider_headers(provider: str) -> dict[str, str]:
     validate_provider(provider)
     headers: dict[str, str] = {}
 
-    api_key = settings.agent_api_key.strip()
+    api_key = resolve_provider_api_key(provider)
     if provider == "openrouter":
         api_key = require_provider_api_key(provider)
         headers["Authorization"] = f"Bearer {api_key}"
@@ -145,6 +163,11 @@ def build_provider_headers(provider: str) -> dict[str, str]:
         return headers
 
     if provider == "openai":
+        api_key = require_provider_api_key(provider)
+        headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    if provider == "doubleword":
         api_key = require_provider_api_key(provider)
         headers["Authorization"] = f"Bearer {api_key}"
         return headers
@@ -174,10 +197,27 @@ def validate_provider_configuration(provider: str) -> None:
     require_provider_api_key(provider)
 
 
+def resolve_provider_api_key(provider: str) -> str:
+    validate_provider(provider)
+    configured = settings.agent_api_key.strip()
+    if configured:
+        return configured
+    env_name = PROVIDER_API_KEY_ENV.get(provider)
+    if env_name is not None:
+        return os.getenv(env_name, "").strip()
+    return ""
+
+
 def require_provider_api_key(provider: str) -> str:
-    api_key = settings.agent_api_key.strip()
-    if provider in ("openrouter", "moonshot", "openai", "anthropic") and not api_key:
-        raise LLMConfigError(f"ANIMA_AGENT_API_KEY is required when agent_provider='{provider}'")
+    api_key = resolve_provider_api_key(provider)
+    if provider in REQUIRED_API_KEY_PROVIDERS and not api_key:
+        env_name = PROVIDER_API_KEY_ENV.get(provider)
+        key_hint = "ANIMA_AGENT_API_KEY"
+        if env_name is not None:
+            key_hint = f"{key_hint} or {env_name}"
+        raise LLMConfigError(
+            f"{key_hint} is required when agent_provider='{provider}'"
+        )
     return api_key
 
 

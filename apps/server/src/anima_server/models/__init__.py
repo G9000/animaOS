@@ -25,7 +25,7 @@ from anima_server.models.consciousness import (
 )
 from anima_server.models.links import DiscordLink, TelegramLink
 from anima_server.models.pending_memory_op import PendingMemoryOp
-from anima_server.models.proactivity import ProactivityConfig
+from anima_server.models.presence import PresenceConfig
 from anima_server.models.runtime import (
     RuntimeBackgroundTaskRun,
     RuntimeMessage,
@@ -74,7 +74,7 @@ __all__ = [
     "MemoryItemTag",
     "MemoryVector",
     "PendingMemoryOp",
-    "ProactivityConfig",
+    "PresenceConfig",
     "RuntimeBackgroundTaskRun",
     "RuntimeEmbedding",
     "RuntimeMessage",

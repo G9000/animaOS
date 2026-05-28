@@ -109,7 +109,7 @@ export default function KnowledgeGraph() {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full pt-16">
       <GraphHeader
         overview={overview}
         searchQuery={searchQuery}
