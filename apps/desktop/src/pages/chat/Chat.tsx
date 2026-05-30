@@ -18,6 +18,7 @@ import {
   loadTodayContext,
   normalizeTodayContext,
   saveTodayContext,
+  suggestTodayContextFromMessage,
   todayIso,
   type TodayContextDraft,
 } from "../../lib/today-context";
@@ -257,12 +258,20 @@ function ProactiveNoticeCard({
 
 function TodayContextCard({
   context,
+  greeting,
+  suggestion,
   onSave,
   onClear,
+  onAcceptSuggestion,
+  onDismissSuggestion,
 }: {
   context: TodayContext | null;
+  greeting: string | null;
+  suggestion: TodayContext | null;
   onSave: (draft: TodayContextDraft) => void;
   onClear: () => void;
+  onAcceptSuggestion: () => void;
+  onDismissSuggestion: () => void;
 }) {
   const [mood, setMood] = useState(context?.mood ?? "");
   const [energy, setEnergy] = useState(context?.energy ?? "");
@@ -276,6 +285,13 @@ function TodayContextCard({
 
   const hasDraft = Boolean(mood.trim() || energy.trim() || note.trim());
   const hasContext = context !== null;
+  const suggestionItems = suggestion
+    ? [
+        suggestion.mood ? `Mood: ${suggestion.mood}` : null,
+        suggestion.energy ? `Energy: ${suggestion.energy}` : null,
+        suggestion.note ? `Note: ${suggestion.note}` : null,
+      ].filter((item): item is string => Boolean(item))
+    : [];
 
   return (
     <div className="mb-2 border border-border bg-card px-3 py-2.5">
@@ -303,6 +319,46 @@ function TodayContextCard({
           </button>
         </div>
       </div>
+      {!hasContext && greeting && (
+        <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+          {greeting}
+        </p>
+      )}
+      {!hasContext && suggestion && suggestionItems.length > 0 && (
+        <div className="mb-2 border-t border-border/60 pt-2">
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/45">
+              Suggested
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onDismissSuggestion}
+                className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
+              >
+                DISMISS
+              </button>
+              <button
+                type="button"
+                onClick={onAcceptSuggestion}
+                className="border border-border px-2 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground"
+              >
+                ACCEPT
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {suggestionItems.map((item) => (
+              <span
+                key={item}
+                className="max-w-full break-words border border-border/70 px-1.5 py-0.5 text-[11px] leading-snug text-muted-foreground"
+              >
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
         <input
           value={mood}
@@ -399,6 +455,10 @@ export default function Chat() {
   const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
     loadTodayContext(),
   );
+  const [todayGreeting, setTodayGreeting] = useState<string | null>(null);
+  const [todaySuggestion, setTodaySuggestion] = useState<TodayContext | null>(
+    null,
+  );
   const [error, setError] = useState("");
   const [translateLang] = useState(getTranslateLang());
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -429,11 +489,26 @@ export default function Chat() {
     const next = normalizeTodayContext(draft);
     setTodayContext(next);
     saveTodayContext(next);
+    setTodaySuggestion(null);
   }, []);
 
   const handleTodayContextClear = useCallback(() => {
     setTodayContext(null);
     saveTodayContext(null);
+  }, []);
+
+  const handleTodaySuggestionAccept = useCallback(() => {
+    const next =
+      todaySuggestion?.date === todayIso()
+        ? normalizeTodayContext(todaySuggestion, todaySuggestion.date)
+        : null;
+    setTodayContext(next);
+    saveTodayContext(next);
+    setTodaySuggestion(null);
+  }, [todaySuggestion]);
+
+  const handleTodaySuggestionDismiss = useCallback(() => {
+    setTodaySuggestion(null);
   }, []);
 
   // Scroll state
@@ -473,6 +548,28 @@ export default function Chat() {
     },
     [user?.id],
   );
+
+  useEffect(() => {
+    setTodayGreeting(null);
+    setTodaySuggestion(null);
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user?.id == null || todayContext !== null || todayGreeting !== null) {
+      return;
+    }
+    let active = true;
+    api.chat
+      .greeting(user.id)
+      .then((greeting) => {
+        const message = greeting.message.trim();
+        if (active && message) setTodayGreeting(message);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [todayContext, todayGreeting, user?.id]);
 
   // ===== CONSOLIDATED: Initial data loading =====
   useEffect(() => {
@@ -709,6 +806,9 @@ export default function Chat() {
       setTodayContext(null);
       saveTodayContext(null);
     }
+    const suggestedTodayContext = activeTodayContext
+      ? null
+      : suggestTodayContextFromMessage(userMsg);
     const imagesForTurn = selectedImages;
     let requestAttachments: ChatRequestAttachment[] = [];
     try {
@@ -722,6 +822,7 @@ export default function Chat() {
 
     setInput("");
     setError("");
+    setTodaySuggestion(suggestedTodayContext);
     if (turnContextMessages.length > 0) {
       setProactiveNotice(null);
     }
@@ -913,8 +1014,12 @@ export default function Chat() {
           <>
             <TodayContextCard
               context={todayContext}
+              greeting={todayContext ? null : todayGreeting}
+              suggestion={todayContext ? null : todaySuggestion}
               onSave={handleTodayContextSave}
               onClear={handleTodayContextClear}
+              onAcceptSuggestion={handleTodaySuggestionAccept}
+              onDismissSuggestion={handleTodaySuggestionDismiss}
             />
             {proactiveNotice && (
               <ProactiveNoticeCard

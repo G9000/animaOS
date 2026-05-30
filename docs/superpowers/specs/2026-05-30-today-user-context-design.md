@@ -36,6 +36,19 @@ The control should show the currently active values and allow clearing them. Whe
 
 The UI should avoid explaining that this becomes memory. Copy should frame it as temporary context for today.
 
+### Empty-State Check-In and Suggested Context
+
+When no today context is active, the chat surface may show a short companion check-in using the existing greeting endpoint. This is display-only and should not be included as a `contextMessage`, because `contextMessages` are persisted into runtime history.
+
+If the user sends a message that clearly states current mood, energy, or desired pacing, the desktop may derive a suggested today-context draft from that message. The suggestion must be shown to the user with explicit accept and dismiss controls. It must not be saved to `sessionStorage` or sent as `todayContext` until the user accepts it.
+
+Example:
+
+- User message: "I'm exhausted today, keep replies direct."
+- Suggested draft: mood "exhausted", energy "low", note "keep replies direct".
+
+This keeps the companion responsive to what the user naturally says while avoiding silent labeling or hidden memory.
+
 ## API Contract
 
 Extend chat requests with an optional request-only field:
@@ -88,6 +101,8 @@ Add a small today-context state helper in the desktop app:
 - Drop the values when the stored date no longer matches today's local date.
 - Let the user update or clear the values.
 - Send the active context to `api.chat.send` and `api.chat.stream`.
+- When no context exists, load the existing companion greeting for the chat panel and show it as a lightweight check-in.
+- After a user message is sent with no active context, derive a possible today-context suggestion from explicit wording only and show it for confirmation.
 
 This is session storage only. It is not sent to any memory endpoint and is not represented as `contextMessages`, because `contextMessages` are persisted into runtime history.
 

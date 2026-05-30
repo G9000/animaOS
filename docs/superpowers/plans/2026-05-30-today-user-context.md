@@ -441,3 +441,78 @@ If verification produced cleanup changes:
 git add <changed files>
 git commit -m "test: verify today context flow"
 ```
+
+## Task 5: Desktop Check-In and Suggested Context Add-On
+
+**Files:**
+- Modify: `apps/desktop/src/lib/today-context.ts`
+- Modify: `apps/desktop/tests/today-context.test.ts`
+- Modify: `apps/desktop/src/pages/chat/Chat.tsx`
+
+- [x] **Step 1: Write failing helper tests for message suggestions**
+
+Add tests proving that explicit wording can produce a suggested draft and unrelated messages return `null`:
+
+```typescript
+expect(
+  suggestTodayContextFromMessage("I'm exhausted today, keep replies direct.", "2026-05-30"),
+).toEqual({
+  date: "2026-05-30",
+  mood: "exhausted",
+  energy: "low",
+  note: "keep replies direct",
+});
+
+expect(suggestTodayContextFromMessage("what should we build next?", "2026-05-30")).toBeNull();
+```
+
+- [x] **Step 2: Run helper tests and verify RED**
+
+Run: `bun test apps/desktop/tests/today-context.test.ts`
+
+Expected: FAIL because `suggestTodayContextFromMessage` does not exist yet.
+
+- [x] **Step 3: Implement explicit-message suggestion extraction**
+
+Add `suggestTodayContextFromMessage(message, date = todayIso())` in `apps/desktop/src/lib/today-context.ts`. Keep it deterministic, conservative, and client-only:
+
+- low energy terms: exhausted, drained, tired, low energy, sleepy
+- high energy terms: energized, excited, wired, focused
+- medium energy terms: okay, steady, balanced
+- mood terms: anxious, stressed, overwhelmed, frustrated, sad, calm, good, excited, tired, exhausted
+- pacing notes from explicit phrases like "keep replies direct", "keep it simple", "short replies", and "be gentle"
+
+Return a normalized today context only when at least one signal is found.
+
+- [x] **Step 4: Wire chat panel check-in and confirmation UI**
+
+In `Chat.tsx`, add state for:
+
+- `todayGreeting: string | null`
+- `todaySuggestion: TodayContext | null`
+
+When a user is present and no today context is active, call `api.chat.greeting(user.id)` and show the message in `TodayContextCard`. If greeting fails, silently omit it.
+
+After `sendMessage` starts a turn with no active today context, call `suggestTodayContextFromMessage(userMsg)`. Store the result as `todaySuggestion`. Render accept and dismiss controls in `TodayContextCard`; accepting saves the suggestion through the same `handleTodayContextSave` path, dismissing clears the suggestion.
+
+Do not include the suggestion in the same chat request. Only an accepted context is sent on later turns.
+
+- [x] **Step 5: Run focused verification**
+
+Run:
+
+```bash
+bun test apps/desktop/tests/today-context.test.ts
+bun run build:desktop
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit add-on slice**
+
+Run:
+
+```bash
+git add docs/superpowers/specs/2026-05-30-today-user-context-design.md docs/superpowers/plans/2026-05-30-today-user-context.md apps/desktop/src/lib/today-context.ts apps/desktop/tests/today-context.test.ts apps/desktop/src/pages/chat/Chat.tsx
+git commit -m "desktop: suggest today context from check-in"
+```

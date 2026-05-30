@@ -4,6 +4,7 @@ import {
   loadTodayContext,
   normalizeTodayContext,
   saveTodayContext,
+  suggestTodayContextFromMessage,
   todayIso,
   type TodayContextStorage,
 } from "../src/lib/today-context";
@@ -71,5 +72,28 @@ describe("today context helpers", () => {
 
   test("formats dates using local calendar fields", () => {
     expect(todayIso(new Date(2026, 4, 30, 23, 30))).toBe("2026-05-30");
+  });
+
+  test("suggests today context from explicit current-state wording", () => {
+    expect(
+      suggestTodayContextFromMessage(
+        "I'm exhausted today, keep replies direct.",
+        "2026-05-30",
+      ),
+    ).toEqual({
+      date: "2026-05-30",
+      mood: "exhausted",
+      energy: "low",
+      note: "keep replies direct",
+    });
+  });
+
+  test("does not suggest today context from ordinary chat", () => {
+    expect(
+      suggestTodayContextFromMessage(
+        "what should we build next?",
+        "2026-05-30",
+      ),
+    ).toBeNull();
   });
 });

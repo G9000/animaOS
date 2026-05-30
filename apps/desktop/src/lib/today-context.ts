@@ -5,6 +5,50 @@ const MOOD_MAX = 80;
 const ENERGY_MAX = 40;
 const NOTE_MAX = 280;
 
+const MOOD_TERMS = [
+  "exhausted",
+  "overwhelmed",
+  "frustrated",
+  "anxious",
+  "stressed",
+  "drained",
+  "tired",
+  "sleepy",
+  "sad",
+  "calm",
+  "excited",
+  "focused",
+  "good",
+  "okay",
+] as const;
+
+const LOW_ENERGY_TERMS = [
+  "exhausted",
+  "drained",
+  "low energy",
+  "tired",
+  "sleepy",
+  "wiped out",
+  "burned out",
+  "burnt out",
+] as const;
+
+const MEDIUM_ENERGY_TERMS = ["steady", "balanced", "okay"] as const;
+const HIGH_ENERGY_TERMS = ["energized", "excited", "wired", "focused"] as const;
+
+const NOTE_PATTERNS: Array<{ pattern: RegExp; note: string }> = [
+  {
+    pattern: /\bkeep (?:your )?repl(?:y|ies) direct\b/,
+    note: "keep replies direct",
+  },
+  { pattern: /\bkeep it simple\b/, note: "keep it simple" },
+  { pattern: /\bshort repl(?:y|ies)\b/, note: "short replies" },
+  { pattern: /\bkeep (?:it|this) brief\b/, note: "keep it brief" },
+  { pattern: /\bbe gentle\b/, note: "be gentle" },
+  { pattern: /\btake it slow\b/, note: "take it slow" },
+  { pattern: /\bgo easy\b/, note: "go easy" },
+];
+
 export type TodayContextDraft = Omit<TodayContext, "date">;
 
 export interface TodayContextStorage {
@@ -22,6 +66,56 @@ export function todayIso(date = new Date()): string {
 
 function cleanText(value: string | null | undefined, maxLength: number): string {
   return (value ?? "").trim().slice(0, maxLength);
+}
+
+function normalizeMessageText(message: string): string {
+  return message
+    .toLowerCase()
+    .replace(/\u2019/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasSelfStateSignal(text: string): boolean {
+  return /\b(?:i'm|im|i am|i feel|feeling|felt|i've been|ive been|today|right now|currently|this morning|this afternoon|this evening)\b/.test(
+    text,
+  );
+}
+
+function hasTerm(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`).test(text);
+}
+
+function findSelfStateTerm(
+  normalizedMessage: string,
+  terms: readonly string[],
+): string | null {
+  const sentences = normalizedMessage
+    .split(/[.!?\n]+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  for (const sentence of sentences) {
+    if (!hasSelfStateSignal(sentence)) continue;
+    const match = terms.find((term) => hasTerm(sentence, term));
+    if (match) return match;
+  }
+  return null;
+}
+
+function suggestEnergy(normalizedMessage: string): string | null {
+  if (findSelfStateTerm(normalizedMessage, LOW_ENERGY_TERMS)) return "low";
+  if (findSelfStateTerm(normalizedMessage, HIGH_ENERGY_TERMS)) return "high";
+  if (findSelfStateTerm(normalizedMessage, MEDIUM_ENERGY_TERMS)) return "medium";
+  return null;
+}
+
+function suggestNote(normalizedMessage: string): string | null {
+  return (
+    NOTE_PATTERNS.find(({ pattern }) => pattern.test(normalizedMessage))?.note ??
+    null
+  );
 }
 
 function getTodayContextStorage(): TodayContextStorage | null {
@@ -46,6 +140,23 @@ export function normalizeTodayContext(
     ...(energy ? { energy } : {}),
     ...(note ? { note } : {}),
   };
+}
+
+export function suggestTodayContextFromMessage(
+  message: string,
+  date = todayIso(),
+): TodayContext | null {
+  const normalizedMessage = normalizeMessageText(message);
+  if (!normalizedMessage) return null;
+
+  return normalizeTodayContext(
+    {
+      mood: findSelfStateTerm(normalizedMessage, MOOD_TERMS) ?? undefined,
+      energy: suggestEnergy(normalizedMessage) ?? undefined,
+      note: suggestNote(normalizedMessage) ?? undefined,
+    },
+    date,
+  );
 }
 
 export function loadTodayContext(
