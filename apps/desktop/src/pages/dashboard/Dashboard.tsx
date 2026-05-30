@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type {
@@ -8,11 +8,20 @@ import type {
   TaskItem,
   MemoryEpisodeData,
   EmotionalContextData,
+  TodayContext,
 } from "@anima/api-client";
 import { api } from "../../lib/api";
 import { PromptInput, DotLoader, cn } from "@anima/standard-templates";
 import { DashboardDiary } from "./DashboardDiary";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
+import { TodayContextPanel } from "../../components/TodayContextPanel";
+import {
+  loadTodayContext,
+  normalizeTodayContext,
+  saveTodayContext,
+  todayIso,
+  type TodayContextDraft,
+} from "../../lib/today-context";
 import banner1 from "../../assets/banner_1.jpg";
 import banner2 from "../../assets/banner_2.jpg";
 
@@ -86,6 +95,27 @@ export default function Dashboard() {
   const [mood, setMood] = useState<EmotionalContextData | null>(null);
   const [presenceConfig, setPresenceConfig] = useState<PresenceConfig | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<MemoryEpisodeData | null>(null);
+  const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
+    loadTodayContext(),
+  );
+
+  const handleTodayContextSave = useCallback((draft: TodayContextDraft) => {
+    const next = normalizeTodayContext(draft);
+    setTodayContext(next);
+    saveTodayContext(next);
+  }, []);
+
+  const handleTodayContextClear = useCallback(() => {
+    setTodayContext(null);
+    saveTodayContext(null);
+  }, []);
+
+  useEffect(() => {
+    if (todayContext && todayContext.date !== todayIso()) {
+      setTodayContext(null);
+      saveTodayContext(null);
+    }
+  }, [todayContext]);
 
   useEffect(() => {
     if (user?.id == null) return;
@@ -232,6 +262,15 @@ export default function Dashboard() {
                 "{brief.message}"
               </p>
             ) : null}
+          </div>
+
+          <div className="mt-3">
+            <TodayContextPanel
+              context={todayContext}
+              greeting={todayContext ? null : "How are you arriving today?"}
+              onSave={handleTodayContextSave}
+              onClear={handleTodayContextClear}
+            />
           </div>
 
           <div className="mt-3">
