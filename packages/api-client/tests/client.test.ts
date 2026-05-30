@@ -62,6 +62,43 @@ describe("createApiClient error handling", () => {
     });
   });
 
+  test("serializes optional today context", async () => {
+    let requestBody: unknown = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            response: "ok",
+            model: "test",
+            provider: "test",
+            toolsUsed: [],
+          }),
+        );
+      },
+    });
+
+    await api.chat.send("Help me focus.", 7, undefined, [], [], {
+      date: "2026-05-30",
+      mood: "tired",
+      energy: "low",
+      note: "short replies",
+    });
+
+    expect(requestBody).toEqual({
+      message: "Help me focus.",
+      userId: 7,
+      stream: false,
+      todayContext: {
+        date: "2026-05-30",
+        mood: "tired",
+        energy: "low",
+        note: "short replies",
+      },
+    });
+  });
+
   test("requests proactive notices with optional custom instruction", async () => {
     let requestedUrl = "";
     const api = createApiClient({

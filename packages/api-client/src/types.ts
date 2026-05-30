@@ -124,6 +124,13 @@ export interface ChatContextMessage {
   source?: string | null;
 }
 
+export interface TodayContext {
+  date: string;
+  mood?: string | null;
+  energy?: string | null;
+  note?: string | null;
+}
+
 export interface ChatAttachment {
   id: string;
   kind: "image";

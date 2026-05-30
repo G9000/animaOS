@@ -41,6 +41,7 @@ import type {
   TaskItem,
   ThreadListResponse,
   ThreadMessagesResponse,
+  TodayContext,
   TraceEvent,
   TraceMessagePreview,
   User,
@@ -250,6 +251,7 @@ export function createApiClient(options: ApiClientOptions) {
     threadId?: number,
     attachments: ChatRequestAttachment[] = [],
     contextMessages: ChatContextMessage[] = [],
+    todayContext?: TodayContext | null,
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
     const streamNonce = getNonce?.() || null;
@@ -268,6 +270,7 @@ export function createApiClient(options: ApiClientOptions) {
         ...(threadId !== undefined ? { threadId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(contextMessages.length > 0 ? { contextMessages } : {}),
+        ...(todayContext ? { todayContext } : {}),
       }),
     });
 
@@ -535,6 +538,7 @@ export function createApiClient(options: ApiClientOptions) {
         threadId?: number,
         attachments: ChatRequestAttachment[] = [],
         contextMessages: ChatContextMessage[] = [],
+        todayContext?: TodayContext | null,
       ) =>
         request<AgentResponse>("/chat", {
           method: "POST",
@@ -545,6 +549,7 @@ export function createApiClient(options: ApiClientOptions) {
             ...(threadId !== undefined ? { threadId } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(contextMessages.length > 0 ? { contextMessages } : {}),
+            ...(todayContext ? { todayContext } : {}),
           },
         }),
       stream: (
@@ -553,7 +558,16 @@ export function createApiClient(options: ApiClientOptions) {
         threadId?: number,
         attachments: ChatRequestAttachment[] = [],
         contextMessages: ChatContextMessage[] = [],
-      ) => streamChat(message, userId, threadId, attachments, contextMessages),
+        todayContext?: TodayContext | null,
+      ) =>
+        streamChat(
+          message,
+          userId,
+          threadId,
+          attachments,
+          contextMessages,
+          todayContext,
+        ),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
       clearHistory: (userId: number) =>
