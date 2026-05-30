@@ -4,6 +4,7 @@ import asyncio
 import base64
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -339,6 +340,63 @@ async def test_run_agent_includes_home_greeting_context_in_current_turn(
     ]
     assert [message.sequence_id for message in messages] == [1, 2, 3]
     assert thread.next_message_sequence == 4
+
+
+@pytest.mark.asyncio
+async def test_run_agent_includes_today_context_without_persisting_or_caching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="today-context",
+                password_hash="not-used",
+                display_name="Today Context",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            today = date.today().isoformat()
+            await run_agent(
+                "Can you help me plan this?",
+                user.id,
+                soul_session,
+                runtime_session,
+                today_context=agent_service.TodayContext(
+                    date=today,
+                    mood="tired",
+                    energy="low",
+                    note="keep replies direct",
+                ),
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+            companion = agent_service.get_companion(user.id)
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    blocks = runner.requests[0]["memory_blocks"]
+    today_blocks = [block for block in blocks if block[0] == "today_user_context"]
+    assert len(today_blocks) == 1
+    assert "Mood: tired" in today_blocks[0][1]
+    assert "Energy: low" in today_blocks[0][1]
+    assert "Note: keep replies direct" in today_blocks[0][1]
+    assert [(message.role, message.content_text) for message in messages] == [
+        ("user", "Can you help me plan this?"),
+        ("assistant", "Reply to: Can you help me plan this?"),
+    ]
+    assert companion is not None
+    cached = companion.get_cached_memory_blocks() or ()
+    assert all(block.label != "today_user_context" for block in cached)
 
 
 @pytest.mark.asyncio

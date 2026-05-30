@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
-from anima_server.schemas.chat import ChatContextMessage, ChatRequestAttachment
+from anima_server.schemas.chat import ChatContextMessage, ChatRequestAttachment, TodayContext
 from anima_server.services.agent.attachments import (
     prepare_chat_attachments,
     validate_chat_attachment_inputs,
@@ -185,6 +185,7 @@ async def run_agent(
     thread_id: int | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
     context_messages: Sequence[ChatContextMessage] = (),
+    today_context: TodayContext | None = None,
 ) -> AgentResult:
     return await _execute_agent_turn(
         user_message,
@@ -195,6 +196,7 @@ async def run_agent(
         thread_id=thread_id,
         attachments=attachments,
         context_messages=context_messages,
+        today_context=today_context,
     )
 
 
@@ -518,6 +520,7 @@ async def _execute_agent_turn(
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
     context_messages: Sequence[ChatContextMessage] = (),
+    today_context: TodayContext | None = None,
 ) -> AgentResult:
     client_action_runtime = None
     if tool_delegate is None:
@@ -544,6 +547,7 @@ async def _execute_agent_turn(
                     extra_tool_schemas=extra_tool_schemas,
                     attachments=attachments,
                     context_messages=context_messages,
+                    today_context=today_context,
                 )
         else:
             # Hold the creation lock through thread lock acquisition so that
@@ -565,6 +569,7 @@ async def _execute_agent_turn(
                         extra_tool_schemas=extra_tool_schemas,
                         attachments=attachments,
                         context_messages=context_messages,
+                        today_context=today_context,
                     )
     finally:
         if client_action_runtime is not None:
@@ -592,6 +597,7 @@ async def _execute_agent_turn_locked(
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
     context_messages: Sequence[ChatContextMessage] = (),
+    today_context: TodayContext | None = None,
 ) -> AgentResult:
     # Stage 1: Prepare turn context
     thread, run, user_msg, initial_sequence_id, turn_ctx = await _prepare_turn_context(
@@ -604,6 +610,7 @@ async def _execute_agent_turn_locked(
         source=source,
         attachments=attachments,
         context_messages=context_messages,
+        today_context=today_context,
     )
 
     # Stage 1b: Proactive context management — compact before the LLM call
@@ -748,6 +755,7 @@ async def _prepare_turn_context(
     source: str | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
     context_messages: Sequence[ChatContextMessage] = (),
+    today_context: TodayContext | None = None,
 ) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
@@ -988,6 +996,10 @@ async def _prepare_turn_context(
     else:
         memory_blocks = static_blocks
 
+    today_context_block = _build_today_context_block(today_context)
+    if today_context_block is not None:
+        memory_blocks = (*memory_blocks, today_context_block)
+
     # Feedback signals (best-effort)
     try:
         from anima_server.services.agent.feedback_signals import (
@@ -1035,6 +1047,33 @@ async def _prepare_turn_context(
         retrieval=retrieval_trace,
     )
     return thread, run, user_msg, initial_sequence_id, turn_ctx
+
+
+def _build_today_context_block(today_context: TodayContext | None) -> MemoryBlock | None:
+    if today_context is None:
+        return None
+
+    lines = ["Current user state for today:"]
+    mood = (today_context.mood or "").strip()
+    energy = (today_context.energy or "").strip()
+    note = (today_context.note or "").strip()
+    if mood:
+        lines.append(f"- Mood: {mood}")
+    if energy:
+        lines.append(f"- Energy: {energy}")
+    if note:
+        lines.append(f"- Note: {note}")
+
+    return MemoryBlock(
+        label="today_user_context",
+        value="\n".join(lines),
+        description=(
+            "User-authored temporary context for today. Use it to adapt tone, "
+            "pacing, and suggestions. Do not store it as memory, do not diagnose it, "
+            "and do not repeat it unless useful or asked."
+        ),
+        read_only=True,
+    )
 
 
 _MEMORY_PRESSURE_WARNING = (
@@ -1646,6 +1685,7 @@ async def stream_agent(
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
     context_messages: Sequence[ChatContextMessage] = (),
+    today_context: TodayContext | None = None,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
     queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
         maxsize=settings.agent_stream_queue_max_size,
@@ -1669,6 +1709,7 @@ async def stream_agent(
                 extra_tool_schemas=extra_tool_schemas,
                 attachments=attachments,
                 context_messages=context_messages,
+                today_context=today_context,
             )
         except Exception as exc:
             await queue.put(build_error_event(str(exc)))

@@ -110,6 +110,26 @@ def test_chat_returns_scaffold_response_and_tracks_turns() -> None:
     assert second.json()["toolsUsed"] == ["send_message"]
 
 
+def test_chat_rejects_stale_today_context_date() -> None:
+    with _scaffold_agent_settings(), _client() as client:
+        user = _register_user(client, username="stale-context")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "hello",
+                "userId": int(user["id"]),
+                "todayContext": {
+                    "date": "1900-01-01",
+                    "mood": "tired",
+                },
+            },
+        )
+
+    assert response.status_code == 422
+
+
 def test_chat_reset_clears_scaffold_thread_state() -> None:
     with _scaffold_agent_settings(), _client() as client:
         user = _register_user(client, username="reset-me")

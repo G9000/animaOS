@@ -79,6 +79,7 @@ async def send_message(
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
                 context_messages=payload.contextMessages,
+                today_context=payload.todayContext,
             )
         except AttachmentTooLargeError as exc:
             raise HTTPException(
@@ -128,6 +129,7 @@ async def send_message(
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
                 context_messages=payload.contextMessages,
+                today_context=payload.todayContext,
             ):
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client

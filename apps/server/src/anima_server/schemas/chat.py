@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -19,6 +19,21 @@ class ChatContextMessage(BaseModel):
     source: str | None = Field(default=None, max_length=64)
 
 
+class TodayContext(BaseModel):
+    date: str = Field(min_length=10, max_length=10)
+    mood: str | None = Field(default=None, max_length=80)
+    energy: str | None = Field(default=None, max_length=40)
+    note: str | None = Field(default=None, max_length=280)
+
+    @model_validator(mode="after")
+    def validate_today_context(self) -> TodayContext:
+        if self.date != date.today().isoformat():
+            raise ValueError("Today context date must match the current date.")
+        if not any((value or "").strip() for value in (self.mood, self.energy, self.note)):
+            raise ValueError("Today context requires mood, energy, or note.")
+        return self
+
+
 class ChatRequest(BaseModel):
     message: str = ""
     userId: int = Field(ge=0)
@@ -27,6 +42,7 @@ class ChatRequest(BaseModel):
     source: str | None = None
     attachments: list[ChatRequestAttachment] = Field(default_factory=list)
     contextMessages: list[ChatContextMessage] = Field(default_factory=list)
+    todayContext: TodayContext | None = None
 
     @model_validator(mode="after")
     def require_text_or_attachment(self) -> ChatRequest:
