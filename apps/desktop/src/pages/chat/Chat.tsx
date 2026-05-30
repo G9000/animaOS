@@ -7,12 +7,20 @@ import type {
   ChatMessage,
   ChatRequestAttachment,
   ProactiveNotice,
+  TodayContext,
   Thread,
   TraceEvent,
 } from "@anima/api-client";
 import { api } from "../../lib/api";
 import { API_BASE, API_ORIGIN } from "../../lib/runtime";
 import { getUnlockToken } from "../../lib/api";
+import {
+  loadTodayContext,
+  normalizeTodayContext,
+  saveTodayContext,
+  todayIso,
+  type TodayContextDraft,
+} from "../../lib/today-context";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
@@ -247,6 +255,81 @@ function ProactiveNoticeCard({
   );
 }
 
+function TodayContextCard({
+  context,
+  onSave,
+  onClear,
+}: {
+  context: TodayContext | null;
+  onSave: (draft: TodayContextDraft) => void;
+  onClear: () => void;
+}) {
+  const [mood, setMood] = useState(context?.mood ?? "");
+  const [energy, setEnergy] = useState(context?.energy ?? "");
+  const [note, setNote] = useState(context?.note ?? "");
+
+  useEffect(() => {
+    setMood(context?.mood ?? "");
+    setEnergy(context?.energy ?? "");
+    setNote(context?.note ?? "");
+  }, [context]);
+
+  const hasDraft = Boolean(mood.trim() || energy.trim() || note.trim());
+  const hasContext = context !== null;
+
+  return (
+    <div className="mb-2 border border-border bg-card px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/55">
+          Today
+        </span>
+        <div className="flex items-center gap-2">
+          {hasContext && (
+            <button
+              type="button"
+              onClick={onClear}
+              className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
+            >
+              CLEAR
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onSave({ mood, energy, note })}
+            disabled={!hasDraft}
+            className="border border-border px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
+          >
+            UPDATE
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
+        <input
+          value={mood}
+          onChange={(event) => setMood(event.currentTarget.value)}
+          placeholder="mood"
+          maxLength={80}
+          className="min-w-0 bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+        />
+        <input
+          value={energy}
+          onChange={(event) => setEnergy(event.currentTarget.value)}
+          placeholder="energy"
+          maxLength={40}
+          className="min-w-0 bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+        />
+      </div>
+      <input
+        value={note}
+        onChange={(event) => setNote(event.currentTarget.value)}
+        placeholder="note"
+        maxLength={280}
+        className="mt-2 w-full bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+      />
+    </div>
+  );
+}
+
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
   return [...threads].sort((left, right) => {
@@ -313,6 +396,9 @@ export default function Chat() {
   const [selectedImages, setSelectedImages] = useState<PendingImageAttachment[]>(
     [],
   );
+  const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
+    loadTodayContext(),
+  );
   const [error, setError] = useState("");
   const [translateLang] = useState(getTranslateLang());
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -338,6 +424,17 @@ export default function Chat() {
 
   // Avatar
   const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
+
+  const handleTodayContextSave = useCallback((draft: TodayContextDraft) => {
+    const next = normalizeTodayContext(draft);
+    setTodayContext(next);
+    saveTodayContext(next);
+  }, []);
+
+  const handleTodayContextClear = useCallback(() => {
+    setTodayContext(null);
+    saveTodayContext(null);
+  }, []);
 
   // Scroll state
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -606,6 +703,12 @@ export default function Chat() {
     const turnContextMessages = implicitContextMessages.filter((message) =>
       message.content.trim(),
     );
+    const activeTodayContext =
+      todayContext?.date === todayIso() ? todayContext : null;
+    if (todayContext && !activeTodayContext) {
+      setTodayContext(null);
+      saveTodayContext(null);
+    }
     const imagesForTurn = selectedImages;
     let requestAttachments: ChatRequestAttachment[] = [];
     try {
@@ -661,6 +764,7 @@ export default function Chat() {
         currentThreadId ?? undefined,
         requestAttachments,
         turnContextMessages,
+        activeTodayContext,
       )) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
@@ -807,6 +911,11 @@ export default function Chat() {
         onAttach={handleAttach}
         inputAccessory={
           <>
+            <TodayContextCard
+              context={todayContext}
+              onSave={handleTodayContextSave}
+              onClear={handleTodayContextClear}
+            />
             {proactiveNotice && (
               <ProactiveNoticeCard
                 notice={proactiveNotice}
