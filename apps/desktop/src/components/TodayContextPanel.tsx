@@ -2,6 +2,19 @@ import { useEffect, useState } from "react";
 import type { TodayContext } from "@anima/api-client";
 import type { TodayContextDraft } from "../lib/today-context";
 
+const MOOD_OPTIONS = [
+  { value: "steady", emoji: "🙂", label: "steady" },
+  { value: "tired", emoji: "😵", label: "tired" },
+  { value: "anxious", emoji: "😟", label: "anxious" },
+  { value: "overwhelmed", emoji: "🌊", label: "overwhelmed" },
+  { value: "frustrated", emoji: "😤", label: "frustrated" },
+  { value: "low", emoji: "😔", label: "low" },
+  { value: "energized", emoji: "🔥", label: "energized" },
+  { value: "good", emoji: "✨", label: "good" },
+] as const;
+
+const ENERGY_OPTIONS = ["low", "steady", "high"] as const;
+
 export function TodayContextPanel({
   context,
   greeting,
@@ -31,6 +44,7 @@ export function TodayContextPanel({
 
   const hasDraft = Boolean(mood.trim() || energy.trim() || note.trim());
   const hasContext = context !== null;
+  const commitDraft = (draft: TodayContextDraft) => onSave(draft);
   const suggestionItems = suggestion
     ? [
         suggestion.mood ? `Mood: ${suggestion.mood}` : null,
@@ -57,7 +71,7 @@ export function TodayContextPanel({
           )}
           <button
             type="button"
-            onClick={() => onSave({ mood, energy, note })}
+            onClick={() => commitDraft({ mood, energy, note })}
             disabled={!hasDraft}
             className="border border-border px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
           >
@@ -105,6 +119,57 @@ export function TodayContextPanel({
           </div>
         </div>
       )}
+      <div className="mb-2 grid grid-cols-4 gap-1.5 sm:grid-cols-8">
+        {MOOD_OPTIONS.map((option) => {
+          const selected = mood.trim().toLowerCase() === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              aria-label={`Set mood ${option.value}`}
+              onClick={() => {
+                setMood(option.value);
+                commitDraft({ mood: option.value, energy, note });
+              }}
+              className={[
+                "min-w-0 border px-1.5 py-1.5 text-[11px] leading-tight transition-colors",
+                selected
+                  ? "border-foreground/40 bg-foreground/10 text-foreground"
+                  : "border-border bg-background text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              <span aria-hidden="true" className="mr-1">
+                {option.emoji}
+              </span>
+              <span className="align-middle">{option.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mb-2 grid grid-cols-3 gap-1.5">
+        {ENERGY_OPTIONS.map((value) => {
+          const selected = energy.trim().toLowerCase() === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              aria-label={`Set energy ${value}`}
+              onClick={() => {
+                setEnergy(value);
+                commitDraft({ mood, energy: value, note });
+              }}
+              className={[
+                "border px-2 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em] transition-colors",
+                selected
+                  ? "border-foreground/40 bg-foreground/10 text-foreground"
+                  : "border-border bg-background text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              {value}
+            </button>
+          );
+        })}
+      </div>
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
         <input
           value={mood}

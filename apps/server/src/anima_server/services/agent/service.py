@@ -1069,8 +1069,10 @@ def _build_today_context_block(today_context: TodayContext | None) -> MemoryBloc
         value="\n".join(lines),
         description=(
             "User-authored temporary context for today. Use it to adapt tone, "
-            "pacing, and suggestions. Do not store it as memory, do not diagnose it, "
-            "and do not repeat it unless useful or asked."
+            "pacing, and suggestions. When the mood or energy is relevant, you may "
+            "gently ask one short check-in or offer a lower-friction path, but not "
+            "every turn. Do not store it as memory, do not diagnose it, and do not "
+            "repeat it unless useful or asked."
         ),
         read_only=True,
     )

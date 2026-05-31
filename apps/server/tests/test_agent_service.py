@@ -399,6 +399,26 @@ async def test_run_agent_includes_today_context_without_persisting_or_caching(
     assert all(block.label != "today_user_context" for block in cached)
 
 
+def test_today_context_block_guides_adaptive_checkins() -> None:
+    block = agent_service._build_today_context_block(
+        agent_service.TodayContext(
+            date=date.today().isoformat(),
+            mood="overwhelmed",
+            energy="low",
+            note="keep it small",
+        )
+    )
+
+    assert block is not None
+    assert block.read_only is True
+    assert "Mood: overwhelmed" in block.value
+    assert "Energy: low" in block.value
+    assert "Note: keep it small" in block.value
+    assert "gently ask" in block.description
+    assert "not every turn" in block.description
+    assert "Do not store" in block.description
+
+
 @pytest.mark.asyncio
 async def test_run_agent_attaches_connected_animus_action_tools(
     monkeypatch: pytest.MonkeyPatch,
