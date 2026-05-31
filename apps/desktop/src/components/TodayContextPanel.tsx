@@ -14,11 +14,13 @@ const MOOD_OPTIONS = [
 ] as const;
 
 const ENERGY_OPTIONS = ["low", "steady", "high"] as const;
+const PRIMARY_MOOD_VALUES = new Set(["steady", "tired", "anxious", "energized"]);
 
 export function TodayContextPanel({
   context,
   greeting,
   suggestion = null,
+  defaultExpanded = false,
   onSave,
   onClear,
   onAcceptSuggestion,
@@ -27,6 +29,7 @@ export function TodayContextPanel({
   context: TodayContext | null;
   greeting?: string | null;
   suggestion?: TodayContext | null;
+  defaultExpanded?: boolean;
   onSave: (draft: TodayContextDraft) => void;
   onClear: () => void;
   onAcceptSuggestion?: () => void;
@@ -35,6 +38,7 @@ export function TodayContextPanel({
   const [mood, setMood] = useState(context?.mood ?? "");
   const [energy, setEnergy] = useState(context?.energy ?? "");
   const [note, setNote] = useState(context?.note ?? "");
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   useEffect(() => {
     setMood(context?.mood ?? "");
@@ -45,6 +49,16 @@ export function TodayContextPanel({
   const hasDraft = Boolean(mood.trim() || energy.trim() || note.trim());
   const hasContext = context !== null;
   const commitDraft = (draft: TodayContextDraft) => onSave(draft);
+  const visibleMoodOptions = expanded
+    ? MOOD_OPTIONS
+    : MOOD_OPTIONS.filter((option) => PRIMARY_MOOD_VALUES.has(option.value));
+  const summaryParts = [
+    mood.trim() || null,
+    energy.trim() ? `${energy.trim()} energy` : null,
+  ].filter((part): part is string => Boolean(part));
+  const summaryText = hasContext && summaryParts.length > 0
+    ? `Today: ${summaryParts.join(" · ")}`
+    : null;
   const suggestionItems = suggestion
     ? [
         suggestion.mood ? `Mood: ${suggestion.mood}` : null,
@@ -56,9 +70,16 @@ export function TodayContextPanel({
   return (
     <div className="mb-2 border border-border bg-card px-3 py-2.5">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/55">
-          Today
-        </span>
+        <div className="min-w-0">
+          <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/55">
+            Today
+          </span>
+          {summaryText && (
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              {summaryText}
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {hasContext && (
             <button
@@ -69,17 +90,31 @@ export function TodayContextPanel({
               CLEAR
             </button>
           )}
+          {expanded && (
+            <button
+              type="button"
+              onClick={() => commitDraft({ mood, energy, note })}
+              disabled={!hasDraft}
+              className="border border-border px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
+            >
+              UPDATE
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => commitDraft({ mood, energy, note })}
-            disabled={!hasDraft}
-            className="border border-border px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
+            aria-label={
+              expanded
+                ? "Show fewer today context controls"
+                : "Show more today context controls"
+            }
+            onClick={() => setExpanded((value) => !value)}
+            className="border border-border px-2 py-1 font-mono text-[10px] leading-none text-muted-foreground hover:text-foreground"
           >
-            UPDATE
+            {expanded ? "-" : "+"}
           </button>
         </div>
       </div>
-      {!hasContext && greeting && (
+      {!hasContext && greeting && !summaryText && (
         <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
           {greeting}
         </p>
@@ -119,8 +154,8 @@ export function TodayContextPanel({
           </div>
         </div>
       )}
-      <div className="mb-2 grid grid-cols-4 gap-1.5 sm:grid-cols-8">
-        {MOOD_OPTIONS.map((option) => {
+      <div className="mb-2 grid grid-cols-4 gap-1.5">
+        {visibleMoodOptions.map((option) => {
           const selected = mood.trim().toLowerCase() === option.value;
           return (
             <button
@@ -170,29 +205,33 @@ export function TodayContextPanel({
           );
         })}
       </div>
-      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
-        <input
-          value={mood}
-          onChange={(event) => setMood(event.currentTarget.value)}
-          placeholder="mood"
-          maxLength={80}
-          className="min-w-0 bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
-        />
-        <input
-          value={energy}
-          onChange={(event) => setEnergy(event.currentTarget.value)}
-          placeholder="energy"
-          maxLength={40}
-          className="min-w-0 bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
-        />
-      </div>
-      <input
-        value={note}
-        onChange={(event) => setNote(event.currentTarget.value)}
-        placeholder="note"
-        maxLength={280}
-        className="mt-2 w-full bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
-      />
+      {expanded && (
+        <>
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
+            <input
+              value={mood}
+              onChange={(event) => setMood(event.currentTarget.value)}
+              placeholder="mood"
+              maxLength={80}
+              className="min-w-0 bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+            />
+            <input
+              value={energy}
+              onChange={(event) => setEnergy(event.currentTarget.value)}
+              placeholder="energy"
+              maxLength={40}
+              className="min-w-0 bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+            />
+          </div>
+          <input
+            value={note}
+            onChange={(event) => setNote(event.currentTarget.value)}
+            placeholder="note"
+            maxLength={280}
+            className="mt-2 w-full bg-background border border-border px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
+          />
+        </>
+      )}
     </div>
   );
 }

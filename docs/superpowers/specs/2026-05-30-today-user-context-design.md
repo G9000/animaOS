@@ -51,7 +51,7 @@ This keeps the companion responsive to what the user naturally says while avoidi
 
 ### Mood Picker and Adaptive Check-Ins
 
-The Today panel should support fast mood entry with emoji chips for common states such as steady, tired, anxious, overwhelmed, frustrated, low, energized, and good. Energy should also have a simple low / steady / high control. Selecting either chip updates today's temporary context immediately while still leaving the free-text mood, energy, and note inputs available for custom wording.
+The Today panel should support fast mood entry with emoji chips for common states such as steady, tired, anxious, overwhelmed, frustrated, low, energized, and good. To avoid clutter, the default view should show only a compact set of primary moods and low / steady / high energy controls. The full mood set and free-text mood, energy, and note fields should live behind an explicit expand control.
 
 The companion may use this context to ask a short, relevant check-in or offer a lower-friction path when the mood or energy makes that useful. It must not ask every turn, diagnose the user, or treat the context as durable memory.
 
