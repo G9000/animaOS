@@ -1,17 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  HomeIcon,
-  TasksIcon,
-  ChatIcon,
-  MemoryIcon,
-  PresenceIcon,
-  MindIcon,
-  ModsIcon,
-  ConfigIcon,
-  DatabaseIcon,
   cn,
-  type IconProps,
 } from "@anima/standard-templates";
 import type { MemoryOverviewData } from "@anima/api-client";
 import { useAuth } from "../../context/AuthContext";
@@ -20,6 +10,7 @@ import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
 import { getDbViewerEnabled } from "../../lib/preferences";
 import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { DATABASE_NAV_ITEM, TOP_NAV_ITEMS } from "./nav-items";
 
 const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
 const NEGATIVE_MOODS = new Set(["sad", "lonely", "tired", "angry", "frustrated", "anxious", "worried"]);
@@ -30,25 +21,6 @@ function moodDotClass(emotion: string): string {
   if (NEGATIVE_MOODS.has(e)) return "bg-destructive";
   return "bg-muted-foreground";
 }
-
-interface NavItem {
-  to: string;
-  label: string;
-  Icon: React.ComponentType<IconProps>;
-}
-
-const STATIC_NAV_ITEMS: NavItem[] = [
-  { to: "/",             label: "Home",     Icon: HomeIcon     },
-  { to: "/chat",         label: "Chat",     Icon: ChatIcon     },
-  { to: "/memory",       label: "Memory",   Icon: MemoryIcon   },
-  { to: "/consciousness",label: "Mind",     Icon: MindIcon     },
-  { to: "/tasks",        label: "Tasks",    Icon: TasksIcon    },
-  { to: "/presence",     label: "Presence", Icon: PresenceIcon },
-  { to: "/mods",         label: "Mods",     Icon: ModsIcon     },
-  { to: "/settings",     label: "Settings", Icon: ConfigIcon   },
-];
-
-const DATABASE_NAV_ITEM: NavItem = { to: "/database", label: "Database", Icon: DatabaseIcon };
 
 export function LayoutTopNav() {
   const { user, logout } = useAuth();
@@ -107,7 +79,7 @@ export function LayoutTopNav() {
     return () => document.removeEventListener("mousedown", handler);
   }, [showUser]);
 
-  const navItems = dbEnabled ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM] : STATIC_NAV_ITEMS;
+  const navItems = dbEnabled ? [...TOP_NAV_ITEMS, DATABASE_NAV_ITEM] : TOP_NAV_ITEMS;
 
   return (
     <header className="h-12 flex items-center border border-border/70 bg-background/90 backdrop-blur-md shadow-md px-4 gap-3 z-20">

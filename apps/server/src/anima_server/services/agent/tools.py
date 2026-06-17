@@ -6,10 +6,13 @@ The `get_tools()` list is bound to the loop runtime and exposed to the LLM.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import copy
 import inspect
 import logging
+import threading as _threading
+import time as _time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from types import UnionType
@@ -1284,23 +1287,67 @@ def get_core_tools() -> list[Any]:
 
 
 _mod_tools_cache: list[Any] | None = None
+_mod_tools_last_failure: float | None = None
+_mod_tools_refresh_lock = _threading.Lock()
+# After a fetch failure, don't retry (or block on) anima-mod for this long.
+_MOD_TOOLS_FAILURE_TTL = 30.0
 
 
 def reload_mod_tools() -> None:
     """Bust the mod tools cache so the next agent turn re-fetches from anima-mod."""
-    global _mod_tools_cache
+    global _mod_tools_cache, _mod_tools_last_failure
     _mod_tools_cache = None
+    _mod_tools_last_failure = None
 
 
 def _load_mod_tools() -> list[Any]:
-    """Fetch tool schemas from the running anima-mod service and build @tool wrappers.
+    """Return @tool wrappers for the anima-mod service's tool schemas.
 
-    Returns an empty list (without caching) if the service is unreachable, so the
-    agent degrades gracefully and retries on the next turn.
+    Never blocks the event loop: when called from async code with a cold
+    cache, the fetch runs in a background thread and this turn proceeds
+    without mod tools.  Failures are negatively cached for
+    ``_MOD_TOOLS_FAILURE_TTL`` so an unreachable anima-mod doesn't add a
+    5s stall to every delegated turn.
     """
-    global _mod_tools_cache
     if _mod_tools_cache is not None:
         return _mod_tools_cache
+
+    if (
+        _mod_tools_last_failure is not None
+        and _time.monotonic() - _mod_tools_last_failure < _MOD_TOOLS_FAILURE_TTL
+    ):
+        return []
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Sync context (startup, CLI, tests): fetch inline so the runner
+        # is built with mod tools from the first turn.
+        return _fetch_and_cache_mod_tools()
+
+    _start_mod_tools_refresh()
+    return []
+
+
+def _start_mod_tools_refresh() -> None:
+    """Refresh the mod tools cache in a worker thread (at most one at a time)."""
+    if not _mod_tools_refresh_lock.acquire(blocking=False):
+        return
+
+    def _worker() -> None:
+        try:
+            _fetch_and_cache_mod_tools()
+        finally:
+            _mod_tools_refresh_lock.release()
+
+    _threading.Thread(
+        target=_worker, daemon=True, name="mod-tools-refresh").start()
+
+
+def _fetch_and_cache_mod_tools() -> list[Any]:
+    """Blocking fetch from anima-mod. Populates the cache on success and
+    the negative cache on failure."""
+    global _mod_tools_cache, _mod_tools_last_failure
 
     import httpx
 
@@ -1312,7 +1359,8 @@ def _load_mod_tools() -> list[Any]:
         schemas: list[dict[str, Any]] = resp.json()
     except Exception as exc:
         logger.debug("anima-mod tools unavailable: %s", exc)
-        return []  # don't cache — retry next turn
+        _mod_tools_last_failure = _time.monotonic()
+        return []
 
     built: list[Any] = []
     for schema in schemas:
@@ -1322,6 +1370,7 @@ def _load_mod_tools() -> list[Any]:
             logger.warning("Skipping mod tool %r: %s", schema.get("name"), exc)
 
     _mod_tools_cache = built
+    _mod_tools_last_failure = None
     if built:
         names = ", ".join(t.name for t in built)
         logger.info("Loaded %d mod tool(s) from anima-mod: %s", len(built), names)

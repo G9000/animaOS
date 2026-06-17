@@ -1,18 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  HomeIcon,
-  TasksIcon,
-  ChatIcon,
-  MemoryIcon,
-  PresenceIcon,
-  MindIcon,
-  ModsIcon,
-  ConfigIcon,
-  DatabaseIcon,
   ChevronRightIcon,
   cn,
-  type IconProps,
 } from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
@@ -20,6 +10,7 @@ import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
 import { getDbViewerEnabled } from "../../lib/preferences";
 import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { DATABASE_NAV_ITEM, SIDEBAR_NAV_ITEMS } from "./nav-items";
 
 
 const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
@@ -38,31 +29,6 @@ function moodDotClass(emotion: string): string {
   if (NEGATIVE_MOODS.has(e)) return "bg-destructive ring-2 ring-sidebar ring-offset-0";
   return "bg-muted-foreground ring-2 ring-sidebar ring-offset-0";
 }
-
-interface NavItem {
-  to: string;
-  label: string;
-  Icon: React.ComponentType<IconProps>;
-  description: string;
-}
-
-const STATIC_NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "Home", Icon: HomeIcon, description: "dashboard" },
-  { to: "/tasks", label: "Tasks", Icon: TasksIcon, description: "queue" },
-  { to: "/chat", label: "Chat", Icon: ChatIcon, description: "console" },
-  { to: "/memory", label: "Memory", Icon: MemoryIcon, description: "archive" },
-  { to: "/presence", label: "Presence", Icon: PresenceIcon, description: "signals" },
-  { to: "/consciousness", label: "Mind", Icon: MindIcon, description: "consciousness" },
-  { to: "/mods", label: "Mods", Icon: ModsIcon, description: "extensions" },
-  { to: "/settings", label: "Settings", Icon: ConfigIcon, description: "system" },
-];
-
-const DATABASE_NAV_ITEM: NavItem = {
-  to: "/database",
-  label: "Database",
-  Icon: DatabaseIcon,
-  description: "inspector",
-};
 
 const SIDEBAR_STORAGE_KEY = "anima-sidebar-collapsed";
 
@@ -141,7 +107,7 @@ export function LayoutSidebar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showUser]);
 
-  const navItems = dbEnabled ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM] : STATIC_NAV_ITEMS;
+  const navItems = dbEnabled ? [...SIDEBAR_NAV_ITEMS, DATABASE_NAV_ITEM] : SIDEBAR_NAV_ITEMS;
 
   return (
     <aside

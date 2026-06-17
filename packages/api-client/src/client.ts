@@ -13,6 +13,9 @@ import type {
   DbQueryResult,
   DbTableData,
   DbTableInfo,
+  DiaryAttachmentData,
+  DiaryEntryCreateData,
+  DiaryEntryData,
   EmotionalContextData,
   GraphEntity,
   GraphEntityDetail,
@@ -217,6 +220,7 @@ export function createApiClient(options: ApiClientOptions) {
     endpoint: string,
     file: File | Blob,
     fieldName = "file",
+    fields: Record<string, string> = {},
   ): Promise<T> {
     const token = getUnlockToken?.() || null;
     const headers: Record<string, string> = {};
@@ -229,6 +233,9 @@ export function createApiClient(options: ApiClientOptions) {
     }
 
     const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      form.append(key, value);
+    }
     form.append(fieldName, file);
 
     const response = await fetchImpl(`${normalizedBaseUrl}${endpoint}`, {
@@ -243,6 +250,31 @@ export function createApiClient(options: ApiClientOptions) {
       throw new Error(extractErrorMessage(data, "Something went wrong"));
     }
     return data as T;
+  }
+
+  async function downloadBlob(endpoint: string): Promise<Blob> {
+    const token = getUnlockToken?.() || null;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["x-anima-unlock"] = token;
+    }
+    const nonce = getNonce?.() || null;
+    if (nonce) {
+      headers["x-anima-nonce"] = nonce;
+    }
+
+    const response = await fetchImpl(`${normalizedBaseUrl}${endpoint}`, {
+      method: "GET",
+      credentials,
+      headers,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(extractErrorMessage(data, "Something went wrong"));
+    }
+
+    return response.blob();
   }
 
   async function* streamChat(
@@ -694,6 +726,28 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ query: string; context: string[]; count: number }>(
           `/graph/${userId}/context?q=${encodeURIComponent(query)}&limit=${limit}`,
         ),
+    },
+    diary: {
+      list: (userId: number, limit = 50) =>
+        request<DiaryEntryData[]>(`/diary?userId=${userId}&limit=${limit}`),
+      create: (userId: number, data: DiaryEntryCreateData) =>
+        request<DiaryEntryData>("/diary", {
+          method: "POST",
+          body: { userId, ...data },
+        }),
+      uploadAttachment: (entryId: number, file: File | Blob, caption?: string) =>
+        uploadFile<DiaryAttachmentData>(
+          `/diary/${entryId}/attachments`,
+          file,
+          "file",
+          caption?.trim() ? { caption: caption.trim() } : {},
+        ),
+      downloadAttachment: (entryId: number, attachmentId: number) =>
+        downloadBlob(`/diary/${entryId}/attachments/${attachmentId}`),
+      delete: (entryId: number) =>
+        request<{ deleted: boolean }>(`/diary/${entryId}`, {
+          method: "DELETE",
+        }),
     },
     memory: {
       overview: (userId: number) =>

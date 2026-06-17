@@ -31,6 +31,15 @@ def build_chunk_event(content: str) -> AgentStreamEvent:
     )
 
 
+def build_run_started_event(*, run_id: int, thread_id: int) -> AgentStreamEvent:
+    """Emitted as soon as the run row is committed so clients learn the
+    run id they need for mid-turn cancellation."""
+    return AgentStreamEvent(
+        event="run_started",
+        data={"runId": run_id, "threadId": thread_id},
+    )
+
+
 def build_memory_state_event(
     blocks: dict[str, str],
 ) -> AgentStreamEvent:

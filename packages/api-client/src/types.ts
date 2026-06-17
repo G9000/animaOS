@@ -404,6 +404,39 @@ export interface MemoryEpisodeData {
   createdAt: string | null;
 }
 
+export interface DiaryAttachmentData {
+  id: number;
+  entryId: number;
+  kind: "image" | "audio" | "video" | "file" | string;
+  mimeType: string;
+  filename: string | null;
+  caption: string | null;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string | null;
+  url: string;
+}
+
+export interface DiaryEntryData {
+  id: number;
+  userId: number;
+  entryDate: string;
+  title: string | null;
+  body: string;
+  mood: string | null;
+  source: string;
+  attachments: DiaryAttachmentData[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface DiaryEntryCreateData {
+  entryDate: string;
+  title?: string | null;
+  body: string;
+  mood?: string | null;
+}
+
 export interface MemorySearchResult {
   type: "item" | "episode";
   id: number;

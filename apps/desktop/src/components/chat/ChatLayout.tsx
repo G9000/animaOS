@@ -15,6 +15,8 @@ interface ChatLayoutProps {
   onToggleSidebar: () => void;
   showScrollButton: boolean;
   onScrollToBottom: () => void;
+  showTrace?: boolean;
+  onToggleTrace?: () => void;
 }
 
 export function ChatLayout({
@@ -31,11 +33,29 @@ export function ChatLayout({
   onToggleSidebar,
   showScrollButton,
   onScrollToBottom,
+  showTrace,
+  onToggleTrace,
 }: ChatLayoutProps) {
   return (
     <div className="flex h-full overflow-hidden">
       {/* Main chat column */}
       <div className="flex-1 flex flex-col min-w-0 relative bg-background">
+        {/* Trace toggle */}
+        {onToggleTrace && (
+          <button
+            type="button"
+            onClick={onToggleTrace}
+            title="Toggle trace panel (Ctrl+Shift+T)"
+            className={`absolute top-3 left-3 z-50 px-3 py-2 font-mono text-[9px] tracking-[0.2em] uppercase border bg-background/80 backdrop-blur-sm transition-all select-none ${
+              showTrace
+                ? "text-yellow-400/90 border-yellow-400/40 hover:border-yellow-400/70"
+                : "text-muted-foreground/40 border-border hover:text-muted-foreground hover:bg-card"
+            }`}
+          >
+            {showTrace ? "TRACE ●" : "TRACE ○"}
+          </button>
+        )}
+
         {/* Expand sidebar button (when hidden) */}
         {!showSidebar && (
           <div

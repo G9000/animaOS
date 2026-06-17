@@ -8,6 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from anima_server.db.session import get_user_session_factory
 from anima_server.db.user_store import authenticate_account
+from anima_server.models.runtime import RuntimeRun
 from anima_server.models.user import User
 from anima_server.services.agent.client_actions import (
     ActionToolConnection as ClientConnection,
@@ -204,10 +205,12 @@ async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
                 await conn.websocket.send_json(ws_msg)
     except Exception as exc:
         logger.exception("Agent error for user_id=%d", conn.user_id)
+        from anima_server.services.agent.service import client_error_message
+
         await conn.websocket.send_json(
             {
                 "type": "error",
-                "message": str(exc),
+                "message": client_error_message(exc),
                 "code": "AGENT_ERROR",
             }
         )
@@ -225,7 +228,41 @@ async def _handle_approval_response(conn: ClientConnection, data: dict) -> None:
 
 
 async def _handle_cancel(conn: ClientConnection, data: dict) -> None:
-    pass
+    """Cancel an in-flight run: {"type": "cancel", "run_id": <int>}."""
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.services.agent.service import cancel_agent_run
+
+    raw_run_id = data.get("run_id", data.get("runId"))
+    try:
+        run_id = int(raw_run_id)
+    except (TypeError, ValueError):
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": "cancel requires a numeric run_id",
+                "code": "BAD_REQUEST",
+            }
+        )
+        return
+
+    runtime_db = get_runtime_session_factory()()
+    try:
+        run = runtime_db.get(RuntimeRun, run_id)
+        if run is None or run.user_id != conn.user_id:
+            await conn.websocket.send_json(
+                {
+                    "type": "error",
+                    "message": f"Run {run_id} not found",
+                    "code": "RUN_NOT_FOUND",
+                }
+            )
+            return
+        await cancel_agent_run(run_id, conn.user_id, runtime_db)
+    except Exception:
+        logger.exception("Cancel failed for run %s (user %s)",
+                         run_id, conn.user_id)
+    finally:
+        runtime_db.close()
 
 
 def _translate_event(event: Any) -> dict[str, Any] | None:
@@ -241,6 +278,19 @@ def _translate_event(event: Any) -> dict[str, Any] | None:
         return {
             "type": "stream_token",
             "token": data.get("content", ""),
+        }
+
+    if etype == "run_started":
+        return {
+            "type": "run_started",
+            "run_id": data.get("runId"),
+            "thread_id": data.get("threadId"),
+        }
+
+    if etype == "cancelled":
+        return {
+            "type": "cancelled",
+            "run_id": data.get("runId"),
         }
 
     if etype == "done":
@@ -281,5 +331,5 @@ def _translate_event(event: Any) -> dict[str, Any] | None:
             "result": data.get("output", ""),
         }
 
-    # thought, timing, step_state, usage, warning, cancelled — skip
+    # thought, timing, step_state, usage, warning — skip
     return None

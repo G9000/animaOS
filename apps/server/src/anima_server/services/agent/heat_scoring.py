@@ -32,6 +32,23 @@ HEAT_GAMMA: float = 1.0  # recency decay weight
 HEAT_DELTA: float = 0.5  # importance weight
 RECENCY_TAU_HOURS: float = 24.0  # time-decay constant
 MAX_IMPORTANCE: int = 5
+HEAT_IMPORTANCE_FLOOR_SCALE: float = 0.03  # heat floor per importance point
+
+
+def importance_heat_floor(importance: float) -> float:
+    """Minimum heat for an item based on its importance, independent of
+    recency decay.
+
+    Every other heat term is multiplied by recency, so without a floor an
+    importance-5 standing fact ("I'm diabetic") falls below the retrieval
+    visibility floor (0.01) after a few idle days and silently stops being
+    surfaced.  The floor keeps importance >= 1 above the visibility floor
+    and importance >= 4 above the default archival threshold (0.1), while
+    leaving low/mid-importance items eligible for normal forgetting.
+    """
+    if importance <= 0:
+        return 0.0
+    return HEAT_IMPORTANCE_FLOOR_SCALE * min(float(importance), float(MAX_IMPORTANCE))
 
 
 def compute_time_decay(
@@ -58,6 +75,7 @@ def compute_heat(
     now: datetime | None = None,
     created_at: datetime | None = None,
     tau_hours: float = RECENCY_TAU_HOURS,
+    superseded: bool = False,
 ) -> float:
     """Compute heat: H = alpha*access + beta*depth + gamma*recency + delta*importance.
 
@@ -66,9 +84,11 @@ def compute_heat(
     that freshly-created items still receive a recency signal.
 
     ``tau_hours`` controls the time-decay rate (default: ``RECENCY_TAU_HOURS``).
-    Superseded items pass a smaller tau for faster decay.
+    Superseded items pass a smaller tau for faster decay; they are also
+    exempt from the importance floor so they can fully decay.
     """
     ref_now = now or datetime.now(UTC)
+    floor = 0.0 if superseded else importance_heat_floor(importance)
     recency = 0.0
     recency_ref = last_accessed_at or created_at
     if (
@@ -84,23 +104,27 @@ def compute_heat(
             ref_now = ref_now.replace(tzinfo=UTC)
         seconds_since_access = max(0.0, (ref_now - recency_ref).total_seconds())
         try:
-            return float(
-                anima_core_bindings.rust_compute_heat(
-                    access_count=access_count,
-                    interaction_depth=interaction_depth,
-                    importance=importance,
-                    seconds_since_access=seconds_since_access,
-                    superseded=False,
-                )
+            return max(
+                float(
+                    anima_core_bindings.rust_compute_heat(
+                        access_count=access_count,
+                        interaction_depth=interaction_depth,
+                        importance=importance,
+                        seconds_since_access=seconds_since_access,
+                        superseded=False,
+                    )
+                ),
+                floor,
             )
         except Exception:
             logger.debug("Rust heat scoring failed; falling back to Python", exc_info=True)
 
     if recency_ref is not None:
         recency = compute_time_decay(recency_ref, ref_now, tau_hours=tau_hours)
-    return (
+    heat = (
         HEAT_ALPHA * access_count + HEAT_BETA * interaction_depth + HEAT_DELTA * importance
     ) * recency + HEAT_GAMMA * recency
+    return max(heat, floor)
 
 
 def update_heat_on_access(
@@ -155,8 +179,9 @@ def decay_all_heat(
     for item in items:
         ref_count = item.reference_count or 0
         # Superseded items decay 3x faster (lower tau)
+        superseded = item.superseded_by is not None
         tau = RECENCY_TAU_HOURS
-        if item.superseded_by is not None:
+        if superseded:
             tau = RECENCY_TAU_HOURS / SUPERSEDED_DECAY_MULTIPLIER
         item.heat = compute_heat(
             access_count=ref_count,
@@ -166,6 +191,7 @@ def decay_all_heat(
             now=ref_now,
             created_at=item.created_at,
             tau_hours=tau,
+            superseded=superseded,
         )
     db.flush()
     return len(items)

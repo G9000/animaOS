@@ -11,7 +11,7 @@ import type {
   TodayContext,
 } from "@anima/api-client";
 import { api } from "../../lib/api";
-import { PromptInput, DotLoader, cn } from "@anima/standard-templates";
+import { PromptInput, DotLoader } from "@anima/standard-templates";
 import { DashboardDiary } from "./DashboardDiary";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { TodayContextPanel } from "../../components/TodayContextPanel";
@@ -22,6 +22,8 @@ import {
   todayIso,
   type TodayContextDraft,
 } from "../../lib/today-context";
+import { BANNER_CHANGED_EVENT } from "../../lib/events";
+import { getCustomBanner, type BannerConfig } from "../../lib/preferences";
 import banner1 from "../../assets/banner_1.jpg";
 import banner2 from "../../assets/banner_2.jpg";
 
@@ -67,25 +69,62 @@ const MOOD_EMOJI: Record<string, string> = {
   confused: "🌀", protective: "🛡", affectionate: "💗",
 };
 
-const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
-const NEGATIVE_MOODS = new Set(["sad", "lonely", "tired", "angry", "frustrated", "anxious", "worried"]);
+
+const MOOD_CHAT_PROMPT: Record<string, string> = {
+  calm:        "What's keeping you so grounded right now?",
+  happy:       "What's bringing you that happiness?",
+  excited:     "What's got you so excited?",
+  curious:     "What are you most curious about today?",
+  anxious:     "What's been weighing on your mind?",
+  sad:         "Want to talk about how you're feeling?",
+  angry:       "What's got you fired up?",
+  frustrated:  "What's been frustrating you lately?",
+  hopeful:     "What are you feeling hopeful about?",
+  lonely:      "I'm here. What's making you feel distant?",
+  content:     "What's bringing you that sense of peace?",
+  tired:       "What's been draining your energy?",
+  playful:     "What do you want to play with today?",
+  worried:     "What's been weighing on you?",
+  grateful:    "What are you feeling grateful for?",
+  confused:    "What's got you feeling uncertain?",
+  protective:  "What do you feel protective of?",
+  affectionate:"Who or what are you feeling close to right now?",
+};
+
+function getMoodChatPrompt(emotion: string): string {
+  return MOOD_CHAT_PROMPT[emotion.toLowerCase().trim()] ?? `Tell me more about feeling ${emotion}.`;
+}
+
+function relativeSession(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const h = Math.floor(diff / 3_600_000);
+  const d = Math.floor(diff / 86_400_000);
+  if (h < 1) return "just now";
+  if (h < 24) return `${h}h ago`;
+  if (d === 1) return "yesterday";
+  if (d < 7) return `${d}d ago`;
+  return `${Math.floor(d / 7)}w ago`;
+}
+
 
 function getMoodEmoji(emotion: string | null): string {
   if (!emotion) return "◌";
   return MOOD_EMOJI[emotion.toLowerCase().trim()] ?? "◌";
 }
 
-function moodBadgeClass(emotion: string): string {
-  const e = emotion.toLowerCase().trim();
-  if (POSITIVE_MOODS.has(e)) return "bg-accent/15 text-accent border border-accent/25";
-  if (NEGATIVE_MOODS.has(e)) return "bg-destructive/10 text-destructive border border-destructive/20";
-  return "bg-border/50 text-muted-foreground border border-border";
-}
 
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { agentName, avatarUrl, relationship } = useAgentProfile(user?.id);
+
+  const [bannerConfig, setBannerConfig] = useState<BannerConfig | null>(() => getCustomBanner());
+
+  useEffect(() => {
+    const onBannerChanged = () => setBannerConfig(getCustomBanner());
+    window.addEventListener(BANNER_CHANGED_EVENT, onBannerChanged);
+    return () => window.removeEventListener(BANNER_CHANGED_EVENT, onBannerChanged);
+  }, []);
 
   const [brief, setBrief] = useState<Greeting | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
@@ -217,51 +256,117 @@ export default function Dashboard() {
   if (needsSetup === null) return <div className="h-full" />;
 
   const emotion = mood?.dominantEmotion ?? null;
+const lastSession = episodes[0]?.date ? relativeSession(episodes[0].date) : null;
+  const todayContextLine =
+    todayContext?.note ||
+    [todayContext?.mood, todayContext?.energy].filter(Boolean).join(" · ") ||
+    null;
 
   return (
     <div className="h-full overflow-y-auto">
 
       {/* ── Banner ── */}
-      <div className="relative h-48 w-full overflow-hidden bg-card">
+      <div className="relative h-82 w-full overflow-hidden bg-card">
         <img
-          src={BANNERS[0]}
+          src={bannerConfig?.url ?? BANNERS[0]}
           alt=""
-          className="absolute inset-0 w-full h-full object-cover object-top"
+          className="absolute inset-0 w-full h-full object-cover"
+          style={bannerConfig ? { objectPosition: `${bannerConfig.x}% ${bannerConfig.y}%` } : { objectPosition: "50% 0%" }}
         />
+        <div className="absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-background via-background/60 to-transparent pointer-events-none" />
       </div>
 
       {/* ── Profile ── */}
       <div className="px-6 relative z-10">
         <div className="max-w-2xl mx-auto">
-          {/* Avatar row — only avatar overlaps the banner */}
-          <div className="flex items-end justify-between -mt-10 mb-3">
-            <div className="w-20 h-20 rounded-full border-4 border-background bg-card overflow-hidden shrink-0 shadow-md">
-              <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover" />
+          {/* Avatar row — avatar + companion state panel emerge from banner gradient */}
+          <div className="flex items-end gap-4 -mt-20 mb-4">
+            <div className="w-40 h-48 border-2 border-background bg-card overflow-hidden shrink-0 shadow-xl">
+              <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover object-top" />
             </div>
-          </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-base font-semibold">{agentName}</span>
-            {relationship && (
-              <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">
-                {relationship}
-              </span>
-            )}
-            {emotion && (
-              <span className={cn("font-mono text-[8px] px-1.5 py-0.5 tracking-wider uppercase", moodBadgeClass(emotion))}>
-                {getMoodEmoji(emotion)} {emotion}
-              </span>
-            )}
-          </div>
+            {/* Companion state panel — taller than avatar, sticks into banner gradient */}
+            <div
+              className="flex-1 min-w-0 h-48 bg-card border border-border/50 shadow-md overflow-hidden self-end"
+              style={{ display: "grid", gridTemplateRows: "auto 1px auto 1px 1fr" }}
+            >
+              {/* Name header */}
+              <div className="flex items-baseline gap-2.5 px-4 py-2.5">
+                <span className="text-base font-semibold tracking-tight text-foreground truncate">{agentName}</span>
+                {relationship && (
+                  <span className="font-mono text-[8px] tracking-[0.2em] uppercase text-muted-foreground/30 shrink-0">{relationship}</span>
+                )}
+              </div>
 
-          <div className="mt-2">
-            {briefLoading ? (
-              <DotLoader />
-            ) : brief?.message ? (
-              <p className="text-base italic text-foreground/75 leading-relaxed animate-fade-in">
-                "{brief.message}"
-              </p>
-            ) : null}
+              {/* Divider */}
+              <div className="bg-border/20 mx-4" />
+
+              {/* Mode row */}
+              <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+                {emotion ? (
+                  <div className="flex items-center gap-2.5 min-w-0 overflow-hidden">
+                    <span className="text-xl leading-none shrink-0">{getMoodEmoji(emotion)}</span>
+                    <span className="text-sm font-semibold capitalize text-foreground/85 truncate">{emotion}</span>
+                    {lastSession && (
+                      <span className="font-mono text-[8px] text-muted-foreground/30 shrink-0">· {lastSession}</span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground/30">—</span>
+                )}
+                {emotion && (
+                  <button
+                    onClick={() => handlePromptSubmit(getMoodChatPrompt(emotion))}
+                    className="shrink-0 px-2 py-0.5 font-mono text-[9px] tracking-[0.15em] uppercase border border-border/50 text-muted-foreground/50 hover:border-accent/40 hover:text-accent transition-all"
+                  >
+                    ask
+                  </button>
+                )}
+              </div>
+
+              {/* Divider */}
+              <div className="bg-border/25 mx-4" />
+
+              {/* Monologue */}
+              <div className="px-4 pt-3 pb-3.5 overflow-hidden flex flex-col justify-between">
+                {briefLoading ? (
+                  <DotLoader />
+                ) : brief?.message ? (
+                  <>
+                    <div className="space-y-1.5 overflow-hidden">
+                      <p className={`text-xs italic text-foreground/55 leading-relaxed animate-fade-in ${todayContextLine ? "line-clamp-2" : "line-clamp-3"}`}>
+                        {brief.message}
+                      </p>
+                      {todayContextLine && (
+                        <p className="font-mono text-[9px] tracking-[0.1em] text-muted-foreground/35 line-clamp-1">
+                          {todayContextLine}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handlePromptSubmit("Let's talk about what's on your mind right now.")}
+                      className="self-start font-mono text-[9px] tracking-[0.15em] uppercase text-muted-foreground/35 hover:text-foreground transition-colors"
+                    >
+                      explore →
+                    </button>
+                  </>
+                ) : todayContextLine ? (
+                  <div className="flex flex-col justify-between h-full">
+                    <p className="text-xs text-foreground/45 leading-relaxed line-clamp-3 italic">
+                      {todayContextLine}
+                    </p>
+                    <button
+                      onClick={() => handlePromptSubmit("Let's talk about how I'm arriving today.")}
+                      className="self-start font-mono text-[9px] tracking-[0.15em] uppercase text-muted-foreground/35 hover:text-foreground transition-colors"
+                    >
+                      explore →
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground/20 italic">...</p>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="mt-3">
@@ -280,14 +385,14 @@ export default function Dashboard() {
       </div>
 
       {/* ── Memory Grid ── */}
-      <div className="px-6 pt-8 pb-0">
+      <div className="px-6 pt-10 pb-0">
         <div className="max-w-2xl mx-auto">
-          <div className="flex items-center gap-3 mb-2">
-            <span className="font-mono text-[9px] tracking-[0.22em] uppercase text-muted-foreground/40">
+          <div className="flex items-center gap-3 mb-3">
+            <span className="font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/35">
               Memory Grid
             </span>
-            <div className="flex-1 h-px bg-border/40" />
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/25">
+            <div className="flex-1 h-px bg-border/30" />
+            <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/20">
               {episodes.length} episodes
             </span>
           </div>
@@ -300,13 +405,13 @@ export default function Dashboard() {
               return (
                 <div
                   key={ep.id}
-                  className="bg-card border border-border/70 p-4 flex flex-col gap-2.5 hover:border-border transition-colors cursor-default"
+                  className="bg-card border border-border/60 p-4 flex flex-col gap-2.5 hover:border-border/90 hover:shadow-sm transition-all cursor-default"
                 >
-                  <p className="text-sm font-semibold text-foreground leading-snug line-clamp-2">
+                  <p className="text-sm font-semibold text-foreground/90 leading-snug line-clamp-2">
                     {title}
                   </p>
                   <p
-                    className="text-sm leading-relaxed text-foreground/65 flex-1 overflow-hidden"
+                    className="text-xs leading-relaxed text-foreground/50 flex-1 overflow-hidden"
                     style={{
                       maskImage: "linear-gradient(to bottom, black 40%, transparent 100%)",
                       WebkitMaskImage: "linear-gradient(to bottom, black 40%, transparent 100%)",
@@ -315,18 +420,18 @@ export default function Dashboard() {
                   >
                     {ep.summary}
                   </p>
-                  <div className="flex items-center gap-1.5 flex-wrap mt-auto pt-0.5">
+                  <div className="flex items-center gap-1.5 flex-wrap mt-auto pt-1 border-t border-border/20">
                     {ep.topics.slice(0, 3).map((t) => (
-                      <span key={t} className="font-mono text-[9px] tracking-widest uppercase px-2 py-0.5 bg-secondary border border-border text-foreground/70">
-                        {t}
+                      <span key={t} className="font-mono text-[8px] tracking-widest uppercase px-1.5 py-0.5 text-muted-foreground/50">
+                        #{t}
                       </span>
                     ))}
                     {isTruncated && (
                       <button
                         onClick={() => setSelectedEpisode(ep)}
-                        className="ml-auto font-mono text-[10px] tracking-wider text-accent/70 hover:text-accent transition-colors"
+                        className="ml-auto font-mono text-[9px] tracking-wider text-accent/60 hover:text-accent transition-colors"
                       >
-                        read more →
+                        read →
                       </button>
                     )}
                   </div>
@@ -338,15 +443,15 @@ export default function Dashboard() {
       </div>
 
       {/* ── Feed ── */}
-      <div className="px-6 pt-8 pb-12">
+      <div className="px-6 pt-10 pb-16">
         <div className="max-w-2xl mx-auto">
           <DashboardDiary episodes={episodes} agentName={agentName} avatarUrl={avatarUrl} onChat={handleEpisodeChat} />
           {episodes.length >= 3 && (
             <button
               onClick={() => navigate("/journal")}
-              className="mt-4 w-full py-2.5 font-mono text-[10px] tracking-[0.22em] uppercase text-muted-foreground/50 hover:text-foreground border border-border/50 hover:border-border transition-all"
+              className="mt-5 w-full py-3 font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/40 hover:text-foreground/70 border border-border/40 hover:border-border/70 transition-all"
             >
-              View all entries →
+              View all entries
             </button>
           )}
         </div>

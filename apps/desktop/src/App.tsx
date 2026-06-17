@@ -13,6 +13,7 @@ import AiSettings from "./pages/settings/AiSettings";
 import SecuritySettings from "./pages/settings/SecuritySettings";
 import VaultSettings from "./pages/settings/VaultSettings";
 import AdvancedSettings from "./pages/settings/AdvancedSettings";
+import AppearanceSettings from "./pages/settings/AppearanceSettings";
 import LanguageSettings from "./pages/settings/LanguageSettings";
 import AgentProfileSettings from "./pages/settings/AgentProfileSettings";
 import Soul from "./pages/Soul";
@@ -78,6 +79,7 @@ function AppRoutes() {
         <Route path="security" element={<SecuritySettings />} />
         <Route path="vault" element={<VaultSettings />} />
         <Route path="language" element={<LanguageSettings />} />
+        <Route path="appearance" element={<AppearanceSettings />} />
         <Route path="advanced" element={<AdvancedSettings />} />
       </Route>
       <Route path="/agent" element={withLayout(<AgentProfileSettings />)} />

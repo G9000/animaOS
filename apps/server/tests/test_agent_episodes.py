@@ -244,6 +244,57 @@ async def test_maybe_generate_episode_creates_episode_with_enough_turns() -> Non
 
 
 @pytest.mark.asyncio
+async def test_maybe_generate_episode_uses_preview_when_llm_summary_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-missing-summary",
+            password_hash="not-used",
+            display_name="Episode Missing Summary",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            message_pairs=[
+                ("Julio asked about makeup class reminders.", "I helped him track it."),
+                ("He prefers cool neutral tones.", "I noted the palette."),
+                ("Galaxy nail art is part of the plan.", "I connected it to the class."),
+            ],
+        )
+
+        async def empty_episode_payload(*_args: object, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        monkeypatch.setattr(
+            episodes_module,
+            "_call_llm_for_episode_safe",
+            empty_episode_payload,
+        )
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+        assert summary == "Session: Julio asked about makeup class reminders...."
+
+
+@pytest.mark.asyncio
 async def test_maybe_generate_episode_skips_already_episoded_turns() -> None:
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
         user = User(

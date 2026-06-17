@@ -92,6 +92,20 @@ def upsert_claim(
         )
     )
 
+    if existing is None and derived is None:
+        # The content slug is lossy: paraphrases ("love hiking" vs "enjoy
+        # hiking") hash to different keys and would accumulate as parallel
+        # active claims.  Resolve against existing same-namespace claims
+        # by text similarity and adopt the matched claim's key so the
+        # lineage stays on one canonical key.
+        existing = _find_similar_freeform_claim(
+            db, user_id=user_id, namespace=category, content=content,
+        )
+        if existing is not None:
+            canonical_key = existing.canonical_key
+            namespace = existing.namespace
+            slot = existing.slot
+
     if existing is not None:
         # Same value — just add evidence if new
         if (
@@ -177,3 +191,59 @@ def _content_slug(content: str, max_len: int = 60) -> str:
     """Derive a short slug from content for use in canonical keys."""
     slug = re.sub(r"[^a-z0-9]+", "_", content.strip().lower())
     return slug[:max_len].strip("_")
+
+
+# Stricter than analyze_memory_item's 0.4 "similar" threshold because a
+# match here supersedes the existing claim rather than just flagging it.
+_FREEFORM_SIMILARITY_THRESHOLD = 0.6
+
+
+def _find_similar_freeform_claim(
+    db: Session,
+    *,
+    user_id: int,
+    namespace: str,
+    content: str,
+) -> MemoryClaim | None:
+    """Find an active claim in *namespace* that states the same thing as
+    *content*, using the same relation classifier and word-overlap
+    similarity the memory store uses for write dedup."""
+    from anima_server.services.agent.memory_store import (
+        _classify_memory_relation,
+        _similarity,
+    )
+
+    # Deterministic order so the chosen supersession target doesn't depend
+    # on storage order when several candidates match.
+    candidates = db.scalars(
+        select(MemoryClaim)
+        .where(
+            MemoryClaim.user_id == user_id,
+            MemoryClaim.namespace == namespace,
+            MemoryClaim.status == "active",
+        )
+        .order_by(MemoryClaim.updated_at.desc(), MemoryClaim.id.desc())
+    ).all()
+
+    # Rank candidates: a classifier "duplicate"/"update" (same slot or
+    # subject) is the strongest signal and beats raw word overlap; among
+    # equal-relation matches the most-recently-updated wins (query order).
+    # Scan all candidates rather than returning the first so we never
+    # supersede a weaker match while a stronger one exists.
+    _RELATION_RANK = {"duplicate": 3, "update": 2}
+    best: MemoryClaim | None = None
+    best_rank = 0.0
+    for claim in candidates:
+        plaintext = df(
+            user_id, claim.value_text, table="memory_items", field="content")
+        relation = _classify_memory_relation(plaintext, content, namespace)
+        rank = float(_RELATION_RANK.get(relation, 0))
+        if rank == 0.0:
+            score = _similarity(plaintext, content)
+            if score < _FREEFORM_SIMILARITY_THRESHOLD:
+                continue
+            rank = score  # 0.6..1.0, always below the relation ranks
+        if rank > best_rank:
+            best = claim
+            best_rank = rank
+    return best

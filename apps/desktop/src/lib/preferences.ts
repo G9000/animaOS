@@ -1,6 +1,42 @@
-import { dispatchSettingsChanged } from "./events";
+import { dispatchBannerChanged, dispatchSettingsChanged } from "./events";
+
+const BANNER_STORAGE_KEY = "anima-dashboard-banner";
+const BANNER_MAX_BYTES = 5 * 1024 * 1024;
+
+export { BANNER_MAX_BYTES };
+
+export interface BannerConfig {
+  url: string;
+  x: number; // object-position x, 0–100
+  y: number; // object-position y, 0–100
+}
+
+export function getCustomBanner(): BannerConfig | null {
+  try {
+    const raw = localStorage.getItem(BANNER_STORAGE_KEY);
+    if (!raw) return null;
+    // legacy: plain data URL
+    if (raw.startsWith("data:") || raw.startsWith("http")) {
+      return { url: raw, x: 50, y: 50 };
+    }
+    const parsed = JSON.parse(raw);
+    if (parsed?.url) return { url: parsed.url, x: parsed.x ?? 50, y: parsed.y ?? 50 };
+    return null;
+  } catch { return null; }
+}
+
+export function saveCustomBanner(config: BannerConfig): void {
+  try { localStorage.setItem(BANNER_STORAGE_KEY, JSON.stringify(config)); } catch {}
+  dispatchBannerChanged();
+}
+
+export function clearCustomBanner(): void {
+  try { localStorage.removeItem(BANNER_STORAGE_KEY); } catch {}
+  dispatchBannerChanged();
+}
 
 const DB_VIEWER_KEY = "anima-debug-db-viewer";
+const SHOW_TRACE_KEY = "anima-show-trace";
 const TRANSLATE_LANG_KEY = "anima-translate-lang";
 
 export const LANGUAGES = [
@@ -22,6 +58,21 @@ export const LANGUAGES = [
 ] as const;
 
 export type LanguageCode = typeof LANGUAGES[number]["code"];
+
+export function getShowTrace(): boolean {
+  try {
+    return localStorage.getItem(SHOW_TRACE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setShowTrace(enabled: boolean): void {
+  try {
+    localStorage.setItem(SHOW_TRACE_KEY, String(enabled));
+  } catch {}
+  dispatchSettingsChanged();
+}
 
 export function getDbViewerEnabled(): boolean {
   try {

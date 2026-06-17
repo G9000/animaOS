@@ -83,8 +83,51 @@ def build_runtime_memory_blocks(
     query: str | None = None,
     runtime_db: Session | None = None,
 ) -> tuple[MemoryBlock, ...]:
-    blocks: list[MemoryBlock] = []
+    """Build the full memory-block set (static + per-turn).
+
+    The turn pipeline calls :func:`build_static_memory_blocks` (cached via
+    the companion version counter) and :func:`build_turn_memory_blocks`
+    separately; this composition is kept for warm-up, dry runs, mid-turn
+    refreshes, and tests.  Block order is cosmetic — the prompt budget
+    planner re-sorts by tier policy.
+    """
     agent_type = _get_agent_type(db, user_id=user_id)
+    return (
+        *build_static_memory_blocks(
+            db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type),
+        *build_turn_memory_blocks(
+            db,
+            user_id=user_id,
+            thread_id=thread_id,
+            semantic_results=semantic_results,
+            query_embedding=query_embedding,
+            query=query,
+            runtime_db=runtime_db,
+            agent_type=agent_type,
+        ),
+    )
+
+
+def build_static_memory_blocks(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_db: Session | None = None,
+    agent_type: str | None = None,
+) -> tuple[MemoryBlock, ...]:
+    """Slow-changing identity blocks, safe to cache between turns.
+
+    These change only through writers that bump the companion memory
+    version: the core-memory tools, the timezone tool, the user-directive
+    endpoint, and Soul Writer promotion — all of which call
+    ``AnimaCompanion.invalidate_memory()``.  Blocks written by background
+    tasks that do NOT invalidate (self-model via inner monologue,
+    emotional patterns, current focus, episodes) are deliberately kept in
+    :func:`build_turn_memory_blocks` so they never go stale.
+    """
+    if agent_type is None:
+        agent_type = _get_agent_type(db, user_id=user_id)
+    blocks: list[MemoryBlock] = []
 
     # Soul block (Priority 0 — immutable biography from DB)
     soul_block = build_soul_biography_block(
@@ -114,12 +157,37 @@ def build_runtime_memory_blocks(
     if user_directive_block is not None:
         blocks.append(user_directive_block)
 
+    return tuple(blocks)
+
+
+def build_turn_memory_blocks(
+    db: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+    semantic_results: list[tuple[int, str, float]] | None = None,
+    query_embedding: list[float] | None = None,
+    query: str | None = None,
+    runtime_db: Session | None = None,
+    agent_type: str | None = None,
+) -> tuple[MemoryBlock, ...]:
+    """Blocks rebuilt every turn: query-ranked content plus state written
+    by background tasks (self-model, emotional patterns/context, current
+    focus, episodes, pending ops, tasks, thread summary, session notes)
+    whose writers don't bump the companion memory version, so they must
+    not be cached."""
+    if agent_type is None:
+        agent_type = _get_agent_type(db, user_id=user_id)
+    blocks: list[MemoryBlock] = []
+
     pending_ops_block = build_pending_ops_block(
         db, runtime_db, user_id=user_id, agent_type=agent_type)
     if pending_ops_block is not None:
         blocks.append(pending_ops_block)
 
-    # Self-model blocks (Priority 1 — always present, never truncated)
+    # Self-model blocks (Priority 1) — inner_state/working_memory/growth_log
+    # are written by the background inner-monologue task without cache
+    # invalidation, so they are rebuilt per turn.
     for sm_block in build_self_model_memory_blocks(db, user_id=user_id, pg_db=runtime_db, agent_type=agent_type):
         blocks.append(sm_block)
 
@@ -129,33 +197,40 @@ def build_runtime_memory_blocks(
     if emotional_block is not None:
         blocks.append(emotional_block)
 
-    # Emotional patterns (Priority 2 — enduring patterns from soul)
+    # Emotional patterns (Priority 2 — promoted by background inner monologue)
     emotional_patterns_block = build_emotional_patterns_block(
         db, user_id=user_id, agent_type=agent_type)
     if emotional_patterns_block is not None:
         blocks.append(emotional_patterns_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
+    semantic_item_ids: frozenset[int] = frozenset()
     if semantic_results:
         semantic_block = _build_semantic_block(
             semantic_results, agent_type=agent_type)
         if semantic_block is not None:
             blocks.append(semantic_block)
+            # Category blocks below skip items already shown here.
+            semantic_item_ids = frozenset(
+                item_id for item_id, _content, _score in semantic_results)
 
     facts_block = build_facts_memory_block(
         db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
+        exclude_ids=semantic_item_ids,
     )
     if facts_block is not None:
         blocks.append(facts_block)
 
     preferences_block = build_preferences_memory_block(
         db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
+        exclude_ids=semantic_item_ids,
     )
     if preferences_block is not None:
         blocks.append(preferences_block)
 
     goals_block = build_goals_memory_block(
         db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
+        exclude_ids=semantic_item_ids,
     )
     if goals_block is not None:
         blocks.append(goals_block)
@@ -167,16 +242,19 @@ def build_runtime_memory_blocks(
 
     relationships_block = build_relationships_memory_block(
         db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
+        exclude_ids=semantic_item_ids,
     )
     if relationships_block is not None:
         blocks.append(relationships_block)
 
     # Knowledge graph block (Priority 4 — entity-relationship context)
     kg_block = build_knowledge_graph_block(
-        db, user_id=user_id, query=query, agent_type=agent_type)
+        db, user_id=user_id, query=query, query_embedding=query_embedding,
+        agent_type=agent_type)
     if kg_block is not None:
         blocks.append(kg_block)
 
+    # Current focus (written by background consolidation, no invalidation)
     current_focus_block = build_current_focus_memory_block(
         db, user_id=user_id, agent_type=agent_type)
     if current_focus_block is not None:
@@ -187,6 +265,7 @@ def build_runtime_memory_blocks(
     if summary_block is not None:
         blocks.append(summary_block)
 
+    # Recent episodes (written by background consolidation, no invalidation)
     episodes_block = build_episodes_memory_block(
         db, user_id=user_id, agent_type=agent_type)
     if episodes_block is not None:
@@ -238,10 +317,15 @@ def build_facts_memory_block(
     query_embedding: list[float] | None = None,
     runtime_db: Session | None = None,
     agent_type: str = "companion",
+    exclude_ids: frozenset[int] = frozenset(),
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
         db, user_id=user_id, category="fact", limit=30, query_embedding=query_embedding
     )
+    if exclude_ids:
+        # Items already rendered in the relevant_memories block — showing
+        # them again wastes budget and duplicates facts in the prompt.
+        items = [item for item in items if item.id not in exclude_ids]
     if not items:
         return None
     touch_memory_items(db, items, runtime_db=runtime_db)
@@ -264,10 +348,15 @@ def build_preferences_memory_block(
     query_embedding: list[float] | None = None,
     runtime_db: Session | None = None,
     agent_type: str = "companion",
+    exclude_ids: frozenset[int] = frozenset(),
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
         db, user_id=user_id, category="preference", limit=20, query_embedding=query_embedding
     )
+    if exclude_ids:
+        # Items already rendered in the relevant_memories block — showing
+        # them again wastes budget and duplicates facts in the prompt.
+        items = [item for item in items if item.id not in exclude_ids]
     if not items:
         return None
     touch_memory_items(db, items, runtime_db=runtime_db)
@@ -290,10 +379,15 @@ def build_goals_memory_block(
     query_embedding: list[float] | None = None,
     runtime_db: Session | None = None,
     agent_type: str = "companion",
+    exclude_ids: frozenset[int] = frozenset(),
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
         db, user_id=user_id, category="goal", limit=15, query_embedding=query_embedding
     )
+    if exclude_ids:
+        # Items already rendered in the relevant_memories block — showing
+        # them again wastes budget and duplicates facts in the prompt.
+        items = [item for item in items if item.id not in exclude_ids]
     if not items:
         return None
     touch_memory_items(db, items, runtime_db=runtime_db)
@@ -371,10 +465,15 @@ def build_relationships_memory_block(
     query_embedding: list[float] | None = None,
     runtime_db: Session | None = None,
     agent_type: str = "companion",
+    exclude_ids: frozenset[int] = frozenset(),
 ) -> MemoryBlock | None:
     items = get_memory_items_scored(
         db, user_id=user_id, category="relationship", limit=15, query_embedding=query_embedding
     )
+    if exclude_ids:
+        # Items already rendered in the relevant_memories block — showing
+        # them again wastes budget and duplicates facts in the prompt.
+        items = [item for item in items if item.id not in exclude_ids]
     if not items:
         return None
     touch_memory_items(db, items, runtime_db=runtime_db)
@@ -996,13 +1095,16 @@ def build_knowledge_graph_block(
     *,
     user_id: int,
     query: str | None = None,
+    query_embedding: list[float] | None = None,
     agent_type: str = "companion",
 ) -> MemoryBlock | None:
     """Build a memory block with relevant knowledge graph context.
 
     Calls graph_context_for_query() to traverse the entity graph and
     return formatted relationship triples. Omitted when no relevant
-    graph context is found.
+    graph context is found.  Passing ``query_embedding`` lets the semantic
+    entity fallback reuse the turn's existing embedding instead of
+    generating one synchronously on the calling thread.
     """
     if not query:
         return None
@@ -1011,7 +1113,12 @@ def build_knowledge_graph_block(
         from anima_server.services.agent.knowledge_graph import graph_context_for_query
 
         lines = graph_context_for_query(
-            db, user_id=user_id, query=query, limit=10)
+            db, user_id=user_id, query=query,
+            query_embedding=query_embedding,
+            # The turn pipeline supplies its own embedding; never fall back
+            # to a synchronous embedding HTTP call on this path.
+            allow_blocking_embedding=False,
+            limit=10)
         if not lines:
             return None
 

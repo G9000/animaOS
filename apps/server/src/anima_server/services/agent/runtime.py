@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -31,7 +32,11 @@ from anima_server.services.agent.messages import (
     make_tool_message,
     message_content,
 )
-from anima_server.services.agent.prompt_budget import PromptBudgetTrace, plan_prompt_budget
+from anima_server.services.agent.prompt_budget import (
+    PromptBudgetTrace,
+    plan_prompt_budget,
+    resolve_budget_config,
+)
 from anima_server.services.agent.rules import InitToolRule, ToolRule, ToolRulesSolver
 from anima_server.services.agent.runtime_types import (
     DryRunResult,
@@ -162,7 +167,8 @@ class AgentRuntime:
         dynamic_identity, persona_content, prompt_memory_blocks = split_prompt_memory_blocks(
             memory_blocks
         )
-        budget_plan = plan_prompt_budget(prompt_memory_blocks)
+        budget_plan = plan_prompt_budget(
+            prompt_memory_blocks, budget=resolve_budget_config())
         system_prompt = build_system_prompt(
             SystemPromptContext(
                 persona_template=self._persona_template,
@@ -1240,6 +1246,63 @@ class AgentRuntime:
 
         return step_result, streamed_assistant_text, ctx
 
+    async def _iter_stream_with_inactivity_timeout(
+        self,
+        request: LLMRequest,
+        *,
+        cancel_event: asyncio.Event | None,
+    ):
+        """Yield adapter stream events, failing fast on a stalled stream.
+
+        Without this, a stream that stops producing data is only bounded
+        by the HTTP client's read timeout (>= 600s) — pinning the thread
+        lock for up to 10 minutes.  Also wakes on the cancel event, so
+        cancellation is honoured even when no chunks are arriving.
+        """
+        timeout = settings.agent_llm_stream_inactivity_timeout
+        stream_iter = self._adapter.stream(request).__aiter__()
+        try:
+            while True:
+                next_chunk: asyncio.Future = asyncio.ensure_future(
+                    anext(stream_iter))
+                waiters: set[asyncio.Future] = {next_chunk}
+                cancel_waiter: asyncio.Future | None = None
+                if cancel_event is not None:
+                    cancel_waiter = asyncio.ensure_future(cancel_event.wait())
+                    waiters.add(cancel_waiter)
+                done, _pending = await asyncio.wait(
+                    waiters,
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_waiter is not None and cancel_waiter not in done:
+                    cancel_waiter.cancel()
+                    with contextlib.suppress(BaseException):
+                        await cancel_waiter
+                if next_chunk not in done:
+                    next_chunk.cancel()
+                    # Drain the cancelled task before the finally block
+                    # aclose()s the generator: aclose() on a generator that
+                    # is still suspended inside __anext__ raises "async
+                    # generator is already running" and the stream leaks.
+                    with contextlib.suppress(BaseException):
+                        await next_chunk
+                    if not done:
+                        raise LLMInvocationError(
+                            f"LLM stream stalled: no data received for {timeout:.0f}s"
+                        )
+                    raise _CancelledDuringStream()
+                try:
+                    stream_event = next_chunk.result()
+                except StopAsyncIteration:
+                    return
+                yield stream_event
+        finally:
+            aclose = getattr(stream_iter, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(Exception):
+                    await aclose()
+
     async def _invoke_llm_with_retry(
         self,
         *,
@@ -1272,7 +1335,9 @@ class AgentRuntime:
                     ctx.progression = StepProgression.RESPONSE_RECEIVED
                 else:
                     step_result = None
-                    async for stream_event in self._adapter.stream(request):
+                    async for stream_event in self._iter_stream_with_inactivity_timeout(
+                        request, cancel_event=cancel_event,
+                    ):
                         if cancel_event is not None and cancel_event.is_set():
                             raise _CancelledDuringStream()
                         if stream_event.content_delta:

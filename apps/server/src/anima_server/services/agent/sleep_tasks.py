@@ -404,11 +404,7 @@ async def _check_contradiction(
         return None
 
     try:
-        from anima_server.services.agent.json_utils import parse_json_object
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
-        llm = create_llm()
+        from anima_server.services.agent.llm_json import call_llm_for_json
         from anima_server.services.agent.prompt_loader import PromptLoader
 
         prompt_loader = PromptLoader(agent_name="Anima")
@@ -416,17 +412,11 @@ async def _check_contradiction(
             memory_a=content_a,
             memory_b=content_b,
         )
-        response = await llm.ainvoke(
-            [
-                SystemMessage(content="You check memory consistency. Respond only with JSON."),
-                HumanMessage(content=prompt),
-            ]
+        parsed = await call_llm_for_json(
+            "You check memory consistency. Respond only with JSON.",
+            prompt,
         )
-        content = getattr(response, "content", "")
-        if not isinstance(content, str):
-            content = str(content)
-
-        return parse_json_object(content)
+        return parsed if isinstance(parsed, dict) else None
     except Exception:
         logger.exception("Contradiction check failed")
         return None
@@ -435,30 +425,22 @@ async def _check_contradiction(
 async def _call_profile_synthesis(facts: list[MemoryItem], *, user_id: int = 0) -> list[dict]:
     """Ask LLM to identify mergeable facts."""
     try:
-        from anima_server.services.agent.json_utils import parse_json_array as _parse_json_array
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+        from anima_server.services.agent.llm_json import call_llm_for_json
+        from anima_server.services.agent.prompt_loader import PromptLoader
 
         facts_text = "\n".join(
             f"[id={f.id}] {df(user_id, f.content, table='memory_items', field='content')}"
             for f in facts
         )
-        from anima_server.services.agent.prompt_loader import PromptLoader
-
         prompt_loader = PromptLoader(agent_name="Anima")
         prompt = prompt_loader.profile_synthesis(facts=facts_text)
 
-        llm = create_llm()
-        response = await llm.ainvoke(
-            [
-                SystemMessage(content="You synthesize user profiles. Respond only with JSON."),
-                HumanMessage(content=prompt),
-            ]
+        parsed = await call_llm_for_json(
+            "You synthesize user profiles. Respond only with JSON.",
+            prompt,
+            expect="array",
         )
-        content = getattr(response, "content", "")
-        if not isinstance(content, str):
-            content = str(content)
-        return _parse_json_array(content)
+        return parsed if isinstance(parsed, list) else []
     except Exception:
         logger.exception("Profile synthesis LLM call failed")
         return []

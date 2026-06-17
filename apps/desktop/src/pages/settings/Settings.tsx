@@ -22,6 +22,11 @@ const SETTINGS_SECTIONS = [
     description: "Translation and display preferences.",
   },
   {
+    to: "/settings/appearance",
+    label: "APPEARANCE",
+    description: "Dashboard banner and visual customization.",
+  },
+  {
     to: "/settings/advanced",
     label: "ADVANCED",
     description: "Debug tools, developer options.",

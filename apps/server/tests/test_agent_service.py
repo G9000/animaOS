@@ -816,3 +816,194 @@ async def test_cancelled_agent_task_marks_running_run_cancelled(
 
     assert run.status == "cancelled"
     assert run.stop_reason == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after the run/user message are persisted but before the
+    runtime is invoked must not leave a zombie 'running' run or replay
+    the user message as unanswered history."""
+
+    async def fail_assemble(**kwargs: object) -> None:
+        raise RuntimeError("memory load failed")
+
+    monkeypatch.setattr(agent_service, "_assemble_turn_context", fail_assemble)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stage1-fail",
+            password_hash="not-used",
+            display_name="Stage1 Fail",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        with pytest.raises(RuntimeError, match="memory load failed"):
+            await run_agent("hello", user.id, soul_session, runtime_session)
+
+        run = runtime_session.query(RuntimeRun).one()
+        message = runtime_session.query(RuntimeMessage).one()
+
+    assert run.status == "failed"
+    assert message.is_in_context is False
+
+
+def test_should_retry_after_compaction_only_before_tools_executed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The overflow retry re-runs the whole turn, so it is only safe when
+    no tools have executed yet."""
+    from anima_server.services.agent.llm import ContextWindowOverflowError
+    from anima_server.services.agent.runtime_types import (
+        StepContext,
+        StepFailedError,
+        StepProgression,
+    )
+
+    monkeypatch.setattr(
+        agent_service.settings, "agent_context_overflow_retry", True)
+
+    def make_error(step_index: int, progression: StepProgression) -> StepFailedError:
+        ctx = StepContext(step_index=step_index, progression=progression)
+        return StepFailedError(ContextWindowOverflowError("too big"), ctx)
+
+    # Overflow on the very first LLM request: prompt too large, safe to retry.
+    assert agent_service._should_retry_after_compaction(
+        make_error(0, StepProgression.LLM_REQUESTED)) is True
+    # Tools already started within step 0: retry would re-execute them.
+    assert agent_service._should_retry_after_compaction(
+        make_error(0, StepProgression.TOOLS_STARTED)) is False
+    # Later step: tools from earlier steps already executed.
+    assert agent_service._should_retry_after_compaction(
+        make_error(1, StepProgression.LLM_REQUESTED)) is False
+    # Non-overflow failures never retry.
+    assert agent_service._should_retry_after_compaction(
+        StepFailedError(RuntimeError("boom"), StepContext())) is False
+
+
+def test_client_error_message_masks_internal_errors() -> None:
+    from anima_server.services.agent.llm import LLMConfigError
+
+    masked = agent_service.client_error_message(
+        RuntimeError("connection to postgres://user:secret@host failed"))
+    assert "secret" not in masked
+    assert "internal error" in masked
+
+    # Messages written for users pass through unchanged.
+    assert agent_service.client_error_message(
+        LLMConfigError("Choose a vision-capable model.")
+    ) == "Choose a vision-capable model."
+
+
+@pytest.mark.asyncio
+async def test_cancel_agent_run_reaches_inflight_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cancel_agent_run() during a turn must stop the runner: the run row
+    is committed before the LLM stage, the cancel endpoint finds it, and
+    the runtime's cancel_event fires."""
+
+    class CancellableRunner:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def invoke(self, *args, **kwargs) -> AgentResult:
+            del args
+            self.started.set()
+            cancel_event = kwargs.get("cancel_event")
+            assert cancel_event is not None
+            await asyncio.wait_for(cancel_event.wait(), timeout=5)
+            return AgentResult(
+                response="",
+                model="test-model",
+                provider="test-provider",
+                stop_reason="cancelled",
+                step_traces=[],
+            )
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = CancellableRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="cancel-mid-turn",
+            password_hash="not-used",
+            display_name="Cancel Mid Turn",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        task = asyncio.create_task(
+            run_agent("slow question", user.id, soul_session, runtime_session)
+        )
+        await asyncio.wait_for(runner.started.wait(), timeout=5)
+
+        # The run row is committed before the LLM stage, so a concurrent
+        # request can find and cancel it.
+        run = runtime_session.query(RuntimeRun).one()
+        assert run.status == "running"
+        cancelled = await agent_service.cancel_agent_run(
+            run.id, user.id, runtime_session)
+        assert cancelled is not None
+
+        result = await asyncio.wait_for(task, timeout=5)
+        runtime_session.expire_all()
+        run = runtime_session.query(RuntimeRun).one()
+
+    assert result.stop_reason == "cancelled"
+    assert run.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_stage3_persist_failure_marks_run_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure while persisting the result (after the early commit) must
+    mark the run failed and evict the user message — not leave a zombie
+    'running' run whose message replays as history."""
+
+    class OkRunner:
+        async def invoke(self, *args, **kwargs) -> AgentResult:
+            del args, kwargs
+            return AgentResult(
+                response="hi there",
+                model="test-model",
+                provider="test-provider",
+                stop_reason="end_turn",
+                step_traces=[StepTrace(step_index=0, assistant_text="hi there")],
+            )
+
+    async def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("persist exploded")
+
+    agent_service.invalidate_agent_runtime_cache()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: OkRunner())
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(agent_service, "_persist_turn_result", boom)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stage3-fail",
+            password_hash="not-used",
+            display_name="Stage3 Fail",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        with pytest.raises(RuntimeError, match="persist exploded"):
+            await run_agent("hello", user.id, soul_session, runtime_session)
+
+        runtime_session.expire_all()
+        run = runtime_session.query(RuntimeRun).one()
+        user_msg = (
+            runtime_session.query(RuntimeMessage)
+            .filter(RuntimeMessage.role == "user")
+            .one()
+        )
+
+    assert run.status == "failed"
+    assert user_msg.is_in_context is False

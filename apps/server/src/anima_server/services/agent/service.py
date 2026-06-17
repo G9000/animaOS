@@ -36,9 +36,14 @@ from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import (
     ContextWindowOverflowError,
     LLMConfigError,
+    LLMInvocationError,
     invalidate_llm_cache,
 )
-from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
+from anima_server.services.agent.memory_blocks import (
+    MemoryBlock,
+    build_runtime_memory_blocks,
+    build_turn_memory_blocks,
+)
 from anima_server.services.agent.model_capabilities import supports_image_input
 from anima_server.services.agent.persistence import (
     append_message,
@@ -55,11 +60,13 @@ from anima_server.services.agent.persistence import (
     persist_agent_result,
     save_approval_checkpoint,
 )
+from anima_server.services.agent.prompt_budget import resolve_context_budget_tokens
 from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.runtime_types import (
     DryRunResult,
     StepFailedError,
+    StepProgression,
     StopReason,
     ToolCall,
 )
@@ -85,10 +92,14 @@ from anima_server.services.agent.streaming import (
     build_cancelled_event,
     build_done_event,
     build_error_event,
+    build_run_started_event,
     build_usage_event,
     summarize_usage,
 )
-from anima_server.services.agent.system_prompt import invalidate_system_prompt_template_cache
+from anima_server.services.agent.system_prompt import (
+    PromptTemplateError,
+    invalidate_system_prompt_template_cache,
+)
 from anima_server.services.agent.tool_context import (
     ToolContext,
     clear_tool_context,
@@ -104,6 +115,15 @@ logger = logging.getLogger(__name__)
 
 _runner_lock = Lock()
 _cached_runner: AgentRuntime | None = None
+
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_task(coro: Awaitable[Any]) -> None:
+    """Run *coro* as a fire-and-forget task with a strong reference."""
+    task = asyncio.get_running_loop().create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def get_or_build_runner() -> AgentRuntime:
@@ -234,8 +254,16 @@ async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db
     if thread is not None:
         companion.thread_id = thread.id
         history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
-        memory_blocks = companion.ensure_memory_loaded(
-            db, runtime_db=runtime_db)
+        memory_blocks = (
+            *companion.ensure_memory_loaded(db, runtime_db=runtime_db),
+            *build_turn_memory_blocks(
+                db,
+                user_id=user_id,
+                thread_id=thread.id,
+                query=user_message,
+                runtime_db=runtime_db,
+            ),
+        )
 
     runner = get_or_build_runner()
     client_action_runtime = build_client_action_runtime(user_id)
@@ -415,7 +443,7 @@ async def _approve_or_deny_turn_locked(
         run_id=run.id,
         trigger_token_limit=max(
             1,
-            int(settings.agent_max_tokens *
+            int(resolve_context_budget_tokens() *
                 settings.agent_compaction_trigger_ratio),
         ),
         keep_last_messages=max(
@@ -481,7 +509,9 @@ async def stream_approve_or_deny(
                 event_callback=emit,
             )
         except Exception as exc:
-            await queue.put(build_error_event(str(exc)))
+            logger.exception(
+                "Approval resume failed for run %s (user %s)", run_id, user_id)
+            await queue.put(build_error_event(client_error_message(exc)))
         finally:
             await queue.put(None)
 
@@ -613,20 +643,36 @@ async def _execute_agent_turn_locked(
         today_context=today_context,
     )
 
+    # The run row is committed; tell streaming clients the id so they can
+    # cancel mid-turn.
+    if event_callback is not None:
+        await event_callback(
+            build_run_started_event(run_id=run.id, thread_id=thread.id))
+
     # Stage 1b: Proactive context management — compact before the LLM call
     # if estimated context usage already exceeds the threshold.
-    turn_ctx = await _proactive_compact_if_needed(
-        runtime_db,
-        thread=thread,
-        run=run,
-        turn_ctx=turn_ctx,
-        user_id=user_id,
-    )
+    try:
+        turn_ctx = await _proactive_compact_if_needed(
+            runtime_db,
+            thread=thread,
+            run=run,
+            turn_ctx=turn_ctx,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+            exc=exc,
+        )
+        raise
 
     # Stage 2: Invoke the runtime
     companion = _get_companion(user_id)
-    cancel_event = companion.create_cancel_event(run.id)
     try:
+        cancel_event = companion.create_cancel_event(run.id)
         result = await _invoke_turn_runtime(
             user_message,
             user_id,
@@ -694,14 +740,27 @@ async def _execute_agent_turn_locked(
             await event_callback(build_done_event(result, thread_id=thread.id))
         return result
 
-    # Stage 3: Persist result
-    await _persist_turn_result(
-        runtime_db,
-        thread=thread,
-        run=run,
-        result=result,
-        initial_sequence_id=initial_sequence_id,
-    )
+    # Stage 3: Persist result.  The run/user message are already committed
+    # (early-commit), so a failure here must mark the run failed and evict
+    # the user message — otherwise the run stays "running" forever and the
+    # message replays as unanswered history next turn.
+    try:
+        await _persist_turn_result(
+            runtime_db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=initial_sequence_id,
+        )
+    except Exception as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+            exc=exc,
+        )
+        raise
     _refresh_companion_history(
         user_id=user_id,
         runtime_db=runtime_db,
@@ -857,18 +916,115 @@ async def _prepare_turn_context(
         _delete_prepared_attachments(prepared_attachments)
         raise
 
-    # Pre-turn Soul Writer check: if eligible candidates or unconsolidated
-    # pending ops exist, promote them before building memory blocks so the
-    # current turn sees the freshest soul data.
+    # Commit the run and user message now: this makes the run visible to
+    # the cancel endpoint while the turn is in flight, and releases the
+    # thread-row lock taken by reserve_message_sequences (otherwise held
+    # across the LLM call, blocking /chat/reset and background writers).
+    runtime_db.commit()
+
+    try:
+        turn_ctx = await _assemble_turn_context(
+            user_message=user_message,
+            user_id=user_id,
+            db=db,
+            runtime_db=runtime_db,
+            thread=thread,
+            companion=companion,
+            history=history,
+            conversation_turn_count=conversation_turn_count,
+            prepared_attachments=prepared_attachments,
+            persisted_context_messages=persisted_context_messages,
+            today_context=today_context,
+        )
+    except Exception as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=persisted_context_messages,
+            exc=exc,
+        )
+        raise
+    return thread, run, user_msg, initial_sequence_id, turn_ctx
+
+
+def _fail_turn_setup(
+    runtime_db: Session,
+    *,
+    run: RuntimeRun,
+    user_msg: RuntimeMessage,
+    context_messages: Sequence[RuntimeMessage] = (),
+    exc: BaseException,
+) -> None:
+    """Best-effort cleanup when a turn fails after the run and user message
+    were committed (early-commit in turn preparation) but before the run
+    reached a terminal state.
+
+    Evicts the orphaned user message (and any context messages) from
+    active context and marks the run failed, so the run does not stay
+    "running" forever and the message does not replay as unanswered
+    history on the next turn.
+
+    Rolls back any uncommitted partial work first, then re-reads the run
+    from committed state and acts ONLY if it is still "running" — so it is
+    safe to call from any failure path, including ones where a downstream
+    handler (Stage 2's own cleanup, an approval checkpoint, or a
+    successful persist) already moved the run to a terminal/awaiting
+    state.
+    """
+    try:
+        # Discard any partial uncommitted state from the failed operation
+        # so we act on the committed run/message rows.
+        with contextlib.suppress(Exception):
+            runtime_db.rollback()
+        runtime_db.refresh(run)
+        if run.status != "running":
+            return
+        user_msg.is_in_context = False
+        runtime_db.add(user_msg)
+        for context_message in context_messages:
+            context_message.is_in_context = False
+            runtime_db.add(context_message)
+        mark_run_failed(runtime_db, run, str(exc))
+        runtime_db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to clean up run %s after turn-setup failure", run.id)
+        with contextlib.suppress(Exception):
+            runtime_db.rollback()
+
+
+async def _assemble_turn_context(
+    *,
+    user_message: str,
+    user_id: int,
+    db: Session,
+    runtime_db: Session,
+    thread: RuntimeThread,
+    companion: AnimaCompanion,
+    history: list[StoredMessage],
+    conversation_turn_count: int,
+    prepared_attachments: tuple[StoredAttachment, ...],
+    persisted_context_messages: list[RuntimeMessage],
+    today_context: TodayContext | None,
+) -> _TurnContext:
+    """Soul Writer check, semantic retrieval, memory blocks, feedback signals."""
+    # Pre-turn Soul Writer check: promote pending core-memory ops (fast,
+    # non-LLM) so the current turn sees the freshest soul data.  Candidate
+    # promotion makes per-candidate LLM extraction calls, so it runs in the
+    # background instead of blocking time-to-first-token; unpromoted
+    # candidates stay visible via the pending_memory_updates block.
     try:
         from anima_server.services.agent.candidate_ops import count_eligible_candidates
         from anima_server.services.agent.pending_ops import count_pending_ops
         from anima_server.services.agent.soul_writer import run_soul_writer
 
-        eligible = count_eligible_candidates(runtime_db, user_id=user_id)
         pending = count_pending_ops(runtime_db, user_id=user_id)
-        if eligible > 0 or pending > 0:
-            await run_soul_writer(user_id)
+        if pending > 0:
+            await run_soul_writer(user_id, ops_only=True)
+        eligible = count_eligible_candidates(runtime_db, user_id=user_id)
+        if eligible > 0:
+            _track_background_task(run_soul_writer(user_id))
     except Exception:
         logger.debug("Pre-turn Soul Writer check failed for user %s",
                      user_id, exc_info=True)
@@ -893,6 +1049,7 @@ async def _prepare_turn_context(
             limit=15,
             similarity_threshold=0.25,
             runtime_db=runtime_db,
+            recency_heat_blend=True,
         )
         retrieval_ms = (time.monotonic() - retrieval_started) * 1000.0
         if query_embedding is None:
@@ -965,36 +1122,20 @@ async def _prepare_turn_context(
             exc_info=True,
         )
 
-    # Use companion-cached static blocks, reload from DB only if stale.
+    # Static identity blocks come from the companion cache (version-counter
+    # invalidated); only the query-ranked and volatile blocks are rebuilt
+    # per turn.
     static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
-
-    # If we have semantic results or a query embedding, build fresh
-    # blocks so query-aware scoring can re-rank facts/preferences/etc.
-    if semantic_results or query_embedding is not None:
-        memory_blocks = build_runtime_memory_blocks(
-            db,
-            user_id=user_id,
-            thread_id=thread.id,
-            semantic_results=semantic_results,
-            query_embedding=query_embedding,
-            query=user_message,
-            runtime_db=runtime_db,
-        )
-        # Re-populate the cache with the freshly-built static subset so
-        # the next turn that has no semantic changes still benefits.
-        companion.set_memory_cache(
-            tuple(
-                b
-                for b in memory_blocks
-                if b.label
-                not in (
-                    "relevant_memories",
-                    "knowledge_graph",
-                )
-            )
-        )
-    else:
-        memory_blocks = static_blocks
+    turn_blocks = build_turn_memory_blocks(
+        db,
+        user_id=user_id,
+        thread_id=thread.id,
+        semantic_results=semantic_results,
+        query_embedding=query_embedding,
+        query=user_message,
+        runtime_db=runtime_db,
+    )
+    memory_blocks = (*static_blocks, *turn_blocks)
 
     today_context_block = _build_today_context_block(today_context)
     if today_context_block is not None:
@@ -1028,7 +1169,10 @@ async def _prepare_turn_context(
                     runtime_db=runtime_db,
                 )
     except Exception:
-        pass
+        logger.warning(
+            "Feedback signal processing failed for user %s", user_id,
+            exc_info=True,
+        )
 
     # Memory pressure warning: estimate total context usage and inject
     # a warning block when approaching the context window limit.
@@ -1038,7 +1182,7 @@ async def _prepare_turn_context(
         companion,
     )
 
-    turn_ctx = _TurnContext(
+    return _TurnContext(
         history=history,
         conversation_turn_count=conversation_turn_count,
         memory_blocks=memory_blocks,
@@ -1046,7 +1190,6 @@ async def _prepare_turn_context(
         context_messages=tuple(persisted_context_messages),
         retrieval=retrieval_trace,
     )
-    return thread, run, user_msg, initial_sequence_id, turn_ctx
 
 
 def _build_today_context_block(today_context: TodayContext | None) -> MemoryBlock | None:
@@ -1107,7 +1250,7 @@ def _inject_memory_pressure_warning(
     history_chars = sum(len(m.content or "") for m in history)
     estimated_tokens = (block_chars + history_chars) // 4
 
-    threshold = int(settings.agent_max_tokens * _MEMORY_PRESSURE_RATIO)
+    threshold = int(resolve_context_budget_tokens() * _MEMORY_PRESSURE_RATIO)
 
     if estimated_tokens < threshold:
         # Below pressure — reset the alert flag if it was set
@@ -1291,7 +1434,7 @@ async def _proactive_compact_if_needed(
     history_chars = sum(len(m.content or "") for m in turn_ctx.history)
     estimated_tokens = (block_chars + history_chars) // 4
 
-    threshold = int(settings.agent_max_tokens *
+    threshold = int(resolve_context_budget_tokens() *
                     settings.agent_compaction_trigger_ratio)
     if estimated_tokens <= threshold:
         return turn_ctx
@@ -1340,10 +1483,23 @@ async def _proactive_compact_if_needed(
 
 
 def _should_retry_after_compaction(exc: StepFailedError) -> bool:
-    """Return True if the step failure looks like a context overflow."""
+    """Return True if the step failure is a context overflow that is safe
+    to retry.
+
+    The retry re-runs the entire turn, so it is only safe when no tools
+    have executed yet — otherwise side-effecting tools (save_to_memory,
+    create_task, delegated client tools) would run a second time.  An
+    overflow on the very first LLM request (prompt too large from the
+    start) is exactly the case compaction can fix.
+    """
     if not settings.agent_context_overflow_retry:
         return False
-    return isinstance(exc.cause, ContextWindowOverflowError)
+    if not isinstance(exc.cause, ContextWindowOverflowError):
+        return False
+    return (
+        exc.context.step_index == 0
+        and exc.progression < StepProgression.TOOLS_STARTED
+    )
 
 
 def _emergency_compact(
@@ -1530,10 +1686,11 @@ async def _persist_turn_result(
     result: AgentResult,
     initial_sequence_id: int,
 ) -> None:
-    """Stage 3: Write result to DB and compact if needed.
+    """Stage 3: Write result to DB; schedule compaction in the background.
 
-    Attempts LLM-powered summarization first for richer summaries,
-    falling back to fast text-based compaction on failure.
+    Compaction (LLM summarization with a text-based fallback) runs as a
+    background task so the client's ``done`` event is not delayed by a
+    full non-streaming LLM call.
     """
     result_message_count = count_persisted_result_messages(result)
     persist_agent_result(
@@ -1551,42 +1708,86 @@ async def _persist_turn_result(
             else None
         ),
     )
-
-    # Commit persistence before compaction to avoid holding the DB lock
-    # open during a potentially slow LLM summarization call.
     runtime_db.commit()
 
-    compaction_kwargs = dict(
-        thread=thread,
-        run_id=run.id,
-        trigger_token_limit=max(
-            1,
-            int(settings.agent_max_tokens *
-                settings.agent_compaction_trigger_ratio),
-        ),
-        keep_last_messages=max(
-            1, settings.agent_compaction_keep_last_messages),
-        reserved_prompt_tokens=(
-            result.prompt_budget.system_prompt_token_estimate
-            if result.prompt_budget is not None
-            else 0
-        ),
+    _track_background_task(
+        _compact_thread_in_background(
+            user_id=run.user_id,
+            thread_id=thread.id,
+            run_id=run.id,
+            reserved_prompt_tokens=(
+                result.prompt_budget.system_prompt_token_estimate
+                if result.prompt_budget is not None
+                else 0
+            ),
+        )
     )
 
-    # Try LLM-powered compaction first (best-effort)
-    llm_result = None
+
+async def _compact_thread_in_background(
+    *,
+    user_id: int,
+    thread_id: int,
+    run_id: int,
+    reserved_prompt_tokens: int,
+) -> None:
+    """Post-turn compaction off the turn's critical path.
+
+    Waits on the thread lock so it never races a subsequent turn (it is
+    scheduled while the current turn still holds the lock, so it runs
+    right after the turn completes), then opens a fresh session and
+    refreshes the companion history cache if anything was compacted.
+    """
+    from anima_server.services.agent.compaction import compact_thread_context_with_llm
+
     try:
-        from anima_server.services.agent.compaction import compact_thread_context_with_llm
+        async with get_thread_lock(thread_id):
+            factory = _build_runtime_db_factory()
+            with factory() as runtime_db:
+                thread = runtime_db.get(RuntimeThread, thread_id)
+                if thread is None:
+                    return
+                compaction_kwargs = dict(
+                    thread=thread,
+                    run_id=run_id,
+                    trigger_token_limit=max(
+                        1,
+                        int(resolve_context_budget_tokens() *
+                            settings.agent_compaction_trigger_ratio),
+                    ),
+                    keep_last_messages=max(
+                        1, settings.agent_compaction_keep_last_messages),
+                    reserved_prompt_tokens=reserved_prompt_tokens,
+                )
 
-        llm_result = await compact_thread_context_with_llm(runtime_db, **compaction_kwargs)
+                # Try LLM-powered compaction first (best-effort)
+                compaction_result = None
+                try:
+                    compaction_result = await compact_thread_context_with_llm(
+                        runtime_db, **compaction_kwargs)
+                except Exception:
+                    logger.warning(
+                        "LLM compaction failed for thread %s; falling back "
+                        "to text-based compaction",
+                        thread_id,
+                        exc_info=True,
+                    )
+
+                # Fall back to fast text-based compaction if LLM didn't trigger
+                if compaction_result is None:
+                    compaction_result = compact_thread_context(
+                        runtime_db, **compaction_kwargs)
+
+                runtime_db.commit()
+                if compaction_result is not None:
+                    _refresh_companion_history(
+                        user_id=user_id,
+                        runtime_db=runtime_db,
+                        thread_id=thread_id,
+                    )
     except Exception:
-        pass
-
-    # Fall back to fast text-based compaction if LLM didn't trigger
-    if llm_result is None:
-        compact_thread_context(runtime_db, **compaction_kwargs)
-
-    runtime_db.commit()
+        logger.exception(
+            "Post-turn compaction failed for thread %s", thread_id)
 
 
 def _extract_inner_thoughts(result: AgentResult) -> str:
@@ -1674,6 +1875,14 @@ def _source_message_ids_for_extraction(
     return message_ids
 
 
+def client_error_message(exc: Exception) -> str:
+    """Client-safe error text: pass through messages written for users,
+    mask everything else (provider/DB errors can leak URLs or payloads)."""
+    if isinstance(exc, (LLMConfigError, LLMInvocationError, PromptTemplateError, ValueError)):
+        return str(exc)
+    return "An internal error occurred while processing this message."
+
+
 async def stream_agent(
     user_message: str,
     user_id: int,
@@ -1714,7 +1923,8 @@ async def stream_agent(
                 today_context=today_context,
             )
         except Exception as exc:
-            await queue.put(build_error_event(str(exc)))
+            logger.exception("Agent turn failed for user %s", user_id)
+            await queue.put(build_error_event(client_error_message(exc)))
         finally:
             await queue.put(None)
 

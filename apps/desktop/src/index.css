@@ -242,6 +242,21 @@ a {
   @apply border-l border-accent/40 pl-4 italic text-muted-foreground;
 }
 
+/* Tiptap diary editor */
+.tiptap {
+  @apply outline-none;
+}
+.tiptap :first-child {
+  margin-top: 0;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  @apply text-muted-foreground/25;
+}
+
 .prose :where(ul, ol):not(:where([class~="not-prose"] *)) {
   @apply my-3;
 }

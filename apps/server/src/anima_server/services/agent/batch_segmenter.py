@@ -122,7 +122,7 @@ async def _call_llm_for_segmentation(
     agent_name: str = "Anima",
 ) -> list[list[int]]:
     """Call LLM to segment messages by topic coherence."""
-    from anima_server.services.agent.messages import HumanMessage, SystemMessage
+    from anima_server.services.agent.llm_json import call_llm_for_text
 
     # Format messages for the prompt
     lines: list[str] = []
@@ -137,12 +137,10 @@ async def _call_llm_for_segmentation(
     timeout = min(settings.agent_llm_timeout,
                   _BATCH_SEGMENTATION_TIMEOUT_SECONDS)
     max_tokens = min(settings.agent_max_tokens, _BATCH_SEGMENTATION_MAX_TOKENS)
-    request_messages = [
-        SystemMessage(
-            content="You group conversation messages by topic. Respond only with a JSON array of arrays."
-        ),
-        HumanMessage(content=prompt),
-    ]
+    system = (
+        "You group conversation messages by topic. "
+        "Respond only with a JSON array of arrays."
+    )
     models = _segmentation_models()
     last_error: Exception | None = None
 
@@ -158,10 +156,7 @@ async def _call_llm_for_segmentation(
 
         try:
             for attempt in range(1, _BATCH_SEGMENTATION_EMPTY_RESPONSE_RETRIES + 2):
-                response = await client.ainvoke(request_messages)
-                content = getattr(response, "content", "")
-                if not isinstance(content, str):
-                    content = str(content)
+                content = await call_llm_for_text(system, prompt, client=client)
 
                 if not content.strip():
                     last_error = ValueError(

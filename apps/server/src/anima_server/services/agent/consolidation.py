@@ -27,8 +27,6 @@ from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
 
-_background_tasks: set[asyncio.Task[Any]] = set()
-
 _background_tasks_lock = Lock()
 _background_tasks: set[asyncio.Task[None]] = set()
 
@@ -47,13 +45,6 @@ class ExtractedTurnMemory:
 class PatternExtractor:
     pattern: re.Pattern[str]
     formatter: Callable[[str], str]
-
-
-@dataclass(slots=True)
-class PendingOpsConsolidationResult:
-    processed_ids: list[int] = field(default_factory=list)
-    failed_ids: list[int] = field(default_factory=list)
-    skipped_ids: list[int] = field(default_factory=list)
 
 
 _FACT_EXTRACTORS: tuple[PatternExtractor, ...] = (
@@ -110,118 +101,6 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-# DEPRECATED: Use run_soul_writer() instead. This function bypasses Soul Writer's
-# journal and idempotency checks. Kept only for direct testing.
-async def consolidate_pending_ops(
-    *,
-    user_id: int,
-    soul_db_factory: Callable[..., object],
-    runtime_db_factory: Callable[..., object],
-) -> PendingOpsConsolidationResult:
-    # DEPRECATED: Use run_soul_writer() instead. This function bypasses Soul Writer's
-    # journal and idempotency checks. Kept only for direct testing.
-    """Promote pending runtime memory ops into the soul store."""
-    from anima_server.models import PendingMemoryOp
-    from anima_server.services.agent.pending_ops import get_pending_ops
-    from anima_server.services.agent.soul_blocks import (
-        append_to_soul_block,
-        full_replace_soul_block,
-        replace_in_soul_block,
-    )
-
-    result = PendingOpsConsolidationResult()
-    runtime_db = runtime_db_factory()
-    soul_db = soul_db_factory()
-    now = datetime.now(UTC)
-
-    try:
-        bind = runtime_db.get_bind()
-        if bind.dialect.name == "postgresql":
-            runtime_db.execute(
-                text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                {"lock_id": user_id},
-            )
-
-        pending_ops = get_pending_ops(runtime_db, user_id=user_id)
-        if not pending_ops:
-            return result
-
-        for op in pending_ops:
-            if op.source_tool_call_id:
-                dedup_filters = [
-                    PendingMemoryOp.user_id == user_id,
-                    PendingMemoryOp.source_tool_call_id == op.source_tool_call_id,
-                    PendingMemoryOp.consolidated.is_(True),
-                    PendingMemoryOp.id != op.id,
-                ]
-                # Scope by run to avoid false matches on non-unique call IDs
-                # (e.g. fallback IDs like "tool-call-0" can repeat across runs)
-                if op.source_run_id is not None:
-                    dedup_filters.append(
-                        PendingMemoryOp.source_run_id == op.source_run_id)
-                duplicate = runtime_db.scalar(
-                    select(PendingMemoryOp.id).where(*dedup_filters))
-                if duplicate is not None:
-                    op.consolidated = True
-                    op.consolidated_at = now
-                    result.skipped_ids.append(op.id)
-                    continue
-
-            if op.op_type == "append":
-                append_to_soul_block(
-                    soul_db,
-                    user_id=user_id,
-                    section=op.target_block,
-                    content=op.content,
-                )
-            elif op.op_type == "replace":
-                replaced = replace_in_soul_block(
-                    soul_db,
-                    user_id=user_id,
-                    section=op.target_block,
-                    old_content=op.old_content or "",
-                    new_content=op.content,
-                )
-                if replaced is None:
-                    op.failed = True
-                    op.failure_reason = "old_content not found in target block"
-                    result.failed_ids.append(op.id)
-                    continue
-            elif op.op_type == "full_replace":
-                full_replace_soul_block(
-                    soul_db,
-                    user_id=user_id,
-                    section=op.target_block,
-                    content=op.content,
-                )
-            else:
-                op.failed = True
-                op.failure_reason = f"unsupported op_type: {op.op_type}"
-                result.failed_ids.append(op.id)
-                continue
-
-            op.consolidated = True
-            op.consolidated_at = now
-            result.processed_ids.append(op.id)
-
-        # Commit soul first so identity mutations are durable before we
-        # mark ops as consolidated. If runtime commit fails afterward,
-        # ops remain unconsolidated but soul already has the data — on
-        # retry the idempotency check (scoped by run + tool_call_id)
-        # prevents re-application. The reverse (runtime first, soul
-        # fails) would silently lose identity writes.
-        soul_db.commit()
-        runtime_db.commit()
-        return result
-    except Exception:
-        soul_db.rollback()
-        runtime_db.rollback()
-        raise
-    finally:
-        soul_db.close()
-        runtime_db.close()
-
-
 @dataclass(slots=True)
 class LLMExtractionResult:
     memories: list[dict[str, Any]] = field(default_factory=list)
@@ -243,26 +122,18 @@ async def extract_memories_via_llm(
     prepared_assistant_response = prepare_memory_text(assistant_response)
 
     try:
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+        from anima_server.services.agent.llm_json import call_llm_for_text
         from anima_server.services.agent.prompt_loader import PromptLoader
 
-        llm = create_llm()
         prompt_loader = PromptLoader(agent_name="Anima")
         prompt = prompt_loader.memory_extraction(
             user_message=prepared_user_message or user_message,
             assistant_response=prepared_assistant_response or assistant_response,
         )
-        response = await llm.ainvoke(
-            [
-                SystemMessage(
-                    content="You extract memories and emotions. Respond only with JSON."),
-                HumanMessage(content=prompt),
-            ]
+        content = await call_llm_for_text(
+            "You extract memories and emotions. Respond only with JSON.",
+            prompt,
         )
-        content = getattr(response, "content", "")
-        if not isinstance(content, str):
-            content = str(content)
 
         result = LLMExtractionResult()
 
@@ -295,24 +166,20 @@ async def resolve_conflict(
         return "DIFFERENT"
 
     try:
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+        from anima_server.services.agent.llm_json import call_llm_for_text
         from anima_server.services.agent.prompt_loader import PromptLoader
 
-        llm = create_llm()
         prompt_loader = PromptLoader(agent_name="Anima")
         prompt = prompt_loader.conflict_check(
             existing=existing_content,
             new_content=new_content,
         )
-        response = await llm.ainvoke(
-            [
-                SystemMessage(
-                    content="Respond with exactly one word: UPDATE or DIFFERENT"),
-                HumanMessage(content=prompt),
-            ]
-        )
-        content = getattr(response, "content", "").strip().upper()
+        content = (
+            await call_llm_for_text(
+                "Respond with exactly one word: UPDATE or DIFFERENT",
+                prompt,
+            )
+        ).strip().upper()
         if content in ("UPDATE", "DIFFERENT"):
             return content
         return "DIFFERENT"
@@ -377,24 +244,20 @@ async def resolve_conflict_batch(
         return BatchConflictResult(action="DIFFERENT")
 
     try:
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+        from anima_server.services.agent.llm_json import call_llm_for_text
         from anima_server.services.agent.prompt_loader import PromptLoader
 
-        llm = create_llm()
         prompt_loader = PromptLoader(agent_name="Anima")
         prompt = prompt_loader.batch_conflict_check(
             existing_memories=existing_memories_block,
             new_content=new_content,
         )
-        response = await llm.ainvoke(
-            [
-                SystemMessage(
-                    content="Respond with exactly: UPDATE <id> or DIFFERENT"),
-                HumanMessage(content=prompt),
-            ]
-        )
-        content = getattr(response, "content", "").strip().upper()
+        content = (
+            await call_llm_for_text(
+                "Respond with exactly: UPDATE <id> or DIFFERENT",
+                prompt,
+            )
+        ).strip().upper()
 
         # Parse "UPDATE <int>"
         m = re.match(r"UPDATE\s+(\d+)", content)

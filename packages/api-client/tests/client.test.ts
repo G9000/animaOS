@@ -164,4 +164,90 @@ describe("createApiClient error handling", () => {
       },
     ]);
   });
+
+  test("requests diary entries and uploads diary attachments", async () => {
+    const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        const body = init?.body;
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          bodyType: body instanceof FormData ? "form" : typeof body,
+          body:
+            typeof body === "string"
+              ? JSON.parse(body)
+              : body instanceof FormData
+                ? {
+                    caption: body.get("caption"),
+                    fileName: (body.get("file") as File).name,
+                  }
+                : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            id: 12,
+            userId: 7,
+            entryDate: "2026-06-05",
+            title: "Private",
+            body: "Today mattered.",
+            mood: "calm",
+            source: "user",
+            attachments: [],
+            createdAt: null,
+            updatedAt: null,
+          }),
+        );
+      },
+    });
+
+    await api.diary.list(7, 25);
+    await api.diary.create(7, {
+      entryDate: "2026-06-05",
+      title: "Private",
+      body: "Today mattered.",
+      mood: "calm",
+    });
+    await api.diary.uploadAttachment(
+      12,
+      new File(["voice"], "voice.wav", { type: "audio/wav" }),
+      "Voice note",
+    );
+    await api.diary.delete(12);
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/diary?userId=7&limit=25",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/diary",
+        method: "POST",
+        bodyType: "string",
+        body: {
+          userId: 7,
+          entryDate: "2026-06-05",
+          title: "Private",
+          body: "Today mattered.",
+          mood: "calm",
+        },
+      },
+      {
+        url: "https://api.test/api/diary/12/attachments",
+        method: "POST",
+        bodyType: "form",
+        body: {
+          caption: "Voice note",
+          fileName: "voice.wav",
+        },
+      },
+      {
+        url: "https://api.test/api/diary/12",
+        method: "DELETE",
+        bodyType: "undefined",
+      },
+    ]);
+  });
 });

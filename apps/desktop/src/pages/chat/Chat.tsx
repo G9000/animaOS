@@ -33,7 +33,11 @@ import {
   CompactChatBubble,
   shouldGroupMessages,
 } from "@anima/standard-templates";
-import { getTranslateLang } from "../../lib/preferences";
+import {
+  getTranslateLang,
+  getShowTrace,
+  setShowTrace as persistShowTrace,
+} from "../../lib/preferences";
 
 // Local chat components
 import {
@@ -340,7 +344,7 @@ export default function Chat() {
   const [streamBuffer, setStreamBuffer] = useState("");
   const [reasoningBuffer, setReasoningBuffer] = useState("");
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
-  const [showTrace] = useState(false);
+  const [showTrace, setShowTrace] = useState(() => getShowTrace());
   const [proactiveNotice, setProactiveNotice] =
     useState<ProactiveNotice | null>(null);
   const [proactiveDraft, setProactiveDraft] = useState("");
@@ -602,6 +606,58 @@ export default function Chat() {
     } catch {
       setError("Failed to delete thread.");
     }
+  };
+
+  const handleToggleTrace = useCallback(() => {
+    setShowTrace((prev) => {
+      const next = !prev;
+      persistShowTrace(next);
+      return next;
+    });
+  }, []);
+
+  // Ctrl+Shift+T — toggle trace panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "T") {
+        e.preventDefault();
+        handleToggleTrace();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [handleToggleTrace]);
+
+  // Send the last run's trace to Animus for debugging.
+  // TODO: when Animus is connected, route directly to Animus session instead of chat.
+  const handleDebugInAnimus = () => {
+    const errorEvents = traceEvents.filter(
+      (e) =>
+        (e as any).type === "error" ||
+        ((e as any).type === "warning" && (e as any).code === "empty_step_result") ||
+        ((e as any).type === "tool_return" && (e as any).isError),
+    );
+    if (errorEvents.length === 0) return;
+
+    const lines: string[] = ["Execution trace from last run:"];
+    for (const e of traceEvents) {
+      const ev = e as any;
+      if (ev.type === "tool_call") {
+        lines.push(`  → ${ev.name}(${JSON.stringify(ev.arguments ?? {})})`);
+      } else if (ev.type === "tool_return") {
+        lines.push(
+          `  ← ${ev.name}: ${ev.isError ? "ERROR — " : ""}${String(ev.output ?? "").slice(0, 400)}`,
+        );
+      } else if (ev.type === "error") {
+        lines.push(`  !! ${ev.error}`);
+      } else if (ev.type === "warning") {
+        lines.push(`  ⚠ [${ev.code}] ${ev.message}`);
+      }
+    }
+
+    void sendMessage(
+      `Debug the last run. Here's the trace:\n\`\`\`\n${lines.join("\n")}\n\`\`\`\nDiagnose what went wrong and fix it.`,
+    );
   };
 
   const handleAttach = useCallback((type: string) => {
@@ -910,6 +966,8 @@ export default function Chat() {
         }
         showSidebar={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        showTrace={showTrace}
+        onToggleTrace={handleToggleTrace}
         showScrollButton={!isAtBottom}
         onScrollToBottom={() => scrollToBottom("smooth")}
         sidebar={
@@ -968,6 +1026,30 @@ export default function Chat() {
             showTrace={showTrace}
             agentAvatarUrl={agentAvatarUrl}
           />
+
+          {/* Debug in Animus — shows after a turn with errors in the trace */}
+          {!streaming &&
+            traceEvents.some(
+              (e) =>
+                (e as any).type === "error" ||
+                ((e as any).type === "warning" &&
+                  (e as any).code === "empty_step_result") ||
+                ((e as any).type === "tool_return" && (e as any).isError),
+            ) && (
+              <div className="flex items-center gap-3 pt-1 pb-2 px-1">
+                <div className="shrink-0 w-12" />
+                <button
+                  type="button"
+                  onClick={handleDebugInAnimus}
+                  className="font-mono text-[9px] tracking-[0.18em] uppercase text-yellow-400/70 hover:text-yellow-400 border border-yellow-400/30 hover:border-yellow-400/60 px-3 py-1.5 bg-yellow-400/5 hover:bg-yellow-400/10 transition-all"
+                >
+                  ⬡ DEBUG IN ANIMUS
+                </button>
+                <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                  sends trace as context
+                </span>
+              </div>
+            )}
 
           {error && (
             <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-[11px] tracking-wider">
