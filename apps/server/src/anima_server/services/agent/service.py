@@ -143,7 +143,19 @@ def _get_companion(user_id: int) -> AnimaCompanion:
     return get_or_build_companion(runtime, user_id)
 
 
+def _rebuild_runner_for_mod_tools() -> None:
+    """Invalidate the cached runner so the next turn rebuilds it with mod
+    tools that loaded asynchronously after startup."""
+    logger.info("Mod tools loaded; rebuilding agent runner to include them")
+    invalidate_agent_runtime_cache()
+
+
 def ensure_agent_ready() -> None:
+    # When anima-mod tools load via a background fetch (cold cache on the
+    # event loop), the already-built runner must be rebuilt to include them.
+    from anima_server.services.agent.tools import set_mod_tools_loaded_callback
+
+    set_mod_tools_loaded_callback(_rebuild_runner_for_mod_tools)
     runner = get_or_build_runner()
     runner.prepare_system_prompt()
 

@@ -27,8 +27,16 @@ class TodayContext(BaseModel):
 
     @model_validator(mode="after")
     def validate_today_context(self) -> TodayContext:
-        if self.date != date.today().isoformat():
-            raise ValueError("Today context date must match the current date.")
+        try:
+            client_date = date.fromisoformat(self.date)
+        except ValueError as exc:
+            raise ValueError("Today context date must be ISO format (YYYY-MM-DD).") from exc
+        # Accept the server's day +/- 1 to tolerate client/server timezone
+        # skew (a client can legitimately be up to a calendar day ahead or
+        # behind a differently-zoned server); reject only clearly stale dates.
+        server_today = date.today()
+        if abs((client_date - server_today).days) > 1:
+            raise ValueError("Today context date is not within the current day.")
         if not any((value or "").strip() for value in (self.mood, self.energy, self.note)):
             raise ValueError("Today context requires mood, energy, or note.")
         return self

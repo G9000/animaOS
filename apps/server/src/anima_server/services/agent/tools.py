@@ -1292,6 +1292,18 @@ _mod_tools_refresh_lock = _threading.Lock()
 # After a fetch failure, don't retry (or block on) anima-mod for this long.
 _MOD_TOOLS_FAILURE_TTL = 30.0
 
+# Called when a background refresh first loads mod tools, so the cached
+# agent runner (built without them) can be rebuilt to include them.
+_mod_tools_loaded_callback: Callable[[], None] | None = None
+
+
+def set_mod_tools_loaded_callback(callback: Callable[[], None] | None) -> None:
+    """Register a callback fired when a background mod-tools fetch newly
+    populates the cache (used to invalidate the runner so it rebuilds with
+    the freshly-loaded tools)."""
+    global _mod_tools_loaded_callback
+    _mod_tools_loaded_callback = callback
+
 
 def reload_mod_tools() -> None:
     """Bust the mod tools cache so the next agent turn re-fetches from anima-mod."""
@@ -1336,9 +1348,16 @@ def _start_mod_tools_refresh() -> None:
 
     def _worker() -> None:
         try:
-            _fetch_and_cache_mod_tools()
+            loaded = _fetch_and_cache_mod_tools()
         finally:
             _mod_tools_refresh_lock.release()
+        # The runner was built without mod tools (cold cache on the event
+        # loop); now that they're loaded, ask the owner to rebuild it.
+        if loaded and _mod_tools_loaded_callback is not None:
+            try:
+                _mod_tools_loaded_callback()
+            except Exception:
+                logger.debug("mod-tools loaded callback failed", exc_info=True)
 
     _threading.Thread(
         target=_worker, daemon=True, name="mod-tools-refresh").start()
