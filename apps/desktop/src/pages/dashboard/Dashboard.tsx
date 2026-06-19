@@ -22,12 +22,6 @@ import {
   todayIso,
   type TodayContextDraft,
 } from "../../lib/today-context";
-import { BANNER_CHANGED_EVENT } from "../../lib/events";
-import { getCustomBanner, type BannerConfig } from "../../lib/preferences";
-import banner1 from "../../assets/banner_1.jpg";
-import banner2 from "../../assets/banner_2.jpg";
-
-const BANNERS = [banner1, banner2];
 
 const GREETING_CACHE_KEY = "anima_dashboard_greeting";
 const GREETING_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -117,14 +111,6 @@ export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { agentName, avatarUrl, relationship } = useAgentProfile(user?.id);
-
-  const [bannerConfig, setBannerConfig] = useState<BannerConfig | null>(() => getCustomBanner());
-
-  useEffect(() => {
-    const onBannerChanged = () => setBannerConfig(getCustomBanner());
-    window.addEventListener(BANNER_CHANGED_EVENT, onBannerChanged);
-    return () => window.removeEventListener(BANNER_CHANGED_EVENT, onBannerChanged);
-  }, []);
 
   const [brief, setBrief] = useState<Greeting | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
@@ -264,28 +250,16 @@ const lastSession = episodes[0]?.date ? relativeSession(episodes[0].date) : null
 
   return (
     <div className="h-full overflow-y-auto">
-
-      {/* ── Banner ── */}
-      <div className="relative h-82 w-full overflow-hidden bg-card">
-        <img
-          src={bannerConfig?.url ?? BANNERS[0]}
-          alt=""
-          className="absolute inset-0 w-full h-full object-cover"
-          style={bannerConfig ? { objectPosition: `${bannerConfig.x}% ${bannerConfig.y}%` } : { objectPosition: "50% 0%" }}
-        />
-        <div className="absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-background via-background/60 to-transparent pointer-events-none" />
-      </div>
-
       {/* ── Profile ── */}
-      <div className="px-6 relative z-10">
+      <div className="px-6 pt-16 relative z-10">
         <div className="max-w-2xl mx-auto">
-          {/* Avatar row — avatar + companion state panel emerge from banner gradient */}
-          <div className="flex items-end gap-4 -mt-20 mb-4">
+          {/* Avatar row */}
+          <div className="flex items-end gap-4 mb-4">
             <div className="w-40 h-48 border-2 border-background bg-card overflow-hidden shrink-0 shadow-xl">
               <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover object-top" />
             </div>
 
-            {/* Companion state panel — taller than avatar, sticks into banner gradient */}
+            {/* Companion state panel */}
             <div
               className="flex-1 min-w-0 h-48 bg-card border border-border/50 shadow-md overflow-hidden self-end"
               style={{ display: "grid", gridTemplateRows: "auto 1px auto 1px 1fr" }}

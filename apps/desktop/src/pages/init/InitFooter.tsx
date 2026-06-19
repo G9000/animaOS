@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { useTheme } from "../../hooks/useTheme";
 import { Button } from "@anima/standard-templates";
 import pkg from "../../../package.json";
 
@@ -9,7 +8,7 @@ interface InitFooterProps {
 }
 
 export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
-  const [theme, setTheme] = useState<Theme>(getTheme);
+  const { effective: theme, toggle: toggleTheme } = useTheme();
 
   return (
     <div
@@ -23,7 +22,7 @@ export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
         <Button
           size="xs"
           variant="ghost"
-          onClick={(e) => { e.stopPropagation(); setTheme(toggleTheme()); }}
+          onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
         >
           {theme === "dark" ? "light" : "dark"}
         </Button>

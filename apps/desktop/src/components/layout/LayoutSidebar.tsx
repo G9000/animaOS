@@ -9,7 +9,7 @@ import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
 import { getDbViewerEnabled } from "../../lib/preferences";
-import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { useTheme } from "../../hooks/useTheme";
 import { DATABASE_NAV_ITEM, SIDEBAR_NAV_ITEMS } from "./nav-items";
 
 
@@ -54,7 +54,7 @@ export function LayoutSidebar() {
   const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
   const [collapsed, setCollapsed] = useState(readCollapsedState);
   const [showUser, setShowUser] = useState(false);
-  const [theme, setTheme] = useState<Theme>(getTheme);
+  const { effective: theme, toggle: toggleTheme } = useTheme();
   const { agentName, avatarUrl, relationship } = useAgentProfile(user?.id);
   const [dominantEmotion, setDominantEmotion] = useState<string | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -205,7 +205,7 @@ export function LayoutSidebar() {
         {/* Theme + Collapse row */}
         <div className={cn("flex gap-1 p-1.5", collapsed ? "flex-col" : "flex-row")}>
           <button
-            onClick={() => setTheme(toggleTheme())}
+            onClick={toggleTheme}
             title={theme === "dark" ? "Switch to light" : "Switch to dark"}
             className={cn(
               "flex items-center justify-center gap-2 py-2 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors rounded-md",

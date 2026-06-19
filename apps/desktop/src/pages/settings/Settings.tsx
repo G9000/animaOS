@@ -24,7 +24,7 @@ const SETTINGS_SECTIONS = [
   {
     to: "/settings/appearance",
     label: "APPEARANCE",
-    description: "Dashboard banner and visual customization.",
+    description: "Theme, full-screen background, and visual customization.",
   },
   {
     to: "/settings/advanced",

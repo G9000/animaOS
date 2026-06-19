@@ -39,7 +39,7 @@ export function ChatLayout({
   return (
     <div className="flex h-full overflow-hidden">
       {/* Main chat column */}
-      <div className="flex-1 flex flex-col min-w-0 relative bg-background">
+      <div className="flex-1 flex flex-col min-w-0 relative">
         {/* Trace toggle */}
         {onToggleTrace && (
           <button

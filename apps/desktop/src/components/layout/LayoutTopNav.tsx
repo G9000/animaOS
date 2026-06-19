@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
+  ChevronDownIcon,
+  ChevronUpIcon,
   cn,
 } from "@anima/standard-templates";
 import type { MemoryOverviewData } from "@anima/api-client";
@@ -9,7 +11,7 @@ import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
 import { getDbViewerEnabled } from "../../lib/preferences";
-import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { useTheme } from "../../hooks/useTheme";
 import { DATABASE_NAV_ITEM, TOP_NAV_ITEMS } from "./nav-items";
 
 const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
@@ -26,12 +28,14 @@ export function LayoutTopNav() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { agentName, avatarUrl } = useAgentProfile(user?.id);
-  const [theme, setTheme] = useState<Theme>(getTheme);
+  const { effective: theme, toggle: toggleTheme } = useTheme();
   const [showUser, setShowUser] = useState(false);
   const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
   const [dominantEmotion, setDominantEmotion] = useState<string | null>(null);
   const [memOverview, setMemOverview] = useState<MemoryOverviewData | null>(null);
   const [pendingTasks, setPendingTasks] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const navRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   const syncDbViewer = useCallback(() => setDbEnabled(getDbViewerEnabled()), []);
@@ -79,123 +83,164 @@ export function LayoutTopNav() {
     return () => document.removeEventListener("mousedown", handler);
   }, [showUser]);
 
+  useEffect(() => {
+    if (!expanded) return;
+    const handler = (e: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) {
+        setExpanded(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [expanded]);
+
   const navItems = dbEnabled ? [...TOP_NAV_ITEMS, DATABASE_NAV_ITEM] : TOP_NAV_ITEMS;
 
+  const glassClasses = [
+    "relative h-12 flex items-center px-4 gap-3 z-20 rounded-2xl overflow-hidden",
+    "bg-background/25",
+    "backdrop-blur-[40px]",
+    "border border-white/[0.14]",
+    "shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]",
+    "before:absolute before:inset-0 before:pointer-events-none",
+    "before:bg-gradient-to-b before:from-white/[0.18] before:to-white/[0.02]",
+    "after:absolute after:inset-0 after:pointer-events-none",
+    "after:shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
+  ].join(" ");
+
   return (
-    <header className="h-12 flex items-center border border-border/70 bg-background/90 backdrop-blur-md shadow-md px-4 gap-3 z-20">
-      {/* Agent branding */}
-      <button
-        onClick={() => navigate("/agent")}
-        className="flex items-center gap-2 shrink-0 hover:opacity-75 transition-opacity"
-      >
-        <div className="relative w-7 h-7 rounded-full overflow-hidden border border-border/70">
-          <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover" />
-          {dominantEmotion && (
-            <span className={cn("absolute bottom-0 right-0 w-2 h-2 rounded-full border border-background", moodDotClass(dominantEmotion))} />
-          )}
-        </div>
-        <span className="text-sm font-semibold text-foreground leading-none">{agentName}</span>
-      </button>
-
-      <div className="w-px h-4 bg-border/60 shrink-0" />
-
-      {/* Navigation */}
-      <nav className="flex items-center gap-0.5 flex-1">
-        {navItems.map(({ to, label, Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            title={label}
-            className={({ isActive }) =>
-              cn(
-                "relative w-9 h-9 flex items-center justify-center transition-all duration-150",
-                isActive
-                  ? "text-foreground bg-foreground/8"
-                  : "text-foreground/35 hover:text-foreground/70 hover:bg-foreground/5",
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <Icon size="md" />
-                {isActive && (
-                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-foreground/60" />
-                )}
-              </>
-            )}
-          </NavLink>
-        ))}
-      </nav>
-
-      {/* Agent stats */}
-      <div className="flex items-center gap-px shrink-0 border border-border/50 bg-muted/30">
-        {memOverview != null && (
-          <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">MEM</span>
-            <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.totalItems}</span>
-          </div>
-        )}
-        {memOverview != null && (
-          <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">EPS</span>
-            <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.episodeCount}</span>
-          </div>
-        )}
-        {pendingTasks != null && (
-          <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">TASKS</span>
-            <span className={cn("font-mono text-[11px] font-medium tabular-nums leading-tight", pendingTasks > 0 ? "text-accent" : "text-foreground/40")}>{pendingTasks}</span>
-          </div>
-        )}
-        {dominantEmotion && (
-          <div className="flex flex-col items-center px-3 py-1">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">STATE</span>
-            <span className="font-mono text-[11px] font-medium text-foreground/80 leading-tight capitalize">{dominantEmotion}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Right controls */}
-      <div className="flex items-center gap-0.5 shrink-0">
+    <div ref={navRef} className="w-fit">
+      <header className={glassClasses}>
+        {/* Agent branding */}
         <button
-          onClick={() => setTheme(toggleTheme())}
-          title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-          className="w-8 h-8 flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-secondary/50 transition-colors"
+          onClick={() => navigate("/agent")}
+          className="flex items-center gap-2 shrink-0 hover:opacity-75 transition-opacity"
         >
-          <span className="text-sm leading-none select-none">
-            {theme === "dark" ? "☀" : "☾"}
-          </span>
+          <div className="relative w-7 h-7 rounded-full overflow-hidden border border-border/70">
+            <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover" />
+            {dominantEmotion && (
+              <span className={cn("absolute bottom-0 right-0 w-2 h-2 rounded-full border border-background", moodDotClass(dominantEmotion))} />
+            )}
+          </div>
+          <span className="text-sm font-semibold text-foreground leading-none">{agentName}</span>
         </button>
 
-        <div ref={userMenuRef} className="relative">
-          <button
-            onClick={() => setShowUser((v) => !v)}
-            className="w-8 h-8 flex items-center justify-center border border-border font-mono text-xs font-medium text-foreground/70 hover:bg-secondary/50 transition-colors"
-          >
-            {user?.name?.[0]?.toUpperCase() ?? "U"}
-          </button>
-          {showUser && (
-            <div className="absolute right-0 top-full mt-1 w-44 border border-border bg-card shadow-xl z-50">
-              <div className="px-3 py-2.5 border-b border-border/60">
-                <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
-              </div>
-              <button
-                onClick={() => { navigate("/profile"); setShowUser(false); }}
-                className="w-full text-left px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
-              >
-                Profile
-              </button>
-              <button
-                onClick={() => { logout(); setShowUser(false); }}
-                className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/5 transition-colors"
-              >
-                Log out
-              </button>
+        {expanded && (
+          <>
+            <div className="w-px h-4 bg-border/60 shrink-0" />
+
+            {/* Navigation */}
+            <nav className="flex items-center gap-0.5 flex-1">
+              {navItems.map(({ to, label, Icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === "/"}
+                  title={label}
+                  onClick={() => setExpanded(false)}
+                  className={({ isActive }) =>
+                    cn(
+                      "relative w-9 h-9 flex items-center justify-center transition-all duration-150",
+                      isActive
+                        ? "text-foreground bg-foreground/8"
+                        : "text-foreground/35 hover:text-foreground/70 hover:bg-foreground/5",
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <Icon size="md" />
+                      {isActive && (
+                        <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-foreground/60" />
+                      )}
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </nav>
+
+            {/* Agent stats */}
+            <div className="flex items-center gap-px shrink-0 border border-border/50 bg-muted/30">
+              {memOverview != null && (
+                <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
+                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">MEM</span>
+                  <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.totalItems}</span>
+                </div>
+              )}
+              {memOverview != null && (
+                <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
+                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">EPS</span>
+                  <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.episodeCount}</span>
+                </div>
+              )}
+              {pendingTasks != null && (
+                <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
+                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">TASKS</span>
+                  <span className={cn("font-mono text-[11px] font-medium tabular-nums leading-tight", pendingTasks > 0 ? "text-accent" : "text-foreground/40")}>{pendingTasks}</span>
+                </div>
+              )}
+              {dominantEmotion && (
+                <div className="flex flex-col items-center px-3 py-1">
+                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">STATE</span>
+                  <span className="font-mono text-[11px] font-medium text-foreground/80 leading-tight capitalize">{dominantEmotion}</span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
-    </header>
+
+            {/* Right controls */}
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                onClick={toggleTheme}
+                title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+                className="w-8 h-8 flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-secondary/50 transition-colors"
+              >
+                <span className="text-sm leading-none select-none">
+                  {theme === "dark" ? "☀" : "☾"}
+                </span>
+              </button>
+
+              <div ref={userMenuRef} className="relative">
+                <button
+                  onClick={() => setShowUser((v) => !v)}
+                  className="w-8 h-8 flex items-center justify-center border border-border font-mono text-xs font-medium text-foreground/70 hover:bg-secondary/50 transition-colors"
+                >
+                  {user?.name?.[0]?.toUpperCase() ?? "U"}
+                </button>
+                {showUser && (
+                  <div className="absolute right-0 top-full mt-1 w-44 border border-border bg-card shadow-xl z-50">
+                    <div className="px-3 py-2.5 border-b border-border/60">
+                      <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
+                    </div>
+                    <button
+                      onClick={() => { navigate("/profile"); setShowUser(false); }}
+                      className="w-full text-left px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+                    >
+                      Profile
+                    </button>
+                    <button
+                      onClick={() => { logout(); setShowUser(false); }}
+                      className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/5 transition-colors"
+                    >
+                      Log out
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="w-px h-4 bg-border/60 shrink-0" />
+          </>
+        )}
+
+        {/* Expand / collapse arrow */}
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? "Collapse nav" : "Expand nav"}
+          className="flex items-center justify-center w-7 h-7 shrink-0 text-muted-foreground/70 hover:text-foreground transition-colors"
+        >
+          {expanded ? <ChevronUpIcon size="sm" /> : <ChevronDownIcon size="sm" />}
+        </button>
+      </header>
+    </div>
   );
 }

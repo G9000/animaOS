@@ -49,6 +49,8 @@ export {
   ArrowRightIcon,
   ArrowLeftIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   XIcon,
 } from "./icons";
 export {
@@ -114,7 +116,6 @@ export {
   TranslateIcon,
   TraceIcon,
   LightbulbIcon,
-  ChevronDownIcon,
   // Utils
   shouldGroupMessages,
   formatTimestamp,

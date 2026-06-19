@@ -14,6 +14,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             // System tray
             let show = MenuItem::with_id(app, "show", "Open ANIMA", true, None::<&str>)?;

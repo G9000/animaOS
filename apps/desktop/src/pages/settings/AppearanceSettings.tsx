@@ -1,84 +1,314 @@
 import { useRef, useState } from "react";
+import { useTheme } from "../../hooks/useTheme";
+import type { Theme } from "../../lib/theme";
 import {
-  getCustomBanner,
-  saveCustomBanner,
-  clearCustomBanner,
-  BANNER_MAX_BYTES,
-  type BannerConfig,
-} from "../../lib/preferences";
-import banner1 from "../../assets/banner_1.jpg";
-import banner2 from "../../assets/banner_2.jpg";
+  useBackground,
+  DEFAULT_BACKGROUND,
+  type BackgroundConfig,
+  type BackgroundType,
+} from "../../hooks/useBackground";
+import { inferBackgroundType } from "../../lib/background";
 
-const DEFAULT_BANNER = banner1;
-const _BUILTIN_BANNERS = [banner1, banner2];
+const THEME_OPTIONS: { value: Theme; label: string; hint: string }[] = [
+  { value: "dark", label: "DARK", hint: "Low-light interface" },
+  { value: "light", label: "LIGHT", hint: "Bright interface" },
+  { value: "system", label: "SYSTEM", hint: "Match OS setting" },
+];
+
+const BACKGROUND_TYPES: { value: BackgroundType; label: string }[] = [
+  { value: "default", label: "DEFAULT" },
+  { value: "color", label: "COLOR" },
+  { value: "gradient", label: "GRADIENT" },
+  { value: "image", label: "IMAGE" },
+  { value: "video", label: "VIDEO" },
+];
+
+const BACKGROUND_FITS: { value: "cover" | "contain" | "repeat"; label: string }[] = [
+  { value: "cover", label: "COVER" },
+  { value: "contain", label: "CONTAIN" },
+  { value: "repeat", label: "REPEAT" },
+];
+
+function ThemeButton({
+  option,
+  active,
+  onSelect,
+}: {
+  option: typeof THEME_OPTIONS[number];
+  active: boolean;
+  onSelect: (value: Theme) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(option.value)}
+      className={[
+        "flex-1 text-left p-3 border transition-all",
+        active
+          ? "bg-primary text-primary-foreground border-primary"
+          : "bg-card text-muted-foreground border-border hover:text-foreground hover:bg-secondary",
+      ].join(" ")}
+    >
+      <div className="font-mono text-[10px] tracking-[0.18em] uppercase">
+        {option.label}
+      </div>
+      <div className="mt-1 font-mono text-[9px] tracking-wider text-current/60">
+        {option.hint}
+      </div>
+    </button>
+  );
+}
+
+function TypeButton({
+  option,
+  active,
+  onSelect,
+}: {
+  option: typeof BACKGROUND_TYPES[number];
+  active: boolean;
+  onSelect: (value: BackgroundType) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(option.value)}
+      className={[
+        "flex-1 py-2 px-1 border font-mono text-[9px] tracking-[0.16em] uppercase transition-all",
+        active
+          ? "bg-primary text-primary-foreground border-primary"
+          : "bg-card text-muted-foreground border-border hover:text-foreground hover:bg-secondary",
+      ].join(" ")}
+    >
+      {option.label}
+    </button>
+  );
+}
+
+function FitButton({
+  option,
+  active,
+  onSelect,
+}: {
+  option: typeof BACKGROUND_FITS[number];
+  active: boolean;
+  onSelect: (value: "cover" | "contain" | "repeat") => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(option.value)}
+      className={[
+        "flex-1 py-1.5 px-2 border font-mono text-[9px] tracking-[0.14em] uppercase transition-all",
+        active
+          ? "bg-primary text-primary-foreground border-primary"
+          : "bg-card text-muted-foreground border-border hover:text-foreground hover:bg-secondary",
+      ].join(" ")}
+    >
+      {option.label}
+    </button>
+  );
+}
+
+function SliderField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  format,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+  format: (value: number) => string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground">
+          {label}
+        </span>
+        <span className="font-mono text-[9px] text-muted-foreground/60">
+          {format(value)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full h-1 bg-border appearance-none cursor-pointer accent-primary"
+      />
+    </div>
+  );
+}
 
 export default function AppearanceSettings() {
-  const [config, setConfig] = useState<BannerConfig | null>(() => getCustomBanner());
-  const [uploading, setUploading] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [error, setError] = useState("");
+  const { theme, set: setTheme } = useTheme();
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const previewRef = useRef<HTMLDivElement>(null);
-  const dragOriginRef = useRef<{ mouseX: number; mouseY: number; posX: number; posY: number } | null>(null);
+  const {
+    config: bgConfig,
+    set: setBgConfig,
+    saveFile: saveBgFile,
+    url: bgUrl,
+    loading: bgLoading,
+  } = useBackground();
+  const [bgUploading, setBgUploading] = useState(false);
+  const [bgError, setBgError] = useState("");
 
-  const activeBannerUrl = config?.url ?? DEFAULT_BANNER;
-  const posX = config?.x ?? 50;
-  const posY = config?.y ?? 50;
+  const bgInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBgTypeChange = (type: BackgroundType) => {
+    const next: BackgroundConfig = { ...bgConfig, type };
+    if (type === "default") {
+      next.value = undefined;
+    } else if (type === "image" || type === "video") {
+      next.value = "";
+      next.fit = next.fit ?? "cover";
+    } else {
+      next.value = bgConfig.value ?? getDefaultValueForType(type);
+    }
+    setBgConfig(next);
+  };
+
+  const getDefaultValueForType = (type: BackgroundType): string => {
+    switch (type) {
+      case "color": return "#1a1a18";
+      case "gradient": return "linear-gradient(135deg, #1a1a18 0%, #353531 100%)";
+      default: return "";
+    }
+  };
+
+  const handleBgFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > BANNER_MAX_BYTES) { setError("Image must be under 5 MB."); return; }
-    setError("");
-    setUploading(true);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
-      const next: BannerConfig = { url: dataUrl, x: 50, y: 50 };
-      setConfig(next);
-      saveCustomBanner(next);
-      setUploading(false);
-    };
-    reader.onerror = () => { setError("Failed to read file."); setUploading(false); };
-    reader.readAsDataURL(file);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    const type = inferBackgroundType(file.type);
+    if (!type || (type !== "image" && type !== "video")) {
+      setBgError("Unsupported file type. Use PNG, JPG, WEBP, GIF, MP4, or WEBM.");
+      return;
+    }
+
+    setBgError("");
+    setBgUploading(true);
+    try {
+      const value = await saveBgFile(file);
+      setBgConfig({ ...bgConfig, type, value });
+    } catch {
+      setBgError("Failed to save background file.");
+    } finally {
+      setBgUploading(false);
+    }
+    if (bgInputRef.current) bgInputRef.current.value = "";
   };
 
-  const handlePreviewMouseDown = (e: React.MouseEvent) => {
-    if (!config) return;
-    e.preventDefault();
-    dragOriginRef.current = { mouseX: e.clientX, mouseY: e.clientY, posX, posY };
-    setIsDragging(true);
+  const renderBackgroundEditor = () => {
+    switch (bgConfig.type) {
+      case "default":
+        return (
+          <p className="font-mono text-[10px] text-muted-foreground/50 tracking-wider">
+            Uses the current theme background.
+          </p>
+        );
 
-    const onMouseMove = (me: MouseEvent) => {
-      const origin = dragOriginRef.current;
-      const container = previewRef.current;
-      if (!origin || !container) return;
-      const { width, height } = container.getBoundingClientRect();
-      const dx = me.clientX - origin.mouseX;
-      const dy = me.clientY - origin.mouseY;
-      const newX = Math.max(0, Math.min(100, origin.posX - (dx / width * 100)));
-      const newY = Math.max(0, Math.min(100, origin.posY - (dy / height * 100)));
-      setConfig((prev) => prev ? { ...prev, x: newX, y: newY } : null);
-    };
+      case "color":
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <input
+                type="color"
+                value={bgConfig.value ?? "#000000"}
+                onChange={(e) => setBgConfig({ ...bgConfig, value: e.target.value })}
+                className="w-12 h-10 border border-border bg-transparent cursor-pointer"
+              />
+              <input
+                type="text"
+                value={bgConfig.value ?? ""}
+                onChange={(e) => setBgConfig({ ...bgConfig, value: e.target.value })}
+                placeholder="#1a1a18"
+                className="flex-1 px-3 py-2 bg-input border border-border font-mono text-xs text-foreground placeholder:text-muted-foreground/30"
+              />
+            </div>
+          </div>
+        );
 
-    const onMouseUp = () => {
-      dragOriginRef.current = null;
-      setIsDragging(false);
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      setConfig((prev) => { if (prev) saveCustomBanner(prev); return prev; });
-    };
+      case "gradient":
+        return (
+          <div className="space-y-3">
+            <textarea
+              value={bgConfig.value ?? ""}
+              onChange={(e) => setBgConfig({ ...bgConfig, value: e.target.value })}
+              placeholder="linear-gradient(135deg, #1a1a18 0%, #353531 100%)"
+              rows={3}
+              className="w-full px-3 py-2 bg-input border border-border font-mono text-xs text-foreground placeholder:text-muted-foreground/30 resize-none"
+            />
+            <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+              Enter any valid CSS background value.
+            </p>
+          </div>
+        );
 
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  };
+      case "image":
+      case "video":
+        return (
+          <div className="space-y-3">
+            <input
+              ref={bgInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm"
+              className="hidden"
+              onChange={handleBgFileChange}
+            />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => bgInputRef.current?.click()}
+                disabled={bgUploading || bgLoading}
+                className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground hover:text-foreground hover:border-primary transition-colors disabled:opacity-40"
+              >
+                {bgUploading ? "SAVING..." : `UPLOAD ${bgConfig.type === "video" ? "VIDEO" : "IMAGE"}`}
+              </button>
+              <button
+                onClick={() => setBgConfig({ ...DEFAULT_BACKGROUND })}
+                className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground/50 hover:text-destructive hover:border-destructive transition-colors"
+              >
+                RESET
+              </button>
+            </div>
+            {bgConfig.value && (
+              <div className="relative w-full h-40 overflow-hidden border border-border bg-card">
+                {bgConfig.type === "video" && bgUrl ? (
+                  <video
+                    src={bgUrl}
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : bgConfig.type === "image" && bgUrl ? (
+                  <img
+                    src={bgUrl}
+                    alt="Background preview"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="font-mono text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+                      {bgLoading ? "Loading..." : "Preview unavailable"}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
 
-  const handleRemove = () => {
-    setConfig(null);
-    clearCustomBanner();
-    setError("");
+      default:
+        return null;
+    }
   };
 
   return (
@@ -86,71 +316,92 @@ export default function AppearanceSettings() {
       <section className="space-y-4">
         <div className="space-y-1">
           <h2 className="font-mono text-[10px] tracking-wider text-foreground">
-            DASHBOARD BANNER
+            THEME
           </h2>
           <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-            PNG, JPG, WEBP or GIF — max 5 MB. Stored locally.
+            Choose the interface background and accent palette.
           </p>
         </div>
 
-        {/* Preview / reposition area */}
-        <div
-          ref={previewRef}
-          onMouseDown={handlePreviewMouseDown}
-          className={[
-            "relative w-full h-40 overflow-hidden border border-border select-none",
-            config ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-default",
-          ].join(" ")}
-        >
-          <img
-            src={activeBannerUrl}
-            alt="Banner preview"
-            draggable={false}
-            className="absolute inset-0 w-full h-full object-cover"
-            style={{ objectPosition: `${posX}% ${posY}%` }}
-          />
-          {config && !isDragging && (
-            <div className="absolute inset-0 flex items-end justify-end p-2 pointer-events-none">
-              <span className="font-mono text-[8px] tracking-[0.18em] uppercase text-white/60 bg-black/40 px-2 py-1 backdrop-blur-sm">
-                drag to reposition
-              </span>
-            </div>
-          )}
+        <div className="flex gap-2">
+          {THEME_OPTIONS.map((option) => (
+            <ThemeButton
+              key={option.value}
+              option={option}
+              active={theme === option.value}
+              onSelect={setTheme}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="space-y-1">
+          <h2 className="font-mono text-[10px] tracking-wider text-foreground">
+            BACKGROUND
+          </h2>
+          <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+            Full-screen background behind the entire app. Media files are saved to disk.
+          </p>
         </div>
 
-        {/* Position readout */}
-        {config && (
-          <p className="font-mono text-[9px] text-muted-foreground/30 tracking-wider">
-            POSITION {Math.round(posX)}% / {Math.round(posY)}%
-          </p>
+        <div className="flex gap-1">
+          {BACKGROUND_TYPES.map((option) => (
+            <TypeButton
+              key={option.value}
+              option={option}
+              active={bgConfig.type === option.value}
+              onSelect={handleBgTypeChange}
+            />
+          ))}
+        </div>
+
+        {renderBackgroundEditor()}
+
+        {bgConfig.type !== "default" && (
+          <div className="space-y-4 pt-2 border-t border-border/40">
+            {bgConfig.type === "image" && (
+              <div className="space-y-2">
+                <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground">
+                  FIT
+                </span>
+                <div className="flex gap-1">
+                  {BACKGROUND_FITS.map((option) => (
+                    <FitButton
+                      key={option.value}
+                      option={option}
+                      active={bgConfig.fit === option.value}
+                      onSelect={(value) => setBgConfig({ ...bgConfig, fit: value })}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <SliderField
+              label="DIM"
+              value={bgConfig.dim ?? 0}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(value) => setBgConfig({ ...bgConfig, dim: value })}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+
+            <SliderField
+              label="BLUR"
+              value={bgConfig.blur ?? 0}
+              min={0}
+              max={32}
+              step={0.5}
+              onChange={(value) => setBgConfig({ ...bgConfig, blur: value })}
+              format={(v) => `${v}px`}
+            />
+          </div>
         )}
 
-        <div className="flex items-center gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            className="hidden"
-            onChange={handleFileChange}
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground hover:text-foreground hover:border-primary transition-colors disabled:opacity-40"
-          >
-            {uploading ? "UPLOADING..." : "UPLOAD IMAGE"}
-          </button>
-          <button
-            onClick={handleRemove}
-            disabled={!config}
-            className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground/50 hover:text-destructive hover:border-destructive transition-colors disabled:opacity-30"
-          >
-            RESET TO DEFAULT
-          </button>
-        </div>
-
-        {error && (
-          <p className="font-mono text-[10px] text-destructive tracking-wider">{error}</p>
+        {bgError && (
+          <p className="font-mono text-[10px] text-destructive tracking-wider">{bgError}</p>
         )}
       </section>
     </div>
