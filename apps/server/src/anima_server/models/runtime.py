@@ -20,6 +20,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -219,6 +220,107 @@ class RuntimeWorkflowCheckpoint(RuntimeBase):
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class RuntimeDocument(RuntimeBase):
+    __tablename__ = "runtime_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "sha256",
+            name="uq_runtime_documents_user_sha256",
+        ),
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_runtime_documents_id_user",
+        ),
+        Index("ix_runtime_documents_user_status", "user_id", "status"),
+        Index("ix_runtime_documents_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    thread_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("runtime_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("runtime_workflow_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="registered",
+        server_default=text("'registered'"),
+    )
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    indexed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+
+class RuntimeDocumentChunk(RuntimeBase):
+    __tablename__ = "runtime_document_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "user_id"],
+            ["runtime_documents.id", "runtime_documents.user_id"],
+            name="fk_runtime_document_chunks_document_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "document_id",
+            "chunk_index",
+            name="uq_runtime_document_chunks_document_index",
+        ),
+        Index(
+            "ix_runtime_document_chunks_document_index",
+            "document_id",
+            "chunk_index",
+        ),
+        Index(
+            "ix_runtime_document_chunks_user_document",
+            "user_id",
+            "document_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
 

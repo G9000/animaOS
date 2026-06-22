@@ -30,6 +30,8 @@ from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.presence import PresenceConfig
 from anima_server.models.runtime import (
     RuntimeBackgroundTaskRun,
+    RuntimeDocument,
+    RuntimeDocumentChunk,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
@@ -82,6 +84,8 @@ __all__ = [
     "PendingMemoryOp",
     "PresenceConfig",
     "RuntimeBackgroundTaskRun",
+    "RuntimeDocument",
+    "RuntimeDocumentChunk",
     "RuntimeEmbedding",
     "RuntimeMessage",
     "RuntimeRun",
