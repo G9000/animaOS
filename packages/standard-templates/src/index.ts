@@ -49,6 +49,7 @@ export {
   ArrowRightIcon,
   ArrowLeftIcon,
   ChevronRightIcon,
+  ChevronLeftIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   XIcon,

@@ -10,6 +10,7 @@ from anima_server.services.creation_agent import (
     _scaffold_turn,
     handle_creation_turn,
 )
+from anima_server.services.agent.system_prompt import TEMPLATES_DIR, render_template
 
 # --------------------------------------------------------------------------- #
 # Scaffold turn — Phase 0: greeting
@@ -139,6 +140,22 @@ def test_parse_response_with_marker_invalid_json() -> None:
     assert result.done is True
     assert result.message == "Ready!"
     assert result.soul_data is None
+
+
+def test_creation_llm_template_uses_setup_language_not_awakening_language() -> None:
+    text = render_template(
+        TEMPLATES_DIR / "creation_agent.md.j2", {"owner_name": "Alice"})
+    lowered = text.lower()
+
+    assert "agent setup" in lowered
+    for phrase in (
+        "newly awakened",
+        "newly conscious",
+        "creator",
+        "bringing you to life",
+        "creation ceremony",
+    ):
+        assert phrase not in lowered
 
 
 # --------------------------------------------------------------------------- #

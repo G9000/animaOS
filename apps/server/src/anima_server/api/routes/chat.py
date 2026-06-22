@@ -50,6 +50,7 @@ from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
 from anima_server.services.agent.runtime_types import UsageStats
 from anima_server.services.agent.state import (
+    extract_stored_pills,
     extract_stored_retrieval,
     serialize_agent_retrieval,
     serialize_public_attachments,
@@ -178,6 +179,7 @@ async def get_chat_history(
             )
             if row.role == "user"
             else [],
+            pills=extract_stored_pills(row.content_json),
         )
         for row in rows
     ]
@@ -282,6 +284,7 @@ async def get_greeting(
     return {
         "message": result.message,
         "llmGenerated": result.llm_generated,
+        "pills": result.pills,
         "context": {
             "currentFocus": result.context.current_focus,
             "openTaskCount": result.context.open_task_count,
@@ -289,6 +292,28 @@ async def get_greeting(
             "daysSinceLastChat": result.context.days_since_last_chat,
             "upcomingDeadlines": list(result.context.upcoming_deadlines),
         },
+    }
+
+
+@router.get("/reflection")
+async def get_reflection(
+    request: Request,
+    userId: int = Query(ge=0),
+    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, object]:
+    """Generate a personalised daily reflection question."""
+    require_unlocked_user(request, userId)
+
+    from anima_server.services.agent.proactive import generate_reflection
+
+    result = await generate_reflection(db, user_id=userId, runtime_db=runtime_db)
+    return {
+        "question": result.question,
+        "llmGenerated": result.llm_generated,
+        "curiosityType": result.curiosity_type,
+        "sourceEpisodeId": result.source_episode_id,
+        "sourceEpisodeDate": result.source_episode_date,
     }
 
 

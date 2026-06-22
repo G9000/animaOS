@@ -78,8 +78,8 @@ def test_register_seeds_persona_block_default() -> None:
             f"/api/consciousness/{user_id}/self-model", headers=h)
         sections = resp.json()["sections"]
         assert "persona" in sections
-        # Default template starts from a neutral, unforced presence.
-        assert "At the beginning of a relationship" in sections["persona"]["content"]
+        # Default template starts from a neutral, practical style.
+        assert "practical, adaptable conversation style" in sections["persona"]["content"]
         assert sections["persona"]["version"] == 1
 
 
@@ -128,6 +128,60 @@ def test_self_model_response_includes_pending_ops() -> None:
         assert data["pendingOps"][0]["targetBlock"] == "human"
         assert data["pendingOps"][0]["opType"] == "append"
         assert data["pendingOps"][0]["content"] == "Has a dog named Biscuit."
+
+
+def test_agent_state_returns_grounded_short_thought() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client, name="Alice")
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        rt_factory = get_runtime_session_factory()
+        with rt_factory() as runtime_db:
+            from anima_server.services.agent.emotional_intelligence import (
+                record_emotional_signal,
+            )
+            from anima_server.services.agent.self_model import set_working_context
+
+            record_emotional_signal(
+                runtime_db,
+                user_id=user_id,
+                emotion="curious",
+                confidence=0.9,
+                evidence_type="contextual",
+                evidence="Working through the agent state line",
+                trajectory="stable",
+                topic="desktop nav",
+            )
+            set_working_context(
+                runtime_db,
+                user_id=user_id,
+                section="working_memory",
+                content="Tracking the agent state line handoff before changing code.",
+                updated_by="test",
+            )
+            runtime_db.commit()
+
+        resp = client.get(
+            f"/api/consciousness/{user_id}/agent-state", headers=h)
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["userId"] == user_id
+        assert data["dominantEmotion"] == "curious"
+        assert data["thought"] == "Tracking the agent state line handoff before changing code."
+        assert data["thoughtSource"] == "working_memory"
+        assert data["chatPrompt"] == "What's behind that thought?"
+        assert data["contextMessages"] == [
+            {
+                "role": "assistant",
+                "content": (
+                    "Current companion state: Tracking the agent state line "
+                    "handoff before changing code. Recent emotion: curious."
+                ),
+                "source": "agent_state",
+            },
+        ]
 
 
 def test_pending_ops_endpoint_returns_unconsolidated_ops() -> None:
@@ -251,7 +305,7 @@ def test_agent_setup_rerenders_persona_with_chosen_template() -> None:
         # Initially the persona is "default" (neutral starting point)
         resp = client.get(
             f"/api/consciousness/{user_id}/self-model", headers=h)
-        assert "At the beginning of a relationship" in resp.json(
+        assert "practical, adaptable conversation style" in resp.json(
         )["sections"]["persona"]["content"]
 
         # Switch to companion template
@@ -264,7 +318,7 @@ def test_agent_setup_rerenders_persona_with_chosen_template() -> None:
         resp = client.get(
             f"/api/consciousness/{user_id}/self-model", headers=h)
         persona = resp.json()["sections"]["persona"]["content"]
-        assert "warm, emotionally perceptive companion" in persona
+        assert "warm, practical companion" in persona.lower()
         assert "Nova" in persona
 
 
@@ -283,7 +337,7 @@ def test_agent_setup_anima_template() -> None:
         resp = client.get(
             f"/api/consciousness/{user_id}/self-model", headers=h)
         persona = resp.json()["sections"]["persona"]["content"]
-        assert "quiet, deliberate presence" in persona.lower()
+        assert "quiet, deliberate style" in persona.lower()
         assert "Anima" in persona
 
 

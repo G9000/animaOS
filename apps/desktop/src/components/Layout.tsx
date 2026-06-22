@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { LayoutTopNav } from "./layout/LayoutTopNav";
+import { BottomRightNav } from "./layout/BottomRightNav";
 import BackgroundLayer from "./BackgroundLayer";
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -12,6 +13,8 @@ export default function Layout({ children }: { children: ReactNode }) {
       </div>
       {/* Content fills full height */}
       <main className="h-full overflow-hidden min-w-0">{children}</main>
+      {/* Bottom-right quick-action nav */}
+      <BottomRightNav />
     </div>
   );
 }

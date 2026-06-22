@@ -17,6 +17,7 @@ export { EyeOffIcon } from "./EyeOffIcon";
 export { ArrowRightIcon } from "./ArrowRightIcon";
 export { ArrowLeftIcon } from "./ArrowLeftIcon";
 export { ChevronRightIcon } from "./ChevronRightIcon";
+export { ChevronLeftIcon } from "./ChevronLeftIcon";
 export { ChevronDownIcon } from "./ChevronDownIcon";
 export { ChevronUpIcon } from "./ChevronUpIcon";
 export { XIcon } from "./XIcon";

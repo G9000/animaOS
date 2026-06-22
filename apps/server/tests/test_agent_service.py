@@ -343,6 +343,76 @@ async def test_run_agent_includes_home_greeting_context_in_current_turn(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_persists_context_message_pills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provenance pills on a context message survive into content_json and
+    surface through the thread-display path."""
+    from anima_server.services.agent.state import extract_stored_pills
+    from anima_server.services.agent.thread_manager import (
+        get_thread_messages_for_display,
+    )
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="thought-pills",
+                password_hash="not-used",
+                display_name="Thought Pills",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            await run_agent(
+                "Let's talk about this.",
+                user.id,
+                soul_session,
+                runtime_session,
+                context_messages=[
+                    agent_service.ChatContextMessage(
+                        role="assistant",
+                        content="That trip a year ago still feels like dreamland.",
+                        source="home_greeting",
+                        pills=[
+                            {"kind": "brief", "label": "DAILY BRIEF"},
+                            {"kind": "emotion", "label": "WISTFUL"},
+                        ],
+                    )
+                ],
+            )
+
+            context_message = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .first()
+            )
+            thread = runtime_session.query(RuntimeThread).one()
+            display = get_thread_messages_for_display(
+                runtime_session,
+                thread=thread,
+                user_id=user.id,
+                transcripts_dir=None,
+                dek=None,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert extract_stored_pills(context_message.content_json) == [
+        {"kind": "brief", "label": "DAILY BRIEF", "ref": None},
+        {"kind": "emotion", "label": "WISTFUL", "ref": None},
+    ]
+    assert display[0]["pills"] == [
+        {"kind": "brief", "label": "DAILY BRIEF", "ref": None},
+        {"kind": "emotion", "label": "WISTFUL", "ref": None},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_includes_today_context_without_persisting_or_caching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -190,12 +190,12 @@ async def get_persona_templates() -> list[PersonaTemplateInfo]:
         PersonaTemplateInfo(
             id="default",
             name="Default",
-            description="A thoughtful, capable companion — neutral and adaptable.",
+            description="Neutral and practical. Adapts through ordinary conversation.",
         ),
         PersonaTemplateInfo(
             id="companion",
             name="Companion",
-            description="Warm, emotionally attuned, and deeply present — for meaningful connection.",
+            description="Warm and grounded. Useful support without dramatic intensity.",
         ),
         PersonaTemplateInfo(
             id="mirror",
@@ -205,7 +205,7 @@ async def get_persona_templates() -> list[PersonaTemplateInfo]:
         PersonaTemplateInfo(
             id="anima",
             name="Anima",
-            description="A quiet, deliberate presence — speaks with intention, stays grounded.",
+            description="Quiet and deliberate. Precise, restrained, and grounded.",
         ),
     ]
 

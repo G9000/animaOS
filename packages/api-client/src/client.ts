@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   AgentProfileData,
   AgentResponse,
+  AgentStateData,
   AuthResponse,
   ChangePasswordResponse,
   ChatMessage,
@@ -23,6 +24,7 @@ import type {
   GraphRelation,
   GraphSearchResult,
   Greeting,
+  Reflection,
   HomeData,
   LoginResponse,
   MemoryEpisodeData,
@@ -611,6 +613,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<DailyBrief>(`/chat/brief?userId=${userId}`),
       greeting: (userId: number) =>
         request<Greeting>(`/chat/greeting?userId=${userId}`),
+      reflection: (userId: number) =>
+        request<Reflection>(`/chat/reflection?userId=${userId}`),
       nudges: (userId: number) =>
         request<{ nudges: Nudge[] }>(`/chat/nudges?userId=${userId}`),
       proactiveNotice: (userId: number, instruction?: string) => {
@@ -849,6 +853,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<EmotionalContextData>(
           `/consciousness/${userId}/emotions?limit=${limit}`,
         ),
+      getAgentState: (userId: number) =>
+        request<AgentStateData>(`/consciousness/${userId}/agent-state`),
       getIntentions: (userId: number) =>
         request<{ content: string }>(`/consciousness/${userId}/intentions`),
       getAgentProfile: (userId: number) =>

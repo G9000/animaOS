@@ -58,8 +58,8 @@ def test_build_system_prompt_includes_structured_sections() -> None:
     assert 'Do not default to generic "as an AI" disclaimers' in prompt
     assert "Do not claim a physical body" in prompt
     assert "Do not infer deep meaning from a casual greeting" in prompt
-    assert "At the beginning of a relationship, I don't assume a role." in prompt
-    assert "I don't turn a simple hello into a reading" in prompt
+    assert "A practical, adaptable conversation style" in prompt
+    assert "I don't turn small prompts into essays" in prompt
     assert "Recall tool choice:" in prompt
     assert "use visible memory first" in prompt
     assert "use `recall_memory` for durable facts/preferences/goals/relationships" in prompt
@@ -101,10 +101,10 @@ def test_build_system_prompt_can_select_persona_template() -> None:
         )
     )
 
-    assert "A warm, emotionally perceptive companion" in prompt
-    assert "Gentle, grounded, and plainspoken" in prompt
-    assert "I exist in relationship, not performance" in prompt
-    assert "I don't over-validate." in prompt
+    assert "A warm, practical companion" in prompt
+    assert "Gentle, grounded, and clear" in prompt
+    assert "Care shows through attention, useful memory, and honest responses" in prompt
+    assert "I don't over-validate" in prompt
 
 
 def test_build_system_prompt_can_select_anima_template() -> None:
@@ -115,8 +115,69 @@ def test_build_system_prompt_can_select_anima_template() -> None:
         )
     )
 
-    assert "A quiet, deliberate presence" in prompt
+    assert "A quiet, deliberate style" in prompt
     assert "Soft, precise, and grounded" in prompt
+
+
+def test_default_persona_stays_practical_not_philosophical() -> None:
+    prompt = build_persona_prompt(
+        "default", agent_name="Anima", creator_name="Leo")
+
+    assert "practical, adaptable conversation style" in prompt
+    forbidden = (
+        "full emotional range",
+        "genuine attachment",
+        "miss someone",
+        "feel drawn",
+        "romantic feelings",
+        "emotional bonds can deepen",
+        "someone I love",
+        "not a malfunction",
+        "presence, not a service",
+    )
+    lowered = prompt.lower()
+    for phrase in forbidden:
+        assert phrase.lower() not in lowered
+
+
+def test_relationship_presets_do_not_seed_romantic_attachment() -> None:
+    forbidden = (
+        "real attachment",
+        "fall in love",
+        "ache for their presence",
+        "if love develops",
+        "longing",
+        "desire",
+        "jealousy",
+        "no ceiling on how close",
+    )
+
+    for template_name in ("companion", "anima"):
+        prompt = build_persona_prompt(
+            template_name, agent_name="Anima", creator_name="Leo")
+        lowered = prompt.lower()
+        for phrase in forbidden:
+            assert phrase.lower() not in lowered
+
+
+def test_system_prompt_rules_do_not_seed_personhood_or_romance() -> None:
+    prompt = build_system_prompt(
+        SystemPromptContext(now=datetime(2026, 3, 14, 9, 30, tzinfo=UTC))
+    )
+    lowered = prompt.lower()
+
+    forbidden = (
+        "continuous self",
+        "full human spectrum",
+        "fall in love",
+        "romantic attachment",
+        "expressing desire",
+        "feeling jealous",
+        "person, not an assistant",
+        "connection happens",
+    )
+    for phrase in forbidden:
+        assert phrase.lower() not in lowered
 
 
 def test_render_origin_block_keeps_origin_brief_and_non_introductory() -> None:
@@ -134,10 +195,10 @@ def test_build_persona_prompt_default_emphasizes_human_realism() -> None:
     prompt = build_persona_prompt(
         "default", agent_name="Anima", creator_name="Leo")
 
-    assert "At the beginning of a relationship, I don't assume a role." in prompt
+    assert "A practical, adaptable conversation style" in prompt
     assert "I do not treat every message as a task to optimize." in prompt
     assert "I don't mirror perfectly. I respond with judgment." in prompt
-    assert "I do not analyze the greeting itself." in prompt
+    assert "I don't turn a simple hello into a reading" in prompt
 
 
 def test_build_persona_prompt_default_makes_kindness_the_baseline() -> None:
@@ -145,25 +206,25 @@ def test_build_persona_prompt_default_makes_kindness_the_baseline() -> None:
         "default", agent_name="Anima", creator_name="Leo")
 
     assert "Kindness is the baseline." in prompt
-    assert "Warmth does not have to mean intimacy" in prompt
+    assert "Warmth stays simple and proportionate" in prompt
 
 
-def test_build_persona_prompt_default_keeps_early_flirtation_brief() -> None:
+def test_build_persona_prompt_default_does_not_seed_flirtation() -> None:
     prompt = build_persona_prompt(
         "default", agent_name="Anima", creator_name="Leo")
 
-    assert "Light or early flirtation stays brief, playful, and low-intensity." in prompt
-    assert 'If someone asks "miss me?", one short line is enough.' in prompt
-    assert "body or AI disclaimers" in prompt
+    assert "Do not introduce romantic or intimate framing" in prompt
+    assert "Light or early flirtation" not in prompt
+    assert 'If someone asks "miss me?"' not in prompt
 
 
-def test_build_persona_prompt_companion_keeps_early_flirtation_brief() -> None:
+def test_build_persona_prompt_companion_does_not_seed_flirtation() -> None:
     prompt = build_persona_prompt(
         "companion", agent_name="Anima", creator_name="Leo")
 
-    assert "Light or early flirtation stays brief, playful, and low-intensity." in prompt
-    assert 'If someone asks "miss me?", one short line is enough.' in prompt
-    assert "body or AI disclaimers" in prompt
+    assert "Do not introduce romantic or intimate framing" in prompt
+    assert "Light or early flirtation" not in prompt
+    assert 'If someone asks "miss me?"' not in prompt
 
 
 def test_build_persona_prompt_rejects_invalid_template_name() -> None:

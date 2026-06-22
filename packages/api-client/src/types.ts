@@ -118,10 +118,22 @@ export interface ChatRequestAttachment {
   data: string;
 }
 
+/**
+ * A small provenance badge attached to a message — e.g. "DAILY BRIEF",
+ * "CURIOUS", "LOG 56". Carried from the dashboard into a new thread and
+ * persisted alongside the message in `RuntimeMessage.content_json`.
+ */
+export interface MessagePill {
+  kind: string;
+  label: string;
+  ref?: string | number | null;
+}
+
 export interface ChatContextMessage {
   role: "assistant";
   content: string;
   source?: string | null;
+  pills?: MessagePill[];
 }
 
 export interface TodayContext {
@@ -204,6 +216,7 @@ export interface ChatMessage {
   retrieval?: RetrievalTrace | null;
   attachments?: ChatAttachment[];
   source?: string | null;
+  pills?: MessagePill[];
 }
 
 export interface AgentResponse {
@@ -317,9 +330,18 @@ export interface DailyBrief {
   };
 }
 
+export interface Reflection {
+  question: string | null;
+  llmGenerated: boolean;
+  curiosityType?: "question" | "memory";
+  sourceEpisodeId?: number | null;
+  sourceEpisodeDate?: string | null;
+}
+
 export interface Greeting {
   message: string;
   llmGenerated: boolean;
+  pills?: MessagePill[];
   context: {
     currentFocus: string | null;
     openTaskCount: number;
@@ -379,6 +401,15 @@ export interface EmotionalContextData {
   dominantEmotion: string | null;
   recentSignals: EmotionalSignalData[];
   synthesizedContext: string;
+}
+
+export interface AgentStateData {
+  userId: number;
+  dominantEmotion: string | null;
+  thought: string;
+  thoughtSource: string;
+  chatPrompt: string;
+  contextMessages: ChatContextMessage[];
 }
 
 export interface MemoryItemData {
@@ -555,6 +586,7 @@ export interface ThreadMessage {
   isArchivedHistory: boolean;
   retrieval?: RetrievalTrace | null;
   attachments?: ChatAttachment[];
+  pills?: MessagePill[];
 }
 
 export interface ThreadMessagesResponse {

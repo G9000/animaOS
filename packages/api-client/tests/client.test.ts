@@ -165,6 +165,41 @@ describe("createApiClient error handling", () => {
     ]);
   });
 
+  test("requests grounded agent state", async () => {
+    let requestedUrl = "";
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input) => {
+        requestedUrl = String(input);
+        return new Response(
+          JSON.stringify({
+            userId: 7,
+            dominantEmotion: "curious",
+            thought: "Tracking the agent state line handoff.",
+            thoughtSource: "working_memory",
+            chatPrompt: "What's behind that thought?",
+            contextMessages: [
+              {
+                role: "assistant",
+                content:
+                  "Current companion state: Tracking the agent state line handoff. Recent emotion: curious.",
+                source: "agent_state",
+              },
+            ],
+          }),
+        );
+      },
+    });
+
+    const state = await api.consciousness.getAgentState(7);
+
+    expect(requestedUrl).toBe(
+      "https://api.test/api/consciousness/7/agent-state",
+    );
+    expect(state.thought).toBe("Tracking the agent state line handoff.");
+    expect(state.contextMessages[0]?.source).toBe("agent_state");
+  });
+
   test("requests diary entries and uploads diary attachments", async () => {
     const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
     const api = createApiClient({

@@ -515,6 +515,7 @@ async def test_chat_history_returns_persisted_retrieval_metadata(monkeypatch) ->
                 },
             },
             "attachments": [],
+            "pills": [],
         }
     ]
 

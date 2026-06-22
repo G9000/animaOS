@@ -9,8 +9,6 @@ from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import select, text
-
 from anima_server.config import settings
 from anima_server.services.agent.emotional_intelligence import (
     record_emotional_signal,
@@ -453,21 +451,35 @@ async def run_background_extraction(
                             )
                         llm_count = len(llm_result.memories)
 
+                        emotion_payload = (
+                            llm_result.emotion
+                            if isinstance(llm_result.emotion, dict)
+                            else None
+                        )
+                        raw_emotion = (
+                            emotion_payload.get("emotion") if emotion_payload else None
+                        )
+                        emotion_name = (
+                            raw_emotion.strip()
+                            if isinstance(raw_emotion, str)
+                            else None
+                        )
+
                         # Persist detected emotion (was previously only logged)
-                        if llm_result.emotion and llm_result.emotion.get("emotion"):
+                        if emotion_payload and emotion_name:
                             record_emotional_signal(
                                 rt_db,
                                 user_id=user_id,
-                                emotion=llm_result.emotion["emotion"],
+                                emotion=emotion_name,
                                 confidence=float(
-                                    llm_result.emotion.get("confidence", 0.5)
+                                    emotion_payload.get("confidence", 0.5)
                                 ),
                                 evidence_type="linguistic",
                                 evidence=str(
-                                    llm_result.emotion.get("evidence", "")
+                                    emotion_payload.get("evidence", "")
                                 ),
                                 trajectory=str(
-                                    llm_result.emotion.get("trajectory", "stable")
+                                    emotion_payload.get("trajectory", "stable")
                                 ),
                             )
 
@@ -475,9 +487,7 @@ async def run_background_extraction(
                             "LLM extraction for user %s: %d memories extracted%s",
                             user_id,
                             llm_count,
-                            f" (emotion: {llm_result.emotion['emotion']})"
-                            if llm_result.emotion
-                            else "",
+                            f" (emotion: {emotion_name})" if emotion_name else "",
                         )
                 except Exception:
                     logger.exception(

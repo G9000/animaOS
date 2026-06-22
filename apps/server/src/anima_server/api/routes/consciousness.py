@@ -86,6 +86,21 @@ class EmotionalContextResponse(BaseModel):
     synthesizedContext: str
 
 
+class AgentStateContextMessageResponse(BaseModel):
+    role: str
+    content: str
+    source: str
+
+
+class AgentStateResponse(BaseModel):
+    userId: int
+    dominantEmotion: str | None = None
+    thought: str
+    thoughtSource: str
+    chatPrompt: str
+    contextMessages: list[AgentStateContextMessageResponse]
+
+
 def _section_dict(
     *,
     content: str,
@@ -752,6 +767,32 @@ async def delete_agent_avatar(
 
 
 # --- Emotional State Endpoints ---
+
+
+@router.get("/{user_id}/agent-state")
+async def get_agent_state(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
+) -> AgentStateResponse:
+    """Get a compact, backend-grounded companion state line for ambient UI."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.proactive import build_agent_state
+
+    state = build_agent_state(db, user_id=user_id, runtime_db=runtime_db)
+    return AgentStateResponse(
+        userId=state.user_id,
+        dominantEmotion=state.dominant_emotion,
+        thought=state.thought,
+        thoughtSource=state.thought_source,
+        chatPrompt=state.chat_prompt,
+        contextMessages=[
+            AgentStateContextMessageResponse(**message)
+            for message in state.context_messages
+        ],
+    )
 
 
 @router.get("/{user_id}/emotions")

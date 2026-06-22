@@ -13,10 +13,17 @@ class ChatRequestAttachment(BaseModel):
     data: str = Field(min_length=1)
 
 
+class MessagePill(BaseModel):
+    kind: str = Field(min_length=1, max_length=32)
+    label: str = Field(min_length=1, max_length=64)
+    ref: str | int | None = None
+
+
 class ChatContextMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str = Field(min_length=1, max_length=4000)
     source: str | None = Field(default=None, max_length=64)
+    pills: list[MessagePill] = Field(default_factory=list, max_length=8)
 
 
 class TodayContext(BaseModel):
@@ -139,6 +146,7 @@ class ChatHistoryMessage(BaseModel):
     source: str | None = None
     retrieval: RetrievalTrace | None = None
     attachments: list[ChatMessageAttachment] = Field(default_factory=list)
+    pills: list[MessagePill] = Field(default_factory=list)
 
 
 class ChatHistoryClearResponse(BaseModel):

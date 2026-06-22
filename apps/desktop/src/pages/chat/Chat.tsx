@@ -60,6 +60,9 @@ const MAX_SELECTED_IMAGES = 4;
 
 interface ChatLocationState {
   contextMessages?: ChatContextMessage[];
+  // When true, open a fresh thread and show contextMessages as the opening
+  // assistant message(s) without auto-sending a user prompt.
+  seedThread?: boolean;
 }
 
 interface PendingImageAttachment {
@@ -107,6 +110,22 @@ function toPreviewAttachment(image: PendingImageAttachment): ChatAttachment {
     sizeBytes: image.file.size,
     url: image.previewUrl,
   };
+}
+
+function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
+  if (!pills || pills.length === 0) return null;
+  return (
+    <div className="mb-2 flex flex-wrap gap-1 not-prose">
+      {pills.map((pill) => (
+        <span
+          key={`${pill.kind}:${pill.label}`}
+          className="font-mono text-[8px] tracking-[0.15em] uppercase text-muted-foreground/55 border border-border/60 px-1.5 py-0.5"
+        >
+          {pill.label}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function ChatImageAttachments({
@@ -212,55 +231,6 @@ function SelectedImagePreviews({
   );
 }
 
-function ProactiveNoticeCard({
-  notice,
-  draft,
-  loading,
-  onDraftChange,
-  onRegenerate,
-  onDismiss,
-}: {
-  notice: ProactiveNotice;
-  draft: string;
-  loading: boolean;
-  onDraftChange: (value: string) => void;
-  onRegenerate: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="mb-2 border border-border bg-card px-3 py-2.5">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {notice.message}
-        </p>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
-        >
-          DISMISS
-        </button>
-      </div>
-      <div className="mt-2 flex items-center gap-2">
-        <input
-          value={draft}
-          onChange={(event) => onDraftChange(event.currentTarget.value)}
-          placeholder="customize notice..."
-          className="min-w-0 flex-1 bg-background border border-border px-2 py-1.5 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
-        />
-        <button
-          type="button"
-          onClick={onRegenerate}
-          disabled={loading}
-          className="shrink-0 border border-border px-2.5 py-1.5 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
-        >
-          {loading ? "..." : "REGEN"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
   return [...threads].sort((left, right) => {
@@ -290,6 +260,7 @@ function mapThreadMessages(
     ts?: string | null;
     retrieval?: ChatMessage["retrieval"];
     attachments?: ChatAttachment[];
+    pills?: ChatMessage["pills"];
   }>,
   userId: number,
 ): ChatMessage[] {
@@ -303,6 +274,25 @@ function mapThreadMessages(
       createdAt: message.ts ?? undefined,
       retrieval: message.retrieval ?? undefined,
       attachments: message.attachments ?? [],
+      pills: message.pills ?? undefined,
+    }));
+}
+
+// Render context messages (the companion's opening thought/notice) as assistant
+// bubbles that seed a fresh thread before the user has replied.
+function contextToSeedMessages(
+  contextMessages: ChatContextMessage[],
+  userId: number,
+): ChatMessage[] {
+  return contextMessages
+    .filter((message) => message.content.trim())
+    .map((message, index) => ({
+      id: Date.now() + index,
+      userId,
+      role: "assistant" as const,
+      content: message.content.trim(),
+      source: message.source ?? null,
+      pills: message.pills ?? undefined,
     }));
 }
 
@@ -320,6 +310,9 @@ export default function Chat() {
   const pendingContextRef = useRef<ChatContextMessage[]>(
     locationState?.contextMessages ?? [],
   );
+  // True while showing an unsent seeded thread (opened via the dashboard
+  // "ask"/"start chat" actions). Cleared once the user sends or switches threads.
+  const seedActiveRef = useRef(locationState?.seedThread === true);
 
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -345,10 +338,6 @@ export default function Chat() {
   const [reasoningBuffer, setReasoningBuffer] = useState("");
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [showTrace, setShowTrace] = useState(() => getShowTrace());
-  const [proactiveNotice, setProactiveNotice] =
-    useState<ProactiveNotice | null>(null);
-  const [proactiveDraft, setProactiveDraft] = useState("");
-  const [proactiveLoading, setProactiveLoading] = useState(false);
 
   // Thread state
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -408,17 +397,16 @@ export default function Chat() {
     }
   }, []);
 
-  const loadProactiveNotice = useCallback(
-    async (instruction?: string) => {
-      if (user?.id == null) return;
-      setProactiveLoading(true);
+  // Fetch the companion's proactive opener (if any). The caller decides how to
+  // present it — currently as the opening bubble of a fresh thread.
+  const loadProactiveNoticeData = useCallback(
+    async (): Promise<ProactiveNotice | null> => {
+      if (user?.id == null) return null;
       try {
-        const result = await api.chat.proactiveNotice(user.id, instruction);
-        setProactiveNotice(result.notice);
+        const result = await api.chat.proactiveNotice(user.id);
+        return result.notice;
       } catch {
-        setProactiveNotice(null);
-      } finally {
-        setProactiveLoading(false);
+        return null;
       }
     },
     [user?.id],
@@ -446,80 +434,109 @@ export default function Chat() {
     };
   }, [todayContext, todayGreeting, user?.id]);
 
-  // ===== CONSOLIDATED: Initial data loading =====
+  // ===== Initial data loading =====
+  // One coherent landing flow. The chat always shows a single thread:
+  //   1. seeded (opened from the dashboard) → fresh thread, companion's
+  //      thought/episode as the opening bubble;
+  //   2. pending msg (?msg=) → load the active thread, then auto-send;
+  //   3. existing active thread with messages → resume it;
+  //   4. otherwise a fresh start → let the companion open with a proactive
+  //      message as the first bubble, if it has one.
   useEffect(() => {
     if (user?.id == null) return;
-
+    const userId = user.id;
     let revoked = false;
 
-    // Load all initial data in parallel
-    Promise.all([
-      // Load avatar
-      api.consciousness
-        .getAgentProfile(user.id)
-        .then(async (profile) => {
-          if (!profile.avatarUrl || revoked) return;
-          const token = getUnlockToken();
-          const headers: Record<string, string> = token
-            ? { "x-anima-unlock": token }
-            : {};
-          const res = await fetch(`${API_BASE}${profile.avatarUrl}`, {
-            headers,
-          });
-          if (res.ok && !revoked) {
-            setAgentAvatarUrl(URL.createObjectURL(await res.blob()));
-          }
-        })
-        .catch(() => {}),
+    // Avatar — independent of the conversation flow.
+    api.consciousness
+      .getAgentProfile(userId)
+      .then(async (profile) => {
+        if (!profile.avatarUrl || revoked) return;
+        const token = getUnlockToken();
+        const headers: Record<string, string> = token
+          ? { "x-anima-unlock": token }
+          : {};
+        const res = await fetch(`${API_BASE}${profile.avatarUrl}`, { headers });
+        if (res.ok && !revoked) {
+          setAgentAvatarUrl(URL.createObjectURL(await res.blob()));
+        }
+      })
+      .catch(() => {});
 
-      // Load chat history
-      api.chat
-        .history(user.id)
-        .then((hist) => {
-          if (revoked) return;
-          setMessages(hist);
-          const pending = pendingMsgRef.current;
-          if (pending) {
-            const pendingContext = pendingContextRef.current;
-            pendingMsgRef.current = null;
-            pendingContextRef.current = [];
-            setSearchParams({}, { replace: true });
-            setTimeout(() => sendMessage(pending, pendingContext), 100);
-          }
-        })
-        .catch(console.error),
+    const seedFreshThread = (context: ChatContextMessage[]) => {
+      currentThreadIdRef.current = null;
+      setCurrentThreadId(null);
+      setMessages(contextToSeedMessages(context, userId));
+    };
 
-      // Load threads
-      api.threads
-        .list()
-        .then((res) => {
-          if (revoked) return;
-          const nextThreads = dedupeThreads(res.threads);
-          setThreads(nextThreads);
-          const active = nextThreads.find((t) => t.status === "active");
-          if (active) {
-            setCurrentThreadId(active.id);
-            currentThreadIdRef.current = active.id;
-          }
-        })
-        .catch(() => {}),
-    ]);
+    void (async () => {
+      // /history returns the active thread's messages, so it and the thread
+      // list describe the same thread — load them together.
+      const [threadsRes, hist] = await Promise.all([
+        api.threads.list().catch(() => null),
+        api.chat.history(userId).catch(() => null),
+      ]);
+      if (revoked) return;
 
-    if (!pendingMsgRef.current) {
-      void loadProactiveNotice();
-    }
+      const nextThreads = threadsRes ? dedupeThreads(threadsRes.threads) : [];
+      setThreads(nextThreads);
+      const active = nextThreads.find((t) => t.status === "active") ?? null;
+
+      // 1. Seeded open from the dashboard.
+      if (seedActiveRef.current) {
+        seedFreshThread(pendingContextRef.current);
+        return;
+      }
+
+      // 2. Pending auto-send (e.g. /chat?msg=...).
+      const pending = pendingMsgRef.current;
+      if (pending) {
+        setMessages(hist ?? []);
+        if (active) {
+          setCurrentThreadId(active.id);
+          currentThreadIdRef.current = active.id;
+        }
+        const pendingContext = pendingContextRef.current;
+        pendingMsgRef.current = null;
+        pendingContextRef.current = [];
+        setSearchParams({}, { replace: true });
+        setTimeout(() => sendMessage(pending, pendingContext), 100);
+        return;
+      }
+
+      // 3. Resume an existing conversation.
+      if (active && (hist?.length ?? 0) > 0) {
+        setCurrentThreadId(active.id);
+        currentThreadIdRef.current = active.id;
+        setMessages(hist ?? []);
+        return;
+      }
+
+      // 4. Fresh start — let the companion open with a proactive message.
+      setMessages([]);
+      const notice = await loadProactiveNoticeData();
+      if (revoked || seedActiveRef.current) return;
+      const opener = (notice?.contextMessages ?? []).filter((m) =>
+        m.content.trim(),
+      );
+      if (opener.length === 0) return;
+      seedActiveRef.current = true;
+      pendingContextRef.current = opener;
+      seedFreshThread(opener);
+    })();
 
     return () => {
       revoked = true;
     };
-  }, [loadProactiveNotice, user?.id]);
+  }, [loadProactiveNoticeData, user?.id]);
 
   // ===== CONSOLIDATED: Polling for updates =====
   useEffect(() => {
     if (user?.id == null) return;
 
     const interval = setInterval(async () => {
-      if (streaming || currentThreadIdRef.current != null) return;
+      if (streaming || currentThreadIdRef.current != null || seedActiveRef.current)
+        return;
       try {
         const hist = await api.chat.history(user.id);
         setMessages((prev) => (hist.length > prev.length ? hist : prev));
@@ -550,19 +567,18 @@ export default function Chat() {
     setIsAtBottom(el.scrollHeight - (el.scrollTop + el.clientHeight) < 40);
   }, []);
 
-  // ===== CONSOLIDATED: Visibility change =====
+  // ===== Close the active thread when leaving the chat page =====
+  // Closing a thread triggers server-side consolidation (episode/memory
+  // extraction), so we mark the session boundary on unmount — i.e. when the
+  // user navigates away from chat. Previously this fired on tab-hide, which
+  // closed the thread the moment you alt-tabbed away mid-conversation.
   useEffect(() => {
     if (user?.id == null) return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden" && currentThreadIdRef.current) {
+    return () => {
+      if (currentThreadIdRef.current) {
         api.threads.close(currentThreadIdRef.current).catch(() => {});
       }
     };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [user?.id]);
 
   // Thread actions
@@ -575,6 +591,8 @@ export default function Chat() {
   );
 
   const handleSelectThread = async (threadId: number) => {
+    seedActiveRef.current = false;
+    pendingContextRef.current = [];
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
@@ -587,11 +605,26 @@ export default function Chat() {
     }
   };
 
-  const handleNewThread = () => {
-    currentThreadIdRef.current = null;
-    setCurrentThreadId(null);
+  const handleNewThread = async () => {
+    seedActiveRef.current = false;
+    pendingContextRef.current = [];
     setMessages([]);
     setError("");
+    try {
+      // Actually start a fresh thread: the endpoint closes the active thread
+      // (firing consolidation) — or reuses it if it's still empty — and returns
+      // the new one. Point the conversation at it so the next reply lands there.
+      const res = await api.threads.create();
+      currentThreadIdRef.current = res.threadId;
+      setCurrentThreadId(res.threadId);
+      const list = await api.threads.list();
+      setThreads(dedupeThreads(list.threads));
+    } catch {
+      // Local-only fallback; the next send still rotates to a fresh thread once
+      // the active one is closed on leaving chat.
+      currentThreadIdRef.current = null;
+      setCurrentThreadId(null);
+    }
   };
 
   const handleDeleteThread = async (threadId: number) => {
@@ -714,17 +747,14 @@ export default function Chat() {
   const sendMessage = async (
     text: string,
     contextMessages: ChatContextMessage[] = [],
+    opts: { skipContextDisplay?: boolean } = {},
   ) => {
     if ((!text.trim() && selectedImages.length === 0) || user?.id == null || streaming) {
       return;
     }
 
     const userMsg = text.trim();
-    const implicitContextMessages =
-      contextMessages.length > 0
-        ? contextMessages
-        : proactiveNotice?.contextMessages ?? [];
-    const turnContextMessages = implicitContextMessages.filter((message) =>
+    const turnContextMessages = contextMessages.filter((message) =>
       message.content.trim(),
     );
     const activeTodayContext =
@@ -750,20 +780,20 @@ export default function Chat() {
     setInput("");
     setError("");
     setTodaySuggestion(suggestedTodayContext);
-    if (turnContextMessages.length > 0) {
-      setProactiveNotice(null);
-    }
 
     const now = Date.now();
-    const optimisticContextMessages: ChatMessage[] = turnContextMessages.map(
-      (message, index) => ({
-        id: now + index,
-        userId: user.id,
-        role: "assistant",
-        content: message.content.trim(),
-        source: message.source ?? null,
-      }),
-    );
+    // When the context is already on screen (e.g. a seeded thread's opening
+    // thought), skip re-rendering it — but still send it to the server below.
+    const optimisticContextMessages: ChatMessage[] = opts.skipContextDisplay
+      ? []
+      : turnContextMessages.map((message, index) => ({
+          id: now + index,
+          userId: user.id,
+          role: "assistant",
+          content: message.content.trim(),
+          source: message.source ?? null,
+          pills: message.pills ?? undefined,
+        }));
     const tempUserMsg: ChatMessage = {
       id: now + optimisticContextMessages.length + 1,
       userId: user.id,
@@ -874,11 +904,25 @@ export default function Chat() {
     }
   };
 
+  // Submit handler — on the first reply to a seeded thread, carry the seeded
+  // thought along as context (it's already shown, so don't re-render it).
+  const handleSubmit = () => {
+    const seedContext = pendingContextRef.current;
+    const wasSeed = seedActiveRef.current && seedContext.length > 0;
+    pendingContextRef.current = [];
+    seedActiveRef.current = false;
+    if (wasSeed) {
+      void sendMessage(input, seedContext, { skipContextDisplay: true });
+    } else {
+      void sendMessage(input);
+    }
+  };
+
   // Message content renderer
   const renderMessageContent = (
     content: string,
     role: string,
-    message?: { attachments?: ChatAttachment[] },
+    message?: { attachments?: ChatAttachment[]; pills?: ChatMessage["pills"] },
   ) => {
     if (role === "user") {
       return (
@@ -894,11 +938,12 @@ export default function Chat() {
     }
     return (
       <div className="prose prose-invert prose-sm md:prose-base max-w-none">
+        <MessagePills pills={message?.pills} />
         <ReactMarkdown
           rehypePlugins={[rehypeHighlight]}
           components={{
             pre: ({ children }) => (
-              <pre className="bg-black/30 p-3 overflow-x-auto my-2">
+              <pre className="bg-foreground/[0.06] p-3 overflow-x-auto my-2">
                 {children}
               </pre>
             ),
@@ -933,7 +978,7 @@ export default function Chat() {
       <ChatLayout
         input={input}
         onInputChange={setInput}
-        onSubmit={() => sendMessage(input)}
+        onSubmit={handleSubmit}
         streaming={streaming}
         canSubmit={Boolean(input.trim()) || selectedImages.length > 0}
         onAttach={handleAttach}
@@ -948,16 +993,6 @@ export default function Chat() {
               onAcceptSuggestion={handleTodaySuggestionAccept}
               onDismissSuggestion={handleTodaySuggestionDismiss}
             />
-            {proactiveNotice && (
-              <ProactiveNoticeCard
-                notice={proactiveNotice}
-                draft={proactiveDraft}
-                loading={proactiveLoading}
-                onDraftChange={setProactiveDraft}
-                onRegenerate={() => loadProactiveNotice(proactiveDraft)}
-                onDismiss={() => setProactiveNotice(null)}
-              />
-            )}
             <SelectedImagePreviews
               images={selectedImages}
               onRemove={removeSelectedImage}

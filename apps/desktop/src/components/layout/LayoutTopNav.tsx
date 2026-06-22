@@ -1,81 +1,123 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import {
-  ChevronDownIcon,
-  ChevronUpIcon,
-  cn,
-} from "@anima/standard-templates";
-import type { MemoryOverviewData } from "@anima/api-client";
+import { ChevronRightIcon, ChevronLeftIcon, cn } from "@anima/standard-templates";
+import type { AgentStateData } from "@anima/api-client";
 import { useAuth } from "../../context/AuthContext";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { api } from "../../lib/api";
-import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
-import { getDbViewerEnabled } from "../../lib/preferences";
-import { useTheme } from "../../hooks/useTheme";
-import { DATABASE_NAV_ITEM, TOP_NAV_ITEMS } from "./nav-items";
+import { TOP_NAV_ITEMS } from "./nav-items";
 
 const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
 const NEGATIVE_MOODS = new Set(["sad", "lonely", "tired", "angry", "frustrated", "anxious", "worried"]);
 
-function moodDotClass(emotion: string): string {
+function moodBadgeClass(emotion: string): string {
   const e = emotion.toLowerCase().trim();
-  if (POSITIVE_MOODS.has(e)) return "bg-accent";
-  if (NEGATIVE_MOODS.has(e)) return "bg-destructive";
-  return "bg-muted-foreground";
+  if (POSITIVE_MOODS.has(e)) return "bg-accent/30 text-accent border border-accent/30";
+  if (NEGATIVE_MOODS.has(e)) return "bg-destructive/20 text-destructive border border-destructive/20";
+  return "bg-border text-foreground/70 border border-border";
+}
+
+
+type TopNavAgentButtonProps = {
+  agentName: string;
+  avatarUrl: string;
+  dominantEmotion: string | null;
+  stateThought?: string | null;
+  expanded: boolean;
+  onClick: () => void;
+};
+
+export function TopNavAgentButton({
+  agentName,
+  avatarUrl,
+  dominantEmotion,
+  stateThought,
+  expanded,
+  onClick,
+}: TopNavAgentButtonProps) {
+  const title = [agentName, dominantEmotion, stateThought]
+    .filter(Boolean)
+    .join(" - ");
+
+  return (
+    <div
+      title={title}
+      className="flex min-w-0 items-center gap-4 shrink-0"
+    >
+      <button
+        onClick={onClick}
+        className="relative size-12 overflow-hidden border border-border/70 shrink-0 hover:opacity-75 transition-opacity"
+      >
+        <img
+          src={avatarUrl}
+          alt={agentName}
+          className="size-full object-cover"
+        />
+      </button>
+      {expanded && (
+        <span className="flex min-w-0 flex-col gap-1 pr-1">
+          <button
+            onClick={onClick}
+            className="flex min-w-0 items-center gap-2 text-left hover:opacity-75 transition-opacity"
+          >
+            <span className="text-base font-semibold text-foreground leading-none truncate">
+              {agentName}
+            </span>
+            {dominantEmotion && (
+              <span
+                className={cn(
+                  "shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] leading-none",
+                  moodBadgeClass(dominantEmotion),
+                )}
+              >
+                {dominantEmotion}
+              </span>
+            )}
+          </button>
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function LayoutTopNav() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { agentName, avatarUrl } = useAgentProfile(user?.id);
-  const { effective: theme, toggle: toggleTheme } = useTheme();
+  const [agentState, setAgentState] = useState<AgentStateData | null>(null);
   const [showUser, setShowUser] = useState(false);
-  const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
-  const [dominantEmotion, setDominantEmotion] = useState<string | null>(null);
-  const [memOverview, setMemOverview] = useState<MemoryOverviewData | null>(null);
-  const [pendingTasks, setPendingTasks] = useState<number | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
+
   const navRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  const syncDbViewer = useCallback(() => setDbEnabled(getDbViewerEnabled()), []);
-
   useEffect(() => {
-    window.addEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
-    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
-  }, [syncDbViewer]);
+    if (user?.id == null) {
+      setAgentState(null);
+      return;
+    }
 
-  useEffect(() => {
-    if (user?.id == null) return;
     let active = true;
-    api.consciousness.getEmotions(user.id, 1)
-      .then((data) => { if (active) setDominantEmotion(data.dominantEmotion); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [user?.id]);
+    api.consciousness.getAgentState(user.id)
+      .then((data) => {
+        if (active) setAgentState(data);
+      })
+      .catch(() => {
+        if (active) setAgentState(null);
+      });
 
-  useEffect(() => {
-    if (user?.id == null) return;
-    let active = true;
-    api.memory.overview(user.id)
-      .then((data) => { if (active) setMemOverview(data); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (user?.id == null) return;
-    let active = true;
-    api.tasks.list(user.id)
-      .then((list) => { if (active) setPendingTasks((list ?? []).filter((t) => !t.done).length); })
-      .catch(() => {});
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [user?.id]);
 
   useEffect(() => {
     if (!showUser) return;
     const handler = (e: MouseEvent) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+      if (
+        userMenuRef.current &&
+        !userMenuRef.current.contains(e.target as Node)
+      ) {
         setShowUser(false);
       }
     };
@@ -94,153 +136,83 @@ export function LayoutTopNav() {
     return () => document.removeEventListener("mousedown", handler);
   }, [expanded]);
 
-  const navItems = dbEnabled ? [...TOP_NAV_ITEMS, DATABASE_NAV_ITEM] : TOP_NAV_ITEMS;
+
 
   const glassClasses = [
-    "relative h-12 flex items-center px-4 gap-3 z-20 rounded-2xl overflow-hidden",
+    "relative flex items-center gap-3 z-20 h-12",
     "bg-background/25",
     "backdrop-blur-[40px]",
-    "border border-white/[0.14]",
+    "border border-foreground/[0.08]",
     "shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]",
     "before:absolute before:inset-0 before:pointer-events-none",
-    "before:bg-gradient-to-b before:from-white/[0.18] before:to-white/[0.02]",
-    "after:absolute after:inset-0 after:pointer-events-none",
-    "after:shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
   ].join(" ");
 
   return (
-    <div ref={navRef} className="w-fit">
-      <header className={glassClasses}>
-        {/* Agent branding */}
-        <button
+    <header ref={navRef} className="w-full flex justify-between">
+      <div className={cn("w-fit", glassClasses)}>
+        <TopNavAgentButton
+          agentName={agentName}
+          avatarUrl={avatarUrl}
+          dominantEmotion={agentState?.dominantEmotion ?? null}
+          stateThought={agentState?.thought ?? null}
+          expanded={expanded}
           onClick={() => navigate("/agent")}
-          className="flex items-center gap-2 shrink-0 hover:opacity-75 transition-opacity"
-        >
-          <div className="relative w-7 h-7 rounded-full overflow-hidden border border-border/70">
-            <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover" />
-            {dominantEmotion && (
-              <span className={cn("absolute bottom-0 right-0 w-2 h-2 rounded-full border border-background", moodDotClass(dominantEmotion))} />
-            )}
-          </div>
-          <span className="text-sm font-semibold text-foreground leading-none">{agentName}</span>
-        </button>
-
-        {expanded && (
-          <>
-            <div className="w-px h-4 bg-border/60 shrink-0" />
-
-            {/* Navigation */}
-            <nav className="flex items-center gap-0.5 flex-1">
-              {navItems.map(({ to, label, Icon }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  end={to === "/"}
-                  title={label}
-                  onClick={() => setExpanded(false)}
-                  className={({ isActive }) =>
-                    cn(
-                      "relative w-9 h-9 flex items-center justify-center transition-all duration-150",
-                      isActive
-                        ? "text-foreground bg-foreground/8"
-                        : "text-foreground/35 hover:text-foreground/70 hover:bg-foreground/5",
-                    )
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      <Icon size="md" />
-                      {isActive && (
-                        <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-foreground/60" />
-                      )}
-                    </>
-                  )}
-                </NavLink>
-              ))}
-            </nav>
-
-            {/* Agent stats */}
-            <div className="flex items-center gap-px shrink-0 border border-border/50 bg-muted/30">
-              {memOverview != null && (
-                <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">MEM</span>
-                  <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.totalItems}</span>
-                </div>
-              )}
-              {memOverview != null && (
-                <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">EPS</span>
-                  <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.episodeCount}</span>
-                </div>
-              )}
-              {pendingTasks != null && (
-                <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">TASKS</span>
-                  <span className={cn("font-mono text-[11px] font-medium tabular-nums leading-tight", pendingTasks > 0 ? "text-accent" : "text-foreground/40")}>{pendingTasks}</span>
-                </div>
-              )}
-              {dominantEmotion && (
-                <div className="flex flex-col items-center px-3 py-1">
-                  <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">STATE</span>
-                  <span className="font-mono text-[11px] font-medium text-foreground/80 leading-tight capitalize">{dominantEmotion}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Right controls */}
-            <div className="flex items-center gap-0.5 shrink-0">
-              <button
-                onClick={toggleTheme}
-                title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-                className="w-8 h-8 flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-secondary/50 transition-colors"
-              >
-                <span className="text-sm leading-none select-none">
-                  {theme === "dark" ? "☀" : "☾"}
-                </span>
-              </button>
-
-              <div ref={userMenuRef} className="relative">
-                <button
-                  onClick={() => setShowUser((v) => !v)}
-                  className="w-8 h-8 flex items-center justify-center border border-border font-mono text-xs font-medium text-foreground/70 hover:bg-secondary/50 transition-colors"
-                >
-                  {user?.name?.[0]?.toUpperCase() ?? "U"}
-                </button>
-                {showUser && (
-                  <div className="absolute right-0 top-full mt-1 w-44 border border-border bg-card shadow-xl z-50">
-                    <div className="px-3 py-2.5 border-b border-border/60">
-                      <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
-                    </div>
-                    <button
-                      onClick={() => { navigate("/profile"); setShowUser(false); }}
-                      className="w-full text-left px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
-                    >
-                      Profile
-                    </button>
-                    <button
-                      onClick={() => { logout(); setShowUser(false); }}
-                      className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/5 transition-colors"
-                    >
-                      Log out
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="w-px h-4 bg-border/60 shrink-0" />
-          </>
-        )}
-
-        {/* Expand / collapse arrow */}
+        />
         <button
           onClick={() => setExpanded((v) => !v)}
           title={expanded ? "Collapse nav" : "Expand nav"}
           className="flex items-center justify-center w-7 h-7 shrink-0 text-muted-foreground/70 hover:text-foreground transition-colors"
         >
-          {expanded ? <ChevronUpIcon size="sm" /> : <ChevronDownIcon size="sm" />}
+          {expanded ? (
+            <ChevronRightIcon size="sm" />
+          ) : (
+            <ChevronLeftIcon size="sm" />
+          )}
         </button>
-      </header>
-    </div>
+      </div>
+      {expanded && (
+        <div className={cn(glassClasses)}>
+          <nav className="flex items-center flex-1">
+            {TOP_NAV_ITEMS.map(({ to, label, Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === "/"}
+                title={label}
+                onClick={() => setExpanded(false)}
+                className={({ isActive }) =>
+                  cn(
+                    "group relative size-12 flex items-center justify-center transition-all duration-150",
+                    isActive
+                      ? "text-foreground bg-foreground/8"
+                      : "text-foreground/35 hover:text-foreground/70 hover:bg-foreground/5",
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon size="md" />
+                    {isActive && (
+                      <span className="absolute bottom-1 left-1/2 -translate-x-1/2 size-1 rounded-full bg-foreground/60" />
+                    )}
+                    <span
+                      className={cn(
+                        "pointer-events-none absolute top-full left-1/2 z-50 mt-1 -translate-x-1/2",
+                        "rounded border border-border bg-background px-1.5 py-0.5",
+                        "text-[10px] font-medium text-foreground shadow-sm",
+                        "opacity-0 transition-opacity group-hover:opacity-100",
+                      )}
+                    >
+                      {label}
+                    </span>
+                  </>
+                )}
+              </NavLink>
+            ))}
+          </nav>
+
+        </div>
+      )}
+    </header>
   );
 }

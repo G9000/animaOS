@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -218,6 +219,71 @@ async def test_run_background_extraction_attaches_source_ids_to_llm_candidates(
 
         assert candidate is not None
         assert candidate.source_message_ids == [201, 202]
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_run_background_extraction_ignores_incomplete_emotion_payload(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.models.runtime_memory import MemoryCandidate
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            memories=[
+                {
+                    "content": "Shared a photo from today",
+                    "category": "fact",
+                    "importance": 2,
+                }
+            ],
+            emotion={
+                "confidence": 0.3,
+                "trajectory": "stable",
+                "evidence": "No notable emotional tone",
+            },
+        )
+
+    original_provider = settings.agent_provider
+    caplog.set_level(
+        logging.ERROR,
+        logger="anima_server.services.agent.consolidation",
+    )
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="today photo",
+                assistant_response="Nice shot.",
+                runtime_db_factory=rt_factory,
+            )
+
+            with rt_factory() as rt_db:
+                candidate = rt_db.scalar(
+                    select(MemoryCandidate).where(MemoryCandidate.source == "llm")
+                )
+
+        assert candidate is not None
+        assert candidate.content == "Shared a photo from today"
+        assert "LLM extraction pipeline failed" not in caplog.text
     finally:
         settings.agent_provider = original_provider
 

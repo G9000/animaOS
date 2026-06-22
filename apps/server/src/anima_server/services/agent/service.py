@@ -82,6 +82,7 @@ from anima_server.services.agent.state import (
     AgentRetrievalTrace,
     StoredAttachment,
     StoredMessage,
+    attach_serialized_pills,
     deserialize_agent_retrieval,
     extract_stored_retrieval,
     serialize_agent_retrieval,
@@ -814,6 +815,42 @@ class _TurnContext:
     retrieval: AgentRetrievalTrace | None = None
 
 
+async def _consolidate_displaced_threads(
+    thread_ids: Sequence[int],
+    *,
+    user_id: int,
+    db: Session,
+    runtime_db: Session,
+) -> None:
+    """Fire consolidation for threads closed to keep a single active thread.
+
+    Mirrors ``reset_agent_thread``: commit the close first so the consolidation
+    worker's own session sees it, then run it (awaited on sqlite, scheduled
+    otherwise).
+    """
+    if not thread_ids:
+        return
+
+    from anima_server.services.agent.eager_consolidation import on_thread_close
+
+    runtime_db.commit()
+    soul_db_factory = _build_db_factory(db)
+    for old_id in thread_ids:
+        close_task = on_thread_close(
+            thread_id=old_id,
+            user_id=user_id,
+            runtime_db_factory=_build_runtime_db_factory(),
+            soul_db_factory=soul_db_factory,
+        )
+        if _runtime_db_is_sqlite(runtime_db):
+            await close_task
+        else:
+            try:
+                asyncio.get_running_loop().create_task(close_task)
+            except RuntimeError:
+                await close_task
+
+
 async def _prepare_turn_context(
     user_message: str,
     user_id: int,
@@ -848,7 +885,7 @@ async def _prepare_turn_context(
                 f"Thread {thread_id} not found for user {user_id}")
         if thread.status != "active":
             dek = get_active_dek(user_id, "conversations")
-            reactivate_thread_if_needed(
+            displaced_thread_ids = reactivate_thread_if_needed(
                 runtime_db,
                 thread=thread,
                 user_id=user_id,
@@ -856,6 +893,12 @@ async def _prepare_turn_context(
                 dek=dek,
             )
             runtime_db.flush()
+            await _consolidate_displaced_threads(
+                displaced_thread_ids,
+                user_id=user_id,
+                db=db,
+                runtime_db=runtime_db,
+            )
     else:
         thread = get_or_create_thread(runtime_db, user_id)
 
@@ -896,6 +939,10 @@ async def _prepare_turn_context(
         for offset, (context_message, cleaned_content) in enumerate(
             cleaned_context_messages
         ):
+            content_json = attach_serialized_pills(
+                None,
+                [pill.model_dump() for pill in context_message.pills],
+            )
             persisted = append_message(
                 runtime_db,
                 thread=thread,
@@ -904,6 +951,7 @@ async def _prepare_turn_context(
                 sequence_id=initial_sequence_id + offset,
                 role=context_message.role,
                 content_text=cleaned_content,
+                content_json=content_json,
                 source=context_message.source,
             )
             persisted_context_messages.append(persisted)
