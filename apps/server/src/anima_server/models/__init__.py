@@ -34,6 +34,8 @@ from anima_server.models.runtime import (
     RuntimeRun,
     RuntimeStep,
     RuntimeThread,
+    RuntimeWorkflowCheckpoint,
+    RuntimeWorkflowRun,
 )
 from anima_server.models.runtime_consciousness import (
     ActiveIntention,
@@ -85,6 +87,8 @@ __all__ = [
     "RuntimeRun",
     "RuntimeStep",
     "RuntimeThread",
+    "RuntimeWorkflowCheckpoint",
+    "RuntimeWorkflowRun",
     "SelfModelBlock",
     "Task",
     "TelegramLink",

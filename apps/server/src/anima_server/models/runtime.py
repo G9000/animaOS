@@ -142,6 +142,87 @@ class RuntimeRun(RuntimeBase):
     )
 
 
+class RuntimeWorkflowRun(RuntimeBase):
+    __tablename__ = "runtime_workflow_runs"
+    __table_args__ = (
+        Index("ix_runtime_workflow_runs_user_status", "user_id", "status"),
+        Index("ix_runtime_workflow_runs_user_type", "user_id", "workflow_type"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    thread_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("runtime_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    workflow_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="created", server_default=text("'created'")
+    )
+    current_state: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="created", server_default=text("'created'")
+    )
+    input_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    max_retries: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("3")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+
+class RuntimeWorkflowCheckpoint(RuntimeBase):
+    __tablename__ = "runtime_workflow_checkpoints"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_run_id",
+            "checkpoint_index",
+            name="uq_runtime_workflow_checkpoint_index",
+        ),
+        UniqueConstraint(
+            "workflow_run_id",
+            "idempotency_key",
+            name="uq_runtime_workflow_checkpoint_idempotency",
+        ),
+        Index(
+            "ix_runtime_workflow_checkpoints_run_created",
+            "workflow_run_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    workflow_run_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("runtime_workflow_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    checkpoint_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    state_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    input_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    artifact_refs_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
 class RuntimeStep(RuntimeBase):
     __tablename__ = "runtime_steps"
     __table_args__ = (
