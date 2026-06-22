@@ -13,6 +13,7 @@ from anima_server.services.workflows.state import (
 )
 
 JsonObject = dict[str, Any]
+TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 def start_workflow(
@@ -64,6 +65,12 @@ def append_checkpoint(
     )
     if existing is not None:
         return existing
+
+    if run.status in TERMINAL_WORKFLOW_STATUSES:
+        raise ValueError(
+            f"Workflow run {workflow_run_id} is terminal ({run.status}); "
+            "cannot append a new checkpoint."
+        )
 
     latest_index = db.scalar(
         select(func.max(RuntimeWorkflowCheckpoint.checkpoint_index)).where(

@@ -1,7 +1,9 @@
+import pytest
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeWorkflowCheckpoint, RuntimeWorkflowRun
 from anima_server.services.workflows.checkpoints import (
     append_checkpoint,
+    cancel_workflow,
     load_resume_point,
     mark_workflow_completed,
     start_workflow,
@@ -109,6 +111,85 @@ def test_append_checkpoint_is_idempotent_by_key(runtime_db):
     assert checkpoints[0].state_name == "retrieve_context"
     assert checkpoints[0].status == "completed"
     assert checkpoints[0].output_json == {"value": "first"}
+
+
+def test_append_checkpoint_rejects_new_checkpoint_after_completion(runtime_db):
+    run = start_workflow(runtime_db, user_id=7, workflow_type="checkpoint_rag")
+    checkpoint = append_checkpoint(
+        runtime_db,
+        workflow_run_id=run.id,
+        state_name="retrieve_context",
+        status="completed",
+        idempotency_key="retrieve-context-1",
+    )
+    mark_workflow_completed(runtime_db, run, result_json={"answer": "done"})
+
+    with pytest.raises(ValueError, match=r"terminal.*completed"):
+        append_checkpoint(
+            runtime_db,
+            workflow_run_id=run.id,
+            state_name="generate_answer",
+            status="completed",
+            idempotency_key="generate-answer-1",
+        )
+
+    checkpoints = runtime_db.query(RuntimeWorkflowCheckpoint).all()
+    assert checkpoints == [checkpoint]
+    assert run.status == "completed"
+    assert run.result_json == {"answer": "done"}
+
+
+def test_append_checkpoint_replays_existing_checkpoint_after_completion(runtime_db):
+    run = start_workflow(runtime_db, user_id=7, workflow_type="checkpoint_rag")
+    checkpoint = append_checkpoint(
+        runtime_db,
+        workflow_run_id=run.id,
+        state_name="retrieve_context",
+        status="completed",
+        idempotency_key="retrieve-context-1",
+        output_json={"matches": [1]},
+    )
+    mark_workflow_completed(runtime_db, run, result_json={"answer": "done"})
+
+    replayed = append_checkpoint(
+        runtime_db,
+        workflow_run_id=run.id,
+        state_name="generate_answer",
+        status="failed",
+        idempotency_key="retrieve-context-1",
+        error_json={"message": "should not be written"},
+    )
+
+    checkpoints = runtime_db.query(RuntimeWorkflowCheckpoint).all()
+    assert replayed is checkpoint
+    assert checkpoints == [checkpoint]
+    assert run.status == "completed"
+    assert run.result_json == {"answer": "done"}
+
+
+def test_append_checkpoint_rejects_new_checkpoint_after_cancellation(runtime_db):
+    run = start_workflow(runtime_db, user_id=7, workflow_type="checkpoint_rag")
+    checkpoint = append_checkpoint(
+        runtime_db,
+        workflow_run_id=run.id,
+        state_name="retrieve_context",
+        status="completed",
+        idempotency_key="retrieve-context-1",
+    )
+    cancel_workflow(runtime_db, run)
+
+    with pytest.raises(ValueError, match=r"terminal.*cancelled"):
+        append_checkpoint(
+            runtime_db,
+            workflow_run_id=run.id,
+            state_name="generate_answer",
+            status="completed",
+            idempotency_key="generate-answer-1",
+        )
+
+    checkpoints = runtime_db.query(RuntimeWorkflowCheckpoint).all()
+    assert checkpoints == [checkpoint]
+    assert run.status == "cancelled"
 
 
 def test_load_resume_point_returns_latest_completed_checkpoint(runtime_db):
