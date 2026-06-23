@@ -106,6 +106,7 @@ class VectorStore(ABC):
         limit: int = 10,
         category: str | None = None,
         source_types: Sequence[str] | None = None,
+        source_ids: Sequence[int] | None = None,
     ) -> list[VectorSearchResult]: ...
 
     @abstractmethod
@@ -213,14 +214,18 @@ class InMemoryVectorStore(VectorStore):
         limit: int = 10,
         category: str | None = None,
         source_types: Sequence[str] | None = None,
+        source_ids: Sequence[int] | None = None,
     ) -> list[VectorSearchResult]:
         user_store = self._data.get(user_id, {})
         scored: list[tuple[float, VectorSearchResult]] = []
         allowed_source_types = set(source_types) if source_types is not None else None
+        allowed_source_ids = set(source_ids) if source_ids is not None else None
         for record in user_store.values():
             if category is not None and record.category != category:
                 continue
             if allowed_source_types is not None and record.source_type not in allowed_source_types:
+                continue
+            if allowed_source_ids is not None and record.item_id not in allowed_source_ids:
                 continue
             sim = _cosine_similarity(query_embedding, record.embedding)
             scored.append(

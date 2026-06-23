@@ -347,6 +347,24 @@ def test_pgvec_search_source_types_adds_sql_filter() -> None:
     assert ["document_chunk"] in compiled.params.values()
 
 
+def test_pgvec_search_source_ids_adds_sql_filter() -> None:
+    db = FakeSession()
+
+    PgVecStore(db).search_by_vector(
+        2,
+        query_embedding=[1.0, 0.0],
+        limit=5,
+        source_types=["document_chunk"],
+        source_ids=[10, 20],
+    )
+
+    compiled = db.statements[0].compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "embeddings.source_id IN" in sql
+    assert [10, 20] in compiled.params.values()
+    assert db.flushed is False
+
+
 def test_bm25_runtime_embedding_fallback_filters_memory_items() -> None:
     db = FakeSession()
 

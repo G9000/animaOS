@@ -111,8 +111,11 @@ class PgVecStore(VectorStore):
         limit: int = 10,
         category: str | None = None,
         source_types: Sequence[str] | None = None,
+        source_ids: Sequence[int] | None = None,
     ) -> list[VectorSearchResult]:
         if limit <= 0:
+            return []
+        if source_ids is not None and not source_ids:
             return []
 
         distance = RuntimeEmbedding.embedding.cosine_distance(query_embedding)
@@ -127,6 +130,8 @@ class PgVecStore(VectorStore):
             stmt = stmt.where(RuntimeEmbedding.category == category)
         if source_types is not None:
             stmt = stmt.where(RuntimeEmbedding.source_type.in_(source_types))
+        if source_ids is not None:
+            stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_ids))
         rows = self._db.execute(stmt).all()
 
         results: list[VectorSearchResult] = []

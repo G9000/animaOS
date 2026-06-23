@@ -6,6 +6,7 @@ from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
+from anima_server.services.agent.vector_store import VectorSearchResult
 from anima_server.services.documents import (
     DocumentRegistration,
     ExtractedDocumentChunk,
@@ -14,6 +15,7 @@ from anima_server.services.documents import (
     list_document_chunks,
     register_document,
     replace_document_chunks,
+    search_document_chunks,
 )
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -58,6 +60,26 @@ def _document_with_chunks(
             ExtractedDocumentChunk(chunk_index=index, content_text=content)
             for index, content in enumerate(chunk_texts)
         ],
+    )
+    return document, inserted
+
+
+def _document_with_extracted_chunks(
+    runtime_db: Session,
+    *,
+    user_id: int = 1,
+    filename: str = "notes.md",
+    sha256: str = "d" * 64,
+    chunks: list[ExtractedDocumentChunk],
+) -> tuple[RuntimeDocument, list[RuntimeDocumentChunk]]:
+    document = register_document(
+        runtime_db,
+        _registration(user_id=user_id, filename=filename, sha256=sha256),
+    )
+    inserted = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=chunks,
     )
     return document, inserted
 
@@ -126,6 +148,29 @@ def _embedding_rows(runtime_db: Session) -> list[RuntimeEmbedding]:
             select(RuntimeEmbedding).order_by(RuntimeEmbedding.source_id)
         ).all()
     )
+
+
+def _add_document_embedding(
+    runtime_db: Session,
+    chunk: RuntimeDocumentChunk,
+    *,
+    embedding: list[float] | None = None,
+) -> RuntimeEmbedding:
+    vector = embedding or _embedding(1.0)
+    row = RuntimeEmbedding(
+        user_id=chunk.user_id,
+        source_type="document_chunk",
+        source_id=chunk.id,
+        content_hash=chunk.content_hash,
+        embedding_checksum=compute_embedding_checksum(vector),
+        embedding=vector,
+        content_preview=chunk.content_text[:200],
+        category="document",
+        importance=3,
+    )
+    runtime_db.add(row)
+    runtime_db.flush()
+    return row
 
 
 def test_embed_document_chunks_indexes_chunks_as_document_sources(
@@ -422,3 +467,461 @@ def test_embed_document_chunks_uses_default_generator_when_no_embedding_fn(
 
     assert indexed == 1
     assert calls == ["default generator"]
+
+
+def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_chunks(runtime_db)
+    _add_document_embedding(runtime_db, chunks[1])
+    calls: list[dict[str, Any]] = []
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+    ) -> list[VectorSearchResult]:
+        calls.append(
+            {
+                "user_id": user_id,
+                "query_embedding": query_embedding,
+                "limit": limit,
+                "category": category,
+                "source_types": source_types,
+                "source_ids": source_ids,
+            }
+        )
+        return [
+            VectorSearchResult(
+                item_id=chunks[1].id,
+                content="beta preview",
+                category="document",
+                importance=3,
+                similarity=0.92,
+                source_type="document_chunk",
+            ),
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="memory row with colliding id",
+                category="fact",
+                importance=5,
+                similarity=0.91,
+                source_type="memory_item",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="beta",
+        limit=2,
+        embedding_fn=lambda text: _embedding(float(len(text)), 1.0),
+    )
+
+    assert calls == [
+        {
+            "user_id": 1,
+            "query_embedding": _embedding(4.0, 1.0),
+            "limit": 22,
+            "category": None,
+            "source_types": ["document_chunk"],
+            "source_ids": None,
+        }
+    ]
+    assert len(results) == 1
+    assert results[0].chunk_id == chunks[1].id
+    assert results[0].document_id == document.id
+    assert results[0].filename == "notes.md"
+    assert results[0].content == "beta notes"
+    assert results[0].similarity == 0.92
+
+
+def test_search_document_chunks_document_filter_overfetches_to_fill_limit(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    allowed_document, allowed_chunks = _document_with_extracted_chunks(
+        runtime_db,
+        filename="allowed.md",
+        sha256="e" * 64,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="allowed first"),
+            ExtractedDocumentChunk(chunk_index=1, content_text="allowed second"),
+        ],
+    )
+    _blocked_document, blocked_chunks = _document_with_extracted_chunks(
+        runtime_db,
+        filename="blocked.md",
+        sha256="f" * 64,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="blocked first"),
+            ExtractedDocumentChunk(chunk_index=1, content_text="blocked second"),
+        ],
+    )
+    for chunk in allowed_chunks:
+        _add_document_embedding(runtime_db, chunk)
+    search_calls: list[dict[str, Any]] = []
+
+    candidates = [
+        VectorSearchResult(
+            item_id=blocked_chunks[0].id,
+            content="blocked first",
+            category="document",
+            importance=3,
+            similarity=0.99,
+            source_type="document_chunk",
+        ),
+        VectorSearchResult(
+            item_id=blocked_chunks[1].id,
+            content="blocked second",
+            category="document",
+            importance=3,
+            similarity=0.98,
+            source_type="document_chunk",
+        ),
+        VectorSearchResult(
+            item_id=allowed_chunks[0].id,
+            content="allowed first",
+            category="document",
+            importance=3,
+            similarity=0.9,
+            source_type="document_chunk",
+        ),
+        VectorSearchResult(
+            item_id=allowed_chunks[1].id,
+            content="allowed second",
+            category="document",
+            importance=3,
+            similarity=0.89,
+            source_type="document_chunk",
+        ),
+    ]
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+    ) -> list[VectorSearchResult]:
+        search_calls.append(
+            {
+                "limit": limit,
+                "source_types": source_types,
+                "source_ids": source_ids,
+            }
+        )
+        allowed_ids = set(source_ids or [])
+        return [
+            candidate
+            for candidate in candidates
+            if not allowed_ids or candidate.item_id in allowed_ids
+        ][:limit]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="allowed",
+        document_ids=[allowed_document.id],
+        limit=2,
+        embedding_fn=lambda _text: _embedding(1.0, 0.0),
+    )
+
+    assert search_calls == [
+        {
+            "limit": 2,
+            "source_types": ["document_chunk"],
+            "source_ids": [chunk.id for chunk in allowed_chunks],
+        }
+    ]
+    assert [result.chunk_id for result in results] == [
+        allowed_chunks[0].id,
+        allowed_chunks[1].id,
+    ]
+
+
+def test_search_document_chunks_accepts_specified_positional_call_shape(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _document, chunks = _document_with_chunks(runtime_db, chunks=["positional chunk"])
+    _add_document_embedding(runtime_db, chunks[0])
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="positional preview",
+                category="document",
+                importance=3,
+                similarity=0.77,
+                source_type="document_chunk",
+            )
+        ],
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        1,
+        "positional",
+        embedding_fn=lambda _text: _embedding(1.0),
+    )
+
+    assert [result.chunk_id for result in results] == [chunks[0].id]
+
+
+def test_search_document_chunks_empty_embedding_returns_empty_without_search(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    def fail_search_by_vector(self: Any, **kwargs: Any) -> list[VectorSearchResult]:
+        raise AssertionError("vector search should not run without an embedding")
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fail_search_by_vector,
+    )
+
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="missing",
+            embedding_fn=lambda _text: None,
+        )
+        == []
+    )
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="missing",
+            embedding_fn=lambda _text: [],
+        )
+        == []
+    )
+
+
+def test_search_document_chunks_includes_citation_metadata(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_extracted_chunks(
+        runtime_db,
+        filename="manual.pdf",
+        sha256="1" * 64,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text="install guide",
+                page_start=3,
+                page_end=4,
+                section_title="Installation",
+            )
+        ],
+    )
+    _add_document_embedding(runtime_db, chunks[0])
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="install preview",
+                category="document",
+                importance=3,
+                similarity=0.88,
+                source_type="document_chunk",
+            )
+        ],
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="install",
+        embedding_fn=lambda _text: _embedding(1.0),
+    )
+
+    assert len(results) == 1
+    assert results[0].document_id == document.id
+    assert results[0].filename == "manual.pdf"
+    assert results[0].page_start == 3
+    assert results[0].page_end == 4
+    assert results[0].section_title == "Installation"
+
+
+def test_search_document_chunks_ignores_stale_embedding_content_hash(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_extracted_chunks(
+        runtime_db,
+        filename="freshness.pdf",
+        sha256="2" * 64,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="changed text"),
+            ExtractedDocumentChunk(chunk_index=1, content_text="fresh text"),
+        ],
+    )
+    embedding = _embedding(1.0)
+    runtime_db.add_all(
+        [
+            RuntimeEmbedding(
+                user_id=document.user_id,
+                source_type="document_chunk",
+                source_id=chunks[0].id,
+                content_hash=RuntimeEmbedding.compute_content_hash("old text"),
+                embedding_checksum=compute_embedding_checksum(embedding),
+                embedding=embedding,
+                content_preview="old text",
+                category="document",
+                importance=3,
+            ),
+            RuntimeEmbedding(
+                user_id=document.user_id,
+                source_type="document_chunk",
+                source_id=chunks[1].id,
+                content_hash=chunks[1].content_hash,
+                embedding_checksum=compute_embedding_checksum(embedding),
+                embedding=embedding,
+                content_preview="fresh text",
+                category="document",
+                importance=3,
+            ),
+        ]
+    )
+    runtime_db.flush()
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="old stale vector",
+                category="document",
+                importance=3,
+                similarity=0.99,
+                source_type="document_chunk",
+            ),
+            VectorSearchResult(
+                item_id=chunks[1].id,
+                content="fresh vector",
+                category="document",
+                importance=3,
+                similarity=0.88,
+                source_type="document_chunk",
+            ),
+        ],
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="fresh",
+        embedding_fn=lambda _text: embedding,
+    )
+
+    assert [result.chunk_id for result in results] == [chunks[1].id]
+    assert [result.content for result in results] == ["fresh text"]
+
+
+def test_search_document_chunks_ignores_stale_or_wrong_user_vector_rows(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _other_document, other_chunks = _document_with_chunks(runtime_db, user_id=2)
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=999_999,
+                content="stale chunk",
+                category="document",
+                importance=3,
+                similarity=0.95,
+                source_type="document_chunk",
+            ),
+            VectorSearchResult(
+                item_id=other_chunks[0].id,
+                content="other user chunk",
+                category="document",
+                importance=3,
+                similarity=0.94,
+                source_type="document_chunk",
+            ),
+        ],
+    )
+
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="private",
+            embedding_fn=lambda _text: _embedding(1.0),
+        )
+        == []
+    )
+
+
+def test_search_document_chunks_accepts_async_embedding_function(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _document, chunks = _document_with_chunks(runtime_db, chunks=["async query"])
+    _add_document_embedding(runtime_db, chunks[0])
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="async query",
+                category="document",
+                importance=3,
+                similarity=0.91,
+                source_type="document_chunk",
+            )
+        ],
+    )
+
+    async def embedding_fn(text: str) -> list[float]:
+        return _embedding(float(len(text)))
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="async",
+        embedding_fn=embedding_fn,
+    )
+
+    assert [result.chunk_id for result in results] == [chunks[0].id]
