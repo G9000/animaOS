@@ -27,6 +27,9 @@ const SELF_MODEL_SECTIONS: Array<{
   },
 ];
 
+const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
+const INPUT_CLASS = "w-full resize-y bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground outline-none focus:border-foreground/[0.18] transition-colors placeholder:text-foreground/20 disabled:opacity-40";
+
 export default function AgentProfileSettings() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -34,19 +37,13 @@ export default function AgentProfileSettings() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [selfModelLoading, setSelfModelLoading] = useState(false);
-  const [selfModelSaving, setSelfModelSaving] =
-    useState<AgentSelfModelSection | null>(null);
-  const [selfModelSaved, setSelfModelSaved] =
-    useState<AgentSelfModelSection | null>(null);
-  const [selfModelVersions, setSelfModelVersions] = useState<
-    Record<AgentSelfModelSection, number | null>
-  >({
+  const [selfModelSaving, setSelfModelSaving] = useState<AgentSelfModelSection | null>(null);
+  const [selfModelSaved, setSelfModelSaved] = useState<AgentSelfModelSection | null>(null);
+  const [selfModelVersions, setSelfModelVersions] = useState<Record<AgentSelfModelSection, number | null>>({
     identity: null,
     persona: null,
   });
-  const [selfModelDrafts, setSelfModelDrafts] = useState<
-    Record<AgentSelfModelSection, string>
-  >({
+  const [selfModelDrafts, setSelfModelDrafts] = useState<Record<AgentSelfModelSection, string>>({
     identity: "",
     persona: "",
   });
@@ -67,7 +64,6 @@ export default function AgentProfileSettings() {
       setSelfModelVersions({ identity: null, persona: null });
       return;
     }
-
     let cancelled = false;
     setSelfModelLoading(true);
     setError("");
@@ -78,14 +74,8 @@ export default function AgentProfileSettings() {
     ])
       .then(([identity, persona]) => {
         if (cancelled) return;
-        setSelfModelDrafts({
-          identity: identity.content,
-          persona: persona.content,
-        });
-        setSelfModelVersions({
-          identity: identity.version,
-          persona: persona.version,
-        });
+        setSelfModelDrafts({ identity: identity.content, persona: persona.content });
+        setSelfModelVersions({ identity: identity.version, persona: persona.version });
       })
       .catch((err: any) => {
         if (cancelled) return;
@@ -95,15 +85,12 @@ export default function AgentProfileSettings() {
         if (!cancelled) setSelfModelLoading(false);
       });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [user?.id]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || user?.id == null) return;
-
     setUploading(true);
     setError("");
     try {
@@ -130,25 +117,17 @@ export default function AgentProfileSettings() {
 
   const handleSelfModelSave = async (section: AgentSelfModelSection) => {
     if (user?.id == null || selfModelSaving != null) return;
-
     setSelfModelSaving(section);
     setSelfModelSaved(null);
     setError("");
-
     try {
       const updated = await api.consciousness.updateSelfModelSection(
         user.id,
         section,
         selfModelDrafts[section],
       );
-      setSelfModelDrafts((current) => ({
-        ...current,
-        [section]: updated.content,
-      }));
-      setSelfModelVersions((current) => ({
-        ...current,
-        [section]: updated.version,
-      }));
+      setSelfModelDrafts((current) => ({ ...current, [section]: updated.content }));
+      setSelfModelVersions((current) => ({ ...current, [section]: updated.version }));
       setSelfModelSaved(section);
       window.setTimeout(() => {
         setSelfModelSaved((current) => (current === section ? null : current));
@@ -178,32 +157,17 @@ export default function AgentProfileSettings() {
 
   const handleWarmerPersonaBaseline = async () => {
     if (user?.id == null || selfModelSaving != null) return;
-
     setSelfModelSaving("persona");
     setSelfModelSaved(null);
     setError("");
-
     try {
-      await api.consciousness.updateAgentProfile(user.id, {
-        personaTemplate: "companion",
-      });
-      const persona = await api.consciousness.getSelfModelSection(
-        user.id,
-        "persona",
-      );
-      setSelfModelDrafts((current) => ({
-        ...current,
-        persona: persona.content,
-      }));
-      setSelfModelVersions((current) => ({
-        ...current,
-        persona: persona.version,
-      }));
+      await api.consciousness.updateAgentProfile(user.id, { personaTemplate: "companion" });
+      const persona = await api.consciousness.getSelfModelSection(user.id, "persona");
+      setSelfModelDrafts((current) => ({ ...current, persona: persona.content }));
+      setSelfModelVersions((current) => ({ ...current, persona: persona.version }));
       setSelfModelSaved("persona");
       window.setTimeout(() => {
-        setSelfModelSaved((current) =>
-          current === "persona" ? null : current,
-        );
+        setSelfModelSaved((current) => (current === "persona" ? null : current));
       }, 2000);
     } catch (err: any) {
       setError(err.message || "Failed to apply warmer persona");
@@ -214,31 +178,33 @@ export default function AgentProfileSettings() {
 
   return (
     <div className="h-full overflow-y-auto pt-16">
-      <div className="max-w-3xl mx-auto px-8 py-8 space-y-8">
+      <div className="max-w-3xl mx-auto px-8 py-8 space-y-4">
         {/* Header */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 pb-2">
           <button
             onClick={() => navigate(-1)}
-            className="font-mono text-[9px] text-muted-foreground/40 hover:text-muted-foreground tracking-wider transition-colors"
+            className="font-mono text-[9px] text-foreground/25 hover:text-foreground/55 tracking-[0.18em] uppercase transition-colors"
           >
-            ← BACK
+            ← Back
           </button>
-          <div className="space-y-0.5">
-            <h2 className="font-mono text-sm tracking-wider">
-              {agentName || "ANIMA"}
+          <div className="h-3.5 w-px bg-foreground/[0.1]" />
+          <div>
+            <h2 className="font-mono text-[11px] tracking-[0.22em] uppercase text-foreground/60">
+              {agentName || "Anima"}
             </h2>
-            <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-              AVATAR, IDENTITY AND MAIN PERSONA
+            <p className="font-mono text-[9px] text-foreground/25 tracking-[0.2em] uppercase">
+              Avatar, Identity & Persona
             </p>
           </div>
         </div>
+
         {/* Avatar */}
-        <section className="space-y-4">
+        <div className={`${glass} p-5 space-y-4`}>
           <div className="space-y-1">
-            <h2 className="font-mono text-[10px] tracking-wider text-foreground">
-              AVATAR
+            <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+              Avatar
             </h2>
-            <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+            <p className="font-mono text-[10px] text-foreground/25 tracking-wide">
               PNG, JPG, WEBP, GIF or SVG — max 2 MB
             </p>
           </div>
@@ -247,7 +213,7 @@ export default function AgentProfileSettings() {
             <img
               src={avatarUrl}
               alt="Agent avatar"
-              className="w-20 h-20 rounded-none border border-border object-cover flex-shrink-0"
+              className="w-20 h-20 border border-foreground/[0.1] object-cover flex-shrink-0"
             />
             <div className="flex flex-col gap-2">
               <input
@@ -260,152 +226,125 @@ export default function AgentProfileSettings() {
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
-                className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground hover:text-foreground hover:border-primary transition-colors disabled:opacity-40"
+                className="font-mono text-[9px] tracking-[0.18em] uppercase px-4 py-2 border border-foreground/[0.1] text-foreground/40 hover:border-foreground/[0.2] hover:text-foreground/70 disabled:opacity-30 transition-all"
               >
-                {uploading ? "UPLOADING..." : "UPLOAD IMAGE"}
+                {uploading ? "Uploading..." : "Upload Image"}
               </button>
               <button
                 onClick={handleRemoveAvatar}
                 disabled={uploading || !hasCustomAvatar}
-                className="font-mono text-[10px] tracking-wider px-4 py-2 border border-border text-muted-foreground/50 hover:text-destructive hover:border-destructive transition-colors disabled:opacity-30"
+                className="font-mono text-[9px] tracking-[0.18em] uppercase px-4 py-2 border border-foreground/[0.07] text-foreground/25 hover:border-destructive/40 hover:text-destructive/70 disabled:opacity-30 transition-all"
               >
-                REMOVE
+                Remove
               </button>
             </div>
           </div>
-        </section>
+        </div>
 
         {/* Bio */}
-        <section className="space-y-4">
-          <h2 className="font-mono text-[10px] tracking-wider text-foreground">
-            BIO
+        <div className={`${glass} p-5 space-y-4`}>
+          <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+            Bio
           </h2>
-          <div className="space-y-3 border-l-2 border-border pl-4">
-            <div>
-              <div className="font-mono text-[9px] text-muted-foreground/40 tracking-wider mb-0.5">
-                NAME
-              </div>
-              <div className="font-mono text-sm text-foreground">
-                {agentName || "—"}
-              </div>
-            </div>
-            <div>
-              <div className="font-mono text-[9px] text-muted-foreground/40 tracking-wider mb-0.5">
-                RELATIONSHIP
-              </div>
-              <div className="font-mono text-sm text-foreground">
-                {relationship || "—"}
-              </div>
-            </div>
-            {agentType && (
-              <div>
-                <div className="font-mono text-[9px] text-muted-foreground/40 tracking-wider mb-0.5">
-                  TYPE
-                </div>
-                <div className="font-mono text-sm text-foreground">
-                  {agentType}
-                </div>
-              </div>
-            )}
+
+          <div className="space-y-3 border-l border-foreground/[0.1] pl-4">
+            <BioRow label="Name" value={agentName} />
+            <BioRow label="Relationship" value={relationship} />
+            {agentType && <BioRow label="Type" value={agentType} />}
           </div>
-        </section>
+        </div>
 
         {/* Birthday */}
-        <section className="space-y-4">
-          <div className="flex items-end justify-between gap-4">
+        <div className={`${glass} p-5 space-y-4`}>
+          <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="font-mono text-[10px] tracking-wider text-foreground">
-                YOUR BIRTHDAY
+              <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+                Your Birthday
               </h2>
-              <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-                USED TO GIVE CONTEXT-AWARE GREETINGS ON YOUR SPECIAL DAY.
+              <p className="font-mono text-[10px] text-foreground/25 tracking-wide leading-relaxed">
+                Used to give context-aware greetings on your special day.
               </p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 shrink-0">
               {birthdaySaved && (
-                <span className="font-mono text-[8px] text-primary tracking-wider">
-                  SAVED
+                <span className="font-mono text-[9px] text-accent/60 tracking-[0.18em] uppercase">
+                  Saved
                 </span>
               )}
               <button
                 onClick={handleBirthdaySave}
                 disabled={birthdaySaving}
-                className="font-mono px-3 py-1.5 text-[9px] tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-primary disabled:opacity-30 transition-colors"
+                className="font-mono text-[9px] tracking-[0.18em] uppercase px-3 py-1.5 border border-foreground/[0.1] text-foreground/40 hover:border-foreground/[0.2] hover:text-foreground/70 disabled:opacity-30 transition-all"
               >
-                {birthdaySaving ? "SAVING..." : "SAVE"}
+                {birthdaySaving ? "Saving..." : "Save"}
               </button>
             </div>
           </div>
+
           <input
             type="date"
             value={birthdayDraft}
-            onChange={(e) => {
-              setBirthdayDraft(e.target.value);
-              setBirthdaySaved(false);
-            }}
-            className="border border-border bg-input px-3 py-2 font-mono text-[11px] text-foreground outline-none transition-colors focus:border-primary/50 [color-scheme:dark]"
+            onChange={(e) => { setBirthdayDraft(e.target.value); setBirthdaySaved(false); }}
+            className="bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2 font-mono text-[11px] text-foreground outline-none focus:border-foreground/[0.18] transition-colors [color-scheme:dark]"
           />
-        </section>
+        </div>
 
-        {/* Direct self-model */}
-        <section className="space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        {/* Core identity */}
+        <div className={`${glass} p-5 space-y-5`}>
+          <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="font-mono text-[10px] tracking-wider text-foreground">
-                CORE IDENTITY
+              <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+                Core Identity
               </h2>
-              <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
-                OVERWRITE THE AGENT IDENTITY AND MAIN PERSONA USED IN FUTURE REPLIES.
+              <p className="font-mono text-[10px] text-foreground/25 tracking-wide leading-relaxed">
+                Overwrite the agent identity and main persona used in future replies.
               </p>
             </div>
             {selfModelLoading && (
-              <span className="font-mono text-[9px] text-muted-foreground/30 tracking-wider">
-                LOADING...
+              <span className="font-mono text-[9px] text-foreground/20 tracking-[0.18em] uppercase shrink-0">
+                Loading...
               </span>
             )}
           </div>
 
           <div className="space-y-5">
             {SELF_MODEL_SECTIONS.map((section) => (
-              <div
-                key={section.key}
-                className="space-y-3 border-l-2 border-border pl-4"
-              >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="space-y-1">
-                    <h3 className="font-mono text-[10px] tracking-wider text-foreground">
+              <div key={section.key} className="space-y-3 border-l border-foreground/[0.1] pl-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-0.5">
+                    <h3 className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/40">
                       {section.label}
                     </h3>
-                    <p className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                    <p className="font-mono text-[10px] text-foreground/25 tracking-wide">
                       {section.description}
                     </p>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 shrink-0">
                     {selfModelVersions[section.key] != null && (
-                      <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
-                        V{selfModelVersions[section.key]}
+                      <span className="font-mono text-[8px] text-foreground/20 tracking-wider">
+                        v{selfModelVersions[section.key]}
                       </span>
                     )}
                     {selfModelSaved === section.key && (
-                      <span className="font-mono text-[8px] text-primary tracking-wider">
-                        SAVED
+                      <span className="font-mono text-[9px] text-accent/60 tracking-[0.18em] uppercase">
+                        Saved
                       </span>
                     )}
                     {section.key === "persona" && (
                       <button
                         onClick={handleWarmerPersonaBaseline}
                         disabled={selfModelLoading || selfModelSaving !== null}
-                        className="font-mono px-3 py-1.5 text-[9px] tracking-wider border border-primary/30 text-primary/70 hover:text-primary hover:border-primary disabled:opacity-30 transition-colors"
+                        className="font-mono text-[9px] tracking-[0.14em] uppercase px-3 py-1.5 border border-accent/25 text-accent/50 hover:border-accent/50 hover:text-accent/80 disabled:opacity-30 transition-all"
                       >
-                        WARMER BASELINE
+                        Warmer Baseline
                       </button>
                     )}
                     <button
                       onClick={() => handleSelfModelSave(section.key)}
                       disabled={selfModelLoading || selfModelSaving !== null}
-                      className="font-mono px-3 py-1.5 text-[9px] tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-primary disabled:opacity-30 transition-colors"
+                      className="font-mono text-[9px] tracking-[0.18em] uppercase px-3 py-1.5 border border-foreground/[0.1] text-foreground/40 hover:border-foreground/[0.2] hover:text-foreground/70 disabled:opacity-30 transition-all"
                     >
-                      {selfModelSaving === section.key ? "SAVING..." : "SAVE"}
+                      {selfModelSaving === section.key ? "Saving..." : "Save"}
                     </button>
                   </div>
                 </div>
@@ -413,25 +352,33 @@ export default function AgentProfileSettings() {
                   value={selfModelDrafts[section.key]}
                   rows={section.rows}
                   disabled={selfModelLoading}
-                  onChange={(e) =>
-                    setSelfModelDrafts((current) => ({
-                      ...current,
-                      [section.key]: e.target.value,
-                    }))
-                  }
-                  className="w-full resize-y border border-border bg-background/60 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/30 focus:border-primary/50 focus:bg-card/30 disabled:opacity-40"
+                  onChange={(e) => setSelfModelDrafts((current) => ({ ...current, [section.key]: e.target.value }))}
+                  className={INPUT_CLASS}
                   placeholder={`${section.label.toLowerCase()} text`}
                 />
               </div>
             ))}
           </div>
-        </section>
+        </div>
 
         {error && (
-          <p className="font-mono text-[10px] text-destructive tracking-wider">
+          <p className="font-mono text-[10px] text-destructive/70 tracking-wider">
             {error}
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+function BioRow({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div>
+      <div className="font-mono text-[9px] text-foreground/25 tracking-[0.18em] uppercase mb-0.5">
+        {label}
+      </div>
+      <div className="font-mono text-sm text-foreground/70">
+        {value || "—"}
       </div>
     </div>
   );

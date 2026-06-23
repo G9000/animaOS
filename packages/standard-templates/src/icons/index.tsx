@@ -21,3 +21,11 @@ export { ChevronLeftIcon } from "./ChevronLeftIcon";
 export { ChevronDownIcon } from "./ChevronDownIcon";
 export { ChevronUpIcon } from "./ChevronUpIcon";
 export { XIcon } from "./XIcon";
+
+// Settings
+export { AiIcon } from "./AiIcon";
+export { SecurityIcon } from "./SecurityIcon";
+export { VaultIcon } from "./VaultIcon";
+export { LanguageIcon } from "./LanguageIcon";
+export { AppearanceIcon } from "./AppearanceIcon";
+export { AdvancedIcon } from "./AdvancedIcon";

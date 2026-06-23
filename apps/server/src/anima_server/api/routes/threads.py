@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
@@ -15,6 +15,7 @@ from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.eager_consolidation import on_thread_close
+from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
 from anima_server.services.sessions import get_active_dek
@@ -160,6 +161,58 @@ async def close_thread_endpoint(
         )
 
     return {"status": "closed", "threadId": thread_id}
+
+
+@router.get("/{thread_id}/context-stats")
+async def get_thread_context_stats(
+    thread_id: int,
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, object]:
+    """Return context window usage stats for a thread."""
+    unlock_session = require_unlocked_session(request)
+    thread = runtime_db.get(RuntimeThread, thread_id)
+    if thread is None or thread.user_id != unlock_session.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+
+    rows = runtime_db.scalars(
+        select(RuntimeMessage).where(
+            RuntimeMessage.thread_id == thread_id,
+            RuntimeMessage.is_in_context.is_(True),
+            RuntimeMessage.is_archived_history.is_(False),
+        )
+    ).all()
+
+    used_tokens = sum(
+        row.token_estimate if row.token_estimate is not None
+        else estimate_message_tokens(
+            content_text=row.content_text,
+            content_json=row.content_json,
+            tool_name=row.tool_name,
+        )
+        for row in rows
+    )
+
+    compaction_count = runtime_db.scalar(
+        select(func.count()).select_from(RuntimeMessage).where(
+            RuntimeMessage.thread_id == thread_id,
+            RuntimeMessage.role == "summary",
+        )
+    ) or 0
+
+    budget = settings.agent_context_window_tokens
+    pct = round(used_tokens / budget * 100, 1) if budget else None
+    trigger_at = round(budget * settings.agent_compaction_trigger_ratio) if budget else None
+
+    return {
+        "threadId": thread_id,
+        "usedTokens": used_tokens,
+        "budgetTokens": budget,
+        "triggerAtTokens": trigger_at,
+        "pct": pct,
+        "compactionCount": compaction_count,
+        "messageCount": len(rows),
+    }
 
 
 @router.delete("/{thread_id}")

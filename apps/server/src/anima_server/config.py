@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     agent_persona_template: str = "default"
     agent_base_url: str = ""
     agent_api_key: str = ""
+    agent_api_keys_json: str = "{}"  # JSON dict: {provider: api_key}
     agent_max_steps: int = 6
     agent_strict_tool_schemas: bool = True
     agent_max_concurrent_spawns: int = 10
@@ -113,12 +114,35 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+
+def _parse_api_keys() -> dict[str, str]:
+    try:
+        data = json.loads(settings.agent_api_keys_json or "{}")
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def get_provider_api_key(provider: str) -> str:
+    return _parse_api_keys().get(provider, "")
+
+
+def set_provider_api_key(provider: str, key: str) -> None:
+    keys = _parse_api_keys()
+    if key:
+        keys[provider] = key
+    else:
+        keys.pop(provider, None)
+    settings.agent_api_keys_json = json.dumps(keys)
+
+
 _PERSISTED_RUNTIME_SETTING_FIELDS: tuple[str, ...] = (
     "agent_provider",
     "agent_model",
     "agent_persona_template",
     "agent_base_url",
     "agent_api_key",
+    "agent_api_keys_json",
     "agent_extraction_model",
     "agent_extraction_provider",
     "agent_embedding_provider",

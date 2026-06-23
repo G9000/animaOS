@@ -44,6 +44,7 @@ import type {
   SelfModelData,
   SelfModelSection,
   TaskItem,
+  ThreadContextStats,
   ThreadListResponse,
   ThreadMessagesResponse,
   TodayContext,
@@ -935,6 +936,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ status: string; threadId: number }>(`/threads/${threadId}`, {
           method: "DELETE",
         }),
+      contextStats: (threadId: number) =>
+        request<ThreadContextStats>(`/threads/${threadId}/context-stats`),
     },
     system: {
       health: () =>

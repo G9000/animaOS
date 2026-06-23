@@ -53,6 +53,12 @@ export {
   ChevronDownIcon,
   ChevronUpIcon,
   XIcon,
+  AiIcon,
+  SecurityIcon,
+  VaultIcon,
+  LanguageIcon,
+  AppearanceIcon,
+  AdvancedIcon,
 } from "./icons";
 export {
   HomeIcon,

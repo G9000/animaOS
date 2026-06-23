@@ -1,73 +1,73 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { cn, AiIcon, SecurityIcon, VaultIcon, LanguageIcon, AppearanceIcon, AdvancedIcon } from "@anima/standard-templates";
 
 const SETTINGS_SECTIONS = [
-  {
-    to: "/settings/ai",
-    label: "AI",
-    description: "Provider, model, keys, system prompt.",
-  },
-  {
-    to: "/settings/security",
-    label: "SECURITY",
-    description: "Master password, session unlock.",
-  },
-  {
-    to: "/settings/vault",
-    label: "VAULT",
-    description: "Encrypted backup export/import.",
-  },
-  {
-    to: "/settings/language",
-    label: "LANGUAGE",
-    description: "Translation and display preferences.",
-  },
-  {
-    to: "/settings/appearance",
-    label: "APPEARANCE",
-    description: "Theme, full-screen background, and visual customization.",
-  },
-  {
-    to: "/settings/advanced",
-    label: "ADVANCED",
-    description: "Debug tools, developer options.",
-  },
+  { to: "/settings/ai",         label: "AI",         description: "Provider, model, keys, directive.", Icon: AiIcon },
+  { to: "/settings/security",   label: "Security",   description: "Master password & session.",        Icon: SecurityIcon },
+  { to: "/settings/vault",      label: "Vault",      description: "Encrypted backup.",                 Icon: VaultIcon },
+  { to: "/settings/language",   label: "Language",   description: "Translation preferences.",          Icon: LanguageIcon },
+  { to: "/settings/appearance", label: "Appearance", description: "Theme & background.",               Icon: AppearanceIcon },
+  { to: "/settings/advanced",   label: "Advanced",   description: "Debug tools.",                      Icon: AdvancedIcon },
 ];
 
 export default function Settings() {
   return (
-    <div className="h-full overflow-y-auto pt-16">
-      <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
-        <header className="space-y-2">
-          <h1 className="font-mono text-sm tracking-[0.18em] uppercase">CONFIG</h1>
-          <p className="font-mono text-[10px] text-muted-foreground/50 tracking-[0.22em] uppercase">
-            RUNTIME CONFIGURATION, VAULT, AND AUTH CONTROLS
+    <div className="flex h-full overflow-hidden">
+      {/* Left rail */}
+      <div className="relative z-10 w-48 flex-shrink-0 border-r border-foreground/[0.08] flex flex-col bg-background/25 backdrop-blur-[40px] shadow-[4px_0_24px_rgba(0,0,0,0.12)] pt-16 overflow-visible">
+        <div className="px-4 pt-5 pb-3 flex-shrink-0">
+          <p className="font-mono text-[8px] tracking-[0.32em] uppercase text-foreground/20 select-none">
+            Config
           </p>
-        </header>
+        </div>
 
-        <nav className="grid gap-2 md:grid-cols-5">
-          {SETTINGS_SECTIONS.map((section) => (
-            <NavLink
-              key={section.to}
-              to={section.to}
-              end
-              className={({ isActive }) =>
-                `p-4 transition-all rounded-none border ${
-                  isActive
-                    ? "bg-primary text-primary-foreground border-primary "
-                    : "bg-card text-muted-foreground hover:text-foreground border-border hover:bg-secondary hover:"
-                }`
-              }
-            >
-              <div className="font-mono text-[10px] tracking-[0.18em] uppercase">
-                {section.label}
-              </div>
-              <div className="mt-2 text-[11px] text-muted-foreground/60 leading-relaxed">
-                {section.description}
-              </div>
+        <div className="h-px bg-foreground/[0.06] mx-3 flex-shrink-0" />
+
+        <nav className="flex-1 px-2 py-2 space-y-px overflow-visible">
+          {SETTINGS_SECTIONS.map(({ to, label, description, Icon }) => (
+            <NavLink key={to} to={to} end className="group block">
+              {({ isActive }) => (
+                <div
+                  className={cn(
+                    "relative flex items-center gap-2.5 px-3 py-2.5 transition-all duration-150",
+                    isActive ? "bg-accent z-20" : "group-hover:bg-foreground/[0.06] group-hover:z-10",
+                  )}
+                  style={isActive ? {
+                    transform: "translateX(12px)",
+                    boxShadow: "-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 55%, transparent)",
+                  } : undefined}
+                  onMouseEnter={(e) => { if (!isActive) { const el = e.currentTarget as HTMLElement; el.style.transform = "translateX(6px)"; el.style.boxShadow = "-2px 2px 0 rgba(0,0,0,0.3), -3px 3px 0 rgba(0,0,0,0.15)"; } }}
+                  onMouseLeave={(e) => { if (!isActive) { const el = e.currentTarget as HTMLElement; el.style.transform = ""; el.style.boxShadow = ""; } }}
+                >
+                  <span className={cn(
+                    "shrink-0 transition-colors",
+                    isActive ? "text-background" : "text-foreground/40 group-hover:text-foreground/65",
+                  )}>
+                    <Icon />
+                  </span>
+                  <div className="flex flex-col min-w-0">
+                    <span className={cn(
+                      "font-mono text-[11px] tracking-[0.12em] uppercase transition-colors",
+                      isActive ? "text-background font-semibold" : "text-foreground/65",
+                    )}>
+                      {label}
+                    </span>
+                    <span className={cn(
+                      "font-mono text-[9px] mt-0.5 leading-snug tracking-wide truncate",
+                      isActive ? "text-background/75" : "text-foreground/40",
+                    )}>
+                      {description}
+                    </span>
+                  </div>
+                </div>
+              )}
             </NavLink>
           ))}
         </nav>
+      </div>
 
+      {/* Content pane */}
+      <div className="flex-1 overflow-y-auto pt-20 pb-10 px-8">
         <Outlet />
       </div>
     </div>

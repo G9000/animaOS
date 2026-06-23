@@ -3,8 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../lib/api";
 
+const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
 const INPUT_CLASS =
-  "w-full bg-input border border-border rounded-sm px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors";
+  "w-full bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-foreground/[0.18] transition-colors font-mono";
 
 export default function VaultSettings() {
   const { logout } = useAuth();
@@ -15,135 +16,104 @@ export default function VaultSettings() {
   const [vaultStatus, setVaultStatus] = useState("");
 
   const handleVaultExport = async () => {
-    if (!vaultPassphrase || vaultPassphrase.length < 8) {
-      setVaultStatus("Passphrase must be at least 8 characters.");
-      return;
-    }
-
-    setVaultBusy(true);
-    setVaultStatus("");
+    if (!vaultPassphrase || vaultPassphrase.length < 8) { setVaultStatus("Passphrase must be at least 8 characters."); return; }
+    setVaultBusy(true); setVaultStatus("");
     try {
       const result = await api.vault.export(vaultPassphrase);
       const blob = new Blob([result.vault], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = result.filename;
-      anchor.click();
+      anchor.href = url; anchor.download = result.filename; anchor.click();
       URL.revokeObjectURL(url);
       setVaultStatus(`Vault exported (${Math.round(result.size / 1024)} KB).`);
     } catch (err) {
       setVaultStatus(err instanceof Error ? err.message : "Vault export failed.");
-    } finally {
-      setVaultBusy(false);
-    }
+    } finally { setVaultBusy(false); }
   };
 
   const handleVaultImport = async () => {
-    if (!vaultPassphrase || vaultPassphrase.length < 8) {
-      setVaultStatus("Passphrase must be at least 8 characters.");
-      return;
-    }
-    if (!vaultPayload.trim()) {
-      setVaultStatus("Paste vault payload or load a vault file first.");
-      return;
-    }
-
-    setVaultBusy(true);
-    setVaultStatus("");
+    if (!vaultPassphrase || vaultPassphrase.length < 8) { setVaultStatus("Passphrase must be at least 8 characters."); return; }
+    if (!vaultPayload.trim()) { setVaultStatus("Paste vault payload or load a vault file first."); return; }
+    setVaultBusy(true); setVaultStatus("");
     try {
       const result = await api.vault.import(vaultPassphrase, vaultPayload);
-      if (result.requiresReauth) {
-        await logout();
-        navigate("/login", { replace: true });
-        return;
-      }
-      setVaultStatus(
-        `Vault restored: ${result.restoredUsers} users, ${result.restoredMemoryFiles} memory files.`,
-      );
+      if (result.requiresReauth) { await logout(); navigate("/login", { replace: true }); return; }
+      setVaultStatus(`Vault restored: ${result.restoredUsers} users, ${result.restoredMemoryFiles} memory files.`);
     } catch (err) {
       setVaultStatus(err instanceof Error ? err.message : "Vault import failed.");
-    } finally {
-      setVaultBusy(false);
-    }
+    } finally { setVaultBusy(false); }
   };
 
   const handleVaultFile = async (file: File | null) => {
     if (!file) return;
-    const text = await file.text();
-    setVaultPayload(text);
+    setVaultPayload(await file.text());
     setVaultStatus(`Loaded ${file.name}.`);
   };
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-sm border border-border bg-card p-5 space-y-5">
-        <header className="space-y-1">
-          <h2 className="text-[11px] text-muted-foreground uppercase tracking-wider">
-            Vault Backup
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            Export or restore the encrypted vault bundle independently from runtime AI
-            configuration.
-          </p>
-        </header>
+    <div className={`${glass} p-6 space-y-5`}>
+      <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+        Vault Backup
+      </h2>
 
-        <section className="space-y-2">
-          <h3 className="text-[11px] text-muted-foreground uppercase tracking-wider">
-            Vault Passphrase
-          </h3>
-          <input
-            type="password"
-            value={vaultPassphrase}
-            onChange={(e) => setVaultPassphrase(e.target.value)}
-            className={INPUT_CLASS}
-            placeholder="Vault passphrase (min 8 chars)"
-          />
-        </section>
+      <p className="font-mono text-[10px] text-foreground/30 tracking-wide leading-relaxed">
+        Export or restore the encrypted vault bundle independently from runtime AI configuration.
+      </p>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={handleVaultExport}
-            disabled={vaultBusy}
-            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary disabled:opacity-50"
-          >
-            {vaultBusy ? "Working..." : "Export Vault"}
-          </button>
-          <button
-            onClick={handleVaultImport}
-            disabled={vaultBusy}
-            className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary disabled:opacity-50"
-          >
-            {vaultBusy ? "Working..." : "Import Vault"}
-          </button>
-          <label className="px-4 py-2 border border-border rounded-sm text-xs uppercase tracking-wider hover:border-primary cursor-pointer">
-            Load File
-            <input
-              type="file"
-              accept="application/json,.json,.vault"
-              className="hidden"
-              onChange={(e) => {
-                void handleVaultFile(e.target.files?.[0] || null);
-              }}
-            />
-          </label>
-        </div>
+      <div className="h-px bg-foreground/[0.06]" />
 
-        <section className="space-y-2">
-          <h3 className="text-[11px] text-muted-foreground uppercase tracking-wider">
-            Vault Payload
-          </h3>
-          <textarea
-            value={vaultPayload}
-            onChange={(e) => setVaultPayload(e.target.value)}
-            rows={8}
-            className="w-full bg-input border border-border rounded-sm px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary transition-colors resize-y"
-            placeholder="Vault JSON payload (for import)..."
-          />
-        </section>
+      <div className="space-y-1.5">
+        <h3 className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/30">Vault Passphrase</h3>
+        <input
+          type="password"
+          value={vaultPassphrase}
+          onChange={(e) => setVaultPassphrase(e.target.value)}
+          className={INPUT_CLASS}
+          placeholder="Vault passphrase (min 8 chars)"
+        />
+      </div>
 
-        {vaultStatus && <p className="text-xs text-muted-foreground">{vaultStatus}</p>}
-      </section>
+      <div className="flex flex-wrap gap-2">
+        <ActionButton onClick={handleVaultExport} disabled={vaultBusy}>
+          {vaultBusy ? "Working..." : "Export Vault"}
+        </ActionButton>
+        <ActionButton onClick={handleVaultImport} disabled={vaultBusy}>
+          {vaultBusy ? "Working..." : "Import Vault"}
+        </ActionButton>
+        <label className="font-mono text-[9px] tracking-[0.18em] uppercase px-4 py-2.5 border border-foreground/[0.1] text-foreground/40 hover:border-foreground/[0.2] hover:text-foreground/70 transition-all cursor-pointer">
+          Load File
+          <input type="file" accept="application/json,.json,.vault" className="hidden" onChange={(e) => { void handleVaultFile(e.target.files?.[0] || null); }} />
+        </label>
+      </div>
+
+      <div className="h-px bg-foreground/[0.06]" />
+
+      <div className="space-y-1.5">
+        <h3 className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/30">Vault Payload</h3>
+        <textarea
+          value={vaultPayload}
+          onChange={(e) => setVaultPayload(e.target.value)}
+          rows={8}
+          className={`${INPUT_CLASS} resize-y leading-relaxed text-xs`}
+          placeholder="Vault JSON payload (for import)..."
+        />
+      </div>
+
+      {vaultStatus && (
+        <p className="font-mono text-[10px] text-foreground/40 tracking-wide">{vaultStatus}</p>
+      )}
     </div>
+  );
+}
+
+function ActionButton({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="font-mono text-[9px] tracking-[0.18em] uppercase px-4 py-2.5 border border-foreground/[0.1] text-foreground/40 hover:border-foreground/[0.2] hover:text-foreground/70 disabled:opacity-30 transition-all"
+    >
+      {children}
+    </button>
   );
 }

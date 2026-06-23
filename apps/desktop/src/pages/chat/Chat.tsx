@@ -6,7 +6,7 @@ import type {
   ChatContextMessage,
   ChatMessage,
   ChatRequestAttachment,
-  ProactiveNotice,
+  ThreadContextStats,
   TodayContext,
   Thread,
   TraceEvent,
@@ -16,11 +16,8 @@ import { API_BASE, API_ORIGIN } from "../../lib/runtime";
 import { getUnlockToken } from "../../lib/api";
 import {
   loadTodayContext,
-  normalizeTodayContext,
   saveTodayContext,
-  suggestTodayContextFromMessage,
   todayIso,
-  type TodayContextDraft,
 } from "../../lib/today-context";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -46,7 +43,6 @@ import {
   ChatEmptyState,
   ChatLayout,
 } from "../../components/chat";
-import { TodayContextPanel } from "../../components/TodayContextPanel";
 
 // Toggle between bubble styles
 const USE_COMPACT_BUBBLE = true;
@@ -135,7 +131,7 @@ function ChatImageAttachments({
 }) {
   if (!attachments || attachments.length === 0) return null;
   return (
-    <div className="mb-2 grid grid-cols-2 gap-2 max-w-sm">
+    <div className="mb-2 flex flex-wrap gap-1.5">
       {attachments.map((attachment) => (
         <AttachmentImage key={attachment.id} attachment={attachment} />
       ))}
@@ -195,7 +191,7 @@ function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
     <img
       src={src}
       alt={attachment.filename || "Attached image"}
-      className="aspect-video w-full object-cover border border-primary-foreground/20 bg-primary-foreground/10"
+      className="h-20 w-auto max-w-[140px] object-cover border border-foreground/[0.08]"
     />
   );
 }
@@ -323,10 +319,6 @@ export default function Chat() {
   const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
     loadTodayContext(),
   );
-  const [todayGreeting, setTodayGreeting] = useState<string | null>(null);
-  const [todaySuggestion, setTodaySuggestion] = useState<TodayContext | null>(
-    null,
-  );
   const [error, setError] = useState("");
   const [translateLang] = useState(getTranslateLang());
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -334,6 +326,7 @@ export default function Chat() {
 
   // Streaming state
   const [streaming, setStreaming] = useState(false);
+  const streamingRef = useRef(false);
   const [streamBuffer, setStreamBuffer] = useState("");
   const [reasoningBuffer, setReasoningBuffer] = useState("");
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
@@ -344,36 +337,11 @@ export default function Chat() {
   const [currentThreadId, setCurrentThreadId] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [threadSearch, setThreadSearch] = useState("");
+  const [contextStats, setContextStats] = useState<ThreadContextStats | null>(null);
   const currentThreadIdRef = useRef<number | null>(null);
 
   // Avatar
   const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
-
-  const handleTodayContextSave = useCallback((draft: TodayContextDraft) => {
-    const next = normalizeTodayContext(draft);
-    setTodayContext(next);
-    saveTodayContext(next);
-    setTodaySuggestion(null);
-  }, []);
-
-  const handleTodayContextClear = useCallback(() => {
-    setTodayContext(null);
-    saveTodayContext(null);
-  }, []);
-
-  const handleTodaySuggestionAccept = useCallback(() => {
-    const next =
-      todaySuggestion?.date === todayIso()
-        ? normalizeTodayContext(todaySuggestion, todaySuggestion.date)
-        : null;
-    setTodayContext(next);
-    saveTodayContext(next);
-    setTodaySuggestion(null);
-  }, [todaySuggestion]);
-
-  const handleTodaySuggestionDismiss = useCallback(() => {
-    setTodaySuggestion(null);
-  }, []);
 
   // Scroll state
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -396,43 +364,6 @@ export default function Chat() {
       objectUrlsRef.current.delete(image.previewUrl);
     }
   }, []);
-
-  // Fetch the companion's proactive opener (if any). The caller decides how to
-  // present it — currently as the opening bubble of a fresh thread.
-  const loadProactiveNoticeData = useCallback(
-    async (): Promise<ProactiveNotice | null> => {
-      if (user?.id == null) return null;
-      try {
-        const result = await api.chat.proactiveNotice(user.id);
-        return result.notice;
-      } catch {
-        return null;
-      }
-    },
-    [user?.id],
-  );
-
-  useEffect(() => {
-    setTodayGreeting(null);
-    setTodaySuggestion(null);
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (user?.id == null || todayContext !== null || todayGreeting !== null) {
-      return;
-    }
-    let active = true;
-    api.chat
-      .greeting(user.id)
-      .then((greeting) => {
-        const message = greeting.message.trim();
-        if (active && message) setTodayGreeting(message);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [todayContext, todayGreeting, user?.id]);
 
   // ===== Initial data loading =====
   // One coherent landing flow. The chat always shows a single thread:
@@ -512,23 +443,14 @@ export default function Chat() {
         return;
       }
 
-      // 4. Fresh start — let the companion open with a proactive message.
+      // 4. Fresh start — empty slate.
       setMessages([]);
-      const notice = await loadProactiveNoticeData();
-      if (revoked || seedActiveRef.current) return;
-      const opener = (notice?.contextMessages ?? []).filter((m) =>
-        m.content.trim(),
-      );
-      if (opener.length === 0) return;
-      seedActiveRef.current = true;
-      pendingContextRef.current = opener;
-      seedFreshThread(opener);
     })();
 
     return () => {
       revoked = true;
     };
-  }, [loadProactiveNoticeData, user?.id]);
+  }, [user?.id]);
 
   // ===== CONSOLIDATED: Polling for updates =====
   useEffect(() => {
@@ -548,13 +470,16 @@ export default function Chat() {
 
   // ===== CONSOLIDATED: Auto-scroll =====
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
   useEffect(() => {
     if (!historyHydratedRef.current && messages.length > 0) {
       scrollToBottom("auto");
       historyHydratedRef.current = true;
+      return;
     }
     if (streaming || isAtBottom) {
       scrollToBottom(streaming ? "auto" : "smooth");
@@ -575,11 +500,22 @@ export default function Chat() {
   useEffect(() => {
     if (user?.id == null) return;
     return () => {
-      if (currentThreadIdRef.current) {
+      // Skip close when a stream is in-flight — the server is still generating.
+      // Consolidation will fire on the next natural thread close instead.
+      if (currentThreadIdRef.current && !streamingRef.current) {
         api.threads.close(currentThreadIdRef.current).catch(() => {});
       }
     };
   }, [user?.id]);
+
+  // Fetch context stats whenever the active thread changes or streaming ends
+  useEffect(() => {
+    if (!currentThreadId) { setContextStats(null); return; }
+    if (streaming) return;
+    api.threads.contextStats(currentThreadId)
+      .then(setContextStats)
+      .catch(() => setContextStats(null));
+  }, [currentThreadId, streaming]);
 
   // Thread actions
   const loadThreadMessages = useCallback(
@@ -596,6 +532,7 @@ export default function Chat() {
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
+    historyHydratedRef.current = false;
     try {
       await loadThreadMessages(threadId);
     } catch {
@@ -608,23 +545,20 @@ export default function Chat() {
   const handleNewThread = async () => {
     seedActiveRef.current = false;
     pendingContextRef.current = [];
+
+    const threadToClose = currentThreadIdRef.current;
+    currentThreadIdRef.current = null;
+    setCurrentThreadId(null);
     setMessages([]);
     setError("");
+
+    // Close the current thread to fire consolidation, but don't eagerly
+    // create a new one — it will be created on the first message send.
     try {
-      // Actually start a fresh thread: the endpoint closes the active thread
-      // (firing consolidation) — or reuses it if it's still empty — and returns
-      // the new one. Point the conversation at it so the next reply lands there.
-      const res = await api.threads.create();
-      currentThreadIdRef.current = res.threadId;
-      setCurrentThreadId(res.threadId);
+      if (threadToClose) await api.threads.close(threadToClose);
       const list = await api.threads.list();
       setThreads(dedupeThreads(list.threads));
-    } catch {
-      // Local-only fallback; the next send still rotates to a fresh thread once
-      // the active one is closed on leaving chat.
-      currentThreadIdRef.current = null;
-      setCurrentThreadId(null);
-    }
+    } catch {}
   };
 
   const handleDeleteThread = async (threadId: number) => {
@@ -763,9 +697,6 @@ export default function Chat() {
       setTodayContext(null);
       saveTodayContext(null);
     }
-    const suggestedTodayContext = activeTodayContext
-      ? null
-      : suggestTodayContextFromMessage(userMsg);
     const imagesForTurn = selectedImages;
     let requestAttachments: ChatRequestAttachment[] = [];
     try {
@@ -779,7 +710,7 @@ export default function Chat() {
 
     setInput("");
     setError("");
-    setTodaySuggestion(suggestedTodayContext);
+    setSelectedImages([]);
 
     const now = Date.now();
     // When the context is already on screen (e.g. a seeded thread's opening
@@ -803,6 +734,7 @@ export default function Chat() {
     };
     setMessages((prev) => [...prev, ...optimisticContextMessages, tempUserMsg]);
     setStreaming(true);
+    streamingRef.current = true;
     setStreamBuffer("");
     setReasoningBuffer("");
     setTraceEvents([]);
@@ -883,7 +815,6 @@ export default function Chat() {
       setStreamBuffer("");
       setReasoningBuffer("");
       revokeImagePreviews(imagesForTurn);
-      setSelectedImages([]);
     } catch (err: any) {
       setError(err.message || "Connection failed");
       setStreamBuffer((partial) => {
@@ -900,6 +831,7 @@ export default function Chat() {
       });
     } finally {
       setStreaming(false);
+      streamingRef.current = false;
       setReasoningBuffer("");
     }
   };
@@ -983,21 +915,10 @@ export default function Chat() {
         canSubmit={Boolean(input.trim()) || selectedImages.length > 0}
         onAttach={handleAttach}
         inputAccessory={
-          <>
-            <TodayContextPanel
-              context={todayContext}
-              greeting={todayContext ? null : todayGreeting}
-              suggestion={todayContext ? null : todaySuggestion}
-              onSave={handleTodayContextSave}
-              onClear={handleTodayContextClear}
-              onAcceptSuggestion={handleTodaySuggestionAccept}
-              onDismissSuggestion={handleTodaySuggestionDismiss}
-            />
-            <SelectedImagePreviews
-              images={selectedImages}
-              onRemove={removeSelectedImage}
-            />
-          </>
+          <SelectedImagePreviews
+            images={selectedImages}
+            onRemove={removeSelectedImage}
+          />
         }
         showSidebar={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -1005,6 +926,8 @@ export default function Chat() {
         onToggleTrace={handleToggleTrace}
         showScrollButton={!isAtBottom}
         onScrollToBottom={() => scrollToBottom("smooth")}
+        scrollContainerRef={scrollRef}
+        onScroll={updateScrollState}
         sidebar={
           sidebarOpen ? (
             <ThreadSidebar
@@ -1016,16 +939,13 @@ export default function Chat() {
               onNewThread={handleNewThread}
               onDeleteThread={handleDeleteThread}
               onToggleSidebar={() => setSidebarOpen(false)}
+              contextStats={contextStats}
             />
           ) : undefined
         }
       >
-        <div
-          ref={scrollRef}
-          onScroll={updateScrollState}
-          className="max-w-5xl mx-auto w-full space-y-1 pb-24"
-        >
-          {messages.length === 0 && !streaming && <ChatEmptyState />}
+        <div className="max-w-5xl mx-auto w-full space-y-1">
+          {/* empty state intentionally blank */}
 
           {messages.map((msg, index) => {
             const prevMsg = index > 0 ? messages[index - 1] : null;

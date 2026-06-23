@@ -401,6 +401,8 @@ export interface EmotionalContextData {
   dominantEmotion: string | null;
   recentSignals: EmotionalSignalData[];
   synthesizedContext: string;
+  valence: number | null;
+  arousal: number | null;
 }
 
 export interface AgentStateData {
@@ -577,6 +579,16 @@ export interface Thread {
 
 export interface ThreadListResponse {
   threads: Thread[];
+}
+
+export interface ThreadContextStats {
+  threadId: number;
+  usedTokens: number;
+  budgetTokens: number | null;
+  triggerAtTokens: number | null;
+  pct: number | null;
+  compactionCount: number;
+  messageCount: number;
 }
 
 export interface ThreadMessage {

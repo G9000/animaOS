@@ -112,7 +112,14 @@ def list_transcript_messages(
         raise TypeError(
             "list_transcript_messages requires thread_id or user_id with limit")
 
-    thread = get_or_create_thread(db, user_id)
+    thread = db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
+    if thread is None:
+        return []
 
     rows = db.scalars(
         select(RuntimeMessage)
