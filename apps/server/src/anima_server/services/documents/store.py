@@ -8,6 +8,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
@@ -75,6 +76,22 @@ def replace_document_chunks(
     document = db.get(RuntimeDocument, document_id)
     if document is None:
         raise ValueError(f"Document {document_id} does not exist.")
+
+    old_chunk_ids = list(
+        db.scalars(
+            select(RuntimeDocumentChunk.id).where(
+                RuntimeDocumentChunk.document_id == document_id,
+            )
+        ).all()
+    )
+    if old_chunk_ids:
+        db.execute(
+            delete(RuntimeEmbedding).where(
+                RuntimeEmbedding.user_id == document.user_id,
+                RuntimeEmbedding.source_type == "document_chunk",
+                RuntimeEmbedding.source_id.in_(old_chunk_ids),
+            )
+        )
 
     db.execute(
         delete(RuntimeDocumentChunk).where(

@@ -4,6 +4,8 @@ import hashlib
 
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
+from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
@@ -18,6 +20,12 @@ from anima_server.services.documents.store import (
 from sqlalchemy import ForeignKeyConstraint, func, inspect, select
 
 pytest_plugins = ("conftest_runtime",)
+
+_TEST_EMBEDDING_DIM = 768
+
+
+def _embedding(*values: float) -> list[float]:
+    return [*values, *([0.0] * (_TEST_EMBEDDING_DIM - len(values)))]
 
 
 def _constraint_columns(model: type, name: str) -> tuple[str, ...]:
@@ -196,6 +204,72 @@ def test_replace_document_chunks_replaces_existing_chunks_and_hashes_content(
     assert chunks[1].section_title == "Later"
     assert chunks[1].token_count == 12
     assert chunks[1].metadata_json == {"kind": "body"}
+
+
+def test_replace_document_chunks_deletes_stale_document_chunk_embeddings(
+    runtime_db,
+) -> None:
+    document = register_document(runtime_db, _registration())
+    old_chunks = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="old first"),
+            ExtractedDocumentChunk(chunk_index=1, content_text="old second"),
+        ],
+    )
+    old_embedding = _embedding(1.0, 0.0)
+    runtime_db.add_all(
+        [
+            RuntimeEmbedding(
+                user_id=document.user_id,
+                source_type="document_chunk",
+                source_id=chunk.id,
+                content_hash=chunk.content_hash,
+                embedding_checksum=compute_embedding_checksum(old_embedding),
+                embedding=old_embedding,
+                content_preview=chunk.content_text,
+                category="document",
+                importance=3,
+            )
+            for chunk in old_chunks
+        ]
+        + [
+            RuntimeEmbedding(
+                user_id=document.user_id,
+                source_type="memory_item",
+                source_id=old_chunks[0].id,
+                content_hash=RuntimeEmbedding.compute_content_hash("memory survives"),
+                embedding_checksum=compute_embedding_checksum(old_embedding),
+                embedding=old_embedding,
+                content_preview="memory survives",
+                category="fact",
+                importance=3,
+            )
+        ]
+    )
+    runtime_db.flush()
+
+    new_chunks = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="new first"),
+        ],
+    )
+
+    remaining = list(
+        runtime_db.scalars(
+            select(RuntimeEmbedding).order_by(
+                RuntimeEmbedding.source_type,
+                RuntimeEmbedding.source_id,
+            )
+        ).all()
+    )
+    assert [chunk.content_text for chunk in new_chunks] == ["new first"]
+    assert [(row.source_type, row.source_id) for row in remaining] == [
+        ("memory_item", old_chunks[0].id)
+    ]
 
 
 def test_replace_document_chunks_uses_document_user_id(runtime_db) -> None:
