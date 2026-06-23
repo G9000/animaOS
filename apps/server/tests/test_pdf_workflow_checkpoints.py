@@ -1,0 +1,729 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+from anima_server.models.runtime import (
+    RuntimeDocument,
+    RuntimeDocumentChunk,
+    RuntimeWorkflowCheckpoint,
+)
+from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.agent import pgvec_store as pgvec_module
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
+from anima_server.services.documents import (
+    DocumentRegistration,
+    ExtractedDocumentChunk,
+    list_document_chunks,
+    register_document,
+    replace_document_chunks,
+)
+from anima_server.services.documents.pdf_workflow import (
+    PDF_WORKFLOW_STATES,
+    PDFIngestionDependencies,
+    PDFIngestionRequest,
+    resume_pdf_ingestion_workflow,
+    run_pdf_ingestion_until_wait_or_done,
+    start_pdf_ingestion_workflow,
+)
+from anima_server.services.workflows import (
+    append_checkpoint,
+    cancel_workflow,
+    mark_workflow_completed,
+    mark_workflow_failed,
+    start_workflow,
+)
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+pytest_plugins = ("conftest_runtime",)
+
+_TEST_EMBEDDING_DIM = 768
+
+
+@dataclass
+class _Calls:
+    extracted: int = 0
+    chunked: int = 0
+    embedded: list[str] | None = None
+    summarized: int = 0
+    proposed: int = 0
+
+
+def _embedding(*values: float) -> list[float]:
+    return [*values, *([0.0] * (_TEST_EMBEDDING_DIM - len(values)))]
+
+
+def _request(*, user_id: int = 7, sha256: str = "a" * 64) -> PDFIngestionRequest:
+    return PDFIngestionRequest(
+        user_id=user_id,
+        filename="manual.pdf",
+        mime_type="application/pdf",
+        storage_path=f".anima/documents/{user_id}/manual.pdf",
+        sha256=sha256,
+        size_bytes=2048,
+        thread_id=42,
+        metadata_json={"source": "test"},
+    )
+
+
+def _registration(request: PDFIngestionRequest) -> DocumentRegistration:
+    return DocumentRegistration(
+        user_id=request.user_id,
+        filename=request.filename,
+        mime_type=request.mime_type,
+        storage_path=request.storage_path,
+        sha256=request.sha256,
+        size_bytes=request.size_bytes,
+        thread_id=request.thread_id,
+        metadata_json=request.metadata_json,
+    )
+
+
+def _patch_pgvec_upsert(monkeypatch: Any) -> None:
+    def fake_upsert_source(
+        self: Any,
+        user_id: int,
+        *,
+        source_type: str,
+        source_id: int,
+        content: str,
+        embedding: list[float],
+        category: str = "document",
+        importance: int = 3,
+    ) -> None:
+        row = self._db.scalar(
+            select(RuntimeEmbedding).where(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == source_type,
+                RuntimeEmbedding.source_id == source_id,
+            )
+        )
+        if row is None:
+            row = RuntimeEmbedding(
+                user_id=user_id,
+                source_type=source_type,
+                source_id=source_id,
+                content_hash=RuntimeEmbedding.compute_content_hash(content),
+                embedding_checksum=compute_embedding_checksum(embedding),
+                embedding=embedding,
+                content_preview=content[:200],
+                category=category,
+                importance=importance,
+            )
+            self._db.add(row)
+        else:
+            row.content_hash = RuntimeEmbedding.compute_content_hash(content)
+            row.embedding_checksum = compute_embedding_checksum(embedding)
+            row.embedding = embedding
+            row.content_preview = content[:200]
+            row.category = category
+            row.importance = importance
+        self._db.flush()
+
+    monkeypatch.setattr(pgvec_module.PgVecStore, "upsert_source", fake_upsert_source)
+
+
+def _dependencies(
+    calls: _Calls,
+    *,
+    fail_extract: bool = False,
+    fail_chunk: bool = False,
+    fail_embed: bool = False,
+    fail_summarize: bool = False,
+    fail_propose: bool = False,
+    embedding_override: Any | None = None,
+) -> PDFIngestionDependencies:
+    calls.embedded = []
+    embedding_fn_override = embedding_override
+
+    def extract_text(document: RuntimeDocument) -> list[dict[str, object]]:
+        if fail_extract:
+            raise AssertionError("extract_text should not run")
+        calls.extracted += 1
+        return [
+            {"page": 1, "text": f"{document.filename} alpha"},
+            {"page": 2, "text": "beta"},
+        ]
+
+    def chunk_text(pages: object) -> list[ExtractedDocumentChunk]:
+        if fail_chunk:
+            raise AssertionError("chunk_text should not run")
+        calls.chunked += 1
+        assert isinstance(pages, list)
+        return [
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text=str(pages[0]["text"]),
+                page_start=1,
+                page_end=1,
+            ),
+            ExtractedDocumentChunk(
+                chunk_index=1,
+                content_text=str(pages[1]["text"]),
+                page_start=2,
+                page_end=2,
+            ),
+        ]
+
+    def embed_text(text: str) -> list[float] | None:
+        if embedding_fn_override is not None:
+            result = embedding_fn_override(text)
+            assert calls.embedded is not None
+            calls.embedded.append(text)
+            return result
+        if fail_embed:
+            raise AssertionError("embedding_fn should not run")
+        assert calls.embedded is not None
+        calls.embedded.append(text)
+        return _embedding(float(len(text)), 1.0)
+
+    def summarize(
+        document: RuntimeDocument,
+        chunks: list[RuntimeDocumentChunk],
+    ) -> dict[str, object]:
+        if fail_summarize:
+            raise AssertionError("summarize should not run")
+        calls.summarized += 1
+        return {
+            "title": document.filename,
+            "chunk_count": len(chunks),
+            "summary": "alpha and beta",
+        }
+
+    def propose_facts(
+        document: RuntimeDocument,
+        chunks: list[RuntimeDocumentChunk],
+        summary: dict[str, object],
+    ) -> list[dict[str, object]]:
+        if fail_propose:
+            raise AssertionError("propose_facts should not run")
+        calls.proposed += 1
+        return [
+            {
+                "content": f"{document.filename}: {summary['summary']}",
+                "source": "pdf",
+                "chunk_count": len(chunks),
+            }
+        ]
+
+    return PDFIngestionDependencies(
+        extract_text=extract_text,
+        chunk_text=chunk_text,
+        embedding_fn=embed_text,
+        summarize=summarize,
+        propose_facts=propose_facts,
+    )
+
+
+def _checkpoint_names(runtime_db: Session, workflow_run_id: int) -> list[str]:
+    return list(
+        runtime_db.scalars(
+            select(RuntimeWorkflowCheckpoint.state_name)
+            .where(RuntimeWorkflowCheckpoint.workflow_run_id == workflow_run_id)
+            .order_by(RuntimeWorkflowCheckpoint.checkpoint_index)
+        ).all()
+    )
+
+
+def _checkpoint(
+    runtime_db: Session,
+    *,
+    workflow_run_id: int,
+    state_name: str,
+    output_json: dict[str, object] | None = None,
+    artifact_refs_json: dict[str, object] | None = None,
+) -> None:
+    append_checkpoint(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        state_name=state_name,
+        status="completed",
+        idempotency_key=f"pdf:{workflow_run_id}:{state_name}",
+        output_json=output_json,
+        artifact_refs_json=artifact_refs_json,
+    )
+
+
+def _seed_run_with_document(
+    runtime_db: Session,
+    request: PDFIngestionRequest,
+) -> tuple[int, RuntimeDocument]:
+    run = start_workflow(
+        runtime_db,
+        user_id=request.user_id,
+        thread_id=request.thread_id,
+        workflow_type="pdf_ingestion",
+        input_json=request.to_input_json(),
+    )
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=request.user_id,
+            filename=request.filename,
+            mime_type=request.mime_type,
+            storage_path=request.storage_path,
+            sha256=request.sha256,
+            size_bytes=request.size_bytes,
+            thread_id=request.thread_id,
+            workflow_run_id=run.id,
+            metadata_json=request.metadata_json,
+        ),
+    )
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=run.id,
+        state_name="file_registered",
+        output_json={"document_id": document.id},
+        artifact_refs_json={"document_id": document.id},
+    )
+    return run.id, document
+
+
+def _seed_text_extracted(
+    runtime_db: Session,
+    *,
+    workflow_run_id: int,
+    document: RuntimeDocument,
+) -> None:
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        state_name="text_extracted",
+        output_json={
+            "document_id": document.id,
+            "pages": [
+                {"page": 1, "text": "seed alpha"},
+                {"page": 2, "text": "seed beta"},
+            ],
+        },
+        artifact_refs_json={"document_id": document.id},
+    )
+
+
+def _seed_chunked(
+    runtime_db: Session,
+    *,
+    workflow_run_id: int,
+    document: RuntimeDocument,
+) -> list[RuntimeDocumentChunk]:
+    chunks = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="seed alpha"),
+            ExtractedDocumentChunk(chunk_index=1, content_text="seed beta"),
+        ],
+    )
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        state_name="chunked",
+        output_json={"document_id": document.id, "chunk_count": len(chunks)},
+        artifact_refs_json={
+            "document_id": document.id,
+            "chunk_ids": [chunk.id for chunk in chunks],
+        },
+    )
+    return chunks
+
+
+def _seed_indexed(
+    runtime_db: Session,
+    monkeypatch: Any,
+    *,
+    workflow_run_id: int,
+    document: RuntimeDocument,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    from anima_server.services.documents import embed_document_chunks
+
+    embed_document_chunks(
+        runtime_db,
+        user_id=document.user_id,
+        document_id=document.id,
+        embedding_fn=lambda text: _embedding(float(len(text))),
+    )
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        state_name="indexed",
+        output_json={"document_id": document.id, "embedded_count": 2},
+        artifact_refs_json={"document_id": document.id},
+    )
+
+
+def test_pdf_workflow_state_order_is_explicit() -> None:
+    assert PDF_WORKFLOW_STATES == (
+        "created",
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "embedded",
+        "indexed",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
+        "memory_saved",
+        "completed",
+    )
+
+
+def test_start_pdf_ingestion_registers_file_then_pauses_for_approval(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    calls = _Calls()
+    request = _request()
+
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(calls),
+    )
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(
+            _Calls(),
+            fail_extract=True,
+            fail_chunk=True,
+            fail_embed=True,
+            fail_summarize=True,
+            fail_propose=True,
+        ),
+    )
+
+    assert result.status == "awaiting_input"
+    assert result.current_state == "awaiting_approval"
+    assert result.result_json == {
+        "document_id": 1,
+        "summary": {
+            "title": "manual.pdf",
+            "chunk_count": 2,
+            "summary": "alpha and beta",
+        },
+        "proposed_facts": [
+            {
+                "content": "manual.pdf: alpha and beta",
+                "source": "pdf",
+                "chunk_count": 2,
+            }
+        ],
+    }
+    assert _checkpoint_names(runtime_db, run.id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "embedded",
+        "indexed",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
+    assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
+
+
+def test_partial_embedding_success_does_not_checkpoint_or_continue(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_chunked(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    calls = _Calls()
+
+    def partial_embedding(text: str) -> list[float] | None:
+        if text == "seed alpha":
+            return None
+        return _embedding(float(len(text)))
+
+    with pytest.raises(ValueError, match=r"PDF document .* was not fully indexed"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=workflow_run_id,
+            dependencies=_dependencies(
+                calls,
+                embedding_override=partial_embedding,
+                fail_summarize=True,
+                fail_propose=True,
+            ),
+        )
+
+    refreshed = runtime_db.get(RuntimeDocument, document.id)
+    assert refreshed is not None
+    assert refreshed.status != "indexed"
+    assert calls.embedded == ["seed alpha", "seed beta"]
+    assert calls.summarized == 0
+    assert calls.proposed == 0
+    assert _checkpoint_names(runtime_db, workflow_run_id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 1
+
+
+def test_existing_embedded_checkpoint_without_indexed_document_does_not_continue(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_chunked(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        state_name="embedded",
+        output_json={"document_id": document.id, "embedded_count": 1},
+        artifact_refs_json={"document_id": document.id},
+    )
+    calls = _Calls()
+
+    with pytest.raises(ValueError, match=r"PDF document .* was not fully indexed"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=workflow_run_id,
+            dependencies=_dependencies(
+                calls,
+                fail_extract=True,
+                fail_chunk=True,
+                fail_embed=True,
+                fail_summarize=True,
+                fail_propose=True,
+            ),
+        )
+
+    assert calls.embedded == []
+    assert calls.summarized == 0
+    assert calls.proposed == 0
+    assert _checkpoint_names(runtime_db, workflow_run_id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "embedded",
+    ]
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled"])
+def test_resume_terminal_pdf_workflow_returns_without_reopening(
+    runtime_db: Session,
+    monkeypatch: Any,
+    terminal_status: str,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    if terminal_status == "completed":
+        mark_workflow_completed(
+            runtime_db,
+            run,
+            result_json={"terminal": "completed"},
+        )
+    elif terminal_status == "failed":
+        mark_workflow_failed(
+            runtime_db,
+            run,
+            error_json={"message": "failed intentionally"},
+        )
+    else:
+        cancel_workflow(runtime_db, run)
+
+    previous_status = run.status
+    previous_current_state = run.current_state
+    previous_result_json = run.result_json
+    previous_error_json = run.error_json
+    previous_checkpoint_count = runtime_db.scalar(
+        select(func.count(RuntimeWorkflowCheckpoint.id))
+    )
+
+    resumed = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(
+            _Calls(),
+            fail_extract=True,
+            fail_chunk=True,
+            fail_embed=True,
+            fail_summarize=True,
+            fail_propose=True,
+        ),
+    )
+
+    assert resumed is run
+    assert run.status == previous_status
+    assert run.current_state == previous_current_state
+    assert run.result_json == previous_result_json
+    assert run.error_json == previous_error_json
+    assert (
+        runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id)))
+        == previous_checkpoint_count
+    )
+
+
+def test_unknown_completed_pdf_checkpoint_state_raises_controlled_error(
+    runtime_db: Session,
+) -> None:
+    request = _request()
+    workflow_run_id, _document = _seed_run_with_document(runtime_db, request)
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        state_name="unexpected_state",
+    )
+
+    with pytest.raises(ValueError, match="Unknown PDF workflow checkpoint state"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=workflow_run_id,
+            dependencies=_dependencies(_Calls()),
+        )
+
+
+def test_resume_from_file_registered_continues_after_existing_document(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    calls = _Calls()
+
+    result = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        dependencies=_dependencies(calls),
+    )
+
+    assert result.status == "awaiting_input"
+    assert result.current_state == "awaiting_approval"
+    assert calls.extracted == 1
+    assert calls.chunked == 1
+    assert calls.embedded == ["manual.pdf alpha", "beta"]
+    assert calls.summarized == 1
+    assert calls.proposed == 1
+    assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
+    assert list_document_chunks(runtime_db, document_id=document.id)[0].content_text == (
+        "manual.pdf alpha"
+    )
+
+
+def test_resume_from_text_extracted_reuses_staged_pages(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    calls = _Calls()
+
+    result = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        dependencies=_dependencies(calls, fail_extract=True),
+    )
+
+    assert result.status == "awaiting_input"
+    assert calls.extracted == 0
+    assert calls.chunked == 1
+    assert calls.embedded == ["seed alpha", "seed beta"]
+    chunk_texts = [
+        chunk.content_text
+        for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+    assert chunk_texts == [
+        "seed alpha",
+        "seed beta",
+    ]
+
+
+def test_resume_from_chunked_reuses_stored_chunks(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_chunked(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    calls = _Calls()
+
+    result = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        dependencies=_dependencies(calls, fail_extract=True, fail_chunk=True),
+    )
+
+    assert result.status == "awaiting_input"
+    assert calls.extracted == 0
+    assert calls.chunked == 0
+    assert calls.embedded == ["seed alpha", "seed beta"]
+    assert calls.summarized == 1
+    assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
+
+
+def test_resume_from_indexed_stages_summary_and_fact_proposals_only(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_chunked(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_indexed(
+        runtime_db,
+        monkeypatch,
+        workflow_run_id=workflow_run_id,
+        document=document,
+    )
+    calls = _Calls()
+
+    result = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        dependencies=_dependencies(
+            calls,
+            fail_extract=True,
+            fail_chunk=True,
+            fail_embed=True,
+        ),
+    )
+
+    assert result.status == "awaiting_input"
+    assert result.current_state == "awaiting_approval"
+    assert calls.extracted == 0
+    assert calls.chunked == 0
+    assert calls.embedded == []
+    assert calls.summarized == 1
+    assert calls.proposed == 1
+    assert result.result_json == {
+        "document_id": document.id,
+        "summary": {
+            "title": "manual.pdf",
+            "chunk_count": 2,
+            "summary": "alpha and beta",
+        },
+        "proposed_facts": [
+            {
+                "content": "manual.pdf: alpha and beta",
+                "source": "pdf",
+                "chunk_count": 2,
+            }
+        ],
+    }
