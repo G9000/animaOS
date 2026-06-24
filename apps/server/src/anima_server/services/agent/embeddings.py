@@ -19,6 +19,7 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
@@ -972,7 +973,7 @@ def _bm25_rerank(
 def recency_heat_rerank(
     results: list[tuple[MemoryItem, float]],
     *,
-    now: "datetime | None" = None,
+    now: datetime | None = None,
 ) -> list[tuple[MemoryItem, float]]:
     """Blend relevance scores with recency and heat.
 
@@ -987,8 +988,6 @@ def recency_heat_rerank(
     scale-free.  Input scores are assumed normalised to [0, 1] (the
     post-rerank hybrid_search scale).
     """
-    from datetime import UTC, datetime
-
     if not results:
         return results
 
