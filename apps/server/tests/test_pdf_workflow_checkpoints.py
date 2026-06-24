@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,7 @@ from anima_server.models.runtime import (
     RuntimeWorkflowCheckpoint,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.models.runtime_memory import MemoryCandidate
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.documents import (
@@ -25,6 +27,8 @@ from anima_server.services.documents.pdf_workflow import (
     PDF_WORKFLOW_STATES,
     PDFIngestionDependencies,
     PDFIngestionRequest,
+    approve_pdf_memory_proposals,
+    reject_pdf_memory_proposals,
     resume_pdf_ingestion_workflow,
     run_pdf_ingestion_until_wait_or_done,
     start_pdf_ingestion_workflow,
@@ -230,6 +234,14 @@ def _checkpoint_names(runtime_db: Session, workflow_run_id: int) -> list[str]:
     )
 
 
+def _candidate_rows(runtime_db: Session) -> list[MemoryCandidate]:
+    return list(
+        runtime_db.scalars(
+            select(MemoryCandidate).order_by(MemoryCandidate.id)
+        ).all()
+    )
+
+
 def _checkpoint(
     runtime_db: Session,
     *,
@@ -369,8 +381,18 @@ def test_pdf_workflow_state_order_is_explicit() -> None:
         "facts_proposed",
         "awaiting_approval",
         "memory_saved",
+        "memory_rejected",
         "completed",
     )
+
+
+def test_pdf_workflow_uses_candidate_pipeline_not_direct_memory_items() -> None:
+    source = inspect.getsource(pdf_workflow)
+
+    assert "create_memory_candidate" in source
+    assert "MemoryItem" not in source
+    assert "add_memory_item" not in source
+    assert "sync_memory_item_to_retrieval_index" not in source
 
 
 def test_start_pdf_ingestion_registers_file_then_pauses_for_approval(
@@ -430,6 +452,7 @@ def test_start_pdf_ingestion_registers_file_then_pauses_for_approval(
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
     assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
 
@@ -521,6 +544,7 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
     assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
     monkeypatch.setattr(
@@ -848,3 +872,217 @@ def test_resume_from_indexed_stages_summary_and_fact_proposals_only(
             }
         ],
     }
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+
+
+def test_approve_pdf_memory_proposals_creates_candidates_once(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    assert result.status == "awaiting_input"
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+
+    approved = approve_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        approved_proposal_indices=[0],
+    )
+    approved_again = approve_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        approved_proposal_indices=[0],
+    )
+
+    candidates = _candidate_rows(runtime_db)
+    assert approved.status == "completed"
+    assert approved.current_state == "memory_saved"
+    assert approved.result_json == {
+        "document_id": 1,
+        "decision": "approved",
+        "selected_count": 1,
+        "created_count": 1,
+        "candidate_ids": [1],
+    }
+    assert approved_again.status == "completed"
+    assert len(candidates) == 1
+    assert candidates[0].user_id == request.user_id
+    assert candidates[0].content == "manual.pdf: alpha and beta"
+    assert candidates[0].category == "fact"
+    assert candidates[0].importance == 3
+    assert candidates[0].importance_source == "user_explicit"
+    assert candidates[0].source == "tool"
+    assert candidates[0].tags_json == ["pdf", "document:1", "workflow:1"]
+    assert _checkpoint_names(runtime_db, run.id)[-1] == "memory_saved"
+    assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 9
+
+
+def test_approve_pdf_memory_proposals_rejects_unstaged_content(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    run = start_pdf_ingestion_workflow(runtime_db, _request())
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+
+    with pytest.raises(ValueError, match="not staged"):
+        approve_pdf_memory_proposals(
+            runtime_db,
+            workflow_run_id=run.id,
+            approved_proposals=[
+                {
+                    "content": "manual.pdf: unrelated caller-provided memory",
+                    "category": "fact",
+                    "importance": 3,
+                }
+            ],
+        )
+
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+    assert _checkpoint_names(runtime_db, run.id)[-1] == "awaiting_approval"
+
+
+def test_approve_pdf_memory_proposals_matches_staged_payload_for_compatibility(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    run = start_pdf_ingestion_workflow(runtime_db, _request())
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+
+    approved = approve_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        approved_proposals=[
+            {
+                "content": "manual.pdf: alpha and beta",
+                "category": "fact",
+                "importance": 3,
+            }
+        ],
+    )
+
+    candidates = _candidate_rows(runtime_db)
+    assert approved.status == "completed"
+    assert approved.result_json == {
+        "document_id": 1,
+        "decision": "approved",
+        "selected_count": 1,
+        "created_count": 1,
+        "candidate_ids": [1],
+    }
+    assert len(candidates) == 1
+    assert candidates[0].content == "manual.pdf: alpha and beta"
+
+
+def test_approve_pdf_memory_proposal_indices_preserve_raw_positions(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    run = start_pdf_ingestion_workflow(runtime_db, _request())
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    run.result_json = {
+        "document_id": 1,
+        "summary": {"summary": "malformed proposal fixture"},
+        "proposed_facts": [
+            {"bad": "entry"},
+            {"content": "valid staged fact"},
+        ],
+    }
+    runtime_db.flush()
+
+    with pytest.raises(ValueError, match="not staged"):
+        approve_pdf_memory_proposals(
+            runtime_db,
+            workflow_run_id=run.id,
+            approved_proposal_indices=[0],
+        )
+
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+    assert run.status == "awaiting_input"
+    assert run.current_state == "awaiting_approval"
+
+    approved = approve_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        approved_proposal_indices=[1],
+    )
+
+    candidates = _candidate_rows(runtime_db)
+    assert approved.status == "completed"
+    assert approved.result_json == {
+        "document_id": 1,
+        "decision": "approved",
+        "selected_count": 1,
+        "created_count": 1,
+        "candidate_ids": [1],
+    }
+    assert len(candidates) == 1
+    assert candidates[0].content == "valid staged fact"
+
+
+def test_reject_pdf_memory_proposals_records_rejection_without_candidates(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    run = start_pdf_ingestion_workflow(runtime_db, _request())
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+
+    rejected = reject_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        reason="not useful",
+    )
+    rejected_again = reject_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        reason="not useful",
+    )
+
+    assert rejected.status == "completed"
+    assert rejected.current_state == "memory_rejected"
+    assert rejected.result_json == {
+        "document_id": 1,
+        "decision": "rejected",
+        "reason": "not useful",
+    }
+    assert rejected_again.status == "completed"
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+    assert _checkpoint_names(runtime_db, run.id)[-1] == "memory_rejected"
+    assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 9
+
+
+def test_approval_requires_awaiting_pdf_workflow(runtime_db: Session) -> None:
+    run = start_pdf_ingestion_workflow(runtime_db, _request())
+
+    with pytest.raises(ValueError, match="awaiting PDF memory approval"):
+        approve_pdf_memory_proposals(
+            runtime_db,
+            workflow_run_id=run.id,
+            approved_proposals=[],
+        )

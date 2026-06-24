@@ -13,6 +13,7 @@ from anima_server.models.runtime import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
+from anima_server.services.agent.candidate_ops import create_memory_candidate
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.documents.chunking import chunk_pages
 from anima_server.services.documents.indexing import embed_document_chunks
@@ -31,6 +32,7 @@ from anima_server.services.workflows import (
     append_checkpoint,
     load_resume_point,
     mark_workflow_awaiting_input,
+    mark_workflow_completed,
     start_workflow,
 )
 
@@ -45,6 +47,7 @@ PDF_WORKFLOW_STATES = (
     "facts_proposed",
     "awaiting_approval",
     "memory_saved",
+    "memory_rejected",
     "completed",
 )
 
@@ -150,6 +153,103 @@ def resume_pdf_ingestion_workflow(
         workflow_run_id=workflow_run_id,
         dependencies=dependencies,
     )
+
+
+def approve_pdf_memory_proposals(
+    db: Session,
+    *,
+    workflow_run_id: int,
+    approved_proposal_indices: Sequence[int] | None = None,
+    approved_proposals: Sequence[JsonObject] | None = None,
+) -> RuntimeWorkflowRun:
+    run = _load_pdf_approval_run(db, workflow_run_id=workflow_run_id)
+    if _is_completed_pdf_memory_decision(run):
+        return run
+    _require_awaiting_pdf_memory_approval(run)
+
+    staged = _staged_approval_payload(run)
+    document_id = _document_id_from_payload(staged)
+    selected_proposals = _select_approved_pdf_proposals(
+        staged,
+        approved_proposal_indices=approved_proposal_indices,
+        approved_proposals=approved_proposals,
+    )
+    candidate_ids: list[int] = []
+    for normalized in selected_proposals:
+        candidate = create_memory_candidate(
+            db,
+            user_id=run.user_id,
+            content=normalized["content"],
+            category=normalized["category"],
+            importance=normalized["importance"],
+            importance_source="user_explicit",
+            source="tool",
+            extraction_model="pdf_workflow",
+            tags=_pdf_memory_candidate_tags(
+                workflow_run_id=run.id,
+                document_id=document_id,
+            ),
+        )
+        if candidate is not None:
+            candidate_ids.append(candidate.id)
+
+    result_json: JsonObject = {
+        "document_id": document_id,
+        "decision": "approved",
+        "selected_count": len(selected_proposals),
+        "created_count": len(candidate_ids),
+        "candidate_ids": candidate_ids,
+    }
+    append_checkpoint(
+        db,
+        workflow_run_id=run.id,
+        state_name="memory_saved",
+        status="completed",
+        idempotency_key=_idempotency_key(run.id, "memory_saved"),
+        input_json={
+            "selected_count": len(selected_proposals),
+            "created_count": len(candidate_ids),
+        },
+        output_json=result_json,
+        artifact_refs_json={
+            "document_id": document_id,
+            "candidate_ids": candidate_ids,
+        },
+    )
+    mark_workflow_completed(db, run, result_json=result_json)
+    return run
+
+
+def reject_pdf_memory_proposals(
+    db: Session,
+    *,
+    workflow_run_id: int,
+    reason: str | None = None,
+) -> RuntimeWorkflowRun:
+    run = _load_pdf_approval_run(db, workflow_run_id=workflow_run_id)
+    if _is_completed_pdf_memory_decision(run):
+        return run
+    _require_awaiting_pdf_memory_approval(run)
+
+    staged = _staged_approval_payload(run)
+    document_id = _document_id_from_payload(staged)
+    result_json: JsonObject = {
+        "document_id": document_id,
+        "decision": "rejected",
+        "reason": reason,
+    }
+    append_checkpoint(
+        db,
+        workflow_run_id=run.id,
+        state_name="memory_rejected",
+        status="completed",
+        idempotency_key=_idempotency_key(run.id, "memory_rejected"),
+        input_json={"reason": reason},
+        output_json=result_json,
+        artifact_refs_json={"document_id": document_id},
+    )
+    mark_workflow_completed(db, run, result_json=result_json)
+    return run
 
 
 def run_pdf_ingestion_until_wait_or_done(
@@ -449,6 +549,163 @@ def _append_completed(
 
 def _idempotency_key(workflow_run_id: int, state_name: str) -> str:
     return f"pdf:{workflow_run_id}:{state_name}"
+
+
+def _load_pdf_approval_run(
+    db: Session,
+    *,
+    workflow_run_id: int,
+) -> RuntimeWorkflowRun:
+    run = db.get(RuntimeWorkflowRun, workflow_run_id)
+    if run is None:
+        raise ValueError(f"Workflow run {workflow_run_id} does not exist.")
+    if run.workflow_type != PDF_WORKFLOW_TYPE:
+        raise ValueError(
+            f"Workflow run {workflow_run_id} is {run.workflow_type!r}, "
+            f"not {PDF_WORKFLOW_TYPE!r}."
+        )
+    return run
+
+
+def _is_completed_pdf_memory_decision(run: RuntimeWorkflowRun) -> bool:
+    if run.status != "completed" or not isinstance(run.result_json, dict):
+        return False
+    return run.result_json.get("decision") in {"approved", "rejected"}
+
+
+def _require_awaiting_pdf_memory_approval(run: RuntimeWorkflowRun) -> None:
+    if run.status != "awaiting_input" or run.current_state != "awaiting_approval":
+        raise ValueError(
+            f"Workflow run {run.id} is not awaiting PDF memory approval."
+        )
+
+
+def _staged_approval_payload(run: RuntimeWorkflowRun) -> JsonObject:
+    if not isinstance(run.result_json, dict):
+        raise ValueError(f"Workflow run {run.id} has no staged PDF proposals.")
+    proposed_facts = run.result_json.get("proposed_facts")
+    if not isinstance(proposed_facts, list):
+        raise ValueError(f"Workflow run {run.id} has no staged PDF proposals.")
+    return run.result_json
+
+
+def _document_id_from_payload(payload: JsonObject) -> int | None:
+    document_id = payload.get("document_id")
+    if isinstance(document_id, int):
+        return document_id
+    return None
+
+
+def _select_approved_pdf_proposals(
+    staged_payload: JsonObject,
+    *,
+    approved_proposal_indices: Sequence[int] | None,
+    approved_proposals: Sequence[JsonObject] | None,
+) -> list[JsonObject]:
+    if approved_proposal_indices is not None and approved_proposals is not None:
+        raise ValueError("Use either approved_proposal_indices or approved_proposals.")
+
+    if approved_proposal_indices is None and approved_proposals is None:
+        return _normalized_staged_pdf_proposals(staged_payload)
+    if approved_proposal_indices is not None:
+        return _select_staged_pdf_proposals_by_index(
+            _raw_staged_pdf_proposals(staged_payload),
+            approved_proposal_indices,
+        )
+    if approved_proposals is not None:
+        return _select_staged_pdf_proposals_by_payload(
+            _normalized_staged_pdf_proposals(staged_payload),
+            approved_proposals,
+        )
+    return []
+
+
+def _raw_staged_pdf_proposals(staged_payload: JsonObject) -> list[object]:
+    raw_proposals = staged_payload.get("proposed_facts", [])
+    if not isinstance(raw_proposals, list):
+        return []
+    return raw_proposals
+
+
+def _normalized_staged_pdf_proposals(staged_payload: JsonObject) -> list[JsonObject]:
+    normalized: list[JsonObject] = []
+    for proposal in _raw_staged_pdf_proposals(staged_payload):
+        if not isinstance(proposal, dict):
+            continue
+        normalized_proposal = _normalize_pdf_proposal(proposal)
+        if normalized_proposal is not None:
+            normalized.append(normalized_proposal)
+    return normalized
+
+
+def _select_staged_pdf_proposals_by_index(
+    raw_proposals: Sequence[object],
+    approved_proposal_indices: Sequence[int],
+) -> list[JsonObject]:
+    selected: list[JsonObject] = []
+    seen_indices: set[int] = set()
+    for index in approved_proposal_indices:
+        if type(index) is not int:
+            raise ValueError("PDF memory proposal index must be an integer.")
+        if index < 0 or index >= len(raw_proposals):
+            raise ValueError(f"PDF memory proposal index {index} is not staged.")
+        if index in seen_indices:
+            continue
+        raw_proposal = raw_proposals[index]
+        if not isinstance(raw_proposal, dict):
+            raise ValueError(f"PDF memory proposal index {index} is not staged.")
+        normalized_proposal = _normalize_pdf_proposal(raw_proposal)
+        if normalized_proposal is None:
+            raise ValueError(f"PDF memory proposal index {index} is not staged.")
+        selected.append(normalized_proposal)
+        seen_indices.add(index)
+    return selected
+
+
+def _select_staged_pdf_proposals_by_payload(
+    staged_proposals: Sequence[JsonObject],
+    approved_proposals: Sequence[JsonObject],
+) -> list[JsonObject]:
+    selected: list[JsonObject] = []
+    available = list(staged_proposals)
+    for proposal in approved_proposals:
+        normalized = _normalize_pdf_proposal(proposal)
+        if normalized is None:
+            raise ValueError("Approved PDF memory proposal is not staged.")
+        try:
+            index = available.index(normalized)
+        except ValueError as exc:
+            raise ValueError(
+                "Approved PDF memory proposal is not staged."
+            ) from exc
+        selected.append(available.pop(index))
+    return selected
+
+
+def _normalize_pdf_proposal(proposal: JsonObject) -> JsonObject | None:
+    content = proposal.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+
+    category = proposal.get("category")
+    importance = proposal.get("importance")
+    return {
+        "content": content.strip(),
+        "category": category if isinstance(category, str) else "fact",
+        "importance": importance if isinstance(importance, int) else 3,
+    }
+
+
+def _pdf_memory_candidate_tags(
+    *,
+    workflow_run_id: int,
+    document_id: int | None,
+) -> list[str]:
+    tags = ["pdf"]
+    if document_id is not None:
+        tags.append(f"document:{document_id}")
+    tags.append(f"workflow:{workflow_run_id}")
+    return tags
 
 
 def _next_state_after(state_name: str) -> str | None:
