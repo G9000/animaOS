@@ -548,7 +548,7 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
             "limit": 22,
             "category": None,
             "source_types": ["document_chunk"],
-            "source_ids": None,
+            "source_ids": [chunk.id for chunk in chunks],
         }
     ]
     assert len(results) == 1
@@ -590,6 +590,100 @@ def test_search_document_chunks_ignores_unindexed_document_hits(
         )
         == []
     )
+
+
+def test_search_document_chunks_filters_indexed_chunk_ids_before_unscoped_search(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    unindexed_document, unindexed_chunks = _document_with_extracted_chunks(
+        runtime_db,
+        filename="partial.pdf",
+        sha256="6" * 64,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=index,
+                content_text=f"partial chunk {index}",
+            )
+            for index in range(25)
+        ],
+    )
+    indexed_document, indexed_chunks = _document_with_extracted_chunks(
+        runtime_db,
+        filename="complete.pdf",
+        sha256="7" * 64,
+        chunks=[ExtractedDocumentChunk(chunk_index=0, content_text="complete match")],
+    )
+    for chunk in [*unindexed_chunks, *indexed_chunks]:
+        _add_document_embedding(runtime_db, chunk)
+    _mark_document_indexed(runtime_db, indexed_document)
+    search_calls: list[dict[str, Any]] = []
+    candidates = [
+        *[
+            VectorSearchResult(
+                item_id=chunk.id,
+                content=chunk.content_text,
+                category="document",
+                importance=3,
+                similarity=0.99 - (index / 1000),
+                source_type="document_chunk",
+            )
+            for index, chunk in enumerate(unindexed_chunks)
+        ],
+        VectorSearchResult(
+            item_id=indexed_chunks[0].id,
+            content="complete match",
+            category="document",
+            importance=3,
+            similarity=0.5,
+            source_type="document_chunk",
+        ),
+    ]
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+    ) -> list[VectorSearchResult]:
+        search_calls.append(
+            {
+                "limit": limit,
+                "source_types": source_types,
+                "source_ids": source_ids,
+            }
+        )
+        allowed_ids = set(source_ids) if source_ids is not None else None
+        return [
+            candidate
+            for candidate in candidates
+            if allowed_ids is None or candidate.item_id in allowed_ids
+        ][:limit]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="complete",
+        limit=1,
+        embedding_fn=lambda _text: _embedding(1.0),
+    )
+
+    assert unindexed_document.status == "registered"
+    assert [call["source_ids"] for call in search_calls] == [
+        [chunk.id for chunk in indexed_chunks]
+    ]
+    assert [result.document_id for result in results] == [indexed_document.id]
+    assert [result.content for result in results] == ["complete match"]
 
 
 def test_search_document_chunks_document_filter_excludes_unindexed_documents(

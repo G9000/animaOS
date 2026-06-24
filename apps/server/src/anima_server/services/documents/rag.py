@@ -47,16 +47,15 @@ def search_document_chunks(
     if not query_embedding:
         return []
 
-    source_ids = None
     search_limit = _candidate_limit(limit)
+    source_ids = _live_document_chunk_ids(
+        runtime_db,
+        user_id=user_id,
+        document_ids=allowed_document_ids,
+    )
+    if not source_ids:
+        return []
     if allowed_document_ids is not None:
-        source_ids = _live_document_chunk_ids(
-            runtime_db,
-            user_id=user_id,
-            document_ids=allowed_document_ids,
-        )
-        if not source_ids:
-            return []
         search_limit = limit
 
     vector_hits = PgVecStore(runtime_db).search_by_vector(
@@ -110,21 +109,22 @@ def _live_document_chunk_ids(
     runtime_db: Session,
     *,
     user_id: int,
-    document_ids: set[int],
+    document_ids: set[int] | None,
 ) -> list[int]:
-    return list(
-        runtime_db.scalars(
-            select(RuntimeDocumentChunk.id)
-            .join(RuntimeDocument, RuntimeDocumentChunk.document_id == RuntimeDocument.id)
-            .where(
-                RuntimeDocumentChunk.user_id == user_id,
-                RuntimeDocument.user_id == user_id,
-                RuntimeDocument.status == "indexed",
-                RuntimeDocumentChunk.document_id.in_(document_ids),
-            )
-            .order_by(RuntimeDocumentChunk.id)
-        ).all()
+    stmt = (
+        select(RuntimeDocumentChunk.id)
+        .join(RuntimeDocument, RuntimeDocumentChunk.document_id == RuntimeDocument.id)
+        .where(
+            RuntimeDocumentChunk.user_id == user_id,
+            RuntimeDocument.user_id == user_id,
+            RuntimeDocument.status == "indexed",
+        )
+        .order_by(RuntimeDocumentChunk.id)
     )
+    if document_ids is not None:
+        stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
+
+    return list(runtime_db.scalars(stmt).all())
 
 
 def _ranked_document_chunk_ids(
