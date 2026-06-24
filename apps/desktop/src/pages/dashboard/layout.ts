@@ -159,33 +159,35 @@ export function buildInitialNodes(
   }
 
   // Column 2 — tasks
-  nodes.push(
-    makeNode<TasksNodeData>("tasks", "tasks", {
-      type: "tasks",
-      tasks,
-      currentFocus,
-      onNavigate: callbacks.onNavigate,
-      onToggleTask: callbacks.onToggleTask,
-      onDeleteTask: callbacks.onDeleteTask,
-      onAddTask: callbacks.onAddTask,
-      onClose: () => callbacks.onCloseNode("tasks"),
-    }) as TasksNode,
-  );
+  const tasksNode = makeNode<TasksNodeData>("tasks", "tasks", {
+    type: "tasks",
+    tasks,
+    currentFocus,
+    onNavigate: callbacks.onNavigate,
+    onToggleTask: callbacks.onToggleTask,
+    onDeleteTask: callbacks.onDeleteTask,
+    onAddTask: callbacks.onAddTask,
+    onClose: () => callbacks.onCloseNode("tasks"),
+  }) as TasksNode;
+  tasksNode.width = COLUMN_WIDTH - 20;
+  tasksNode.height = 320;
+  nodes.push(tasksNode);
 
   // Column 3 — memories
   if (episodes.length > 0) {
-    nodes.push(
-      makeNode<MemoryNodeData>("memory", "memory", {
-        type: "memory",
-        episodes,
-        agentName,
-        avatarUrl,
-        onChat: callbacks.onEpisodeChat,
-        onRead: callbacks.onEpisodeRead,
-        onViewAll: callbacks.onViewAllEntries,
-        onClose: () => callbacks.onCloseNode("memory"),
-      }) as MemoryNode,
-    );
+    const memoryNode = makeNode<MemoryNodeData>("memory", "memory", {
+      type: "memory",
+      episodes,
+      agentName,
+      avatarUrl,
+      onChat: callbacks.onEpisodeChat,
+      onRead: callbacks.onEpisodeRead,
+      onViewAll: callbacks.onViewAllEntries,
+      onClose: () => callbacks.onCloseNode("memory"),
+    }) as MemoryNode;
+    memoryNode.width = COLUMN_WIDTH - 20;
+    memoryNode.height = 340;
+    nodes.push(memoryNode);
   }
 
   // Column 3 — gallery (images from journal); starts at a fixed size, user can resize
