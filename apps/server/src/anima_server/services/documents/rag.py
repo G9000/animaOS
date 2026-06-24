@@ -42,12 +42,6 @@ def search_document_chunks(
     if allowed_document_ids == set():
         return []
 
-    embed = embedding_fn or generate_embedding
-    query_embedding = _run_embedding(embed, query)
-    if not query_embedding:
-        return []
-
-    search_limit = _candidate_limit(limit)
     source_ids = _live_document_chunk_ids(
         runtime_db,
         user_id=user_id,
@@ -55,6 +49,13 @@ def search_document_chunks(
     )
     if not source_ids:
         return []
+
+    embed = embedding_fn or generate_embedding
+    query_embedding = _run_embedding(embed, query)
+    if not query_embedding:
+        return []
+
+    search_limit = _candidate_limit(limit)
     if allowed_document_ids is not None:
         search_limit = limit
 

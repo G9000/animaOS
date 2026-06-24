@@ -718,6 +718,43 @@ def test_search_document_chunks_document_filter_excludes_unindexed_documents(
     )
 
 
+def test_search_document_chunks_skips_embedding_when_no_indexed_chunks(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, _chunks = _document_with_chunks(runtime_db)
+    embedding_calls: list[str] = []
+
+    def fail_search_by_vector(
+        self: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[VectorSearchResult]:
+        raise AssertionError("vector search should not run without indexed chunks")
+
+    def embedding_fn(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _embedding(1.0)
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fail_search_by_vector,
+    )
+
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="partial",
+            document_ids=[document.id],
+            embedding_fn=embedding_fn,
+        )
+        == []
+    )
+    assert embedding_calls == []
+
+
 def test_search_document_chunks_document_filter_overfetches_to_fill_limit(
     runtime_db: Session,
     monkeypatch: Any,
