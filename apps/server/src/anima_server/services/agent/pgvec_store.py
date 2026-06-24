@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embedding_integrity import (
@@ -112,9 +113,12 @@ class PgVecStore(VectorStore):
         category: str | None = None,
         source_types: Sequence[str] | None = None,
         source_ids: Sequence[int] | None = None,
+        source_id_query: Select[tuple[int]] | None = None,
     ) -> list[VectorSearchResult]:
         if limit <= 0:
             return []
+        if source_ids is not None and source_id_query is not None:
+            raise ValueError("source_ids and source_id_query are mutually exclusive")
         if source_ids is not None and not source_ids:
             return []
 
@@ -132,6 +136,8 @@ class PgVecStore(VectorStore):
             stmt = stmt.where(RuntimeEmbedding.source_type.in_(source_types))
         if source_ids is not None:
             stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_ids))
+        if source_id_query is not None:
+            stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_id_query))
         rows = self._db.execute(stmt).all()
 
         results: list[VectorSearchResult] = []

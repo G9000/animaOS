@@ -497,6 +497,7 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
         category: str | None = None,
         source_types: list[str] | None = None,
         source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
     ) -> list[VectorSearchResult]:
         calls.append(
             {
@@ -506,6 +507,11 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
                 "category": category,
                 "source_types": source_types,
                 "source_ids": source_ids,
+                "source_query_ids": (
+                    list(runtime_db.scalars(source_id_query).all())
+                    if source_id_query is not None
+                    else None
+                ),
             }
         )
         return [
@@ -548,7 +554,8 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
             "limit": 22,
             "category": None,
             "source_types": ["document_chunk"],
-            "source_ids": [chunk.id for chunk in chunks],
+            "source_ids": None,
+            "source_query_ids": [chunk.id for chunk in chunks],
         }
     ]
     assert len(results) == 1
@@ -557,6 +564,69 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
     assert results[0].filename == "notes.md"
     assert results[0].content == "beta notes"
     assert results[0].similarity == 0.92
+
+
+def test_search_document_chunks_unfiltered_search_uses_db_side_source_filter(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_chunks(runtime_db, chunks=["global match"])
+    _add_document_embedding(runtime_db, chunks[0])
+    _mark_document_indexed(runtime_db, document)
+    calls: list[dict[str, Any]] = []
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
+    ) -> list[VectorSearchResult]:
+        calls.append(
+            {
+                "source_ids": source_ids,
+                "source_query_ids": (
+                    list(runtime_db.scalars(source_id_query).all())
+                    if source_id_query is not None
+                    else None
+                ),
+            }
+        )
+        return [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="global match",
+                category="document",
+                importance=3,
+                similarity=0.96,
+                source_type="document_chunk",
+            )
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="global",
+        embedding_fn=lambda _text: _embedding(1.0),
+    )
+
+    assert calls == [
+        {
+            "source_ids": None,
+            "source_query_ids": [chunks[0].id],
+        }
+    ]
+    assert [result.chunk_id for result in results] == [chunks[0].id]
 
 
 def test_search_document_chunks_ignores_unindexed_document_hits(
@@ -649,15 +719,27 @@ def test_search_document_chunks_filters_indexed_chunk_ids_before_unscoped_search
         category: str | None = None,
         source_types: list[str] | None = None,
         source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
     ) -> list[VectorSearchResult]:
+        source_query_ids = (
+            list(runtime_db.scalars(source_id_query).all())
+            if source_id_query is not None
+            else None
+        )
         search_calls.append(
             {
                 "limit": limit,
                 "source_types": source_types,
                 "source_ids": source_ids,
+                "source_query_ids": source_query_ids,
             }
         )
-        allowed_ids = set(source_ids) if source_ids is not None else None
+        if source_query_ids is not None:
+            allowed_ids = set(source_query_ids)
+        elif source_ids is not None:
+            allowed_ids = set(source_ids)
+        else:
+            allowed_ids = None
         return [
             candidate
             for candidate in candidates
@@ -679,8 +761,13 @@ def test_search_document_chunks_filters_indexed_chunk_ids_before_unscoped_search
     )
 
     assert unindexed_document.status == "registered"
-    assert [call["source_ids"] for call in search_calls] == [
-        [chunk.id for chunk in indexed_chunks]
+    assert search_calls == [
+        {
+            "limit": 21,
+            "source_types": ["document_chunk"],
+            "source_ids": None,
+            "source_query_ids": [chunk.id for chunk in indexed_chunks],
+        }
     ]
     assert [result.document_id for result in results] == [indexed_document.id]
     assert [result.content for result in results] == ["complete match"]

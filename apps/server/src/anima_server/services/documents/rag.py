@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -42,13 +43,23 @@ def search_document_chunks(
     if allowed_document_ids == set():
         return []
 
-    source_ids = _live_document_chunk_ids(
-        runtime_db,
-        user_id=user_id,
-        document_ids=allowed_document_ids,
-    )
-    if not source_ids:
-        return []
+    source_ids: list[int] | None = None
+    source_id_query: Select[tuple[int]] | None = None
+    if allowed_document_ids is None:
+        if not _has_live_document_chunks(runtime_db, user_id=user_id):
+            return []
+        source_id_query = _live_document_chunk_id_query(
+            user_id=user_id,
+            document_ids=None,
+        )
+    else:
+        source_ids = _live_document_chunk_ids(
+            runtime_db,
+            user_id=user_id,
+            document_ids=allowed_document_ids,
+        )
+        if not source_ids:
+            return []
 
     embed = embedding_fn or generate_embedding
     query_embedding = _run_embedding(embed, query)
@@ -59,13 +70,23 @@ def search_document_chunks(
     if allowed_document_ids is not None:
         search_limit = limit
 
-    vector_hits = PgVecStore(runtime_db).search_by_vector(
-        user_id,
-        query_embedding=query_embedding,
-        limit=search_limit,
-        source_types=["document_chunk"],
-        source_ids=source_ids,
-    )
+    store = PgVecStore(runtime_db)
+    if source_id_query is not None:
+        vector_hits = store.search_by_vector(
+            user_id,
+            query_embedding=query_embedding,
+            limit=search_limit,
+            source_types=["document_chunk"],
+            source_id_query=source_id_query,
+        )
+    else:
+        vector_hits = store.search_by_vector(
+            user_id,
+            query_embedding=query_embedding,
+            limit=search_limit,
+            source_types=["document_chunk"],
+            source_ids=source_ids,
+        )
     ranked_chunk_ids = _ranked_document_chunk_ids(vector_hits)
     if not ranked_chunk_ids:
         return []
@@ -112,6 +133,31 @@ def _live_document_chunk_ids(
     user_id: int,
     document_ids: set[int] | None,
 ) -> list[int]:
+    stmt = _live_document_chunk_id_query(
+        user_id=user_id,
+        document_ids=document_ids,
+    ).order_by(RuntimeDocumentChunk.id)
+
+    return list(runtime_db.scalars(stmt).all())
+
+
+def _has_live_document_chunks(
+    runtime_db: Session,
+    *,
+    user_id: int,
+) -> bool:
+    stmt = _live_document_chunk_id_query(
+        user_id=user_id,
+        document_ids=None,
+    ).limit(1)
+    return runtime_db.scalar(stmt) is not None
+
+
+def _live_document_chunk_id_query(
+    *,
+    user_id: int,
+    document_ids: set[int] | None,
+) -> Select[tuple[int]]:
     stmt = (
         select(RuntimeDocumentChunk.id)
         .join(RuntimeDocument, RuntimeDocumentChunk.document_id == RuntimeDocument.id)
@@ -120,12 +166,11 @@ def _live_document_chunk_ids(
             RuntimeDocument.user_id == user_id,
             RuntimeDocument.status == "indexed",
         )
-        .order_by(RuntimeDocumentChunk.id)
     )
     if document_ids is not None:
         stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
 
-    return list(runtime_db.scalars(stmt).all())
+    return stmt
 
 
 def _ranked_document_chunk_ids(

@@ -4,6 +4,7 @@ import hashlib
 from types import SimpleNamespace
 from typing import Any
 
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import bm25_index as bm25_module
 from anima_server.services.agent import vector_store as vector_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
@@ -17,6 +18,7 @@ from anima_server.services.agent.vector_store import (
     upsert_memory,
     use_in_memory_store,
 )
+from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 
@@ -362,6 +364,27 @@ def test_pgvec_search_source_ids_adds_sql_filter() -> None:
     sql = str(compiled)
     assert "embeddings.source_id IN" in sql
     assert [10, 20] in compiled.params.values()
+    assert db.flushed is False
+
+
+def test_pgvec_search_source_id_query_adds_sql_filter() -> None:
+    db = FakeSession()
+    source_query = select(RuntimeEmbedding.source_id).where(
+        RuntimeEmbedding.category == "document"
+    )
+
+    PgVecStore(db).search_by_vector(
+        2,
+        query_embedding=[1.0, 0.0],
+        limit=5,
+        source_types=["document_chunk"],
+        source_id_query=source_query,
+    )
+
+    compiled = db.statements[0].compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "embeddings.source_id IN (SELECT" in sql
+    assert "embeddings.category =" in sql
     assert db.flushed is False
 
 
