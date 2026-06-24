@@ -77,6 +77,11 @@ def replace_document_chunks(
     if document is None:
         raise ValueError(f"Document {document_id} does not exist.")
 
+    now = datetime.now(UTC)
+    document.status = "registered"
+    document.indexed_at = None
+    document.updated_at = now
+
     old_chunk_ids = list(
         db.scalars(
             select(RuntimeDocumentChunk.id).where(
@@ -98,6 +103,7 @@ def replace_document_chunks(
             RuntimeDocumentChunk.document_id == document_id,
         )
     )
+    db.add(document)
     db.flush()
 
     inserted = [

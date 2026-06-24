@@ -272,6 +272,29 @@ def test_replace_document_chunks_deletes_stale_document_chunk_embeddings(
     ]
 
 
+def test_replace_document_chunks_resets_indexed_status(runtime_db) -> None:
+    document = register_document(runtime_db, _registration())
+    set_document_status(
+        runtime_db,
+        document_id=document.id,
+        status="indexed",
+        indexed=True,
+    )
+    assert document.status == "indexed"
+    assert document.indexed_at is not None
+
+    replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="new text"),
+        ],
+    )
+
+    assert document.status == "registered"
+    assert document.indexed_at is None
+
+
 def test_replace_document_chunks_uses_document_user_id(runtime_db) -> None:
     document = register_document(runtime_db, _registration(user_id=77))
 

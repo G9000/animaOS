@@ -13,6 +13,7 @@ from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
     RuntimeDocument,
     RuntimeDocumentChunk,
+    RuntimeThread,
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
@@ -106,6 +107,8 @@ async def start_pdf_workflow(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     require_unlocked_user(request, payload.userId)
+    if payload.threadId is not None:
+        _load_owned_thread(runtime_db, payload.threadId, user_id=payload.userId)
 
     run = start_pdf_ingestion_workflow(
         runtime_db,
@@ -230,6 +233,18 @@ def _load_owned_workflow(
     if run.workflow_type != _PDF_WORKFLOW_TYPE:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return run
+
+
+def _load_owned_thread(
+    runtime_db: Session,
+    thread_id: int,
+    *,
+    user_id: int,
+) -> RuntimeThread:
+    thread = runtime_db.get(RuntimeThread, thread_id)
+    if thread is None or thread.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    return thread
 
 
 def _workflow_action_response(

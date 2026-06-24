@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from anima_server.db.runtime import get_runtime_session_factory
+from anima_server.models.runtime import RuntimeThread
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
@@ -31,17 +33,23 @@ def _register_user(
     return response.json()
 
 
-def _pdf_payload(user_id: int) -> dict[str, object]:
-    return {
+def _pdf_payload(
+    user_id: int,
+    *,
+    thread_id: int | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
         "userId": user_id,
         "filename": "manual.pdf",
         "mimeType": "application/pdf",
         "storagePath": ".anima/documents/manual.pdf",
         "sha256": "a" * 64,
         "sizeBytes": 2048,
-        "threadId": 42,
         "metadata": {"source": "test"},
     }
+    if thread_id is not None:
+        payload["threadId"] = thread_id
+    return payload
 
 
 def _embedding(*values: float) -> list[float]:
@@ -162,11 +170,14 @@ def test_start_pdf_workflow_and_get_status() -> None:
         reg = _register_user(client)
         user_id = int(reg["id"])
         headers = {"x-anima-unlock": str(reg["unlockToken"])}
+        thread_response = client.post("/api/threads", headers=headers)
+        assert thread_response.status_code == 201
+        thread_id = int(thread_response.json()["threadId"])
 
         start = client.post(
             "/api/documents/workflows/pdf",
             headers=headers,
-            json=_pdf_payload(user_id),
+            json=_pdf_payload(user_id, thread_id=thread_id),
         )
 
         assert start.status_code == 201
@@ -184,10 +195,48 @@ def test_start_pdf_workflow_and_get_status() -> None:
         status = status_response.json()
         assert status["id"] == 1
         assert status["userId"] == user_id
-        assert status["threadId"] == 42
+        assert status["threadId"] == thread_id
         assert status["workflowType"] == "pdf_ingestion"
         assert status["input"]["filename"] == "manual.pdf"
         assert status["checkpoints"] == []
+
+
+def test_start_pdf_workflow_rejects_missing_thread_id() -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=_pdf_payload(user_id, thread_id=999),
+        )
+
+        assert start.status_code == 404
+        assert start.json()["error"] == "Thread not found"
+
+
+def test_start_pdf_workflow_rejects_other_users_thread_id() -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="document-thread-owner")
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+        runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            other_thread = RuntimeThread(user_id=user_id + 999, status="active")
+            runtime_db.add(other_thread)
+            runtime_db.commit()
+            thread_id = other_thread.id
+
+        start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=_pdf_payload(user_id, thread_id=thread_id),
+        )
+
+        assert start.status_code == 404
+        assert start.json()["error"] == "Thread not found"
 
 
 def test_resume_pdf_workflow_search_chunks_and_approve_memory(monkeypatch: Any) -> None:
