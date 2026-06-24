@@ -43,7 +43,7 @@ def _pdf_payload(
         "userId": user_id,
         "filename": "manual.pdf",
         "mimeType": "application/pdf",
-        "storagePath": ".anima/documents/manual.pdf",
+        "storagePath": f".anima/documents/{user_id}/manual.pdf",
         "sha256": "a" * 64,
         "sizeBytes": 2048,
         "metadata": {"source": "test"},
@@ -248,6 +248,36 @@ def test_start_pdf_workflow_rejects_other_users_thread_id() -> None:
     ],
 )
 def test_start_pdf_workflow_rejects_storage_path_outside_data_dir(
+    storage_path: str,
+) -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+        payload = _pdf_payload(user_id)
+        payload["storagePath"] = storage_path
+
+        start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=payload,
+        )
+
+        assert start.status_code == 400
+        assert start.json()["error"] == "Invalid document storage path."
+        runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            assert runtime_db.scalar(select(RuntimeWorkflowRun).limit(1)) is None
+
+
+@pytest.mark.parametrize(
+    "storage_path",
+    [
+        ".anima/documents/999/manual.pdf",
+        "users/999/attachments/chat/manual.pdf",
+    ],
+)
+def test_start_pdf_workflow_rejects_other_users_storage_path(
     storage_path: str,
 ) -> None:
     with managed_test_client("anima-documents-api-") as client:

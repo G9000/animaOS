@@ -119,6 +119,7 @@ def _live_document_chunk_ids(
             .where(
                 RuntimeDocumentChunk.user_id == user_id,
                 RuntimeDocument.user_id == user_id,
+                RuntimeDocument.status == "indexed",
                 RuntimeDocumentChunk.document_id.in_(document_ids),
             )
             .order_by(RuntimeDocumentChunk.id)
@@ -163,6 +164,7 @@ def _load_document_chunks(
             RuntimeDocumentChunk.id.in_(chunk_ids),
             RuntimeDocumentChunk.user_id == user_id,
             RuntimeDocument.user_id == user_id,
+            RuntimeDocument.status == "indexed",
         )
     )
     if document_ids is not None:

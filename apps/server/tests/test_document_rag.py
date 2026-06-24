@@ -16,6 +16,7 @@ from anima_server.services.documents import (
     register_document,
     replace_document_chunks,
     search_document_chunks,
+    set_document_status,
 )
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -171,6 +172,15 @@ def _add_document_embedding(
     runtime_db.add(row)
     runtime_db.flush()
     return row
+
+
+def _mark_document_indexed(runtime_db: Session, document: RuntimeDocument) -> None:
+    set_document_status(
+        runtime_db,
+        document_id=document.id,
+        status="indexed",
+        indexed=True,
+    )
 
 
 def test_embed_document_chunks_indexes_chunks_as_document_sources(
@@ -475,6 +485,7 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
 ) -> None:
     document, chunks = _document_with_chunks(runtime_db)
     _add_document_embedding(runtime_db, chunks[1])
+    _mark_document_indexed(runtime_db, document)
     calls: list[dict[str, Any]] = []
 
     def fake_search_by_vector(
@@ -548,6 +559,71 @@ def test_search_document_chunks_returns_document_hits_and_filters_memory_rows(
     assert results[0].similarity == 0.92
 
 
+def test_search_document_chunks_ignores_unindexed_document_hits(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _document, chunks = _document_with_chunks(runtime_db)
+    _add_document_embedding(runtime_db, chunks[0])
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="partial preview",
+                category="document",
+                importance=3,
+                similarity=0.97,
+                source_type="document_chunk",
+            )
+        ],
+    )
+
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="partial",
+            embedding_fn=lambda _text: _embedding(1.0),
+        )
+        == []
+    )
+
+
+def test_search_document_chunks_document_filter_excludes_unindexed_documents(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_chunks(runtime_db)
+    _add_document_embedding(runtime_db, chunks[0])
+
+    def fail_search_by_vector(
+        self: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[VectorSearchResult]:
+        raise AssertionError("vector search should not run for unindexed documents")
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fail_search_by_vector,
+    )
+
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="partial",
+            document_ids=[document.id],
+            embedding_fn=lambda _text: _embedding(1.0),
+        )
+        == []
+    )
+
+
 def test_search_document_chunks_document_filter_overfetches_to_fill_limit(
     runtime_db: Session,
     monkeypatch: Any,
@@ -572,6 +648,7 @@ def test_search_document_chunks_document_filter_overfetches_to_fill_limit(
     )
     for chunk in allowed_chunks:
         _add_document_embedding(runtime_db, chunk)
+    _mark_document_indexed(runtime_db, allowed_document)
     search_calls: list[dict[str, Any]] = []
 
     candidates = [
@@ -665,8 +742,9 @@ def test_search_document_chunks_accepts_specified_positional_call_shape(
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
-    _document, chunks = _document_with_chunks(runtime_db, chunks=["positional chunk"])
+    document, chunks = _document_with_chunks(runtime_db, chunks=["positional chunk"])
     _add_document_embedding(runtime_db, chunks[0])
+    _mark_document_indexed(runtime_db, document)
 
     monkeypatch.setattr(
         pgvec_module.PgVecStore,
@@ -745,6 +823,7 @@ def test_search_document_chunks_includes_citation_metadata(
         ],
     )
     _add_document_embedding(runtime_db, chunks[0])
+    _mark_document_indexed(runtime_db, document)
 
     monkeypatch.setattr(
         pgvec_module.PgVecStore,
@@ -817,6 +896,7 @@ def test_search_document_chunks_ignores_stale_embedding_content_hash(
         ]
     )
     runtime_db.flush()
+    _mark_document_indexed(runtime_db, document)
 
     monkeypatch.setattr(
         pgvec_module.PgVecStore,
@@ -896,8 +976,9 @@ def test_search_document_chunks_accepts_async_embedding_function(
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
-    _document, chunks = _document_with_chunks(runtime_db, chunks=["async query"])
+    document, chunks = _document_with_chunks(runtime_db, chunks=["async query"])
     _add_document_embedding(runtime_db, chunks[0])
+    _mark_document_indexed(runtime_db, document)
 
     monkeypatch.setattr(
         pgvec_module.PgVecStore,

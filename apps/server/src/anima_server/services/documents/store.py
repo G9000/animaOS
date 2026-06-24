@@ -21,7 +21,7 @@ class DocumentStoragePathError(ValueError):
     pass
 
 
-def resolve_document_storage_path(storage_path: str) -> Path:
+def resolve_document_storage_path(storage_path: str, *, user_id: int) -> Path:
     stripped = storage_path.strip()
     windows_path = PureWindowsPath(stripped)
     path = Path(stripped)
@@ -38,6 +38,7 @@ def resolve_document_storage_path(storage_path: str) -> Path:
         data_root = settings.data_dir.resolve()
         resolved_path = (data_root / path).resolve()
         resolved_path.relative_to(data_root)
+        _require_user_document_path(resolved_path, data_root=data_root, user_id=user_id)
     except (OSError, ValueError) as exc:
         raise DocumentStoragePathError("Invalid document storage path.") from exc
 
@@ -72,6 +73,25 @@ def register_document(
     db.add(document)
     db.flush()
     return document
+
+
+def _require_user_document_path(
+    resolved_path: Path,
+    *,
+    data_root: Path,
+    user_id: int,
+) -> None:
+    user_roots = (
+        data_root / ".anima" / "documents" / str(user_id),
+        data_root / "users" / str(user_id) / "attachments",
+    )
+    for root in user_roots:
+        try:
+            resolved_path.relative_to(root)
+        except ValueError:
+            continue
+        return
+    raise ValueError
 
 
 def set_document_status(

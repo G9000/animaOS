@@ -303,7 +303,10 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "text_extracted":
             document = context.require_document()
-            storage_path = resolve_document_storage_path(document.storage_path)
+            storage_path = resolve_document_storage_path(
+                document.storage_path,
+                user_id=run.user_id,
+            )
             pages = list(dependencies.extract_text(str(storage_path)))
             _append_completed(
                 db,
