@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from anima_server.db import runtime as runtime_module
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
@@ -293,6 +294,40 @@ def test_embed_document_chunks_marks_document_indexed_when_embeddings_succeed(
     assert refreshed is not None
     assert refreshed.status == "indexed"
     assert refreshed.indexed_at is not None
+
+
+def test_embedding_table_reset_marks_indexed_documents_unembedded(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    document, chunks = _document_with_chunks(runtime_db)
+
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=lambda _text: _embedding(0.2, 0.8),
+    ) == 2
+    assert document.status == "indexed"
+    assert document.indexed_at is not None
+
+    for row in _embedding_rows(runtime_db):
+        runtime_db.delete(row)
+    runtime_db.flush()
+
+    runtime_module._mark_indexed_documents_unindexed_after_embedding_reset(
+        runtime_db.get_bind()
+    )
+    runtime_db.refresh(document)
+
+    assert document.status == "registered"
+    assert document.indexed_at is None
+    assert get_unembedded_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+    ) == chunks
 
 
 def test_embed_document_chunks_does_not_mark_empty_document_indexed(
