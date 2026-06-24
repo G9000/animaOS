@@ -340,6 +340,7 @@ def run_pdf_ingestion_until_wait_or_done(
                 document_id=document.id,
                 embedding_fn=dependencies.embedding_fn,
             )
+            _commit_progress(db)
             document = context.require_document(refresh=True)
             if document.status != "indexed":
                 raise ValueError(
@@ -429,6 +430,7 @@ def run_pdf_ingestion_until_wait_or_done(
                 state_name="awaiting_approval",
                 result_json=result_json,
             )
+            _commit_progress(db)
             return run
 
         latest_completed = next_state
@@ -545,6 +547,12 @@ def _append_completed(
         output_json=output_json,
         artifact_refs_json=artifact_refs_json,
     )
+    _commit_progress(db)
+
+
+def _commit_progress(db: Session) -> None:
+    db.flush()
+    db.commit()
 
 
 def _idempotency_key(workflow_run_id: int, state_name: str) -> str:

@@ -86,7 +86,7 @@ class SearchDocumentsRequest(BaseModel):
 
 
 class ApproveMemoryRequest(BaseModel):
-    proposalIndices: list[int] = Field(min_length=1)
+    proposalIndices: list[int] = Field()
 
     @field_validator("proposalIndices")
     @classmethod

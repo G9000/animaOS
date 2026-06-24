@@ -48,10 +48,38 @@ def _embedding(*values: float) -> list[float]:
     return [*values, *([0.0] * (_TEST_EMBEDDING_DIM - len(values)))]
 
 
-def _patch_pdf_edges(monkeypatch: Any) -> None:
+def _patch_pdf_edges(
+    monkeypatch: Any,
+    *,
+    proposed_facts: list[dict[str, object]] | None = None,
+    summarize_failure: Exception | None = None,
+) -> None:
     from anima_server.api.routes import documents as documents_route
 
     def fake_dependencies() -> pdf_workflow.PDFIngestionDependencies:
+        def summarize(document: Any, chunks: list[Any]) -> dict[str, object]:
+            if summarize_failure is not None:
+                raise summarize_failure
+            return {
+                "title": document.filename,
+                "chunk_count": len(chunks),
+                "summary": f"Indexed {len(chunks)} chunks from {document.filename}.",
+            }
+
+        def propose_facts(
+            document: Any,
+            chunks: list[Any],
+            summary: dict[str, object],
+        ) -> list[dict[str, object]]:
+            if proposed_facts is not None:
+                return proposed_facts
+            return [
+                {
+                    "content": f"{document.filename}: {summary['summary']}",
+                    "chunk_count": len(chunks),
+                }
+            ]
+
         return pdf_workflow.PDFIngestionDependencies(
             extract_text=lambda _path: [
                 PageText(page_number=1, text="alpha installation guide"),
@@ -72,17 +100,8 @@ def _patch_pdf_edges(monkeypatch: Any) -> None:
                 ),
             ],
             embedding_fn=lambda _text: _embedding(0.0),
-            summarize=lambda document, chunks: {
-                "title": document.filename,
-                "chunk_count": len(chunks),
-                "summary": f"Indexed {len(chunks)} chunks from {document.filename}.",
-            },
-            propose_facts=lambda document, chunks, summary: [
-                {
-                    "content": f"{document.filename}: {summary['summary']}",
-                    "chunk_count": len(chunks),
-                }
-            ],
+            summarize=summarize,
+            propose_facts=propose_facts,
         )
 
     monkeypatch.setattr(documents_route, "_default_pdf_dependencies", fake_dependencies)
@@ -270,6 +289,88 @@ def test_resume_pdf_workflow_search_chunks_and_approve_memory(monkeypatch: Any) 
         }
 
 
+def test_approve_memory_allows_empty_selection_when_no_facts(
+    monkeypatch: Any,
+) -> None:
+    _patch_pdf_edges(monkeypatch, proposed_facts=[])
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=_pdf_payload(user_id),
+        )
+        assert start.status_code == 201
+        resume = client.post(
+            "/api/documents/workflows/1/resume",
+            headers=headers,
+        )
+        assert resume.status_code == 200
+        assert resume.json()["workflow"]["result"]["proposed_facts"] == []
+
+        approve = client.post(
+            "/api/documents/workflows/1/approve-memory",
+            headers=headers,
+            json={"proposalIndices": []},
+        )
+
+        assert approve.status_code == 200
+        approved = approve.json()
+        assert approved["status"] == "completed"
+        assert approved["currentState"] == "memory_saved"
+        assert approved["workflow"]["result"] == {
+            "document_id": 1,
+            "decision": "approved",
+            "selected_count": 0,
+            "created_count": 0,
+            "candidate_ids": [],
+        }
+
+
+def test_resume_preserves_committed_checkpoints_when_later_stage_fails(
+    monkeypatch: Any,
+) -> None:
+    _patch_pdf_edges(monkeypatch, summarize_failure=RuntimeError("summary unavailable"))
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=_pdf_payload(user_id),
+        )
+        assert start.status_code == 201
+
+        resume = client.post(
+            "/api/documents/workflows/1/resume",
+            headers=headers,
+        )
+
+        assert resume.status_code == 503
+        status_response = client.get(
+            "/api/documents/workflows/1",
+            headers=headers,
+        )
+        assert status_response.status_code == 200
+        status_json = status_response.json()
+        assert status_json["status"] == "running"
+        assert status_json["currentState"] == "indexed"
+        assert [checkpoint["state"] for checkpoint in status_json["checkpoints"]] == [
+            "file_registered",
+            "text_extracted",
+            "chunked",
+            "embedded",
+            "indexed",
+        ]
+
+
 def test_default_resume_returns_controlled_error_when_pdf_parser_unavailable() -> None:
     with managed_test_client("anima-documents-api-") as client:
         reg = _register_user(client)
@@ -296,12 +397,16 @@ def test_default_resume_returns_controlled_error_when_pdf_parser_unavailable() -
             headers=headers,
         )
         assert status_response.status_code == 200
-        assert status_response.json()["status"] == "created"
-        assert status_response.json()["currentState"] == "created"
+        status_json = status_response.json()
+        assert status_json["status"] == "running"
+        assert status_json["currentState"] == "file_registered"
+        assert [checkpoint["state"] for checkpoint in status_json["checkpoints"]] == [
+            "file_registered"
+        ]
 
 
-@pytest.mark.parametrize("body", [{}, {"proposalIndices": []}])
-def test_approve_memory_requires_nonempty_proposal_indices(
+@pytest.mark.parametrize("body", [{}, {"proposalIndices": [-1]}])
+def test_approve_memory_rejects_invalid_proposal_indices(
     monkeypatch: Any,
     body: dict[str, object],
 ) -> None:
