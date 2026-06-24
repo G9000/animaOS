@@ -13,11 +13,14 @@ from anima_server.models.runtime import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
+from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.documents.chunking import chunk_pages
 from anima_server.services.documents.indexing import embed_document_chunks
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
+from anima_server.services.documents.pdf_text import PageText, extract_pdf_text
 from anima_server.services.documents.store import (
     get_document_for_user,
     list_document_chunks,
@@ -49,8 +52,8 @@ PDF_WORKFLOW_TYPE = "pdf_ingestion"
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 JsonObject = dict[str, Any]
-ExtractTextFn = Callable[[RuntimeDocument], object]
-ChunkTextFn = Callable[[object], Sequence[ExtractedDocumentChunk]]
+ExtractTextFn = Callable[[str], Sequence[PageText]]
+ChunkTextFn = Callable[[Sequence[PageText]], Sequence[ExtractedDocumentChunk]]
 EmbeddingFn = Callable[[str], list[float] | None]
 SummarizeFn = Callable[[RuntimeDocument, list[RuntimeDocumentChunk]], JsonObject]
 ProposeFactsFn = Callable[
@@ -103,6 +106,21 @@ class PDFIngestionDependencies:
     embedding_fn: EmbeddingFn
     summarize: SummarizeFn
     propose_facts: ProposeFactsFn
+
+
+def default_pdf_ingestion_dependencies(
+    *,
+    summarize: SummarizeFn,
+    propose_facts: ProposeFactsFn,
+    embedding_fn: EmbeddingFn | None = None,
+) -> PDFIngestionDependencies:
+    return PDFIngestionDependencies(
+        extract_text=extract_pdf_text,
+        chunk_text=chunk_pages,
+        embedding_fn=embedding_fn or generate_embedding,
+        summarize=summarize,
+        propose_facts=propose_facts,
+    )
 
 
 def start_pdf_ingestion_workflow(
@@ -184,7 +202,7 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "text_extracted":
             document = context.require_document()
-            pages = dependencies.extract_text(document)
+            pages = list(dependencies.extract_text(document.storage_path))
             _append_completed(
                 db,
                 run,
@@ -349,11 +367,11 @@ class _WorkflowContext:
         self.document = document
         return document
 
-    def require_pages(self) -> object:
+    def require_pages(self) -> list[PageText]:
         checkpoint = self._checkpoint("text_extracted")
         if checkpoint is None or checkpoint.output_json is None:
             raise ValueError("Cannot chunk PDF before text_extracted checkpoint.")
-        return checkpoint.output_json.get("pages", [])
+        return _pages_from_checkpoint_payload(checkpoint.output_json.get("pages", []))
 
     def require_chunks(self) -> list[RuntimeDocumentChunk]:
         if self.chunks is not None:
@@ -465,6 +483,26 @@ def _request_from_input(input_json: JsonObject) -> PDFIngestionRequest:
             else None
         ),
     )
+
+
+def _pages_from_checkpoint_payload(payload: object) -> list[PageText]:
+    if not isinstance(payload, list):
+        return []
+
+    pages: list[PageText] = []
+    for item in payload:
+        if isinstance(item, PageText):
+            pages.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        page_number = item.get("page_number", item.get("page"))
+        text = item.get("text")
+        if page_number is None or text is None:
+            continue
+        pages.append(PageText(page_number=int(page_number), text=str(text)))
+    return pages
 
 
 def _json_safe(value: object) -> Any:

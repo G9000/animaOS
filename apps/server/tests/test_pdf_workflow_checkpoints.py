@@ -16,9 +16,11 @@ from anima_server.services.documents import (
     DocumentRegistration,
     ExtractedDocumentChunk,
     list_document_chunks,
+    pdf_workflow,
     register_document,
     replace_document_chunks,
 )
+from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.documents.pdf_workflow import (
     PDF_WORKFLOW_STATES,
     PDFIngestionDependencies,
@@ -138,16 +140,17 @@ def _dependencies(
     calls.embedded = []
     embedding_fn_override = embedding_override
 
-    def extract_text(document: RuntimeDocument) -> list[dict[str, object]]:
+    def extract_text(path: str) -> list[PageText]:
         if fail_extract:
             raise AssertionError("extract_text should not run")
         calls.extracted += 1
+        filename = path.rsplit("/", 1)[-1]
         return [
-            {"page": 1, "text": f"{document.filename} alpha"},
-            {"page": 2, "text": "beta"},
+            PageText(page_number=1, text=f"{filename} alpha"),
+            PageText(page_number=2, text="beta"),
         ]
 
-    def chunk_text(pages: object) -> list[ExtractedDocumentChunk]:
+    def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
         if fail_chunk:
             raise AssertionError("chunk_text should not run")
         calls.chunked += 1
@@ -155,13 +158,13 @@ def _dependencies(
         return [
             ExtractedDocumentChunk(
                 chunk_index=0,
-                content_text=str(pages[0]["text"]),
+                content_text=pages[0].text,
                 page_start=1,
                 page_end=1,
             ),
             ExtractedDocumentChunk(
                 chunk_index=1,
-                content_text=str(pages[1]["text"]),
+                content_text=pages[1].text,
                 page_start=2,
                 page_end=2,
             ),
@@ -424,6 +427,124 @@ def test_start_pdf_ingestion_registers_file_then_pauses_for_approval(
         "facts_proposed",
         "awaiting_approval",
     ]
+    assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
+    assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
+
+
+def test_default_pdf_dependencies_wire_document_services_end_to_end(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    extracted_paths: list[str] = []
+    embedded_texts: list[str] = []
+    page_one_text = " ".join(["alpha"] * 280)
+    page_two_text = " ".join(["beta"] * 50)
+
+    def fake_extract_pdf_text(path: str) -> list[PageText]:
+        extracted_paths.append(path)
+        return [
+            PageText(page_number=1, text=page_one_text),
+            PageText(page_number=2, text=page_two_text),
+        ]
+
+    def fake_embedding(text: str) -> list[float]:
+        embedded_texts.append(text)
+        return _embedding(float(len(text)), 2.0)
+
+    def summarize(
+        document: RuntimeDocument,
+        chunks: list[RuntimeDocumentChunk],
+    ) -> dict[str, object]:
+        return {
+            "title": document.filename,
+            "chunk_count": len(chunks),
+            "summary": "default dependency summary",
+        }
+
+    def propose_facts(
+        document: RuntimeDocument,
+        chunks: list[RuntimeDocumentChunk],
+        summary: dict[str, object],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "content": f"{document.filename}: {summary['summary']}",
+                "chunk_count": len(chunks),
+            }
+        ]
+
+    monkeypatch.setattr(pdf_workflow, "extract_pdf_text", fake_extract_pdf_text)
+    dependencies = pdf_workflow.default_pdf_ingestion_dependencies(
+        embedding_fn=fake_embedding,
+        summarize=summarize,
+        propose_facts=propose_facts,
+    )
+
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=dependencies,
+    )
+
+    chunk_rows = runtime_db.scalars(
+        select(RuntimeDocumentChunk).order_by(RuntimeDocumentChunk.chunk_index)
+    ).all()
+    assert result.status == "awaiting_input"
+    assert extracted_paths == [request.storage_path]
+    assert [chunk.content_text for chunk in chunk_rows] == [
+        page_one_text,
+        page_two_text,
+    ]
+    assert [(chunk.page_start, chunk.page_end) for chunk in chunk_rows] == [
+        (1, 1),
+        (2, 2),
+    ]
+    assert embedded_texts == [
+        page_one_text,
+        page_two_text,
+    ]
+    assert _checkpoint_names(runtime_db, run.id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "embedded",
+        "indexed",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
+    assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
+
+    monkeypatch.setattr(
+        pdf_workflow,
+        "extract_pdf_text",
+        lambda _path: pytest.fail("rerun should resume from checkpoints"),
+    )
+    rerun = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=pdf_workflow.default_pdf_ingestion_dependencies(
+            embedding_fn=lambda _text: pytest.fail(
+                "rerun should not write duplicate embeddings"
+            ),
+            summarize=lambda _document, _chunks: pytest.fail(
+                "rerun should reuse summarized checkpoint"
+            ),
+            propose_facts=lambda _document, _chunks, _summary: pytest.fail(
+                "rerun should reuse fact proposal checkpoint"
+            ),
+        ),
+    )
+
+    assert rerun.status == "awaiting_input"
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
     assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
