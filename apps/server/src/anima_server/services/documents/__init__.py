@@ -13,16 +13,19 @@ from anima_server.services.documents.rag import (
     search_document_chunks,
 )
 from anima_server.services.documents.store import (
+    DocumentStoragePathError,
     get_document_for_user,
     list_document_chunks,
     register_document,
     replace_document_chunks,
+    resolve_document_storage_path,
     set_document_status,
 )
 
 __all__ = [
     "DocumentRagResult",
     "DocumentRegistration",
+    "DocumentStoragePathError",
     "ExtractedDocumentChunk",
     "embed_document_chunks",
     "get_document_for_user",
@@ -30,6 +33,7 @@ __all__ = [
     "list_document_chunks",
     "register_document",
     "replace_document_chunks",
+    "resolve_document_storage_path",
     "search_document_chunks",
     "set_document_status",
 ]

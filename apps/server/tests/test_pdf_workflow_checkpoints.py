@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
+from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeDocument,
     RuntimeDocumentChunk,
@@ -148,7 +150,7 @@ def _dependencies(
         if fail_extract:
             raise AssertionError("extract_text should not run")
         calls.extracted += 1
-        filename = path.rsplit("/", 1)[-1]
+        filename = Path(path).name
         return [
             PageText(page_number=1, text=f"{filename} alpha"),
             PageText(page_number=2, text="beta"),
@@ -517,8 +519,9 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     chunk_rows = runtime_db.scalars(
         select(RuntimeDocumentChunk).order_by(RuntimeDocumentChunk.chunk_index)
     ).all()
+    expected_extract_path = str((settings.data_dir / request.storage_path).resolve())
     assert result.status == "awaiting_input"
-    assert extracted_paths == [request.storage_path]
+    assert extracted_paths == [expected_extract_path]
     assert [chunk.content_text for chunk in chunk_rows] == [
         page_one_text,
         page_two_text,
@@ -615,6 +618,35 @@ def test_partial_embedding_success_does_not_checkpoint_or_continue(
         "chunked",
     ]
     assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 1
+
+
+def test_registered_pdf_storage_path_must_stay_under_data_dir(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    document.storage_path = "../outside.pdf"
+    runtime_db.flush()
+    calls = _Calls()
+
+    with pytest.raises(ValueError, match="Invalid document storage path"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=workflow_run_id,
+            dependencies=_dependencies(
+                calls,
+                fail_extract=True,
+                fail_chunk=True,
+                fail_embed=True,
+                fail_summarize=True,
+                fail_propose=True,
+            ),
+        )
+
+    assert calls.extracted == 0
+    assert _checkpoint_names(runtime_db, workflow_run_id) == ["file_registered"]
 
 
 def test_existing_embedded_checkpoint_without_indexed_document_does_not_continue(
@@ -873,6 +905,55 @@ def test_resume_from_indexed_stages_summary_and_fact_proposals_only(
         ],
     }
     assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+
+
+def test_resume_from_indexed_rechecks_document_status_before_summary(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    request = _request()
+    workflow_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_chunked(runtime_db, workflow_run_id=workflow_run_id, document=document)
+    _seed_indexed(
+        runtime_db,
+        monkeypatch,
+        workflow_run_id=workflow_run_id,
+        document=document,
+    )
+    replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=0, content_text="replacement alpha"),
+            ExtractedDocumentChunk(chunk_index=1, content_text="replacement beta"),
+        ],
+    )
+    calls = _Calls()
+
+    with pytest.raises(ValueError, match=r"PDF document .* was not fully indexed"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=workflow_run_id,
+            dependencies=_dependencies(
+                calls,
+                fail_extract=True,
+                fail_chunk=True,
+                fail_embed=True,
+                fail_summarize=True,
+                fail_propose=True,
+            ),
+        )
+
+    assert calls.embedded == []
+    assert calls.summarized == 0
+    assert calls.proposed == 0
+    assert _checkpoint_names(runtime_db, workflow_run_id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "indexed",
+    ]
 
 
 def test_approve_pdf_memory_proposals_creates_candidates_once(

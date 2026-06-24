@@ -3,16 +3,45 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path, PureWindowsPath
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
+
+
+class DocumentStoragePathError(ValueError):
+    pass
+
+
+def resolve_document_storage_path(storage_path: str) -> Path:
+    stripped = storage_path.strip()
+    windows_path = PureWindowsPath(stripped)
+    path = Path(stripped)
+    if (
+        not stripped
+        or path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or windows_path.root
+    ):
+        raise DocumentStoragePathError("Invalid document storage path.")
+
+    try:
+        data_root = settings.data_dir.resolve()
+        resolved_path = (data_root / path).resolve()
+        resolved_path.relative_to(data_root)
+    except (OSError, ValueError) as exc:
+        raise DocumentStoragePathError("Invalid document storage path.") from exc
+
+    return resolved_path
 
 
 def register_document(

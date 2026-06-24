@@ -17,6 +17,10 @@ from anima_server.models.runtime import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
+from anima_server.services.documents import (
+    DocumentStoragePathError,
+    resolve_document_storage_path,
+)
 from anima_server.services.documents.pdf_workflow import (
     PDFIngestionDependencies,
     PDFIngestionRequest,
@@ -107,6 +111,13 @@ async def start_pdf_workflow(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     require_unlocked_user(request, payload.userId)
+    try:
+        resolve_document_storage_path(payload.storagePath)
+    except DocumentStoragePathError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     if payload.threadId is not None:
         _load_owned_thread(runtime_db, payload.threadId, user_id=payload.userId)
 

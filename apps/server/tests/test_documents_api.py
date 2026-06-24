@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 from anima_server.db.runtime import get_runtime_session_factory
-from anima_server.models.runtime import RuntimeThread
+from anima_server.models.runtime import RuntimeThread, RuntimeWorkflowRun
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
@@ -237,6 +238,36 @@ def test_start_pdf_workflow_rejects_other_users_thread_id() -> None:
 
         assert start.status_code == 404
         assert start.json()["error"] == "Thread not found"
+
+
+@pytest.mark.parametrize(
+    "storage_path",
+    [
+        "../outside.pdf",
+        str(Path.cwd() / "outside.pdf"),
+    ],
+)
+def test_start_pdf_workflow_rejects_storage_path_outside_data_dir(
+    storage_path: str,
+) -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+        payload = _pdf_payload(user_id)
+        payload["storagePath"] = storage_path
+
+        start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=payload,
+        )
+
+        assert start.status_code == 400
+        assert start.json()["error"] == "Invalid document storage path."
+        runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            assert runtime_db.scalar(select(RuntimeWorkflowRun).limit(1)) is None
 
 
 def test_resume_pdf_workflow_search_chunks_and_approve_memory(monkeypatch: Any) -> None:

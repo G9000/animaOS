@@ -27,6 +27,7 @@ from anima_server.services.documents.store import (
     list_document_chunks,
     register_document,
     replace_document_chunks,
+    resolve_document_storage_path,
 )
 from anima_server.services.workflows import (
     append_checkpoint,
@@ -302,7 +303,8 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "text_extracted":
             document = context.require_document()
-            pages = list(dependencies.extract_text(document.storage_path))
+            storage_path = resolve_document_storage_path(document.storage_path)
+            pages = list(dependencies.extract_text(str(storage_path)))
             _append_completed(
                 db,
                 run,
@@ -342,11 +344,7 @@ def run_pdf_ingestion_until_wait_or_done(
             )
             _commit_progress(db)
             document = context.require_document(refresh=True)
-            if document.status != "indexed":
-                raise ValueError(
-                    f"PDF document {document.id} was not fully indexed; "
-                    "resume after missing embeddings are available."
-                )
+            _require_indexed_document(document)
             _append_completed(
                 db,
                 run,
@@ -360,11 +358,7 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "indexed":
             document = context.require_document(refresh=True)
-            if document.status != "indexed":
-                raise ValueError(
-                    f"PDF document {document.id} was not fully indexed; "
-                    "resume after missing embeddings are available."
-                )
+            _require_indexed_document(document)
             _append_completed(
                 db,
                 run,
@@ -378,7 +372,8 @@ def run_pdf_ingestion_until_wait_or_done(
             )
 
         elif next_state == "summarized":
-            document = context.require_document()
+            document = context.require_document(refresh=True)
+            _require_indexed_document(document)
             chunks = context.require_chunks()
             summary = dependencies.summarize(document, chunks)
             _append_completed(
@@ -548,6 +543,14 @@ def _append_completed(
         artifact_refs_json=artifact_refs_json,
     )
     _commit_progress(db)
+
+
+def _require_indexed_document(document: RuntimeDocument) -> None:
+    if document.status != "indexed":
+        raise ValueError(
+            f"PDF document {document.id} was not fully indexed; "
+            "resume after missing embeddings are available."
+        )
 
 
 def _commit_progress(db: Session) -> None:
