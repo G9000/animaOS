@@ -16,6 +16,7 @@
   "dependencies": {
     "@anima/api-client": "workspace:*",
     "@anima/standard-templates": "workspace:*",
+    "@anima/daemon-contracts": "workspace:*",
     "@fontsource/playfair-display": "^5.2.8",
     "@fontsource/space-grotesk": "^5.2.10",
     "@fontsource/space-mono": "^5.2.9",

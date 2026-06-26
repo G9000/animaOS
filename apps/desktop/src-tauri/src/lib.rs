@@ -2,12 +2,9 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Manager,
+    RunEvent,
+    WindowEvent,
 };
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,9 +47,20 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app, _event| {});
+    app.run(|app, event| {
+        if let RunEvent::WindowEvent {
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } = event
+        {
+            api.prevent_close();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+        }
+    });
 }
