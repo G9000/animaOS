@@ -813,6 +813,92 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
     assert resumed_chunk_ids == original_chunk_ids
 
 
+def test_resume_reused_text_checkpoint_replaces_stale_pages_payload(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    indexed_run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=indexed_run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == indexed_run.id)
+    )
+    assert document is not None
+
+    duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        state_name="file_registered",
+        output_json={"document_id": document.id},
+        artifact_refs_json={"document_id": document.id},
+    )
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        state_name="text_extracted",
+        output_json={"document_id": document.id, "pages": []},
+        artifact_refs_json={"document_id": document.id},
+    )
+
+    for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
+        runtime_db.delete(embedding)
+    document.status = "registered"
+    document.indexed_at = None
+    runtime_db.flush()
+
+    restored_pages = [PageText(page_number=1, text="restored page")]
+
+    def extract_text(_path: str) -> list[PageText]:
+        return restored_pages
+
+    def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
+        assert [page.text for page in pages] == ["restored page"]
+        return [
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text=pages[0].text,
+                page_start=1,
+                page_end=1,
+            )
+        ]
+
+    with pytest.raises(ValueError, match=r"PDF document .* was not fully indexed"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=duplicate_run.id,
+            dependencies=PDFIngestionDependencies(
+                extract_text=extract_text,
+                chunk_text=chunk_text,
+                embedding_fn=lambda _text: None,
+                summarize=lambda _document, _chunks: {},
+                propose_facts=lambda _document, _chunks, _summary: [],
+            ),
+        )
+
+    text_extracted = runtime_db.scalar(
+        select(RuntimeWorkflowCheckpoint)
+        .where(
+            RuntimeWorkflowCheckpoint.workflow_run_id == duplicate_run.id,
+            RuntimeWorkflowCheckpoint.state_name == "text_extracted",
+        )
+        .order_by(RuntimeWorkflowCheckpoint.checkpoint_index.desc())
+        .limit(1)
+    )
+    assert text_extracted is not None
+    assert text_extracted.output_json == {
+        "document_id": document.id,
+        "pages": [{"page_number": 1, "text": "restored page"}],
+    }
+    chunks = list_document_chunks(runtime_db, document_id=document.id)
+    assert [chunk.content_text for chunk in chunks] == ["restored page"]
+
+
 def test_partial_embedding_success_does_not_checkpoint_or_continue(
     runtime_db: Session,
     monkeypatch: Any,

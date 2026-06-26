@@ -693,6 +693,11 @@ def _rewind_unindexed_document_resume_state(
             return latest_completed
         chunks = context.require_chunks()
         if chunks and not context.require_pages():
+            checkpoint = context._checkpoint("text_extracted")
+            if checkpoint is not None:
+                context.db.delete(checkpoint)
+                context.db.flush()
+            context.chunks = None
             return "file_registered"
         return latest_completed
 
