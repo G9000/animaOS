@@ -8,7 +8,9 @@ use config::{load_config, AnimusConfig, ConfigOverrides};
 mod app;
 mod client;
 mod config;
+mod permissions;
 mod protocol;
+mod tools;
 mod transcript;
 mod tui;
 

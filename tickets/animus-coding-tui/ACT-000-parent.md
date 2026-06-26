@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 04:48 MYT
+- Updated: 2026-06-27 04:55 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 | `ACT-002` | Scaffold Rust package and license notes | `done` | none |
 | `ACT-003` | Build ANIMA WebSocket client | `done` | `ACT-001`, `ACT-002` |
 | `ACT-004` | Add terminal event loop and transcript | `done` | `ACT-003` |
-| `ACT-005` | Add local tools and permissions | `backlog` | `ACT-003` |
+| `ACT-005` | Add local tools and permissions | `done` | `ACT-003` |
 | `ACT-006` | Add input, slash commands, and status line | `backlog` | `ACT-004` |
 | `ACT-007` | Add inline approvals | `backlog` | `ACT-001`, `ACT-004`, `ACT-005` |
 | `ACT-008` | Add ANIMA spawn/thread visibility | `backlog` | `ACT-004` |
@@ -54,6 +54,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 04:36 MYT - `ACT-002` added the Rust Animus workspace package, headless CLI scaffold, and source notice.
 - 2026-06-27 04:42 MYT - `ACT-003` added typed Rust protocol/config/websocket client foundations.
 - 2026-06-27 04:48 MYT - `ACT-004` added app reducer, transcript renderers, and terminal event loop.
+- 2026-06-27 04:55 MYT - `ACT-005` added local tools, permission checks, and tool-result dispatch.
 
 ## Activity Log
 
@@ -69,6 +70,8 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 04:42 MYT - ACT-003 completed and verified.
 - 2026-06-27 04:43 MYT - ACT-004 moved to in_progress for reducer and terminal transcript work.
 - 2026-06-27 04:48 MYT - ACT-004 completed and verified.
+- 2026-06-27 04:49 MYT - ACT-005 moved to in_progress for local tools and permissions.
+- 2026-06-27 04:55 MYT - ACT-005 completed and verified.
 
 ## Validation
 
