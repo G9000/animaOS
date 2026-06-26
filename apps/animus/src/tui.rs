@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Terminal;
 
 use crate::app::{AppEvent, AppState};
+use crate::commands::parse_command;
 
 type AnimusTerminal = Terminal<CrosstermBackend<Stdout>>;
 
@@ -74,15 +75,7 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
     let transcript = List::new(items).block(Block::default().title("Animus").borders(Borders::ALL));
     frame.render_widget(transcript, chunks[0]);
 
-    let status = format!(
-        "conn: {:?} | run: {} | cwd: {}",
-        app.connection,
-        app.run
-            .current_run_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        app.config.workspace.display()
-    );
+    let status = status_line(app);
     let input = Paragraph::new(format!("{status}\ninput: {}", app.input))
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(input, chunks[1]);
@@ -92,18 +85,7 @@ pub fn render_to_text(app: &AppState, width: u16, height: u16) -> Vec<String> {
     let max_width = usize::from(width.max(1));
     let max_rows = usize::from(height.max(1));
     let mut rows = Vec::new();
-    rows.push(truncate_line(
-        format!(
-            "conn: {:?} | run: {} | cwd: {}",
-            app.connection,
-            app.run
-                .current_run_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            app.config.workspace.display()
-        ),
-        max_width,
-    ));
+    rows.push(truncate_line(status_line(app), max_width));
     rows.extend(
         app.transcript
             .iter()
@@ -121,6 +103,26 @@ fn truncate_line(mut line: String, max_width: usize) -> String {
     line
 }
 
+pub fn status_line(app: &AppState) -> String {
+    format!(
+        "conn: {:?} | run: {} | thread: {} | permission: {} | approval: {} | spawns: {} | bg: {} | cwd: {}",
+        app.connection,
+        app.run
+            .current_run_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        app.run
+            .thread_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        app.permission_mode,
+        app.approval_mode,
+        app.spawn_count,
+        app.background_process_count,
+        app.config.workspace.display(),
+    )
+}
+
 fn handle_key(app: &mut AppState, key: KeyEvent) {
     if is_quit_key(key) {
         app.apply(AppEvent::Quit);
@@ -136,7 +138,20 @@ fn handle_key(app: &mut AppState, key: KeyEvent) {
         }
         KeyCode::Enter if !app.input.trim().is_empty() => {
             let message = app.input.clone();
-            app.apply(AppEvent::UserSubmitted(message));
+            if message.trim_start().starts_with('/') {
+                match parse_command(&message) {
+                    Ok(command) => {
+                        app.handle_command(command);
+                        app.input.clear();
+                    }
+                    Err(err) => {
+                        app.apply(AppEvent::Notice(format!("command error: {err:?}")));
+                        app.input.clear();
+                    }
+                }
+            } else {
+                app.apply(AppEvent::UserSubmitted(message));
+            }
         }
         _ => {}
     }
@@ -172,5 +187,24 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("anima: hi")));
         assert!(rows.iter().any(|row| row.contains("run: 5")));
         assert!(rows.iter().any(|row| row.contains("input: draft")));
+    }
+
+    #[test]
+    fn status_line_includes_session_operational_state() {
+        let mut app = AppState::for_test();
+        app.permission_mode = "workspace-write".to_string();
+        app.approval_mode = "manual".to_string();
+        app.spawn_count = 2;
+        app.background_process_count = 1;
+        app.run.current_run_id = Some(7);
+
+        let status = status_line(&app);
+
+        assert!(status.contains("conn: Disconnected"));
+        assert!(status.contains("permission: workspace-write"));
+        assert!(status.contains("approval: manual"));
+        assert!(status.contains("run: 7"));
+        assert!(status.contains("spawns: 2"));
+        assert!(status.contains("bg: 1"));
     }
 }

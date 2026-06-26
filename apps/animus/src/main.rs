@@ -7,7 +7,9 @@ use config::{load_config, AnimusConfig, ConfigOverrides};
 
 mod app;
 mod client;
+mod commands;
 mod config;
+mod input;
 mod permissions;
 mod protocol;
 mod tools;
