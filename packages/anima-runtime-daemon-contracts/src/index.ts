@@ -72,6 +72,7 @@ export interface DaemonStatusResponse {
   readonly lock: DaemonLockStatus;
   readonly restart: DaemonRestartPolicy;
   readonly backgroundEnabled: boolean;
+  readonly runtimeNonce?: string;
   readonly updatedAt: string;
   readonly error: string | null;
 }

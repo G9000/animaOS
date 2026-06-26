@@ -8,6 +8,7 @@ axum = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 reqwest = { workspace = true }
+tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

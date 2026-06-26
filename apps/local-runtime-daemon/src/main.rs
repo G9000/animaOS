@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -28,6 +28,7 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use tower_http::cors::CorsLayer;
 
 const DAEMON_API_VERSION: &str = "v1";
 const DEFAULT_DAEMON_HOST: &str = "127.0.0.1";
@@ -445,7 +446,13 @@ async fn main() {
         .route("/v1/status", get(status))
         .route("/v1/control/:command", post(control))
         .route("/v1/logs", get(open_logs))
-        .with_state(runtime);
+        .with_state(runtime)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers(tower_http::cors::Any),
+        );
 
     let bind = format!(
         "{}:{}",
@@ -841,6 +848,7 @@ async fn set_background_enabled(
 async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
     let mut should_restart_in_seconds: Option<u64> = None;
     let mut should_check_health = false;
+    let mut process_to_restart: Option<RuntimeProcess> = None;
     let config = runtime.state.config.clone();
 
     {
@@ -909,28 +917,6 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
         }
     }
 
-    if let Some(delay) = should_restart_in_seconds {
-        if delay > 0 {
-            time::sleep(Duration::from_secs(delay)).await;
-        }
-
-        {
-            let state = runtime.state.inner.lock().await;
-            if state.process.is_some() || !state.expected_running {
-                return Ok(());
-            }
-        }
-
-        if let Err(err) = start_runtime(runtime, true).await {
-            return Err(err);
-        }
-        {
-            let mut state = runtime.state.inner.lock().await;
-            state.restart_wait_seconds = None;
-        }
-        return Ok(());
-    }
-
     if should_check_health {
         match check_runtime_health(&runtime.state.config).await {
             Ok(()) => {
@@ -955,11 +941,47 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                 if state.consecutive_health_failures >= 2 {
                     should_restart_in_seconds = state
                         .mark_restart_delay(&runtime.state.config, "runtime health check failed");
+                    if should_restart_in_seconds.is_some() {
+                        process_to_restart = state.process.take();
+                    }
                     if should_restart_in_seconds.is_some() && state.consecutive_health_failures > 1 {
                         state.status = DaemonState::Degraded;
                     }
                 }
             }
+        }
+    }
+
+    if let Some(mut process) = process_to_restart {
+        if let Err(err) = process.child.kill().await {
+            warn!("Failed to restart unhealthy runtime process {}: {err}", process.pid);
+        }
+        if let Err(err) = process.child.wait().await {
+            warn!(
+                "Failed to wait for killed unhealthy runtime process {}: {err}",
+                process.pid
+            );
+        }
+    }
+
+    if let Some(delay) = should_restart_in_seconds {
+        if delay > 0 {
+            time::sleep(Duration::from_secs(delay)).await;
+        }
+
+        {
+            let state = runtime.state.inner.lock().await;
+            if !state.expected_running || state.process.is_some() {
+                return Ok(());
+            }
+        }
+
+        if let Err(err) = start_runtime(runtime, true).await {
+            return Err(err);
+        }
+        {
+            let mut state = runtime.state.inner.lock().await;
+            state.restart_wait_seconds = None;
         }
     }
 

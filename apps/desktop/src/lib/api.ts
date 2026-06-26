@@ -1,5 +1,6 @@
 import { createApiClient, type ApiClient } from "@anima/api-client";
 import { API_BASE } from "./runtime";
+import { getRuntimeNonce } from "./daemon";
 
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
 let unlockTokenCache: string | null = null;
@@ -34,9 +35,14 @@ export function clearUnlockToken(): void {
   }
 }
 
+function getRuntimeNonceSafely(): string | null {
+  return getRuntimeNonce();
+}
+
 const baseApi = createApiClient({
   baseUrl: API_BASE,
   getUnlockToken,
+  getNonce: getRuntimeNonceSafely,
 });
 
 export const api: ApiClient & {

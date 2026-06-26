@@ -15,6 +15,21 @@ import {
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
+let daemonRuntimeNonce: string | null = null;
+
+function normalizeNonce(value: string | undefined | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function setRuntimeNonce(nonce: string | null) {
+  daemonRuntimeNonce = normalizeNonce(nonce);
+}
+
+export function getRuntimeNonce(): string | null {
+  return daemonRuntimeNonce;
+}
 
 function getDaemonOrigin(): string {
   return (
@@ -97,7 +112,14 @@ export async function getDaemonHealth(): Promise<{ status: string; version: stri
 }
 
 export async function getDaemonStatus(): Promise<DaemonStatusResponse> {
-  return request(`${DAEMON_ROUTES.status}`);
+  const status = await request<DaemonStatusResponse>(`${DAEMON_ROUTES.status}`);
+  setRuntimeNonce(status.runtimeNonce ?? null);
+  return status;
+}
+
+export async function refreshDaemonRuntimeNonce(): Promise<string | null> {
+  const status = await getDaemonStatus();
+  return status.runtimeNonce ? normalizeNonce(status.runtimeNonce) : null;
 }
 
 export async function getDaemonLogs(lines = 120): Promise<DaemonLogResponse> {
@@ -120,6 +142,7 @@ export async function startDaemon(): Promise<void> {
 
 export async function stopDaemon(): Promise<void> {
   await controlDaemon("stop");
+  setRuntimeNonce(null);
 }
 
 export async function restartDaemon(): Promise<void> {
