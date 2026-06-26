@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import re
+import secrets
 from string import hexdigits
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
+from anima_server.config import settings
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
     RuntimeDocument,
@@ -34,6 +38,7 @@ from anima_server.services.documents.rag import search_document_chunks
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 _PDF_WORKFLOW_TYPE = "pdf_ingestion"
+_PDF_STORAGE_PREFIX = ".anima/documents"
 
 
 class StartPDFWorkflowRequest(BaseModel):
@@ -99,6 +104,85 @@ class ApproveMemoryRequest(BaseModel):
         if any(index < 0 for index in value):
             raise ValueError("proposalIndices must be non-negative.")
         return value
+
+
+@router.post(
+    "/pdf",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_pdf_document(
+    request: Request,
+    userId: int = Form(..., ge=0),
+    threadId: int | None = Form(default=None, ge=1),
+    file: UploadFile = File(...),
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    if threadId is not None:
+        _load_owned_thread(runtime_db, threadId, user_id=userId)
+
+    filename = _sanitize_pdf_filename(file.filename or "")
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only application/pdf documents are supported.",
+        )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PDF file must not be empty.",
+        )
+    if len(data) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "PDF is too large. "
+                f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
+            ),
+        )
+    if not data.lstrip().startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is not a valid PDF.",
+        )
+
+    sha256 = hashlib.sha256(data).hexdigest()
+    storage_path = _document_storage_path(userId, filename)
+    try:
+        resolved_path = resolve_document_storage_path(storage_path, user_id=userId)
+    except DocumentStoragePathError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_path.write_bytes(data)
+
+    run = start_pdf_ingestion_workflow(
+        runtime_db,
+        PDFIngestionRequest(
+            user_id=userId,
+            filename=filename,
+            mime_type="application/pdf",
+            storage_path=storage_path,
+            sha256=sha256,
+            size_bytes=len(data),
+            thread_id=threadId,
+            metadata_json={"source": "chat_upload"},
+        ),
+    )
+    runtime_db.flush()
+    response = _workflow_action_response(run)
+    response["document"] = {
+        "filename": filename,
+        "mimeType": "application/pdf",
+        "storagePath": storage_path,
+        "sha256": sha256,
+        "sizeBytes": len(data),
+    }
+    return response
 
 
 @router.post(
@@ -315,6 +399,23 @@ def _checkpoint_to_response(checkpoint: RuntimeWorkflowCheckpoint) -> dict[str, 
         "error": checkpoint.error_json,
         "createdAt": checkpoint.created_at,
     }
+
+
+def _sanitize_pdf_filename(filename: str) -> str:
+    name = filename.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .")
+    if not name:
+        name = "document.pdf"
+    if not name.lower().endswith(".pdf"):
+        name = f"{name}.pdf"
+    if len(name) > 240:
+        stem = name[:-4].rstrip(" .")[:236]
+        name = f"{stem}.pdf"
+    return name
+
+
+def _document_storage_path(user_id: int, filename: str) -> str:
+    return f"{_PDF_STORAGE_PREFIX}/{user_id}/{secrets.token_hex(8)}_{filename}"
 
 
 def _default_pdf_dependencies() -> PDFIngestionDependencies:

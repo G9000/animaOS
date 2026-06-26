@@ -1,7 +1,7 @@
 """Add runtime document tables.
 
 Revision ID: 017_document_tables
-Revises: 016_workflow_checkpoints_documents
+Revises: 016_workflow_checkpoints
 Create Date: 2026-06-23
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "017_document_tables"
-down_revision = "016_workflow_checkpoints_documents"
+down_revision = "016_workflow_checkpoints"
 branch_labels = None
 depends_on = None
 

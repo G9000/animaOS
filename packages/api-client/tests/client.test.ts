@@ -99,6 +99,33 @@ describe("createApiClient error handling", () => {
     });
   });
 
+  test("serializes selected document ids in chat requests", async () => {
+    let requestBody: unknown = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            response: "ok",
+            model: "test",
+            provider: "test",
+            toolsUsed: [],
+          }),
+        );
+      },
+    });
+
+    await api.chat.send("Use the manual.", 7, undefined, [], [], null, [4, 9]);
+
+    expect(requestBody).toEqual({
+      message: "Use the manual.",
+      userId: 7,
+      stream: false,
+      documentIds: [4, 9],
+    });
+  });
+
   test("requests proactive notices with optional custom instruction", async () => {
     let requestedUrl = "";
     const api = createApiClient({
@@ -281,6 +308,63 @@ describe("createApiClient error handling", () => {
       {
         url: "https://api.test/api/diary/12",
         method: "DELETE",
+        bodyType: "undefined",
+      },
+    ]);
+  });
+
+  test("uploads PDF documents and resumes workflows", async () => {
+    const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        const body = init?.body;
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          bodyType: body instanceof FormData ? "form" : typeof body,
+          body:
+            body instanceof FormData
+              ? {
+                  userId: body.get("userId"),
+                  threadId: body.get("threadId"),
+                  fileName: (body.get("file") as File).name,
+                }
+              : typeof body === "string"
+                ? JSON.parse(body)
+                : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            workflowId: 22,
+            status: "created",
+            currentState: "created",
+          }),
+        );
+      },
+    });
+
+    await api.documents.uploadPdf(
+      7,
+      new File(["%PDF-1.4"], "manual.pdf", { type: "application/pdf" }),
+      3,
+    );
+    await api.documents.resumeWorkflow(22);
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/documents/pdf",
+        method: "POST",
+        bodyType: "form",
+        body: {
+          userId: "7",
+          threadId: "3",
+          fileName: "manual.pdf",
+        },
+      },
+      {
+        url: "https://api.test/api/documents/workflows/22/resume",
+        method: "POST",
         bodyType: "undefined",
       },
     ]);

@@ -109,6 +109,7 @@ from anima_server.services.agent.tool_context import (
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df, get_active_dek
+from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,7 @@ async def run_agent(
     source: str | None = None,
     thread_id: int | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AgentResult:
@@ -228,6 +230,7 @@ async def run_agent(
         source=source,
         thread_id=thread_id,
         attachments=attachments,
+        document_ids=document_ids,
         context_messages=context_messages,
         today_context=today_context,
     )
@@ -562,6 +565,7 @@ async def _execute_agent_turn(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AgentResult:
@@ -589,6 +593,7 @@ async def _execute_agent_turn(
                     delegated_tool_names=delegated_tool_names,
                     extra_tool_schemas=extra_tool_schemas,
                     attachments=attachments,
+                    document_ids=document_ids,
                     context_messages=context_messages,
                     today_context=today_context,
                 )
@@ -611,6 +616,7 @@ async def _execute_agent_turn(
                         delegated_tool_names=delegated_tool_names,
                         extra_tool_schemas=extra_tool_schemas,
                         attachments=attachments,
+                        document_ids=document_ids,
                         context_messages=context_messages,
                         today_context=today_context,
                     )
@@ -639,6 +645,7 @@ async def _execute_agent_turn_locked(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AgentResult:
@@ -652,6 +659,7 @@ async def _execute_agent_turn_locked(
         event_callback=event_callback,
         source=source,
         attachments=attachments,
+        document_ids=document_ids,
         context_messages=context_messages,
         today_context=today_context,
     )
@@ -862,6 +870,7 @@ async def _prepare_turn_context(
                              Awaitable[None]] | None = None,
     source: str | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
@@ -993,6 +1002,7 @@ async def _prepare_turn_context(
             history=history,
             conversation_turn_count=conversation_turn_count,
             prepared_attachments=prepared_attachments,
+            document_ids=document_ids,
             persisted_context_messages=persisted_context_messages,
             today_context=today_context,
         )
@@ -1065,6 +1075,7 @@ async def _assemble_turn_context(
     history: list[StoredMessage],
     conversation_turn_count: int,
     prepared_attachments: tuple[StoredAttachment, ...],
+    document_ids: Sequence[int],
     persisted_context_messages: list[RuntimeMessage],
     today_context: TodayContext | None,
 ) -> _TurnContext:
@@ -1197,6 +1208,15 @@ async def _assemble_turn_context(
     )
     memory_blocks = (*static_blocks, *turn_blocks)
 
+    document_context_block = _build_document_context_block(
+        runtime_db,
+        user_id=user_id,
+        user_message=user_message,
+        document_ids=document_ids,
+    )
+    if document_context_block is not None:
+        memory_blocks = (*memory_blocks, document_context_block)
+
     today_context_block = _build_today_context_block(today_context)
     if today_context_block is not None:
         memory_blocks = (*memory_blocks, today_context_block)
@@ -1250,6 +1270,93 @@ async def _assemble_turn_context(
         context_messages=tuple(persisted_context_messages),
         retrieval=retrieval_trace,
     )
+
+
+def _build_document_context_block(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    user_message: str,
+    document_ids: Sequence[int],
+) -> MemoryBlock | None:
+    cleaned_document_ids = _dedupe_positive_ids(document_ids)
+    query = user_message.strip()
+    if not cleaned_document_ids or not query:
+        return None
+
+    try:
+        results = search_document_chunks(
+            runtime_db,
+            user_id,
+            query,
+            document_ids=cleaned_document_ids,
+            limit=5,
+        )
+    except Exception:
+        logger.debug(
+            "Document retrieval failed for user %s documents %s",
+            user_id,
+            cleaned_document_ids,
+            exc_info=True,
+        )
+        return None
+    if not results:
+        return None
+
+    lines = [
+        "Selected document context from indexed PDFs. Use this only when it is relevant.",
+    ]
+    for index, result in enumerate(results, start=1):
+        location = _format_document_location(result)
+        section = f", section {result.section_title}" if result.section_title else ""
+        lines.append(
+            f"[{index}] {result.filename}{location}{section} "
+            f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
+        )
+        lines.append(_truncate_document_chunk(result.content))
+
+    return MemoryBlock(
+        label="document_context",
+        value="\n".join(lines),
+        description=(
+            "Query-relevant excerpts from PDFs the user explicitly selected for this chat turn. "
+            "Ground answers in these snippets when they apply; do not treat them as long-term memory."
+        ),
+    )
+
+
+def _dedupe_positive_ids(ids: Sequence[int]) -> list[int]:
+    cleaned: list[int] = []
+    seen: set[int] = set()
+    for raw_id in ids:
+        try:
+            document_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if document_id <= 0 or document_id in seen:
+            continue
+        seen.add(document_id)
+        cleaned.append(document_id)
+    return cleaned
+
+
+def _format_document_location(result: DocumentRagResult) -> str:
+    if result.page_start is None:
+        return ""
+    if result.page_end is None or result.page_end == result.page_start:
+        return f", page {result.page_start}"
+    return f", pages {result.page_start}-{result.page_end}"
+
+
+def _truncate_document_chunk(content: str, limit: int = 900) -> str:
+    cleaned = " ".join(content.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    truncated = cleaned[:limit]
+    boundary = max(truncated.rfind(". "), truncated.rfind("; "), truncated.rfind(", "))
+    if boundary >= limit // 2:
+        return truncated[: boundary + 1]
+    return truncated.rstrip()
 
 
 def _build_today_context_block(today_context: TodayContext | None) -> MemoryBlock | None:
@@ -1955,6 +2062,7 @@ async def stream_agent(
     delegated_tool_names: frozenset[str] = frozenset(),
     extra_tool_schemas: list[dict[str, Any]] | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
+    document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
@@ -1979,6 +2087,7 @@ async def stream_agent(
                 delegated_tool_names=delegated_tool_names,
                 extra_tool_schemas=extra_tool_schemas,
                 attachments=attachments,
+                document_ids=document_ids,
                 context_messages=context_messages,
                 today_context=today_context,
             )

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models.runtime import RuntimeThread, RuntimeWorkflowRun
 from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -200,6 +201,44 @@ def test_start_pdf_workflow_and_get_status() -> None:
         assert status["workflowType"] == "pdf_ingestion"
         assert status["input"]["filename"] == "manual.pdf"
         assert status["checkpoints"] == []
+
+
+def test_upload_pdf_creates_owned_workflow_and_saves_file() -> None:
+    with managed_test_client("anima-documents-upload-") as client:
+        reg = _register_user(client, username="document-upload-user")
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+        content = b"%PDF-1.4\n% test pdf\n"
+
+        response = client.post(
+            "/api/documents/pdf",
+            headers=headers,
+            data={"userId": str(user_id)},
+            files={"file": ("Plan Manual.pdf", content, "application/pdf")},
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["workflowId"] == 1
+        assert payload["status"] == "created"
+        assert payload["currentState"] == "created"
+        assert payload["document"]["filename"] == "Plan Manual.pdf"
+        assert payload["document"]["mimeType"] == "application/pdf"
+        assert payload["document"]["sizeBytes"] == len(content)
+
+        storage_path = payload["document"]["storagePath"]
+        assert storage_path.startswith(f".anima/documents/{user_id}/")
+        saved_path = settings.data_dir / storage_path
+        assert saved_path.read_bytes() == content
+
+        status_response = client.get(
+            "/api/documents/workflows/1",
+            headers=headers,
+        )
+        assert status_response.status_code == 200
+        workflow = status_response.json()
+        assert workflow["input"]["filename"] == "Plan Manual.pdf"
+        assert workflow["input"]["storage_path"] == storage_path
 
 
 def test_start_pdf_workflow_rejects_missing_thread_id() -> None:

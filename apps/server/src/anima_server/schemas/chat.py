@@ -56,13 +56,16 @@ class ChatRequest(BaseModel):
     stream: bool = False
     source: str | None = None
     attachments: list[ChatRequestAttachment] = Field(default_factory=list)
+    documentIds: list[int] = Field(default_factory=list, max_length=8)
     contextMessages: list[ChatContextMessage] = Field(default_factory=list)
     todayContext: TodayContext | None = None
 
     @model_validator(mode="after")
     def require_text_or_attachment(self) -> ChatRequest:
-        if not self.message.strip() and not self.attachments:
+        if not self.message.strip() and not self.attachments and not self.documentIds:
             raise ValueError("Message text or at least one attachment is required.")
+        if any(document_id <= 0 for document_id in self.documentIds):
+            raise ValueError("documentIds must contain positive ids.")
         return self
 
 

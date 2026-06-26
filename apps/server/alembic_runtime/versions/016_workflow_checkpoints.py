@@ -1,6 +1,6 @@
 """Add workflow checkpoint runtime tables.
 
-Revision ID: 016_workflow_checkpoints_documents
+Revision ID: 016_workflow_checkpoints
 Revises: 015_memory_extraction_failures
 Create Date: 2026-06-22
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "016_workflow_checkpoints_documents"
+revision = "016_workflow_checkpoints"
 down_revision = "015_memory_extraction_failures"
 branch_labels = None
 depends_on = None

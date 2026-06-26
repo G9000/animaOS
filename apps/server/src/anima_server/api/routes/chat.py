@@ -79,6 +79,7 @@ async def send_message(
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
+                document_ids=payload.documentIds,
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
             )
@@ -129,6 +130,7 @@ async def send_message(
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
+                document_ids=payload.documentIds,
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
             ):
