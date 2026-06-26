@@ -27,21 +27,22 @@ This document traces a user message through the agent runtime end-to-end, explai
 10. [Tool Orchestration Rules](#tool-orchestration-rules)
 11. [Context Window Management](#context-window-management)
 12. [Approval Flow](#approval-flow)
-13. [Cancellation](#cancellation)
-14. [Multi-Thread Support](#multi-thread-support)
-15. [Dual Database Architecture](#dual-database-architecture)
-16. [Soul Writer Pipeline](#soul-writer-pipeline)
-17. [Eager Consolidation & Thread Lifecycle](#eager-consolidation--thread-lifecycle)
-18. [Transcript Archive](#transcript-archive)
-19. [Post-Turn Background Work](#post-turn-background-work)
-20. [Memory Correction Mechanism](#memory-correction-mechanism)
-21. [Episode Merging](#episode-merging)
-22. [Knowledge Graph API](#knowledge-graph-api)
-23. [Tool Delegation (Animus CLI)](#tool-delegation-animus-cli)
-24. [Health Observability](#health-observability)
-25. [Error Handling & Recovery](#error-handling--recovery)
-26. [Key Data Structures](#key-data-structures)
-27. [Security Findings](#security-findings)
+13. [Workflow Checkpoints](#workflow-checkpoints)
+14. [Cancellation](#cancellation)
+15. [Multi-Thread Support](#multi-thread-support)
+16. [Dual Database Architecture](#dual-database-architecture)
+17. [Soul Writer Pipeline](#soul-writer-pipeline)
+18. [Eager Consolidation & Thread Lifecycle](#eager-consolidation--thread-lifecycle)
+19. [Transcript Archive](#transcript-archive)
+20. [Post-Turn Background Work](#post-turn-background-work)
+21. [Memory Correction Mechanism](#memory-correction-mechanism)
+22. [Episode Merging](#episode-merging)
+23. [Knowledge Graph API](#knowledge-graph-api)
+24. [Tool Delegation (Animus CLI)](#tool-delegation-animus-cli)
+25. [Health Observability](#health-observability)
+26. [Error Handling & Recovery](#error-handling--recovery)
+27. [Key Data Structures](#key-data-structures)
+28. [Security Findings](#security-findings)
 
 ---
 
@@ -1059,6 +1060,18 @@ If denied:
 ```
 
 Approval checkpoints are persisted as a `role='approval'` message in `runtime_messages`, allowing recovery across server restarts.
+
+---
+
+## Workflow Checkpoints
+
+Workflow checkpointing is separate from the chat turn state machine. A chat `RuntimeRun` tracks one agent turn through statuses such as running, awaiting approval, completed, failed, or cancelled. A workflow `RuntimeWorkflowRun` tracks a longer-running product flow, such as PDF ingestion and document RAG setup, through workflow-level states such as created, running, awaiting input, paused, completed, failed, or cancelled.
+
+Workflow runs can reference a conversation thread with `thread_id`. That link gives the workflow conversational context and lets a step create or inspect chat-side runtime records when it needs an agent turn, but the workflow state remains independent. Retrying or resuming a workflow does not reopen the chat turn state machine; it loads the workflow record and its checkpoints.
+
+Each durable step writes a `RuntimeWorkflowCheckpoint` with a monotonic `checkpoint_index`, `state_name`, status, idempotency key, and JSON payload. Resume starts from the latest completed checkpoint for the `RuntimeWorkflowRun`, then re-enters the next incomplete workflow state. This makes server restarts and repeated resume calls safe as long as each state uses stable idempotency keys for side effects such as document creation, chunk replacement, embedding, and candidate staging.
+
+Terminal workflow states are explicit. Failed workflows keep their last checkpoint and failure payload for inspection or manual retry policy. Cancelled workflows stop future checkpoint writes and are not resumed automatically. Awaiting-input workflows persist the staged payload needed by the UI, such as extracted conclusions awaiting approval; after the user responds, the workflow records the decision and continues or completes without treating the staged document text as durable memory by default.
 
 ---
 

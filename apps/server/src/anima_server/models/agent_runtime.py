@@ -307,6 +307,82 @@ class MemoryEpisode(Base):
     )
 
 
+class DiaryEntry(Base):
+    """User-authored private daily diary/log entry."""
+
+    __tablename__ = "diary_entries"
+    __table_args__ = (
+        Index("ix_diary_entries_user_date", "user_id", "entry_date"),
+        Index("ix_diary_entries_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    entry_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    mood: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="user",
+        server_default=text("'user'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    attachments: Mapped[list[DiaryAttachment]] = relationship(
+        back_populates="entry",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="DiaryAttachment.created_at",
+    )
+
+
+class DiaryAttachment(Base):
+    """Encrypted local blob attached to a diary entry."""
+
+    __tablename__ = "diary_attachments"
+    __table_args__ = (
+        Index("ix_diary_attachments_user_entry", "user_id", "entry_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("diary_entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    original_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    entry: Mapped[DiaryEntry] = relationship(back_populates="attachments")
+
+
 class MemoryItemTag(Base):
     """Junction table for tag-based memory filtering.
 

@@ -17,4 +17,31 @@ export { EyeOffIcon } from "./EyeOffIcon";
 export { ArrowRightIcon } from "./ArrowRightIcon";
 export { ArrowLeftIcon } from "./ArrowLeftIcon";
 export { ChevronRightIcon } from "./ChevronRightIcon";
+export { ChevronLeftIcon } from "./ChevronLeftIcon";
+export { ChevronDownIcon } from "./ChevronDownIcon";
+export { ChevronUpIcon } from "./ChevronUpIcon";
 export { XIcon } from "./XIcon";
+
+// Settings
+export { AiIcon } from "./AiIcon";
+export { SecurityIcon } from "./SecurityIcon";
+export { VaultIcon } from "./VaultIcon";
+export { LanguageIcon } from "./LanguageIcon";
+export { AppearanceIcon } from "./AppearanceIcon";
+export { AdvancedIcon } from "./AdvancedIcon";
+
+// Time of day
+export { SunIcon } from "./SunIcon";
+export { MoonIcon } from "./MoonIcon";
+export { SunriseIcon } from "./SunriseIcon";
+export { SunsetIcon } from "./SunsetIcon";
+
+// Agent / content
+export { UserIcon } from "./UserIcon";
+export { LinkIcon } from "./LinkIcon";
+export { SparkleIcon } from "./SparkleIcon";
+export { CompassIcon } from "./CompassIcon";
+export { GearIcon } from "./GearIcon";
+export { TrendIcon } from "./TrendIcon";
+export { InboxIcon } from "./InboxIcon";
+export { TargetIcon } from "./TargetIcon";

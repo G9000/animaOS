@@ -10,6 +10,7 @@ from anima_server.services.agent.runtime_types import StepTrace, ToolCall
 
 RETRIEVAL_CONTENT_KEY = "retrieval"
 ATTACHMENTS_CONTENT_KEY = "attachments"
+PILLS_CONTENT_KEY = "pills"
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +172,31 @@ def extract_stored_retrieval(
 
     retrieval = content_json.get(RETRIEVAL_CONTENT_KEY)
     return retrieval if isinstance(retrieval, dict) else None
+
+
+def attach_serialized_pills(
+    content_json: dict[str, object] | None,
+    pills: list[dict[str, object]],
+) -> dict[str, object] | None:
+    if not pills:
+        return content_json
+
+    payload = dict(content_json or {})
+    payload[PILLS_CONTENT_KEY] = pills
+    return payload
+
+
+def extract_stored_pills(
+    content_json: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    if not isinstance(content_json, dict):
+        return []
+
+    pills = content_json.get(PILLS_CONTENT_KEY)
+    if not isinstance(pills, list):
+        return []
+
+    return [dict(pill) for pill in pills if isinstance(pill, dict)]
 
 
 def attach_serialized_attachments(

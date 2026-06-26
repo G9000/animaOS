@@ -206,6 +206,44 @@ class PromptLoader:
             memory_context=memory_context,
         )
 
+    def reflection(
+        self,
+        *,
+        identity_context: str,
+        emotional_context: str,
+        memory_context: str,
+    ) -> str:
+        """Render the reflection question prompt."""
+        return self.render(
+            "reflection",
+            identity_context=identity_context,
+            emotional_context=emotional_context,
+            memory_context=memory_context,
+        )
+
+    def memory_curiosity(
+        self,
+        *,
+        identity_context: str,
+        episode_summary: str,
+        episode_date: str,
+    ) -> str:
+        """Render the memory-curiosity prompt for a specific past episode."""
+        return self.render(
+            "memory_curiosity",
+            identity_context=identity_context,
+            episode_summary=episode_summary,
+            episode_date=episode_date,
+        )
+
+    def greeting_pills(self, *, greeting_message: str, context: str) -> str:
+        """Render the prompt that tags a greeting with a few short pills."""
+        return self.render(
+            "greeting_pills",
+            greeting_message=greeting_message,
+            context=context,
+        )
+
     # -----------------------------------------------------------------------
     # Emotional Intelligence
     # -----------------------------------------------------------------------

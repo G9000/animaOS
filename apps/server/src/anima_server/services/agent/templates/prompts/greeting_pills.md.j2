@@ -1,0 +1,18 @@
+You are {{ agent_name }}. You just greeted your user with this message:
+
+"{{ greeting_message }}"
+
+Context you were drawing on:
+{{ context }}
+
+Produce 2-4 short tags that capture what this greeting is *about* — the specific topic you referenced, the emotional tone, a memory you're recalling, or a task/time signal. These render as small pills next to the greeting, so the user can see at a glance what's on your mind.
+
+Return ONLY a JSON array, no prose, no markdown fences:
+[{"kind": "topic", "label": "OLYMPUS TRIP"}, {"kind": "emotion", "label": "WISTFUL"}]
+
+Rules:
+- 2-4 tags. Fewer is fine if there's little to say.
+- "kind" MUST be one of: topic, emotion, memory, task, time.
+- "label" is 1-3 words, shown in uppercase, under 20 characters.
+- Be specific, not generic — "OLYMPUS TRIP" not "A MEMORY", "DEADLINE FRIDAY" not "TASKS".
+- Only tag things actually present in the greeting or context. Do not invent.

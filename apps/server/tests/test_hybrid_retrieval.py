@@ -381,6 +381,40 @@ class TestAdaptiveFilter:
         assert cutoff == 2
         assert trigger == "relative_threshold"
 
+    def test_rust_adaptive_cutoff_falls_back_on_exception(self, monkeypatch):
+        monkeypatch.setattr(
+            adaptive_retrieval_module,
+            "_rust_find_adaptive_cutoff",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("mocked")),
+        )
+
+        cutoff, trigger, _normalized = adaptive_retrieval_module.find_adaptive_cutoff(
+            [0.95, 0.8, 0.4, 0.1],
+            config=adaptive_retrieval_module.AdaptiveRetrievalConfig(
+                strategy="relative_threshold",
+                min_results=2,
+                max_results=4,
+                relative_threshold=0.8,
+            ),
+        )
+
+        assert cutoff == 2
+        assert trigger == "relative_threshold"
+        assert _normalized == adaptive_retrieval_module.normalize_scores([0.95, 0.8, 0.4, 0.1])
+
+    def test_rust_normalize_scores_falls_back_on_exception(self, monkeypatch):
+        monkeypatch.setattr(
+            adaptive_retrieval_module,
+            "_rust_normalize_scores",
+            lambda _scores: (_ for _ in ()).throw(RuntimeError("mocked")),
+        )
+
+        assert adaptive_retrieval_module.normalize_scores([1.0, 0.5, 0.0]) == [
+            1.0,
+            0.5,
+            0.0,
+        ]
+
 
 # ===================================================================
 # 1.3 — Query-Aware Memory Block Scoring Tests

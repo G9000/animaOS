@@ -15,6 +15,7 @@ from anima_server.services.agent.state import (
     attach_serialized_attachments,
     attach_serialized_retrieval,
     deserialize_stored_attachments,
+    extract_stored_pills,
     extract_stored_retrieval,
     serialize_public_attachments,
 )
@@ -157,13 +158,22 @@ def reactivate_thread_if_needed(
     user_id: int,
     transcripts_dir: Path | None,
     dek: bytes | None,
-) -> None:
+) -> list[int]:
     """Reactivate a closed/archived thread so the agent can continue it.
 
     If PG messages still exist (within TTL), just flip status to active.
     If messages are gone, rehydrate from JSONL archive and insert a summary
     system message so the agent has context without loading raw history.
+
+    Resuming a thread makes it the user's active conversation, so any *other*
+    active thread is closed to preserve the single-active-thread invariant
+    (otherwise ``get_or_create_thread`` / the history endpoint become
+    ambiguous). Returns the ids of the threads that were closed so the caller
+    can fire consolidation on them.
     """
+    displaced = _close_other_active_threads(
+        db, user_id=user_id, keep_thread_id=thread.id)
+
     has_pg_messages = db.scalar(
         select(RuntimeMessage.id)
         .where(RuntimeMessage.thread_id == thread.id)
@@ -172,7 +182,7 @@ def reactivate_thread_if_needed(
 
     if has_pg_messages:
         _set_active(thread)
-        return
+        return displaced
 
     summary = "Previous conversation"
     if transcripts_dir is not None:
@@ -185,6 +195,32 @@ def reactivate_thread_if_needed(
     _insert_summary_message(
         db, thread=thread, user_id=user_id, summary=summary)
     _set_active(thread)
+    return displaced
+
+
+def _close_other_active_threads(
+    db: Session, *, user_id: int, keep_thread_id: int
+) -> list[int]:
+    """Close every active thread for ``user_id`` except ``keep_thread_id``."""
+    from datetime import UTC, datetime
+
+    others = list(
+        db.scalars(
+            select(RuntimeThread).where(
+                RuntimeThread.user_id == user_id,
+                RuntimeThread.status == "active",
+                RuntimeThread.id != keep_thread_id,
+            )
+        ).all()
+    )
+    now = datetime.now(UTC)
+    closed_ids: list[int] = []
+    for other in others:
+        other.status = "closed"
+        other.closed_at = now
+        other.updated_at = now
+        closed_ids.append(other.id)
+    return closed_ids
 
 
 def _set_active(thread: RuntimeThread) -> None:
@@ -341,6 +377,7 @@ def get_thread_messages_for_display(
                 )
                 if m.role == "user"
                 else [],
+                "pills": extract_stored_pills(m.content_json),
             }
             for m in pg_messages
             if not m.is_internal
@@ -358,6 +395,7 @@ def get_thread_messages_for_display(
             "isArchivedHistory": True,
             "retrieval": m.get("retrieval") if isinstance(m.get("retrieval"), dict) else None,
             "attachments": [],
+            "pills": m.get("pills") if isinstance(m.get("pills"), list) else [],
         }
         for m in messages
         if m.get("role") in ("user", "assistant")

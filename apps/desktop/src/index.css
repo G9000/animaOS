@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
 @import "@anima/standard-templates/tokens.css";
 
 @import "@fontsource/space-grotesk/400.css";
@@ -8,6 +9,71 @@
 @import "@fontsource/space-mono/700.css";
 @source "../../../packages/standard-templates/src";
 @plugin "@tailwindcss/typography";
+
+/* ── React Flow node chrome reset ── */
+.react-flow__node {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding: 0 !important;
+}
+
+.react-flow__node:focus,
+.react-flow__node:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.dashboard-flow .react-flow__handle {
+  display: none !important;
+}
+
+.agent-customization-flow .react-flow__handle {
+  display: block !important;
+  opacity: 1 !important;
+}
+
+.agent-customization-flow .agent-pulse-edge-path {
+  transition: stroke-opacity 160ms ease;
+}
+
+.agent-customization-flow .agent-pulse-orb,
+.agent-customization-flow .agent-pulse-orb-halo {
+  pointer-events: none;
+}
+
+.agent-customization-flow .agent-pulse-orb {
+  filter:
+    drop-shadow(0 0 4px color-mix(in oklch, var(--accent) 90%, transparent))
+    drop-shadow(0 0 10px color-mix(in oklch, var(--accent) 45%, transparent));
+}
+
+.agent-customization-flow .agent-pulse-dash {
+  pointer-events: none;
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-customization-flow .agent-pulse-orb,
+  .agent-customization-flow .agent-pulse-orb-halo,
+  .agent-customization-flow .agent-pulse-dash {
+    display: none;
+  }
+}
+
+.react-flow__attribution {
+  background: transparent !important;
+  opacity: 0.4;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.react-flow__attribution a {
+  color: var(--muted-foreground);
+}
 
 /* ── Type scale ── */
 .text-micro {
@@ -37,7 +103,7 @@ body {
 }
 
 ::selection {
-  background: rgba(212, 165, 154, 0.22);
+  background: color-mix(in oklch, var(--accent) 20%, transparent);
 }
 
 /* Scrollbar — thin, minimal */
@@ -96,6 +162,12 @@ a {
 /* Micro label — tiny, all-caps, wide tracking */
 .hw-label {
   @apply font-mono text-[9px] uppercase tracking-[0.25em] text-muted-foreground;
+}
+
+/* Thinking dots wave */
+@keyframes thinking-dot {
+  0%, 70%, 100% { opacity: 0.2; transform: translateY(0px); }
+  35% { opacity: 0.85; transform: translateY(-4px); }
 }
 
 /* Terminal cursor blink */
@@ -185,6 +257,31 @@ a {
   animation: border-pulse 2s ease-in-out infinite;
 }
 
+/* Handle pulse — ring expands outward and fades; ambient glow at rest */
+@keyframes handle-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 60%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 9px color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+}
+
+@keyframes handle-pulse-muted {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--muted-foreground) 40%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px color-mix(in oklch, var(--muted-foreground) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--muted-foreground) 0%, transparent);
+  }
+}
+
 /* Toast slide-in animation */
 @keyframes slide-in {
   from {
@@ -240,6 +337,21 @@ a {
 
 .prose :where(blockquote):not(:where([class~="not-prose"] *)) {
   @apply border-l border-accent/40 pl-4 italic text-muted-foreground;
+}
+
+/* Tiptap diary editor */
+.tiptap {
+  @apply outline-none;
+}
+.tiptap :first-child {
+  margin-top: 0;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  @apply text-muted-foreground/25;
 }
 
 .prose :where(ul, ol):not(:where([class~="not-prose"] *)) {

@@ -34,9 +34,11 @@ export interface CompactChatBubbleProps {
   ) => React.ReactNode;
 }
 
+// Subtle scan-line texture — HUD feel
+const scanLines = "bg-[repeating-linear-gradient(180deg,transparent_0px,transparent_3px,rgba(255,255,255,0.012)_3px,rgba(255,255,255,0.012)_4px)]";
+
 export function CompactChatBubble({
   message,
-  avatarUrl,
   showTrace = false,
   isGrouped = false,
   onTranslate,
@@ -51,6 +53,7 @@ export function CompactChatBubble({
   const [showRetrieval, setShowRetrieval] = useState(false);
   const [showMsgTrace, setShowMsgTrace] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+
   const hasTrace = message.traceEvents && message.traceEvents.length > 0;
   const hasReasoning = !!message.reasoning;
   const retrieval = getMessageRetrieval(message);
@@ -58,18 +61,12 @@ export function CompactChatBubble({
 
   const handleTranslate = async () => {
     if (translating) return;
-    if (translation) {
-      setTranslation(null);
-      return;
-    }
-    if (!onTranslate) {
-      setTranslation("[translation not configured]");
-      return;
-    }
+    if (translation) { setTranslation(null); return; }
+    if (!onTranslate) { setTranslation("[translation not configured]"); return; }
     setTranslating(true);
     try {
       const result = await onTranslate(message.content);
-      setTranslation(result);
+      setTranslation(result?.trim() || "[translation unavailable]");
     } catch {
       setTranslation("[translation failed]");
     } finally {
@@ -79,7 +76,6 @@ export function CompactChatBubble({
 
   const timestamp = formatTimestamp(message.createdAt);
   const fullTimestamp = formatFullTimestamp(message.createdAt);
-  const displayName = isUser ? "You" : isSystem ? "System" : "Anima";
 
   const bubbleContent = renderContent ? (
     renderContent(message.content, message.role, message)
@@ -89,309 +85,216 @@ export function CompactChatBubble({
     </p>
   );
 
-  // Show panels if hovered AND toggled on
-  const showReasoningPanel = isHovered && showReasoning && message.reasoning;
-  const showRetrievalPanel = isHovered && showRetrieval && retrieval;
-  const showTracePanel = isHovered && (showTrace || showMsgTrace) && hasTrace;
-  const showTranslationPanel = isHovered && translation && !translating;
-  const showTranslatingIndicator = isHovered && translating;
-
-  // Any panel is showing
+  const showReasoningPanel = showReasoning && !!message.reasoning;
+  const showRetrievalPanel = showRetrieval && retrieval != null;
+  const showTracePanel = (showTrace || showMsgTrace) && hasTrace;
   const hasPanelOpen =
     showReasoningPanel ||
     showRetrievalPanel ||
     showTracePanel ||
-    showTranslationPanel ||
-    showTranslatingIndicator;
+    translation !== null ||
+    translating;
 
-  return (
-    <div
-      className={cn(
-        "group flex w-full",
-        isUser ? "justify-end" : "justify-start",
-        isGrouped ? "pt-1" : "pt-4",
-        className,
-      )}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
+  // ── SYSTEM ───────────────────────────────────────────────────────────────
+  if (isSystem) {
+    return (
+      <div className={cn("flex justify-center", isGrouped ? "pt-1" : "pt-6", className)}>
+        <div className="max-w-[80%] px-3 py-2 bg-background/25 backdrop-blur-[32px] shadow-[0_4px_20px_rgba(0,0,0,0.25)]">
+          <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/30 select-none block mb-1">
+            System
+          </span>
+          {bubbleContent}
+        </div>
+      </div>
+    );
+  }
+
+  // ── USER ─────────────────────────────────────────────────────────────────
+  if (isUser) {
+    return (
       <div
-        className={cn(
-          "flex flex-col max-w-[90%] md:max-w-[80%] lg:max-w-[70%]",
-          isUser ? "items-end" : "items-start",
-        )}
+        className={cn("flex justify-end", isGrouped ? "pt-1" : "pt-6", className)}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
       >
-        {/* Main Bubble */}
-        <div
-          className={cn(
-            "relative flex flex-col min-w-[200px]",
-            isUser
-              ? "bg-primary text-primary-foreground"
-              : isSystem
-                ? "bg-muted/50 border border-border/60"
-                : "bg-card border border-border/80 hover:transition-shadow",
-          )}
-        >
-          {/* Header Row */}
-          <div
-            className={cn(
-              "flex items-center gap-2 px-3 py-2 border-b",
-              isUser
-                ? "border-primary-foreground/20 flex-row-reverse"
-                : "border-border/40",
-            )}
-          >
-            {/* Avatar */}
-            {isUser ? (
-              <div className="w-6 h-6 bg-primary-foreground/20 flex items-center justify-center">
-                <svg
-                  className="w-3.5 h-3.5 text-primary-foreground/80"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                  />
-                </svg>
-              </div>
-            ) : avatarUrl ? (
-              <img
-                src={avatarUrl}
-                alt="Agent"
-                className="w-6 h-6 object-cover ring-1 ring-border/50"
-              />
-            ) : (
-              <div className="w-6 h-6 bg-primary/10 flex items-center justify-center">
-                <span className="font-mono text-[8px] text-primary/60">AI</span>
-              </div>
-            )}
-
-            {/* Name */}
-            <span
-              className={cn(
-                "font-mono text-[10px] font-medium tracking-wide",
-                isUser ? "text-primary-foreground/90" : "text-foreground/80",
-              )}
-            >
-              {displayName}
-            </span>
-
-            {/* Timestamp - pushed to opposite side */}
-            {fullTimestamp && (
-              <span
-                className={cn(
-                  "font-mono text-[9px]",
-                  isUser ? "mr-auto" : "ml-auto",
-                  isUser
-                    ? "text-primary-foreground/50"
-                    : "text-muted-foreground/40",
-                )}
-                title={fullTimestamp}
-              >
+        <div className="flex flex-col items-end max-w-[65%] lg:max-w-[55%]">
+          {/* Header chip */}
+          {!isGrouped && fullTimestamp && (
+            <div className="inline-flex bg-background/20 backdrop-blur-[16px] px-2.5 py-1 mb-2">
+              <span className="font-mono text-[9px] text-foreground/30 select-none" title={fullTimestamp}>
                 {timestamp}
               </span>
-            )}
+            </div>
+          )}
 
-            {/* Copy button - appears on hover */}
-            <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-              <CopyButton
-                text={message.content}
-                className={cn(
-                  isUser
-                    ? "text-primary-foreground/50 hover:text-primary-foreground hover:bg-primary-foreground/10"
-                    : "",
-                )}
-              />
+          {/* Content — identical glass panel as assistant */}
+          <div className="relative bg-background/[0.28] backdrop-blur-[40px] shadow-[0_4px_28px_rgba(0,0,0,0.30)] w-full overflow-hidden">
+            <div className={cn("absolute inset-0 pointer-events-none opacity-50", scanLines)} />
+            <div className="relative px-4 py-3.5">
+              {bubbleContent}
             </div>
           </div>
 
-          {/* Message Content */}
-          <div className="px-3 py-2.5">{bubbleContent}</div>
-        </div>
-
-        {/* UTILITY BAR - Below bubble, aligned same as bubble */}
-        <div
-          className={cn(
-            "flex items-center gap-3 mt-1 transition-all duration-200",
-            isHovered ? "opacity-100" : "opacity-0",
-            isUser ? "flex-row-reverse" : "flex-row",
+          {/* Panels */}
+          {hasPanelOpen && (
+            <div className="w-full mt-1 space-y-px">
+              {translating && <TranslatingIndicator />}
+              {translation != null && !translating && (
+                <TranslationPanel translation={translation} onClose={() => setTranslation(null)} />
+              )}
+            </div>
           )}
-        >
-          {/* Action buttons */}
+
+          {/* Utility bar */}
           <div
             className={cn(
-              "flex items-center gap-1",
-              isUser ? "flex-row-reverse" : "flex-row",
+              "inline-flex items-center gap-0.5 mt-1 bg-background/20 backdrop-blur-[20px] shadow-[0_2px_10px_rgba(0,0,0,0.20)] px-1.5 py-0.5 transition-all duration-150",
+              isHovered ? "opacity-100" : "opacity-0 pointer-events-none",
             )}
           >
-            {hasReasoning && (
-              <FloatyButton
-                active={showReasoning}
-                onClick={() => setShowReasoning((v) => !v)}
-                icon={<ThinkIcon className="w-3.5 h-3.5" />}
-                label="THINK"
-              />
-            )}
-
-            {hasTrace && (
-              <FloatyButton
-                active={showMsgTrace}
-                onClick={() => setShowMsgTrace((v) => !v)}
-                icon={<TraceIcon className="w-3.5 h-3.5" />}
-                label="TRACE"
-              />
-            )}
-
-            {hasRetrieval && (
-              <FloatyButton
-                active={showRetrieval}
-                onClick={() => setShowRetrieval((value) => !value)}
-                icon={<LightbulbIcon className="w-3.5 h-3.5" />}
-                label="CITE"
-              />
-            )}
-
-            <FloatyButton
+            <BarButton
               active={!!translation}
               onClick={handleTranslate}
               disabled={translating}
-              icon={<TranslateIcon className="w-3.5 h-3.5" />}
+              icon={<TranslateIcon className="w-3 h-3" />}
               label="TL"
             />
+            <div className="text-foreground/25 hover:text-foreground/55 transition-colors">
+              <CopyButton text={message.content} />
+            </div>
           </div>
-
-          {/* Token usage (assistant only) */}
-          {!isUser && <CompactTokenUsage events={message.traceEvents} />}
         </div>
+      </div>
+    );
+  }
 
-        {!isUser && retrieval && (
-          <div className="mt-1 px-1 font-mono text-[9px] tracking-wider text-muted-foreground/30">
-            <span className="text-emerald-400/55">MEMORY</span>{" "}
-            <span>{formatRetrievalSummary(retrieval)}</span>
-          </div>
-        )}
+  // ── ASSISTANT ─────────────────────────────────────────────────────────────
+  return (
+    <div
+      className={cn("w-full", isGrouped ? "pt-1" : "pt-7", className)}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      {/* Header — timestamp only */}
+      {!isGrouped && fullTimestamp && (
+        <div className="inline-flex bg-background/20 backdrop-blur-[16px] px-2.5 py-1 mb-2">
+          <span className="font-mono text-[9px] text-foreground/30 select-none" title={fullTimestamp}>
+            {timestamp}
+          </span>
+        </div>
+      )}
 
-        {/* EXTERNAL PANELS - Aligned same as bubble, same width as bubble */}
-        {hasPanelOpen && (
-          <div
-            className={cn(
-              "w-full mt-1 space-y-1",
-              isUser ? "text-right" : "text-left",
-            )}
-          >
-            {/* Reasoning Panel */}
-            {showReasoningPanel && (
-              <div
-                className={cn(
-                  "inline-block text-left px-3 py-2 border",
-                  "bg-primary/[0.04] border-primary/20",
-                  "min-w-[200px] max-w-full",
-                )}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-mono text-[9px] text-primary/60 tracking-wider flex items-center gap-1">
-                    <LightbulbIcon className="w-3 h-3" />
-                    REASONING
-                  </span>
-                  <button
-                    onClick={() => setShowReasoning(false)}
-                    className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-                  >
-                    <XIcon className="w-3 h-3" />
-                  </button>
-                </div>
-                <div className="text-[11px] text-muted-foreground/80 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto text-left">
-                  {message.reasoning}
-                </div>
-              </div>
-            )}
+      {/* Content — scan lines */}
+      <div className="relative bg-background/[0.28] backdrop-blur-[40px] shadow-[0_4px_28px_rgba(0,0,0,0.30)] px-4 py-3.5 text-foreground/90 overflow-hidden">
+        <div className={cn("absolute inset-0 pointer-events-none opacity-50", scanLines)} />
+        <div className="relative">{bubbleContent}</div>
+      </div>
 
-            {/* Retrieval Panel */}
-            {showRetrievalPanel && retrieval && (
-              <div
-                className={cn(
-                  "inline-block text-left px-3 py-2 border rounded-none",
-                  "bg-card/50 border-emerald-400/25",
-                  "min-w-[200px] max-w-full",
-                )}
-              >
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="font-mono text-[9px] text-emerald-400/60 tracking-wider flex items-center gap-1">
-                    <LightbulbIcon className="w-3 h-3" />
-                    MEMORY HITS
-                  </span>
-                  <button
-                    onClick={() => setShowRetrieval(false)}
-                    className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-                  >
-                    <XIcon className="w-3 h-3" />
-                  </button>
-                </div>
-                <RetrievalPanel retrieval={retrieval} />
-              </div>
-            )}
-
-            {/* Trace Panel */}
-            {showTracePanel && (
-              <div
-                className={cn(
-                  "inline-block text-left px-3 py-2 border rounded-none max-h-64 overflow-y-auto",
-                  "bg-card/50 border-yellow-400/30",
-                  "min-w-[200px] max-w-full",
-                )}
-              >
-                <TracePanel events={message.traceEvents!} />
-              </div>
-            )}
-
-            {/* Translation Panel */}
-            {showTranslationPanel && (
-              <div
-                className={cn(
-                  "inline-block text-left px-3 py-2 border rounded-none",
-                  "bg-card/50 border-border/60",
-                  "min-w-[200px] max-w-full",
-                )}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="font-mono text-[9px] text-primary/60 tracking-wider">
-                    TRANSLATION
-                  </span>
-                  <button
-                    onClick={() => setTranslation(null)}
-                    className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-                  >
-                    <XIcon className="w-3 h-3" />
-                  </button>
-                </div>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  {translation}
-                </p>
-              </div>
-            )}
-
-            {/* Translating indicator */}
-            {showTranslatingIndicator && (
-              <div className="inline-block px-3 py-2 bg-card/50 border rounded-none border-border/60 flex items-center gap-2">
-                <span className="w-3 h-3 border border-primary/30 border-t-primary/60 animate-spin" />
-                <span className="font-mono text-[9px] text-muted-foreground/60 tracking-wider">
-                  Translating...
+      {/* Panels — left-accent strip, no full rectangle */}
+      {hasPanelOpen && (
+        <div className="mt-1 space-y-px">
+          {showReasoningPanel && (
+            <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-accent/35 shadow-[0_2px_12px_rgba(0,0,0,0.18)]">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-mono text-[9px] text-accent/50 tracking-[0.15em] uppercase flex items-center gap-1.5">
+                  <LightbulbIcon className="w-3 h-3" />
+                  Reasoning
                 </span>
+                <button onClick={() => setShowReasoning(false)} className="text-foreground/25 hover:text-foreground/60 transition-colors">
+                  <XIcon className="w-3 h-3" />
+                </button>
               </div>
-            )}
-          </div>
+              <div className="text-[11px] text-foreground/55 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                {message.reasoning}
+              </div>
+            </div>
+          )}
+
+          {showRetrievalPanel && retrieval && (
+            <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-emerald-400/40 shadow-[0_2px_12px_rgba(0,0,0,0.18)]">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="font-mono text-[9px] text-emerald-400/55 tracking-[0.15em] uppercase flex items-center gap-1.5">
+                  <LightbulbIcon className="w-3 h-3" />
+                  Memory
+                </span>
+                <button onClick={() => setShowRetrieval(false)} className="text-foreground/25 hover:text-foreground/60 transition-colors">
+                  <XIcon className="w-3 h-3" />
+                </button>
+              </div>
+              <RetrievalPanel retrieval={retrieval} />
+            </div>
+          )}
+
+          {showTracePanel && (
+            <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-accent/30 shadow-[0_2px_12px_rgba(0,0,0,0.18)] max-h-64 overflow-y-auto">
+              <TracePanel events={message.traceEvents!} />
+            </div>
+          )}
+
+          {translating && <TranslatingIndicator />}
+          {translation != null && !translating && (
+            <TranslationPanel translation={translation} onClose={() => setTranslation(null)} />
+          )}
+        </div>
+      )}
+
+      {/* Utility bar */}
+      <div
+        className={cn(
+          "inline-flex items-center gap-0.5 mt-1 bg-background/20 backdrop-blur-[20px] shadow-[0_2px_10px_rgba(0,0,0,0.18)] px-1.5 py-0.5 transition-all duration-150",
+          isHovered ? "opacity-100" : "opacity-0 pointer-events-none",
+        )}
+      >
+        {hasReasoning && (
+          <BarButton active={showReasoning} onClick={() => setShowReasoning((v) => !v)} icon={<ThinkIcon className="w-3 h-3" />} label="Think" />
+        )}
+        {hasTrace && (
+          <BarButton active={showMsgTrace} onClick={() => setShowMsgTrace((v) => !v)} icon={<TraceIcon className="w-3 h-3" />} label="Trace" />
+        )}
+        {hasRetrieval && (
+          <BarButton active={showRetrieval} onClick={() => setShowRetrieval((v) => !v)} icon={<LightbulbIcon className="w-3 h-3" />} label="Cite" />
+        )}
+        <BarButton active={!!translation} onClick={handleTranslate} disabled={translating} icon={<TranslateIcon className="w-3 h-3" />} label="TL" />
+        <div className="text-foreground/25 hover:text-foreground/55 transition-colors">
+          <CopyButton text={message.content} />
+        </div>
+        <CompactTokenUsage events={message.traceEvents} />
+        {hasRetrieval && retrieval && (
+          <span className="font-mono text-[8px] text-emerald-400/40 ml-1">
+            · mem {formatRetrievalSummary(retrieval)}
+          </span>
         )}
       </div>
     </div>
   );
 }
 
-// Floaty button - no background, just text/icon
-interface FloatyButtonProps {
+// ── Shared sub-components ──────────────────────────────────────────────────
+
+function TranslatingIndicator() {
+  return (
+    <div className="pl-3 pr-3 py-2 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-accent/30 shadow-[0_2px_12px_rgba(0,0,0,0.15)] font-mono text-[9px] text-foreground/35 tracking-[0.15em] uppercase flex items-center gap-2">
+      <span className="w-2.5 h-2.5 border border-accent/30 border-t-accent/70 animate-spin shrink-0" />
+      Translating...
+    </div>
+  );
+}
+
+function TranslationPanel({ translation, onClose }: { translation: string; onClose: () => void }) {
+  return (
+    <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-foreground/20 shadow-[0_2px_12px_rgba(0,0,0,0.15)]">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="font-mono text-[9px] text-foreground/35 tracking-[0.15em] uppercase">Translation</span>
+        <button onClick={onClose} className="text-foreground/25 hover:text-foreground/60 transition-colors">
+          <XIcon className="w-3 h-3" />
+        </button>
+      </div>
+      <p className="text-sm text-foreground/65 leading-relaxed">{translation}</p>
+    </div>
+  );
+}
+
+interface BarButtonProps {
   active: boolean;
   onClick: () => void;
   disabled?: boolean;
@@ -399,22 +302,14 @@ interface FloatyButtonProps {
   label: string;
 }
 
-function FloatyButton({
-  active,
-  onClick,
-  disabled,
-  icon,
-  label,
-}: FloatyButtonProps) {
+function BarButton({ active, onClick, disabled, icon, label }: BarButtonProps) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex items-center gap-1.5 px-2 py-1 font-mono text-[9px] tracking-wider transition-all disabled:opacity-30",
-        active
-          ? "text-primary"
-          : "text-muted-foreground/40 hover:text-muted-foreground",
+        "flex items-center gap-1 px-1.5 py-1 font-mono text-[9px] tracking-[0.1em] transition-all duration-150 disabled:opacity-30",
+        active ? "text-accent/80" : "text-foreground/30 hover:text-foreground/60",
       )}
     >
       {icon}
@@ -423,33 +318,18 @@ function FloatyButton({
   );
 }
 
-// Compact token usage component
-interface CompactTokenUsageProps {
-  events?: TraceEvent[];
-}
-
-function CompactTokenUsage({ events }: CompactTokenUsageProps) {
+function CompactTokenUsage({ events }: { events?: TraceEvent[] }) {
   const usage = events?.find((e) => e.type === "usage");
   const timing = events?.filter((e) => e.type === "timing");
-
   if (!usage) return null;
-
-  const totalMs =
-    timing?.reduce((sum, t) => sum + (t.stepDurationMs ?? 0), 0) ?? 0;
-
+  const totalMs = timing?.reduce((sum, t) => sum + (t.stepDurationMs ?? 0), 0) ?? 0;
   return (
-    <div className="flex items-center gap-1.5 font-mono text-[8px] text-muted-foreground/40">
-      <span>{(usage.totalTokens ?? 0).toLocaleString()}</span>
+    <div className="flex items-center gap-1 font-mono text-[8px] text-foreground/20 ml-1">
+      <span>{(usage.totalTokens ?? 0).toLocaleString()} tkn</span>
       {(usage.cachedInputTokens ?? 0) > 0 && (
-        <span className="text-emerald-500/50">
-          · {usage.cachedInputTokens}cached
-        </span>
+        <span className="text-emerald-500/35">· {usage.cachedInputTokens}c</span>
       )}
-      {totalMs > 0 && (
-        <span className="text-muted-foreground/30">
-          · {(totalMs / 1000).toFixed(1)}s
-        </span>
-      )}
+      {totalMs > 0 && <span>· {(totalMs / 1000).toFixed(1)}s</span>}
     </div>
   );
 }

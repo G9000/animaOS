@@ -1,3 +1,19 @@
+import type {
+  AuthUser,
+  ChangePasswordRequest as ContractChangePasswordRequest,
+  ChangePasswordResponse as ContractChangePasswordResponse,
+  CreateAiChatResponse as ContractCreateAiChatResponse,
+  CreateAiChatRequest as ContractCreateAiChatRequest,
+  LoginResponse as ContractLoginResponse,
+  LoginRequest as ContractLoginRequest,
+  LogoutResponse as ContractLogoutResponse,
+  RegisterResponse as ContractRegisterResponse,
+  RegisterRequest as ContractRegisterRequest,
+  RecoverRequest as ContractRecoverRequest,
+  RecoverResponse as ContractRecoverResponse,
+  UserResponse as ContractUserResponse,
+} from "@anima/auth-contracts";
+
 export interface ApiClientOptions {
   baseUrl: string;
   getUnlockToken?: () => string | null;
@@ -6,31 +22,20 @@ export interface ApiClientOptions {
   credentials?: RequestCredentials;
 }
 
-export interface User {
-  id: number;
-  username: string;
-  name: string;
-  gender?: string | null;
-  age?: number | null;
-  birthday?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-}
-
-export interface LoginResponse extends User {
-  message: string;
-  unlockToken: string;
-}
-
-export interface AuthResponse extends User {
-  unlockToken: string;
-  recoveryPhrase?: string;
-}
-
-export interface ChangePasswordResponse {
-  success: boolean;
-  unlockToken: string;
-}
+export type User = AuthUser;
+export interface LoginResponse extends ContractLoginResponse {}
+export interface AuthResponse extends ContractRegisterResponse {}
+export interface RegisterResponse extends ContractRegisterResponse {}
+export interface ChangePasswordResponse extends ContractChangePasswordResponse {}
+export interface LogoutResponse extends ContractLogoutResponse {}
+export interface RecoverRequest extends ContractRecoverRequest {}
+export interface RecoverResponse extends ContractRecoverResponse {}
+export interface ChangePasswordRequest extends ContractChangePasswordRequest {}
+export interface LoginRequest extends ContractLoginRequest {}
+export interface RegisterRequest extends ContractRegisterRequest {}
+export interface UserResponse extends ContractUserResponse {}
+export interface CreateAiChatRequest extends ContractCreateAiChatRequest {}
+export interface CreateAiChatResponse extends ContractCreateAiChatResponse {}
 
 export type VaultTransferFormat = "vault_json" | "anima_capsule";
 
@@ -64,7 +69,33 @@ export interface AgentProfileData {
   personaTemplate: string;
   agentType?: string;
   avatarUrl?: string | null;
+  agentBirthday?: string | null;
+  thinkingMonologue: string[];
   setupComplete: boolean;
+}
+
+export interface AgentBiographyPreviewSection {
+  id: string;
+  title: string;
+  content: string;
+  source: string;
+}
+
+export interface AgentBiographyPreviewData {
+  userId: number;
+  agentName: string;
+  relationship: string;
+  agentType: string;
+  avatarUrl?: string | null;
+  agentBirthday?: string | null;
+  birthday?: string | null;
+  dominantEmotion?: string | null;
+  identityDraft: string;
+  personaDraft: string;
+  biography: string;
+  contextLine: string;
+  sections: AgentBiographyPreviewSection[];
+  promptBlockLabels: string[];
 }
 
 export interface TraceMessagePreview {
@@ -118,10 +149,29 @@ export interface ChatRequestAttachment {
   data: string;
 }
 
+/**
+ * A small provenance badge attached to a message — e.g. "DAILY BRIEF",
+ * "CURIOUS", "LOG 56". Carried from the dashboard into a new thread and
+ * persisted alongside the message in `RuntimeMessage.content_json`.
+ */
+export interface MessagePill {
+  kind: string;
+  label: string;
+  ref?: string | number | null;
+}
+
 export interface ChatContextMessage {
   role: "assistant";
   content: string;
   source?: string | null;
+  pills?: MessagePill[];
+}
+
+export interface TodayContext {
+  date: string;
+  mood?: string | null;
+  energy?: string | null;
+  note?: string | null;
 }
 
 export interface TodayContext {
@@ -204,6 +254,7 @@ export interface ChatMessage {
   retrieval?: RetrievalTrace | null;
   attachments?: ChatAttachment[];
   source?: string | null;
+  pills?: MessagePill[];
 }
 
 export interface AgentResponse {
@@ -212,6 +263,53 @@ export interface AgentResponse {
   provider: string;
   toolsUsed: string[];
   retrieval?: RetrievalTrace | null;
+}
+
+export interface DocumentUploadInfo {
+  filename: string;
+  mimeType: string;
+  storagePath: string;
+  sha256: string;
+  sizeBytes: number;
+}
+
+export interface DocumentWorkflowCheckpoint {
+  id: number;
+  index: number;
+  state: string;
+  status: string;
+  input?: Record<string, unknown> | null;
+  output?: Record<string, unknown> | null;
+  artifacts?: Record<string, unknown> | null;
+  error?: Record<string, unknown> | null;
+  createdAt?: string | null;
+}
+
+export interface DocumentWorkflow {
+  id: number;
+  userId: number;
+  threadId?: number | null;
+  workflowType: string;
+  status: string;
+  currentState: string;
+  input?: Record<string, unknown> | null;
+  result?: Record<string, unknown> | null;
+  error?: Record<string, unknown> | null;
+  retryCount: number;
+  maxRetries: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  checkpoints: DocumentWorkflowCheckpoint[];
+}
+
+export interface DocumentWorkflowActionResponse {
+  workflowId: number;
+  status: string;
+  currentState: string;
+  workflow?: DocumentWorkflow;
+  document?: DocumentUploadInfo;
 }
 
 export interface ProviderInfo {
@@ -317,9 +415,18 @@ export interface DailyBrief {
   };
 }
 
+export interface Reflection {
+  question: string | null;
+  llmGenerated: boolean;
+  curiosityType?: "question" | "memory";
+  sourceEpisodeId?: number | null;
+  sourceEpisodeDate?: string | null;
+}
+
 export interface Greeting {
   message: string;
   llmGenerated: boolean;
+  pills?: MessagePill[];
   context: {
     currentFocus: string | null;
     openTaskCount: number;
@@ -379,6 +486,17 @@ export interface EmotionalContextData {
   dominantEmotion: string | null;
   recentSignals: EmotionalSignalData[];
   synthesizedContext: string;
+  valence: number | null;
+  arousal: number | null;
+}
+
+export interface AgentStateData {
+  userId: number;
+  dominantEmotion: string | null;
+  thought: string;
+  thoughtSource: string;
+  chatPrompt: string;
+  contextMessages: ChatContextMessage[];
 }
 
 export interface MemoryItemData {
@@ -402,6 +520,39 @@ export interface MemoryEpisodeData {
   significanceScore: number;
   turnCount: number | null;
   createdAt: string | null;
+}
+
+export interface DiaryAttachmentData {
+  id: number;
+  entryId: number;
+  kind: "image" | "audio" | "video" | "file" | string;
+  mimeType: string;
+  filename: string | null;
+  caption: string | null;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string | null;
+  url: string;
+}
+
+export interface DiaryEntryData {
+  id: number;
+  userId: number;
+  entryDate: string;
+  title: string | null;
+  body: string;
+  mood: string | null;
+  source: string;
+  attachments: DiaryAttachmentData[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface DiaryEntryCreateData {
+  entryDate: string;
+  title?: string | null;
+  body: string;
+  mood?: string | null;
 }
 
 export interface MemorySearchResult {
@@ -515,6 +666,16 @@ export interface ThreadListResponse {
   threads: Thread[];
 }
 
+export interface ThreadContextStats {
+  threadId: number;
+  usedTokens: number;
+  budgetTokens: number | null;
+  triggerAtTokens: number | null;
+  pct: number | null;
+  compactionCount: number;
+  messageCount: number;
+}
+
 export interface ThreadMessage {
   role: string;
   content: string;
@@ -522,6 +683,7 @@ export interface ThreadMessage {
   isArchivedHistory: boolean;
   retrieval?: RetrievalTrace | null;
   attachments?: ChatAttachment[];
+  pills?: MessagePill[];
 }
 
 export interface ThreadMessagesResponse {

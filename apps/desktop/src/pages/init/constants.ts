@@ -48,7 +48,7 @@ export const TEMPLATES: PersonaCardData[] = [
   {
     id: "companion",
     label: "Companion",
-    desc: "Warm and attuned. Listens closely, responds with genuine care.",
+    desc: "Warm and grounded. Useful support without making things heavy.",
     relationship: "companion",
     persona: "companion",
   },
@@ -62,7 +62,7 @@ export const TEMPLATES: PersonaCardData[] = [
   {
     id: "anima",
     label: "Anima",
-    desc: "Quiet and reflective. Understands deeply, challenges gently.",
+    desc: "Quiet and deliberate. Precise, restrained, and grounded.",
     relationship: "companion",
     persona: "anima",
   },

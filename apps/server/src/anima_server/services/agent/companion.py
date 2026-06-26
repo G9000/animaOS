@@ -21,7 +21,10 @@ from threading import Lock
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
+from anima_server.services.agent.memory_blocks import (
+    MemoryBlock,
+    build_static_memory_blocks,
+)
 from anima_server.services.agent.persistence import load_thread_history
 from anima_server.services.agent.runtime import AgentRuntime
 from anima_server.services.agent.state import StoredMessage
@@ -195,9 +198,16 @@ class AnimaCompanion:
     # -- cancellation -------------------------------------------------
 
     def create_cancel_event(self, run_id: int) -> asyncio.Event:
-        """Create and return a cancellation event for *run_id*."""
-        event = asyncio.Event()
-        self._cancel_events[run_id] = event
+        """Return the cancellation event for *run_id*, creating it if needed.
+
+        Reuses an existing event so a cancel that arrives between the run
+        row becoming visible (committed in turn preparation) and the turn
+        registering its event is not lost.
+        """
+        event = self._cancel_events.get(run_id)
+        if event is None:
+            event = asyncio.Event()
+            self._cancel_events[run_id] = event
         return event
 
     def set_cancel(self, run_id: int) -> None:
@@ -251,12 +261,10 @@ class AnimaCompanion:
             thread = get_or_create_thread(runtime_db, self._user_id)
             self._thread_id = thread.id
 
-        # Load static memory blocks (without semantic results — those are per-turn)
-        blocks = build_runtime_memory_blocks(
+        # Load static memory blocks (query-aware blocks are per-turn)
+        blocks = build_static_memory_blocks(
             db,
             user_id=self._user_id,
-            thread_id=self._thread_id,
-            semantic_results=None,
             runtime_db=runtime_db,
         )
         self.set_memory_cache(blocks)
@@ -275,19 +283,19 @@ class AnimaCompanion:
     def ensure_memory_loaded(
         self, db: Session, *, runtime_db: Session | None = None
     ) -> tuple[MemoryBlock, ...]:
-        """Return cached static blocks, reloading from DB if stale."""
+        """Return cached static blocks, reloading from DB if stale.
+
+        Holds only the slow-changing identity blocks; per-turn blocks
+        (semantic retrieval, category re-ranks, tasks, summaries) are
+        built fresh each turn by the service.
+        """
         cached = self.get_cached_memory_blocks()
         if cached is not None:
             return cached
 
-        if self._thread_id is None:
-            return ()
-
-        blocks = build_runtime_memory_blocks(
+        blocks = build_static_memory_blocks(
             db,
             user_id=self._user_id,
-            thread_id=self._thread_id,
-            semantic_results=None,
             runtime_db=runtime_db,
         )
         self.set_memory_cache(blocks)

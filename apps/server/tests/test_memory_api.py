@@ -469,6 +469,43 @@ def test_memory_episodes_return_stored_summary_without_display_rewrite() -> None
         assert summary == stored_summary
 
 
+def test_memory_episodes_hide_legacy_conversation_session_placeholders() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        with get_user_session_factory(user_id)() as db:
+            db.add(
+                MemoryEpisode(
+                    user_id=user_id,
+                    date="2026-05-22",
+                    summary="Conversation session",
+                    topics_json=None,
+                    significance_score=3,
+                    turn_count=3,
+                )
+            )
+            db.add(
+                MemoryEpisode(
+                    user_id=user_id,
+                    date="2026-05-23",
+                    summary="I helped Julio prepare for the makeup class.",
+                    topics_json=["makeup-class"],
+                    significance_score=3,
+                    turn_count=3,
+                )
+            )
+            db.commit()
+
+        resp = client.get(f"/api/memory/{user_id}/episodes", headers=headers)
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert len(payload) == 1
+        assert payload[0]["summary"] == "I helped Julio prepare for the makeup class."
+
+
 def test_memory_writes_update_rust_index(monkeypatch) -> None:
     upserts: list[dict[str, object]] = []
     deletes: list[dict[str, object]] = []

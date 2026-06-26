@@ -31,17 +31,29 @@ class Settings(BaseSettings):
     agent_persona_template: str = "default"
     agent_base_url: str = ""
     agent_api_key: str = ""
+    agent_api_keys_json: str = "{}"  # JSON dict: {provider: api_key}
     agent_max_steps: int = 6
     agent_strict_tool_schemas: bool = True
     agent_max_concurrent_spawns: int = 10
     agent_spawn_timeout: float = 300.0
     agent_spawn_max_steps: int = 4
     agent_max_tokens: int = 4096
+    # Model context window in tokens.  When set, the prompt budget
+    # (memory blocks + conversation) is derived from it (window minus
+    # agent_max_tokens reserved for output); when unset, agent_max_tokens
+    # doubles as the legacy context budget.
+    agent_context_window_tokens: int | None = None
+    # Fraction of the context budget that memory blocks may use; the
+    # remainder is left for conversation history.
+    agent_block_budget_ratio: float = 0.5
     agent_temperature: float | None = None
     agent_compaction_trigger_ratio: float = 0.8
     agent_compaction_keep_last_messages: int = 8
     agent_stream_chunk_size: int = 48
     agent_llm_timeout: float = 120.0
+    # Streaming LLM calls fail when no data arrives for this many seconds
+    # (the non-streaming branch uses agent_llm_timeout for the whole call).
+    agent_llm_stream_inactivity_timeout: float = 120.0
     agent_llm_retry_limit: int = 3
     agent_llm_retry_backoff_factor: float = 0.5
     agent_llm_retry_max_delay: float = 10.0
@@ -51,6 +63,7 @@ class Settings(BaseSettings):
     agent_background_memory_enabled: bool = True
     chat_image_max_size_bytes: int = 10 * 1024 * 1024
     chat_image_max_count: int = 4
+    diary_attachment_max_size_bytes: int = 100 * 1024 * 1024
     core_passphrase: str = ""
     core_require_encryption: bool = True
     agent_extraction_model: str = ""
@@ -61,6 +74,12 @@ class Settings(BaseSettings):
     agent_embedding_base_url: str = ""
     agent_embedding_dim: int = 768
     agent_session_memory_max_notes: int = 20
+    # Automatic per-turn retrieval blends relevance with recency and heat
+    # (explicit memory searches keep pure relevance ranking).
+    agent_retrieval_relevance_weight: float = 0.7
+    agent_retrieval_recency_weight: float = 0.2
+    agent_retrieval_heat_weight: float = 0.1
+    agent_retrieval_recency_tau_days: float = 14.0
     agent_session_memory_budget_chars: int = 1500
     agent_self_model_identity_budget: int = 1000
     agent_self_model_inner_state_budget: int = 800
@@ -95,12 +114,39 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+
+def _parse_api_keys() -> dict[str, str]:
+    try:
+        data = json.loads(settings.agent_api_keys_json or "{}")
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def get_provider_api_key(provider: str) -> str:
+    return _parse_api_keys().get(provider, "")
+
+
+def has_provider_api_keys() -> bool:
+    return bool(_parse_api_keys())
+
+
+def set_provider_api_key(provider: str, key: str) -> None:
+    keys = _parse_api_keys()
+    if key:
+        keys[provider] = key
+    else:
+        keys.pop(provider, None)
+    settings.agent_api_keys_json = json.dumps(keys)
+
+
 _PERSISTED_RUNTIME_SETTING_FIELDS: tuple[str, ...] = (
     "agent_provider",
     "agent_model",
     "agent_persona_template",
     "agent_base_url",
     "agent_api_key",
+    "agent_api_keys_json",
     "agent_extraction_model",
     "agent_extraction_provider",
     "agent_embedding_provider",

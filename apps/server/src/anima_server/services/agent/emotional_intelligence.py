@@ -246,3 +246,43 @@ def _read_text(signal: CurrentEmotion | EmotionalSignal, *, user_id: int, field:
     if isinstance(signal, CurrentEmotion):
         return value or ""
     return df(user_id, value, table="emotional_signals", field=field)
+
+
+# Circumplex model: (valence, arousal) per tracked emotion.
+# valence: -1.0 (very negative) → +1.0 (very positive)
+# arousal: 0.0 (very calm/deactivated) → 1.0 (very activated)
+_CIRCUMPLEX: dict[str, tuple[float, float]] = {
+    "frustrated":    (-0.70, 0.72),
+    "excited":       ( 0.80, 0.90),
+    "anxious":       (-0.60, 0.80),
+    "calm":          ( 0.30, 0.10),
+    "stressed":      (-0.60, 0.72),
+    "relieved":      ( 0.65, 0.20),
+    "curious":       ( 0.40, 0.55),
+    "disappointed":  (-0.50, 0.22),
+    "vulnerable":    (-0.30, 0.40),
+    "proud":         ( 0.72, 0.52),
+    "overwhelmed":   (-0.68, 0.82),
+    "playful":       ( 0.62, 0.72),
+    "love":          ( 0.90, 0.60),
+    "longing":       (-0.20, 0.30),
+    "desire":        ( 0.50, 0.80),
+    "tenderness":    ( 0.72, 0.28),
+    "jealousy":      (-0.50, 0.62),
+    "protective":    ( 0.30, 0.50),
+    "affection":     ( 0.80, 0.42),
+    "infatuation":   ( 0.72, 0.80),
+    "devotion":      ( 0.80, 0.40),
+    "adoration":     ( 0.82, 0.52),
+    "missing":       (-0.40, 0.30),
+    "yearning":      (-0.30, 0.38),
+}
+
+
+def dominant_valence_arousal(
+    dominant_emotion: str | None,
+) -> tuple[float, float] | None:
+    """Return (valence, arousal) for the dominant emotion, or None if unknown."""
+    if dominant_emotion is None:
+        return None
+    return _CIRCUMPLEX.get(dominant_emotion.lower().strip())

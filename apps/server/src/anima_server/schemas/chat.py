@@ -13,10 +13,40 @@ class ChatRequestAttachment(BaseModel):
     data: str = Field(min_length=1)
 
 
+class MessagePill(BaseModel):
+    kind: str = Field(min_length=1, max_length=32)
+    label: str = Field(min_length=1, max_length=64)
+    ref: str | int | None = None
+
+
 class ChatContextMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str = Field(min_length=1, max_length=4000)
     source: str | None = Field(default=None, max_length=64)
+    pills: list[MessagePill] = Field(default_factory=list, max_length=8)
+
+
+class TodayContext(BaseModel):
+    date: str = Field(min_length=10, max_length=10)
+    mood: str | None = Field(default=None, max_length=80)
+    energy: str | None = Field(default=None, max_length=40)
+    note: str | None = Field(default=None, max_length=280)
+
+    @model_validator(mode="after")
+    def validate_today_context(self) -> TodayContext:
+        try:
+            client_date = date.fromisoformat(self.date)
+        except ValueError as exc:
+            raise ValueError("Today context date must be ISO format (YYYY-MM-DD).") from exc
+        # Accept the server's day +/- 1 to tolerate client/server timezone
+        # skew (a client can legitimately be up to a calendar day ahead or
+        # behind a differently-zoned server); reject only clearly stale dates.
+        server_today = date.today()
+        if abs((client_date - server_today).days) > 1:
+            raise ValueError("Today context date is not within the current day.")
+        if not any((value or "").strip() for value in (self.mood, self.energy, self.note)):
+            raise ValueError("Today context requires mood, energy, or note.")
+        return self
 
 
 class TodayContext(BaseModel):
@@ -41,13 +71,16 @@ class ChatRequest(BaseModel):
     stream: bool = False
     source: str | None = None
     attachments: list[ChatRequestAttachment] = Field(default_factory=list)
+    documentIds: list[int] = Field(default_factory=list, max_length=8)
     contextMessages: list[ChatContextMessage] = Field(default_factory=list)
     todayContext: TodayContext | None = None
 
     @model_validator(mode="after")
     def require_text_or_attachment(self) -> ChatRequest:
-        if not self.message.strip() and not self.attachments:
+        if not self.message.strip() and not self.attachments and not self.documentIds:
             raise ValueError("Message text or at least one attachment is required.")
+        if any(document_id <= 0 for document_id in self.documentIds):
+            raise ValueError("documentIds must contain positive ids.")
         return self
 
 
@@ -131,6 +164,7 @@ class ChatHistoryMessage(BaseModel):
     source: str | None = None
     retrieval: RetrievalTrace | None = None
     attachments: list[ChatMessageAttachment] = Field(default_factory=list)
+    pills: list[MessagePill] = Field(default_factory=list)
 
 
 class ChatHistoryClearResponse(BaseModel):

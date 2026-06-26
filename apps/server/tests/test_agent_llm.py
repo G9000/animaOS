@@ -14,6 +14,7 @@ from anima_server.services.agent.llm import (
     create_provider_chat_client,
     invalidate_llm_cache,
     resolve_base_url,
+    resolve_provider_api_key,
 )
 
 
@@ -234,6 +235,21 @@ def test_doubleword_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
         settings.agent_api_key = original_api_key
 
 
+def test_provider_key_map_prevents_legacy_key_leakage() -> None:
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+
+    try:
+        settings.agent_api_key = "legacy-key"
+        settings.agent_api_keys_json = '{"openai": "openai-key"}'
+
+        assert resolve_provider_api_key("openai") == "openai-key"
+        assert resolve_provider_api_key("anthropic") == ""
+    finally:
+        settings.agent_api_key = original_api_key
+        settings.agent_api_keys_json = original_api_keys_json
+
+
 def test_create_llm_uses_openai_compatible_client_for_doubleword() -> None:
     from anima_server.services.agent.openai_compatible_client import (
         OpenAICompatibleChatClient,
@@ -313,6 +329,53 @@ def test_doubleword_embedding_uses_provider_specific_env_key(
     assert embeddings_module.build_provider_headers("doubleword") == {
         "Authorization": "Bearer env-doubleword-key"
     }
+
+
+def test_doubleword_embedding_uses_saved_provider_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+    original_embedding_api_key = settings.agent_embedding_api_key
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+
+    try:
+        settings.agent_api_key = ""
+        settings.agent_api_keys_json = '{"doubleword": "saved-doubleword-key"}'
+        settings.agent_embedding_api_key = ""
+
+        assert embeddings_module.build_provider_headers("doubleword") == {
+            "Authorization": "Bearer saved-doubleword-key"
+        }
+    finally:
+        settings.agent_api_key = original_api_key
+        settings.agent_api_keys_json = original_api_keys_json
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+
+def test_embedding_provider_key_map_prevents_legacy_key_leakage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+    original_embedding_api_key = settings.agent_embedding_api_key
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+
+    try:
+        settings.agent_api_key = "legacy-key"
+        settings.agent_api_keys_json = '{"openai": "openai-key"}'
+        settings.agent_embedding_api_key = ""
+
+        assert embeddings_module._resolve_embedding_api_key("openai") == "openai-key"
+        assert embeddings_module._resolve_embedding_api_key("doubleword") == ""
+    finally:
+        settings.agent_api_key = original_api_key
+        settings.agent_api_keys_json = original_api_keys_json
+        settings.agent_embedding_api_key = original_embedding_api_key
 
 
 def test_create_llm_uses_anthropic_client() -> None:

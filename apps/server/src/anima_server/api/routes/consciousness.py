@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -68,6 +70,7 @@ class PendingMemoryConsolidationResponse(BaseModel):
 
 class SelfModelUpdateRequest(BaseModel):
     content: str
+    allowIdentityOverride: bool = False
 
 
 class EmotionalSignalResponse(BaseModel):
@@ -84,6 +87,47 @@ class EmotionalContextResponse(BaseModel):
     dominantEmotion: str | None = None
     recentSignals: list[EmotionalSignalResponse]
     synthesizedContext: str
+    valence: float | None = None
+    arousal: float | None = None
+
+
+class AgentStateContextMessageResponse(BaseModel):
+    role: str
+    content: str
+    source: str
+
+
+class AgentStateResponse(BaseModel):
+    userId: int
+    dominantEmotion: str | None = None
+    thought: str
+    thoughtSource: str
+    chatPrompt: str
+    contextMessages: list[AgentStateContextMessageResponse]
+
+
+class AgentBiographyPreviewSectionResponse(BaseModel):
+    id: str
+    title: str
+    content: str
+    source: str
+
+
+class AgentBiographyPreviewResponse(BaseModel):
+    userId: int
+    agentName: str
+    relationship: str
+    agentType: str
+    avatarUrl: str | None = None
+    agentBirthday: str | None = None
+    birthday: str | None = None
+    dominantEmotion: str | None = None
+    identityDraft: str
+    personaDraft: str
+    biography: str
+    contextLine: str
+    sections: list[AgentBiographyPreviewSectionResponse]
+    promptBlockLabels: list[str]
 
 
 def _section_dict(
@@ -116,6 +160,26 @@ def _section_response(
         updatedBy=updated_by,
         updatedAt=updated_at.isoformat() if updated_at else None,
     )
+
+
+def _iso_seconds(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace(microsecond=0).isoformat()
+
+
+def _effective_agent_birthday(profile) -> str | None:
+    return _iso_seconds(profile.agent_birthday or profile.created_at)
+
+
+def _parse_agent_birthday(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="agentBirthday must be an ISO datetime",
+        ) from exc
 
 
 def _pending_op_dict(*, op) -> dict[str, object]:
@@ -437,6 +501,21 @@ async def update_self_model_section(
 
     ensure_self_model_exists(db, user_id=user_id)
 
+    if section in {"identity", "soul", "user_directive", "intentions"}:
+        from anima_server.models import AgentProfile
+
+        profile = db.query(AgentProfile).filter(
+            AgentProfile.user_id == user_id).first()
+        if (
+            profile is not None
+            and profile.setup_complete
+            and not payload.allowIdentityOverride
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Identity override required to change {section}",
+            )
+
     rt = runtime_db or db
     if section == "intentions":
         block = set_active_intentions(
@@ -497,6 +576,9 @@ class AgentProfileUpdateRequest(BaseModel):
     agentName: str | None = None
     relationship: str | None = None
     personaTemplate: str | None = None
+    agentBirthday: str | None = None
+    thinkingMonologue: list[str] | None = None
+    allowIdentityOverride: bool = False
 
 
 @router.get("/{user_id}/agent-profile")
@@ -509,6 +591,10 @@ async def get_agent_profile(
     require_unlocked_user(request, user_id)
 
     from anima_server.models import AgentProfile
+    from anima_server.services.agent.thinking_monologue import (
+        DEFAULT_THINKING_MONOLOGUE,
+        parse_thinking_monologue,
+    )
 
     profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == user_id).first()
@@ -519,6 +605,8 @@ async def get_agent_profile(
             "personaTemplate": "default",
             "agentType": "companion",
             "avatarUrl": None,
+            "agentBirthday": None,
+            "thinkingMonologue": list(DEFAULT_THINKING_MONOLOGUE),
             "setupComplete": False,
         }
     return {
@@ -527,8 +615,38 @@ async def get_agent_profile(
         "personaTemplate": "default",
         "agentType": profile.agent_type,
         "avatarUrl": profile.avatar_url,
+        "agentBirthday": _effective_agent_birthday(profile),
+        "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
         "setupComplete": profile.setup_complete,
     }
+
+
+@router.get("/{user_id}/agent-biography-preview")
+async def get_agent_biography_preview(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
+) -> AgentBiographyPreviewResponse:
+    """Get a compiled preview of the backend context shaping this agent."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.biography_preview import build_agent_biography_preview
+
+    preview = build_agent_biography_preview(
+        db,
+        user_id=user_id,
+        runtime_db=runtime_db,
+    )
+    return AgentBiographyPreviewResponse(
+        **{
+            **preview,
+            "sections": [
+                AgentBiographyPreviewSectionResponse(**section)
+                for section in preview["sections"]
+            ],
+        },
+    )
 
 
 @router.patch("/{user_id}/agent-profile")
@@ -542,8 +660,16 @@ async def update_agent_profile(
     require_unlocked_user(request, user_id)
 
     from anima_server.models import AgentProfile
+    from anima_server.services.agent.profile_memory import (
+        record_agent_name_memory,
+        record_agent_relationship_memory,
+    )
     from anima_server.services.agent.self_model import get_self_model_block, set_self_model_block
     from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
+    from anima_server.services.agent.thinking_monologue import (
+        parse_thinking_monologue,
+        serialize_thinking_monologue,
+    )
 
     profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == user_id).first()
@@ -551,15 +677,56 @@ async def update_agent_profile(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
+    old_agent_name = profile.agent_name
     name_changed = False
     if payload.agentName is not None:
-        profile.agent_name = payload.agentName.strip() or "Anima"
-        name_changed = True
+        next_agent_name = payload.agentName.strip() or "Anima"
+        if (
+            profile.setup_complete
+            and next_agent_name != old_agent_name
+            and not payload.allowIdentityOverride
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Identity override required to change agent name",
+            )
+        profile.agent_name = next_agent_name
+        name_changed = next_agent_name != old_agent_name
 
+    old_relationship = profile.relationship
     relationship_changed = False
     if payload.relationship is not None:
-        profile.relationship = payload.relationship.strip()
-        relationship_changed = True
+        next_relationship = payload.relationship.strip()
+        if (
+            profile.setup_complete
+            and next_relationship != old_relationship
+            and not payload.allowIdentityOverride
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Identity override required to change relationship",
+            )
+        profile.relationship = next_relationship
+        relationship_changed = next_relationship != old_relationship
+
+    if payload.agentBirthday is not None:
+        next_agent_birthday = _parse_agent_birthday(payload.agentBirthday)
+        next_agent_birthday_text = _iso_seconds(next_agent_birthday)
+        if (
+            profile.setup_complete
+            and next_agent_birthday_text != _effective_agent_birthday(profile)
+            and not payload.allowIdentityOverride
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Identity override required to change agent birthday",
+            )
+        profile.agent_birthday = next_agent_birthday
+
+    if payload.thinkingMonologue is not None:
+        profile.thinking_monologue_json = serialize_thinking_monologue(
+            payload.thinkingMonologue,
+        )
 
     profile.setup_complete = True
 
@@ -575,6 +742,13 @@ async def update_agent_profile(
             section="soul",
             content=origin_content,
             updated_by="agent_setup",
+        )
+
+        record_agent_name_memory(
+            db,
+            user_id=user_id,
+            old_name=old_agent_name,
+            new_name=profile.agent_name,
         )
 
     if relationship_changed:
@@ -595,6 +769,12 @@ async def update_agent_profile(
                 content="\n".join(new_lines),
                 updated_by="agent_setup",
             )
+        record_agent_relationship_memory(
+            db,
+            user_id=user_id,
+            old_relationship=old_relationship,
+            new_relationship=profile.relationship,
+        )
 
     if payload.personaTemplate is not None:
         from anima_server.services.agent.system_prompt import PromptTemplateError
@@ -626,7 +806,25 @@ async def update_agent_profile(
         "relationship": profile.relationship,
         "agentType": profile.agent_type,
         "avatarUrl": profile.avatar_url,
+        "agentBirthday": _effective_agent_birthday(profile),
+        "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
         "setupComplete": True,
+    }
+
+
+@router.post("/{user_id}/agent-profile/thinking-monologue/generate")
+async def generate_agent_thinking_monologue(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Generate a draft Thinking Monologue without persisting it."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.thinking_monologue import generate_thinking_monologue
+
+    return {
+        "thinkingMonologue": await generate_thinking_monologue(db, user_id=user_id),
     }
 
 
@@ -754,6 +952,32 @@ async def delete_agent_avatar(
 # --- Emotional State Endpoints ---
 
 
+@router.get("/{user_id}/agent-state")
+async def get_agent_state(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    runtime_db: Session = Depends(_get_optional_runtime_db),
+) -> AgentStateResponse:
+    """Get a compact, backend-grounded companion state line for ambient UI."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.proactive import build_agent_state
+
+    state = build_agent_state(db, user_id=user_id, runtime_db=runtime_db)
+    return AgentStateResponse(
+        userId=state.user_id,
+        dominantEmotion=state.dominant_emotion,
+        thought=state.thought,
+        thoughtSource=state.thought_source,
+        chatPrompt=state.chat_prompt,
+        contextMessages=[
+            AgentStateContextMessageResponse(**message)
+            for message in state.context_messages
+        ],
+    )
+
+
 @router.get("/{user_id}/emotions")
 async def get_emotional_state(
     user_id: int,
@@ -766,6 +990,7 @@ async def get_emotional_state(
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.emotional_intelligence import (
+        dominant_valence_arousal,
         get_recent_signals,
         synthesize_emotional_context,
     )
@@ -782,6 +1007,10 @@ async def get_emotional_state(
                 signal.emotion, 0) + signal.confidence
         if emotion_scores:
             dominant = max(emotion_scores, key=emotion_scores.get)
+
+    va = dominant_valence_arousal(dominant)
+    valence = va[0] if va else None
+    arousal = va[1] if va else None
 
     from anima_server.models import EmotionalSignal
 
@@ -807,6 +1036,8 @@ async def get_emotional_state(
             for signal in signals
         ],
         synthesizedContext=context,
+        valence=valence,
+        arousal=arousal,
     )
 
 

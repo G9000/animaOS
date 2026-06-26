@@ -106,8 +106,14 @@ async def run_soul_writer(
     *,
     soul_db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
+    ops_only: bool = False,
 ) -> SoulWriterResult:
-    """Main entry point. Acquires per-user lock and runs the promotion pipeline."""
+    """Main entry point. Acquires per-user lock and runs the promotion pipeline.
+
+    With ``ops_only=True`` only Phase 1 (pending core-memory ops, no LLM
+    calls) runs — used pre-turn where candidate promotion would block
+    time-to-first-token on per-candidate LLM extraction.
+    """
     lock = _get_user_lock(user_id)
     result = SoulWriterResult()
 
@@ -129,10 +135,26 @@ async def run_soul_writer(
                 soul_db_factory=soul_db_factory,
                 runtime_db_factory=runtime_db_factory,
                 event_loop=loop,
+                ops_only=ops_only,
             )
         except Exception as e:
             logger.exception("Soul Writer failed for user %s", user_id)
             result.errors.append(str(e))
+
+    # Soul Writer mutates identity blocks (human/persona/soul) outside the
+    # turn pipeline, so the companion's static-block cache must be told.
+    if result.ops_processed > 0 or result.candidates_promoted > 0:
+        try:
+            from anima_server.services.agent.companion import get_companion
+
+            companion = get_companion(user_id)
+            if companion is not None:
+                companion.invalidate_memory()
+        except Exception:
+            logger.debug(
+                "Companion cache invalidation failed after Soul Writer run",
+                exc_info=True,
+            )
 
     total_work = (
         result.ops_processed
@@ -176,6 +198,7 @@ def _run_soul_writer_inner(
     soul_db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
     event_loop: asyncio.AbstractEventLoop | None = None,
+    ops_only: bool = False,
 ) -> None:
     """Inner pipeline — called under lock via asyncio.to_thread."""
     from anima_server.db.runtime import get_runtime_session_factory
@@ -234,6 +257,9 @@ def _run_soul_writer_inner(
                 result.errors.append(f"op {op.id}: {e}")
 
         runtime_db.commit()
+
+    if ops_only:
+        return
 
     # Phase 1.5: Retry preserved turn-level extraction failures.
     with rt_factory() as runtime_db:

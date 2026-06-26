@@ -138,6 +138,33 @@ def test_heat_scoring_uses_adapter_binding(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def test_heat_scoring_forwards_superseded_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from anima_server.services import anima_core_bindings
+    from anima_server.services.agent import heat_scoring
+
+    now = datetime(2026, 4, 25, tzinfo=UTC)
+    last_accessed = now - timedelta(seconds=30)
+
+    def _fake_heat(**kwargs):
+        assert kwargs["superseded"] is True
+        assert kwargs["seconds_since_access"] == 30.0
+        return 2.0
+
+    monkeypatch.setattr(anima_core_bindings, "rust_compute_heat", _fake_heat)
+
+    assert (
+        heat_scoring.compute_heat(
+            access_count=2,
+            interaction_depth=3,
+            last_accessed_at=last_accessed,
+            importance=4.0,
+            now=now,
+            superseded=True,
+        )
+        == 2.0
+    )
+
+
 def test_rust_heat_binding_clamps_importance_to_memory_scale() -> None:
     from anima_server.services import anima_core_bindings
 

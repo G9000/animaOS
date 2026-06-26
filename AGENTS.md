@@ -28,7 +28,7 @@ Build thoughtfully. I will remember.
 This repo is a mixed monorepo:
 
 - `apps/server`: Python + FastAPI — the cognitive core. SQLAlchemy models in `src/anima_server/models/`, Alembic revisions in `alembic/versions/`. All new backend work goes here.
-- `apps/api`: Bun + Hono bot gateway. LangChain and Drizzle have been stripped — this now serves as a thin adapter layer (e.g. Telegram). Not a general backend.
+- `apps/animus`: Bun-based CLI/local tool interface.
 - `apps/desktop`: React + Vite + Tailwind + Tauri desktop app (`src/pages`, `src/components`, `src/context`, `src/lib`; Rust host in `src-tauri/`).
 - `apps/anima-mod`: Bun + Elysia mod runtime (port 3034). Self-contained skill/integration modules ("mods") live in `mods/`. Each mod exposes config schemas, setup wizards, and HTTP routes. The cognitive core can call mod APIs via thin `@tool` adapters. Example: `mods/google/` for Gmail + Calendar.
 - `docs/`: project documentation and thesis.
@@ -80,9 +80,52 @@ Use clear, imperative commit messages (for example `api: validate config payload
 PRs should include:
 
 - concise summary of behavior changes,
-- affected areas (`apps/server`, `apps/api`, `apps/desktop`, migrations),
+- affected areas (`apps/server`, `apps/desktop`, `apps/anima-mod`, `apps/animus`, migrations),
 - screenshots/GIFs for UI changes,
 - migration or setup notes when DB/config behavior changes.
+
+## PRD, Plan, and Ticket Workflow
+
+This repo uses separate artifacts for product scope, implementation sequencing, and issue-style execution. Do not merge them into one file type.
+
+- `docs/prds/`: product requirements and version scope
+- `docs/superpowers/plans/`: implementation plans and execution order
+- `tickets/`: local ticket backlog with claim/progress/completion state
+
+When creating or revising planning artifacts:
+
+1. Create or update a PRD if product scope is changing.
+2. Create or update a dated plan if implementation sequencing matters.
+3. Create or update one parent ticket plus child ticket files for discrete units of work.
+
+For new work, prefer `PRD -> plan -> tickets`. Use `scratchboard/` only when continuing an older workstream that already depends on it.
+
+When executing a ticket:
+
+1. Open the ticket file first.
+2. Set `Status: in_progress`.
+3. Set `Started:` if it is empty.
+4. Update `Updated:`.
+5. Append an `Activity Log` entry with a timestamp.
+6. Do the implementation work.
+7. Record validation and changed paths.
+8. Set `Status: done` or `Status: blocked`.
+9. Set `Completed:` when the ticket is done.
+
+Parent ticket rule:
+
+- Each initiative should have one parent tracker ticket that lists child tickets, child status, and completed-ticket history.
+- Child tickets should reference the parent in metadata.
+- When a child ticket changes state, update the parent tracker too.
+
+Use the workflow doc and template:
+
+- `docs/ops/prd-ticket-workflow.md`
+- `tickets/TEMPLATE.md`
+
+Timestamp format for ticket files:
+
+- `YYYY-MM-DD HH:MM MYT`
 
 ## Security & Configuration Tips
 

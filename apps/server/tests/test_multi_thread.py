@@ -203,6 +203,59 @@ def test_reactivate_thread_with_pg_messages(db: Session) -> None:
     assert len(msgs) == 1
 
 
+def test_reactivate_closes_other_active_thread(db: Session) -> None:
+    """Resuming a thread closes any other active thread (single-active invariant)."""
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+
+    uid = _uid()
+    # The conversation currently in progress.
+    active = RuntimeThread(user_id=uid, status="active")
+    # An older thread the user is about to resume.
+    resumed = RuntimeThread(user_id=uid, status="closed", is_archived=True)
+    db.add_all([active, resumed])
+    db.flush()
+    db.add(
+        RuntimeMessage(
+            thread_id=resumed.id,
+            user_id=uid,
+            sequence_id=1,
+            role="user",
+            content_text="old message still in PG",
+            is_in_context=True,
+            is_archived_history=False,
+        )
+    )
+    db.flush()
+
+    displaced = reactivate_thread_if_needed(
+        db, thread=resumed, user_id=uid, transcripts_dir=None, dek=None
+    )
+
+    assert resumed.status == "active"
+    assert active.status == "closed"
+    assert displaced == [active.id]
+
+
+def test_reactivate_leaves_other_users_threads_untouched(db: Session) -> None:
+    """Closing siblings is scoped to the resuming user."""
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+
+    uid = _uid()
+    other_uid = _uid()
+    other_active = RuntimeThread(user_id=other_uid, status="active")
+    resumed = RuntimeThread(user_id=uid, status="closed")
+    db.add_all([other_active, resumed])
+    db.flush()
+
+    displaced = reactivate_thread_if_needed(
+        db, thread=resumed, user_id=uid, transcripts_dir=None, dek=None
+    )
+
+    assert resumed.status == "active"
+    assert other_active.status == "active"
+    assert displaced == []
+
+
 def test_maybe_set_thread_title() -> None:
     from anima_server.services.agent.thread_manager import maybe_set_thread_title
 

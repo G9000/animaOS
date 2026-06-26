@@ -1,229 +1,249 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  HomeIcon,
-  TasksIcon,
-  ChatIcon,
-  MemoryIcon,
-  PresenceIcon,
-  MindIcon,
-  ModsIcon,
-  ConfigIcon,
-  DatabaseIcon,
-  cn,
-  type IconProps,
+  SunIcon, MoonIcon, SunriseIcon, SunsetIcon,
+  ChevronRightIcon, ChevronLeftIcon, cn,
 } from "@anima/standard-templates";
-import type { MemoryOverviewData } from "@anima/api-client";
+import type { AgentStateData } from "@anima/api-client";
 import { useAuth } from "../../context/AuthContext";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
+import { useClockFormat } from "../../hooks/useClockFormat";
 import { api } from "../../lib/api";
-import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
-import { getDbViewerEnabled } from "../../lib/preferences";
-import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { TOP_NAV_ITEMS } from "./nav-items";
+
+// ── Time-of-day icon ──────────────────────────────────────────────────────────
+
+function DayIcon({ hour }: { hour: number }) {
+  if (hour < 5 || hour >= 21) return <MoonIcon size="sm" />;
+  if (hour < 9)               return <SunriseIcon size="sm" />;
+  if (hour >= 18)             return <SunsetIcon size="sm" />;
+  return                             <SunIcon size="sm" />;
+}
+
+// ── Inline clock ─────────────────────────────────────────────────────────────
+
+function InlineClock() {
+  const [now, setNow] = useState(() => new Date());
+  const { format } = useClockFormat();
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const time = now
+    .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: format === "12h" })
+    .toUpperCase();
+  const day  = now.toLocaleDateString([], { weekday: "short" }).toUpperCase();
+  const date = now.toLocaleDateString([], { day: "numeric", month: "short" }).toUpperCase();
+
+  return (
+    <div className="flex items-center gap-3 shrink-0 pl-2 pr-4 cursor-default">
+      <div className="w-px h-6 bg-foreground/[0.10] group-hover/leftcard:bg-accent/40 transition-colors duration-200" />
+      <div className="flex items-center gap-2.5 select-none">
+        <span className="text-foreground/35 group-hover/leftcard:text-accent shrink-0 transition-colors duration-200">
+          <DayIcon hour={now.getHours()} />
+        </span>
+        <div className="flex flex-col gap-[5px]">
+          <span className="font-mono text-[15px] tracking-[0.16em] text-foreground/60 group-hover/leftcard:text-accent uppercase leading-none transition-colors duration-200">
+            {time}
+          </span>
+          <span className="font-mono text-[10px] tracking-[0.20em] text-foreground/32 group-hover/leftcard:text-accent/70 leading-none transition-colors duration-200">
+            {day} · {date}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mood badge ────────────────────────────────────────────────────────────────
 
 const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
 const NEGATIVE_MOODS = new Set(["sad", "lonely", "tired", "angry", "frustrated", "anxious", "worried"]);
 
-function moodDotClass(emotion: string): string {
+function moodColor(emotion: string) {
   const e = emotion.toLowerCase().trim();
-  if (POSITIVE_MOODS.has(e)) return "bg-accent";
-  if (NEGATIVE_MOODS.has(e)) return "bg-destructive";
-  return "bg-muted-foreground";
+  if (POSITIVE_MOODS.has(e)) return "text-accent border-accent/40";
+  if (NEGATIVE_MOODS.has(e)) return "text-destructive border-destructive/40";
+  return "text-foreground/50 border-foreground/[0.14]";
 }
 
-interface NavItem {
-  to: string;
-  label: string;
-  Icon: React.ComponentType<IconProps>;
+// ── Shared glass style ────────────────────────────────────────────────────────
+
+const glass =
+  "relative flex items-center z-20 h-16 " +
+  "bg-background/20 backdrop-blur-[44px] " +
+  "border border-foreground/[0.08] " +
+  "shadow-[0_8px_32px_rgba(0,0,0,0.20)]";
+
+// ── TopNavAgentButton (kept exported for any external consumers) ──────────────
+
+export interface TopNavAgentButtonProps {
+  agentName: string;
+  avatarUrl: string;
+  dominantEmotion: string | null;
+  onClick: () => void;
 }
 
-const STATIC_NAV_ITEMS: NavItem[] = [
-  { to: "/",             label: "Home",     Icon: HomeIcon     },
-  { to: "/chat",         label: "Chat",     Icon: ChatIcon     },
-  { to: "/memory",       label: "Memory",   Icon: MemoryIcon   },
-  { to: "/consciousness",label: "Mind",     Icon: MindIcon     },
-  { to: "/tasks",        label: "Tasks",    Icon: TasksIcon    },
-  { to: "/presence",     label: "Presence", Icon: PresenceIcon },
-  { to: "/mods",         label: "Mods",     Icon: ModsIcon     },
-  { to: "/settings",     label: "Settings", Icon: ConfigIcon   },
-];
+export function TopNavAgentButton({ agentName, avatarUrl, dominantEmotion, onClick }: TopNavAgentButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      className="group/agent flex items-center h-full hover:opacity-85 transition-opacity"
+    >
+      {/* Avatar — fills card height edge-to-edge */}
+      <span className="relative h-full aspect-square shrink-0 overflow-hidden">
+        <img src={avatarUrl} alt={agentName} className="h-full w-full object-cover" />
+        <span className="absolute inset-0 bg-accent/0 group-hover/agent:bg-accent/10 transition-colors" />
+      </span>
 
-const DATABASE_NAV_ITEM: NavItem = { to: "/database", label: "Database", Icon: DatabaseIcon };
+      {/* Divider */}
+      <span className="w-px h-5 bg-foreground/[0.10] shrink-0" />
+
+      {/* Name + emotion */}
+      <span className="flex flex-col gap-[5px] min-w-0 px-3">
+        <span className="font-semibold text-[14px] leading-none text-foreground truncate max-w-[110px]">
+          {agentName}
+        </span>
+        {dominantEmotion && (
+          <span className={cn(
+            "font-mono text-[7.5px] uppercase tracking-[0.16em] leading-none border px-1.5 py-[3px] w-fit",
+            moodColor(dominantEmotion),
+          )}>
+            {dominantEmotion}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+// ── Main nav ──────────────────────────────────────────────────────────────────
 
 export function LayoutTopNav() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { agentName, avatarUrl } = useAgentProfile(user?.id);
-  const [theme, setTheme] = useState<Theme>(getTheme);
-  const [showUser, setShowUser] = useState(false);
-  const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
-  const [dominantEmotion, setDominantEmotion] = useState<string | null>(null);
-  const [memOverview, setMemOverview] = useState<MemoryOverviewData | null>(null);
-  const [pendingTasks, setPendingTasks] = useState<number | null>(null);
-  const userMenuRef = useRef<HTMLDivElement>(null);
+  const [agentState, setAgentState] = useState<AgentStateData | null>(null);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem("anima_nav_collapsed") === "true"; } catch { return false; }
+  });
+  const navRef = useRef<HTMLDivElement>(null);
 
-  const syncDbViewer = useCallback(() => setDbEnabled(getDbViewerEnabled()), []);
-
-  useEffect(() => {
-    window.addEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
-    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, syncDbViewer);
-  }, [syncDbViewer]);
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try { localStorage.setItem("anima_nav_collapsed", String(next)); } catch {}
+  };
 
   useEffect(() => {
-    if (user?.id == null) return;
+    if (user?.id == null) { setAgentState(null); return; }
     let active = true;
-    api.consciousness.getEmotions(user.id, 1)
-      .then((data) => { if (active) setDominantEmotion(data.dominantEmotion); })
-      .catch(() => {});
+    api.consciousness
+      .getAgentState(user.id)
+      .then((data) => { if (active) setAgentState(data); })
+      .catch(() => { if (active) setAgentState(null); });
     return () => { active = false; };
   }, [user?.id]);
-
-  useEffect(() => {
-    if (user?.id == null) return;
-    let active = true;
-    api.memory.overview(user.id)
-      .then((data) => { if (active) setMemOverview(data); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (user?.id == null) return;
-    let active = true;
-    api.tasks.list(user.id)
-      .then((list) => { if (active) setPendingTasks((list ?? []).filter((t) => !t.done).length); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (!showUser) return;
-    const handler = (e: MouseEvent) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
-        setShowUser(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showUser]);
-
-  const navItems = dbEnabled ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM] : STATIC_NAV_ITEMS;
 
   return (
-    <header className="h-12 flex items-center border border-border/70 bg-background/90 backdrop-blur-md shadow-md px-4 gap-3 z-20">
-      {/* Agent branding */}
-      <button
-        onClick={() => navigate("/agent")}
-        className="flex items-center gap-2 shrink-0 hover:opacity-75 transition-opacity"
-      >
-        <div className="relative w-7 h-7 rounded-full overflow-hidden border border-border/70">
-          <img src={avatarUrl} alt={agentName} className="w-full h-full object-cover" />
-          {dominantEmotion && (
-            <span className={cn("absolute bottom-0 right-0 w-2 h-2 rounded-full border border-background", moodDotClass(dominantEmotion))} />
-          )}
-        </div>
-        <span className="text-sm font-semibold text-foreground leading-none">{agentName}</span>
-      </button>
+    <header ref={navRef} className="w-full flex justify-between items-stretch">
 
-      <div className="w-px h-4 bg-border/60 shrink-0" />
+      {/* ── Left: Agent identity + clock ── */}
+      <div className={cn(glass, "group/leftcard")}>
+        {/* Avatar — always visible, click navigates to agent */}
+        <button
+          onClick={() => navigate("/agent")}
+          className="group/avatar relative h-full aspect-square shrink-0 overflow-hidden hover:opacity-85 transition-opacity"
+        >
+          <img src={avatarUrl} alt={agentName} className="h-full w-full object-cover" />
+          <span className="absolute inset-0 bg-accent/0 group-hover/avatar:bg-accent/10 transition-colors" />
+        </button>
 
-      {/* Navigation */}
-      <nav className="flex items-center gap-0.5 flex-1">
-        {navItems.map(({ to, label, Icon }) => (
+        {/* Name + mood — hidden when collapsed */}
+        {!collapsed && (
+          <>
+            <span className="w-px h-5 bg-foreground/[0.10] group-hover/leftcard:bg-accent/40 shrink-0 ml-1 transition-colors duration-200" />
+            <button
+              onClick={() => navigate("/agent")}
+              className="group/name flex flex-col gap-[6px] min-w-0 px-3"
+            >
+              <span className="font-mono text-[15px] tracking-[0.16em] text-foreground/60 group-hover/leftcard:text-accent uppercase leading-none truncate max-w-[130px] transition-colors duration-200">
+                {agentName}
+              </span>
+              {agentState?.dominantEmotion && (
+                <span className={cn(
+                  "font-mono text-[7.5px] uppercase tracking-[0.16em] leading-none border px-1.5 py-[3px] w-fit",
+                  "transition-colors duration-200",
+                  "group-hover/name:bg-accent group-hover/name:text-accent-foreground group-hover/name:border-accent",
+                  "group-hover/leftcard:border-accent/60 group-hover/leftcard:text-accent",
+                  moodColor(agentState.dominantEmotion),
+                )}>
+                  {agentState.dominantEmotion}
+                </span>
+              )}
+            </button>
+          </>
+        )}
+
+        <InlineClock />
+
+        {/* Collapse toggle — far right of left card */}
+        <button
+          onClick={toggleCollapsed}
+          className="flex items-center justify-center w-6 h-full shrink-0 text-foreground/20 group-hover/leftcard:text-accent group-hover/leftcard:border-accent/20 hover:bg-foreground/[0.04] transition-colors border-l border-foreground/[0.06]"
+          title={collapsed ? "Expand" : "Collapse"}
+        >
+          {collapsed
+            ? <ChevronRightIcon size="sm" />
+            : <ChevronLeftIcon size="sm" />
+          }
+        </button>
+      </div>
+
+      {/* ── Right: Navigation — hidden when collapsed ── */}
+      {!collapsed && <div className={cn(glass, "overflow-hidden p-0")}>
+        {TOP_NAV_ITEMS.map(({ to, label, Icon, description }) => (
           <NavLink
             key={to}
             to={to}
             end={to === "/"}
-            title={label}
             className={({ isActive }) =>
               cn(
-                "relative w-9 h-9 flex items-center justify-center transition-all duration-150",
+                "group/nav relative h-full w-16 flex flex-col items-center justify-center gap-[6px] transition-colors duration-150",
                 isActive
-                  ? "text-foreground bg-foreground/8"
-                  : "text-foreground/35 hover:text-foreground/70 hover:bg-foreground/5",
+                  ? "bg-accent text-accent-foreground"
+                  : "text-foreground/30 hover:text-foreground/80 hover:bg-foreground/[0.06]",
               )
             }
           >
             {({ isActive }) => (
               <>
-                <Icon size="md" />
-                {isActive && (
-                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-foreground/60" />
-                )}
+                <Icon size="lg" />
+                <span className={cn(
+                  "font-mono text-[7.5px] tracking-[0.14em] uppercase leading-none transition-colors",
+                  isActive
+                    ? "text-accent-foreground/60"
+                    : "text-foreground/20 group-hover/nav:text-foreground/50",
+                )}>
+                  {description}
+                </span>
+                {/* Tooltip */}
+                <span className={cn(
+                  "pointer-events-none absolute top-full left-1/2 z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap",
+                  "border border-foreground/[0.08] bg-background/80 backdrop-blur-sm px-2 py-1",
+                  "font-mono text-[9px] tracking-[0.1em] text-foreground/60",
+                  "opacity-0 transition-opacity group-hover/nav:opacity-100",
+                )}>
+                  {label}
+                </span>
               </>
             )}
           </NavLink>
         ))}
-      </nav>
+      </div>}
 
-      {/* Agent stats */}
-      <div className="flex items-center gap-px shrink-0 border border-border/50 bg-muted/30">
-        {memOverview != null && (
-          <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">MEM</span>
-            <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.totalItems}</span>
-          </div>
-        )}
-        {memOverview != null && (
-          <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">EPS</span>
-            <span className="font-mono text-[11px] font-medium text-foreground/80 tabular-nums leading-tight">{memOverview.episodeCount}</span>
-          </div>
-        )}
-        {pendingTasks != null && (
-          <div className="flex flex-col items-center px-3 py-1 border-r border-border/40">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">TASKS</span>
-            <span className={cn("font-mono text-[11px] font-medium tabular-nums leading-tight", pendingTasks > 0 ? "text-accent" : "text-foreground/40")}>{pendingTasks}</span>
-          </div>
-        )}
-        {dominantEmotion && (
-          <div className="flex flex-col items-center px-3 py-1">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">STATE</span>
-            <span className="font-mono text-[11px] font-medium text-foreground/80 leading-tight capitalize">{dominantEmotion}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Right controls */}
-      <div className="flex items-center gap-0.5 shrink-0">
-        <button
-          onClick={() => setTheme(toggleTheme())}
-          title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-          className="w-8 h-8 flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-secondary/50 transition-colors"
-        >
-          <span className="text-sm leading-none select-none">
-            {theme === "dark" ? "☀" : "☾"}
-          </span>
-        </button>
-
-        <div ref={userMenuRef} className="relative">
-          <button
-            onClick={() => setShowUser((v) => !v)}
-            className="w-8 h-8 flex items-center justify-center border border-border font-mono text-xs font-medium text-foreground/70 hover:bg-secondary/50 transition-colors"
-          >
-            {user?.name?.[0]?.toUpperCase() ?? "U"}
-          </button>
-          {showUser && (
-            <div className="absolute right-0 top-full mt-1 w-44 border border-border bg-card shadow-xl z-50">
-              <div className="px-3 py-2.5 border-b border-border/60">
-                <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
-              </div>
-              <button
-                onClick={() => { navigate("/profile"); setShowUser(false); }}
-                className="w-full text-left px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
-              >
-                Profile
-              </button>
-              <button
-                onClick={() => { logout(); setShowUser(false); }}
-                className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/5 transition-colors"
-              >
-                Log out
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
     </header>
   );
 }

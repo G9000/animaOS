@@ -93,7 +93,13 @@ class AdaptiveFilterResult[ItemT]:
 
 def normalize_scores(scores: Sequence[float]) -> list[float]:
     if _rust_normalize_scores is not None:
-        return [float(score) for score in _rust_normalize_scores(list(scores))]
+        try:
+            return [float(score) for score in _rust_normalize_scores(list(scores))]
+        except Exception:
+            logger.debug(
+                "Rust score normalization failed; falling back to Python",
+                exc_info=True,
+            )
 
     if not scores:
         return []
@@ -124,18 +130,24 @@ def find_adaptive_cutoff(
         return _legacy_cutoff(capped_scores, active_config)
 
     if _rust_find_adaptive_cutoff is not None:
-        cutoff, trigger, normalized = _rust_find_adaptive_cutoff(
-            capped_scores,
-            strategy=active_config.strategy,
-            min_results=active_config.min_results,
-            max_results=active_config.max_results,
-            normalize=active_config.normalize_scores,
-            absolute_min=active_config.absolute_min,
-            relative_threshold=active_config.relative_threshold,
-            max_drop_ratio=active_config.max_drop_ratio,
-            sensitivity=active_config.sensitivity,
-        )
-        return int(cutoff), str(trigger), [float(score) for score in normalized]
+        try:
+            cutoff, trigger, normalized = _rust_find_adaptive_cutoff(
+                capped_scores,
+                strategy=active_config.strategy,
+                min_results=active_config.min_results,
+                max_results=active_config.max_results,
+                normalize=active_config.normalize_scores,
+                absolute_min=active_config.absolute_min,
+                relative_threshold=active_config.relative_threshold,
+                max_drop_ratio=active_config.max_drop_ratio,
+                sensitivity=active_config.sensitivity,
+            )
+            return int(cutoff), str(trigger), [float(score) for score in normalized]
+        except Exception:
+            logger.debug(
+                "Rust adaptive cutoff failed; falling back to Python",
+                exc_info=True,
+            )
 
     return _python_cutoff(capped_scores, active_config)
 

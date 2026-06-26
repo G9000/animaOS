@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from "react";
-import { Button } from "../primitives/Button";
+import { cn } from "../utils/cn";
 import { PlusIcon, ImageIcon, FileIcon, DocumentIcon } from "../icons";
 
 const ITEMS = [
-  { label: "image",    icon: <ImageIcon className="w-3.5 h-3.5" /> },
-  { label: "file",     icon: <FileIcon className="w-3.5 h-3.5" /> },
-  { label: "document", icon: <DocumentIcon className="w-3.5 h-3.5" /> },
+  { label: "Image",    type: "image",    icon: ImageIcon },
+  { label: "File",     type: "file",     icon: FileIcon },
+  { label: "Document", type: "document", icon: DocumentIcon },
 ];
 
 export interface AttachMenuProps {
@@ -27,30 +27,49 @@ export function AttachMenu({ onAttach }: AttachMenuProps) {
 
   return (
     <div ref={ref} className="relative shrink-0">
-      <Button
+      {/* Trigger */}
+      <button
         type="button"
-        variant="ghost"
-        size="sm"
-        iconOnly
-        icon={<PlusIcon />}
         onClick={() => setOpen((v) => !v)}
-      />
+        title="Attach"
+        className={cn(
+          "size-7 flex items-center justify-center border transition-colors duration-150",
+          open
+            ? "border-accent bg-accent text-accent-foreground"
+            : "border-foreground/[0.08] text-foreground/35 hover:border-foreground/[0.14] hover:text-foreground/65 hover:bg-foreground/[0.04]",
+        )}
+      >
+        <PlusIcon size="sm" />
+      </button>
 
+      {/* Popup */}
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-40 border border-border bg-card rounded-none flex flex-col gap-px animate-fade-in z-50 overflow-hidden">
-          {ITEMS.map(({ label, icon }) => (
-            <button
-              key={label}
-              type="button"
-              onClick={() => { onAttach?.(label); setOpen(false); }}
-              className="group flex items-center gap-3 px-3 py-2.5 bg-card font-mono text-[10px] tracking-wider uppercase text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-            >
-              <span className="shrink-0 text-muted-foreground/60 group-hover:text-foreground transition-colors">
-                {icon}
-              </span>
-              <span>{label}</span>
-            </button>
-          ))}
+        <div className="absolute bottom-full left-0 mb-3 flex flex-col z-50 overflow-hidden shadow-[0_20px_50px_-12px_rgba(0,0,0,0.4)]">
+          {/* Items */}
+          <div className="flex bg-accent/90 backdrop-blur-[40px] border border-accent/30">
+            {ITEMS.map(({ label, type, icon: Icon }, i) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => { onAttach?.(type); setOpen(false); }}
+                className={cn(
+                  "flex flex-col items-center gap-1.5 px-4 py-3 min-w-[64px]",
+                  "text-accent-foreground/70 hover:text-accent-foreground hover:bg-black/10",
+                  "transition-colors",
+                  i > 0 && "border-l border-accent-foreground/10",
+                )}
+              >
+                <Icon size="sm" />
+                <span className="font-mono text-[8px] tracking-[0.16em] uppercase">
+                  {label}
+                </span>
+              </button>
+            ))}
+          </div>
+          {/* Arrow pointing down to the trigger */}
+          <div className="w-3 h-1.5 self-start ml-2.5 overflow-hidden">
+            <div className="w-3 h-3 bg-accent/90 border border-accent/30 rotate-45 origin-top-left translate-x-0 translate-y-[-50%]" />
+          </div>
         </div>
       )}
     </div>

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any
@@ -59,6 +60,7 @@ class VectorSearchResult:
     category: str
     importance: int
     similarity: float
+    source_type: str = "memory_item"
 
 
 class VectorStore(ABC):
@@ -77,7 +79,23 @@ class VectorStore(ABC):
     ) -> None: ...
 
     @abstractmethod
+    def upsert_source(
+        self,
+        user_id: int,
+        *,
+        source_type: str,
+        source_id: int,
+        content: str,
+        embedding: list[float],
+        category: str = "document",
+        importance: int = 3,
+    ) -> None: ...
+
+    @abstractmethod
     def delete(self, user_id: int, *, item_id: int) -> None: ...
+
+    @abstractmethod
+    def delete_source(self, user_id: int, *, source_type: str, source_id: int) -> None: ...
 
     @abstractmethod
     def search_by_vector(
@@ -87,6 +105,8 @@ class VectorStore(ABC):
         query_embedding: list[float],
         limit: int = 10,
         category: str | None = None,
+        source_types: Sequence[str] | None = None,
+        source_ids: Sequence[int] | None = None,
     ) -> list[VectorSearchResult]: ...
 
     @abstractmethod
@@ -97,6 +117,7 @@ class VectorStore(ABC):
         query_text: str,
         limit: int = 10,
         category: str | None = None,
+        source_types: Sequence[str] | None = None,
     ) -> list[VectorSearchResult]: ...
 
     @abstractmethod
@@ -110,6 +131,9 @@ class VectorStore(ABC):
     def count(self, user_id: int) -> int: ...
 
     @abstractmethod
+    def count_source(self, user_id: int, *, source_type: str) -> int: ...
+
+    @abstractmethod
     def reset(self) -> None: ...
 
 
@@ -120,6 +144,7 @@ class VectorStore(ABC):
 
 @dataclass(slots=True)
 class _VectorRecord:
+    source_type: str
     item_id: int
     content: str
     embedding: list[float]
@@ -131,7 +156,7 @@ class InMemoryVectorStore(VectorStore):
     """Process-local dict-based vector store. No persistence."""
 
     def __init__(self) -> None:
-        self._data: dict[int, dict[int, _VectorRecord]] = {}
+        self._data: dict[int, dict[tuple[str, int], _VectorRecord]] = {}
 
     def upsert(
         self,
@@ -143,8 +168,30 @@ class InMemoryVectorStore(VectorStore):
         category: str = "fact",
         importance: int = 3,
     ) -> None:
-        self._data.setdefault(user_id, {})[item_id] = _VectorRecord(
-            item_id=item_id,
+        self.upsert_source(
+            user_id,
+            source_type="memory_item",
+            source_id=item_id,
+            content=content,
+            embedding=embedding,
+            category=category,
+            importance=importance,
+        )
+
+    def upsert_source(
+        self,
+        user_id: int,
+        *,
+        source_type: str,
+        source_id: int,
+        content: str,
+        embedding: list[float],
+        category: str = "document",
+        importance: int = 3,
+    ) -> None:
+        self._data.setdefault(user_id, {})[(source_type, source_id)] = _VectorRecord(
+            source_type=source_type,
+            item_id=source_id,
             content=content,
             embedding=embedding,
             category=category,
@@ -152,9 +199,12 @@ class InMemoryVectorStore(VectorStore):
         )
 
     def delete(self, user_id: int, *, item_id: int) -> None:
+        self.delete_source(user_id, source_type="memory_item", source_id=item_id)
+
+    def delete_source(self, user_id: int, *, source_type: str, source_id: int) -> None:
         user_store = self._data.get(user_id)
         if user_store:
-            user_store.pop(item_id, None)
+            user_store.pop((source_type, source_id), None)
 
     def search_by_vector(
         self,
@@ -163,11 +213,19 @@ class InMemoryVectorStore(VectorStore):
         query_embedding: list[float],
         limit: int = 10,
         category: str | None = None,
+        source_types: Sequence[str] | None = None,
+        source_ids: Sequence[int] | None = None,
     ) -> list[VectorSearchResult]:
         user_store = self._data.get(user_id, {})
         scored: list[tuple[float, VectorSearchResult]] = []
+        allowed_source_types = set(source_types) if source_types is not None else None
+        allowed_source_ids = set(source_ids) if source_ids is not None else None
         for record in user_store.values():
             if category is not None and record.category != category:
+                continue
+            if allowed_source_types is not None and record.source_type not in allowed_source_types:
+                continue
+            if allowed_source_ids is not None and record.item_id not in allowed_source_ids:
                 continue
             sim = _cosine_similarity(query_embedding, record.embedding)
             scored.append(
@@ -179,6 +237,7 @@ class InMemoryVectorStore(VectorStore):
                         category=record.category,
                         importance=record.importance,
                         similarity=round(sim, 4),
+                        source_type=record.source_type,
                     ),
                 )
             )
@@ -192,11 +251,15 @@ class InMemoryVectorStore(VectorStore):
         query_text: str,
         limit: int = 10,
         category: str | None = None,
+        source_types: Sequence[str] | None = None,
     ) -> list[VectorSearchResult]:
         user_store = self._data.get(user_id, {})
         scored: list[tuple[float, VectorSearchResult]] = []
+        allowed_source_types = set(source_types) if source_types is not None else None
         for record in user_store.values():
             if category is not None and record.category != category:
+                continue
+            if allowed_source_types is not None and record.source_type not in allowed_source_types:
                 continue
             sim = _text_similarity(query_text, record.content)
             if sim > 0.0:
@@ -209,6 +272,7 @@ class InMemoryVectorStore(VectorStore):
                             category=record.category,
                             importance=record.importance,
                             similarity=round(sim, 4),
+                            source_type=record.source_type,
                         ),
                     )
                 )
@@ -220,9 +284,12 @@ class InMemoryVectorStore(VectorStore):
         user_id: int,
         items: list[tuple[int, str, list[float], str, int]],
     ) -> int:
-        self._data[user_id] = {}
+        user_store = self._data.setdefault(user_id, {})
+        for key in [key for key in user_store if key[0] == "memory_item"]:
+            user_store.pop(key, None)
         for item_id, content, embedding, category, importance in items:
-            self._data[user_id][item_id] = _VectorRecord(
+            user_store[("memory_item", item_id)] = _VectorRecord(
+                source_type="memory_item",
                 item_id=item_id,
                 content=content,
                 embedding=embedding,
@@ -233,6 +300,13 @@ class InMemoryVectorStore(VectorStore):
 
     def count(self, user_id: int) -> int:
         return len(self._data.get(user_id, {}))
+
+    def count_source(self, user_id: int, *, source_type: str) -> int:
+        return sum(
+            1
+            for record in self._data.get(user_id, {}).values()
+            if record.source_type == source_type
+        )
 
     def reset(self) -> None:
         self._data.clear()
@@ -418,6 +492,7 @@ def search_similar(
             query_embedding=query_embedding,
             limit=limit,
             category=category,
+            source_types=["memory_item"],
         )
         payload = [
             {
@@ -460,6 +535,7 @@ def search_by_text(
             query_text=query_text,
             limit=limit,
             category=category,
+            source_types=["memory_item"],
         )
         payload = [
             {
@@ -522,7 +598,7 @@ def get_collection(
         def count(self) -> int:
             store, owned_session = _get_store(db, runtime_db=runtime_db)
             try:
-                count = store.count(user_id)
+                count = store.count_source(user_id, source_type="memory_item")
                 if owned_session is not None:
                     owned_session.commit()
                 return count

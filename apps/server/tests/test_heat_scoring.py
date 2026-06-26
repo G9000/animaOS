@@ -60,9 +60,49 @@ class TestComputeHeat:
             last_accessed_at=None,
             importance=3.0,
         )
-        # H = 0 + 0 + 0 (no recency) + 0.5*3*0 = 0.0
-        # importance is weighted by recency, so no recency = no importance contribution
-        assert heat == pytest.approx(0.0, abs=1e-6)
+        # All recency-weighted terms are zero, but importance provides a
+        # recency-independent floor so important memories never become
+        # invisible on time alone.
+        from anima_server.services.agent.heat_scoring import importance_heat_floor
+
+        assert heat == pytest.approx(importance_heat_floor(3.0), abs=1e-6)
+
+    def test_importance_floor_keeps_old_important_items_visible(self):
+        from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+        from anima_server.services.agent.heat_scoring import importance_heat_floor
+
+        now = datetime.now(UTC)
+        stale_critical = compute_heat(
+            access_count=2,
+            interaction_depth=2,
+            last_accessed_at=now - timedelta(days=30),
+            importance=5.0,
+            now=now,
+        )
+        # A month-old importance-5 fact stays retrievable...
+        assert stale_critical >= HEAT_VISIBILITY_FLOOR
+        assert stale_critical == pytest.approx(importance_heat_floor(5.0))
+
+        # ...while an importance-0 item decays to invisibility as before.
+        stale_trivial = compute_heat(
+            access_count=2,
+            interaction_depth=2,
+            last_accessed_at=now - timedelta(days=30),
+            importance=0.0,
+            now=now,
+        )
+        assert stale_trivial < HEAT_VISIBILITY_FLOOR
+
+        # Superseded items are exempt so they can fully decay.
+        stale_superseded = compute_heat(
+            access_count=2,
+            interaction_depth=2,
+            last_accessed_at=now - timedelta(days=30),
+            importance=5.0,
+            now=now,
+            superseded=True,
+        )
+        assert stale_superseded < HEAT_VISIBILITY_FLOOR
 
     def test_frequently_accessed_beats_old(self):
         now = datetime.now(UTC)
