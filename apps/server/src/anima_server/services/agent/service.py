@@ -121,6 +121,22 @@ _cached_runner: AgentRuntime | None = None
 _background_tasks: set[asyncio.Task[Any]] = set()
 
 
+def normalize_document_only_user_message(
+    user_message: str,
+    document_ids: Sequence[int],
+) -> str:
+    """Give document-only chat turns an explicit user intent."""
+    if user_message.strip() or not _dedupe_positive_ids(document_ids):
+        return user_message
+    return _default_document_only_user_message(document_ids)
+
+
+def _default_document_only_user_message(document_ids: Sequence[int]) -> str:
+    document_count = len(_dedupe_positive_ids(document_ids))
+    noun = "document" if document_count == 1 else "documents"
+    return f"Summarize the selected {noun}."
+
+
 def _track_background_task(coro: Awaitable[Any]) -> None:
     """Run *coro* as a fire-and-forget task with a strong reference."""
     task = asyncio.get_running_loop().create_task(coro)
@@ -569,6 +585,7 @@ async def _execute_agent_turn(
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AgentResult:
+    user_message = normalize_document_only_user_message(user_message, document_ids)
     client_action_runtime = None
     if tool_delegate is None:
         client_action_runtime = build_client_action_runtime(user_id)
@@ -1280,9 +1297,11 @@ def _build_document_context_block(
     document_ids: Sequence[int],
 ) -> MemoryBlock | None:
     cleaned_document_ids = _dedupe_positive_ids(document_ids)
-    query = user_message.strip()
-    if not cleaned_document_ids or not query:
+    if not cleaned_document_ids:
         return None
+    query = user_message.strip() or _default_document_only_user_message(
+        cleaned_document_ids
+    )
 
     try:
         results = search_document_chunks(

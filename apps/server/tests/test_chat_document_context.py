@@ -65,6 +65,47 @@ def test_build_document_context_block_uses_selected_pdf_hits(monkeypatch: Any) -
     assert "Install the relay" in block.value
 
 
+def test_build_document_context_block_defaults_document_only_query(
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        calls.append(query)
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="The selected document can be summarized from indexed chunks.",
+                similarity=0.91,
+                page_start=1,
+                page_end=1,
+                section_title=None,
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="   ",
+        document_ids=[4],
+    )
+
+    assert calls == ["Summarize the selected document."]
+    assert block is not None
+    assert "selected document" in block.value
+
+
 def test_build_document_context_block_skips_empty_selection() -> None:
     assert (
         agent_service._build_document_context_block(
