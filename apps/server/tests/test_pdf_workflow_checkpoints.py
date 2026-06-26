@@ -1060,6 +1060,53 @@ def test_approve_pdf_memory_proposals_creates_candidates_once(
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 9
 
 
+def test_approve_pdf_memory_proposals_reembeds_reset_document_before_completion(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == run.id)
+    )
+    assert document is not None
+    assert document.status == "indexed"
+
+    for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
+        runtime_db.delete(embedding)
+    document.status = "registered"
+    document.indexed_at = None
+    runtime_db.flush()
+    embedding_calls: list[str] = []
+
+    def repair_embedding(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _embedding(float(len(text)), 2.0)
+
+    approved = approve_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        approved_proposal_indices=[0],
+        embedding_fn=repair_embedding,
+    )
+
+    runtime_db.refresh(document)
+    assert approved.status == "completed"
+    assert approved.current_state == "memory_saved"
+    assert document.status == "indexed"
+    assert document.indexed_at is not None
+    assert embedding_calls == ["manual.pdf alpha", "beta"]
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 1
+    assert _checkpoint_names(runtime_db, run.id)[-1] == "memory_saved"
+
+
 def test_approve_pdf_memory_proposals_rejects_unstaged_content(
     runtime_db: Session,
     monkeypatch: Any,
@@ -1211,6 +1258,53 @@ def test_reject_pdf_memory_proposals_records_rejection_without_candidates(
     assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
     assert _checkpoint_names(runtime_db, run.id)[-1] == "memory_rejected"
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 9
+
+
+def test_reject_pdf_memory_proposals_reembeds_reset_document_before_completion(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == run.id)
+    )
+    assert document is not None
+    assert document.status == "indexed"
+
+    for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
+        runtime_db.delete(embedding)
+    document.status = "registered"
+    document.indexed_at = None
+    runtime_db.flush()
+    embedding_calls: list[str] = []
+
+    def repair_embedding(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _embedding(float(len(text)), 3.0)
+
+    rejected = reject_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        reason="not useful",
+        embedding_fn=repair_embedding,
+    )
+
+    runtime_db.refresh(document)
+    assert rejected.status == "completed"
+    assert rejected.current_state == "memory_rejected"
+    assert document.status == "indexed"
+    assert document.indexed_at is not None
+    assert embedding_calls == ["manual.pdf alpha", "beta"]
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
+    assert _checkpoint_names(runtime_db, run.id)[-1] == "memory_rejected"
 
 
 def test_approval_requires_awaiting_pdf_workflow(runtime_db: Session) -> None:

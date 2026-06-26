@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
@@ -13,10 +13,14 @@ from anima_server.models.runtime import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.candidate_ops import create_memory_candidate
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.documents.chunking import chunk_pages
-from anima_server.services.documents.indexing import embed_document_chunks
+from anima_server.services.documents.indexing import (
+    embed_document_chunks,
+    get_unembedded_chunks,
+)
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
@@ -162,6 +166,7 @@ def approve_pdf_memory_proposals(
     workflow_run_id: int,
     approved_proposal_indices: Sequence[int] | None = None,
     approved_proposals: Sequence[JsonObject] | None = None,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> RuntimeWorkflowRun:
     run = _load_pdf_approval_run(db, workflow_run_id=workflow_run_id)
     if _is_completed_pdf_memory_decision(run):
@@ -170,6 +175,12 @@ def approve_pdf_memory_proposals(
 
     staged = _staged_approval_payload(run)
     document_id = _document_id_from_payload(staged)
+    _ensure_approval_document_indexed(
+        db,
+        run=run,
+        document_id=document_id,
+        embedding_fn=embedding_fn,
+    )
     selected_proposals = _select_approved_pdf_proposals(
         staged,
         approved_proposal_indices=approved_proposal_indices,
@@ -226,6 +237,7 @@ def reject_pdf_memory_proposals(
     *,
     workflow_run_id: int,
     reason: str | None = None,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> RuntimeWorkflowRun:
     run = _load_pdf_approval_run(db, workflow_run_id=workflow_run_id)
     if _is_completed_pdf_memory_decision(run):
@@ -234,6 +246,12 @@ def reject_pdf_memory_proposals(
 
     staged = _staged_approval_payload(run)
     document_id = _document_id_from_payload(staged)
+    _ensure_approval_document_indexed(
+        db,
+        run=run,
+        document_id=document_id,
+        embedding_fn=embedding_fn,
+    )
     result_json: JsonObject = {
         "document_id": document_id,
         "decision": "rejected",
@@ -558,6 +576,73 @@ def _require_indexed_document(document: RuntimeDocument) -> None:
             f"PDF document {document.id} was not fully indexed; "
             "resume after missing embeddings are available."
         )
+
+
+def _ensure_approval_document_indexed(
+    db: Session,
+    *,
+    run: RuntimeWorkflowRun,
+    document_id: int,
+    embedding_fn: EmbeddingFn | None = None,
+) -> None:
+    document = get_document_for_user(
+        db,
+        user_id=run.user_id,
+        document_id=document_id,
+    )
+    if document is None:
+        raise ValueError(f"PDF document {document_id} does not exist.")
+
+    missing_chunks = get_unembedded_chunks(
+        db,
+        user_id=run.user_id,
+        document_id=document_id,
+    )
+    if document.status != "indexed" or missing_chunks:
+        embed_document_chunks(
+            db,
+            user_id=run.user_id,
+            document_id=document_id,
+            embedding_fn=embedding_fn,
+        )
+        db.refresh(document)
+        missing_chunks = get_unembedded_chunks(
+            db,
+            user_id=run.user_id,
+            document_id=document_id,
+        )
+        if missing_chunks:
+            _delete_document_chunk_vectors(
+                db,
+                user_id=run.user_id,
+                document_id=document_id,
+            )
+            raise ValueError(
+                f"PDF document {document.id} was not fully indexed; "
+                "resume after missing embeddings are available."
+            )
+
+    _require_indexed_document(document)
+
+
+def _delete_document_chunk_vectors(
+    db: Session,
+    *,
+    user_id: int,
+    document_id: int,
+) -> None:
+    chunk_ids = select(RuntimeDocumentChunk.id).where(
+        RuntimeDocumentChunk.user_id == user_id,
+        RuntimeDocumentChunk.document_id == document_id,
+    )
+    db.execute(
+        delete(RuntimeEmbedding).where(
+            RuntimeEmbedding.user_id == user_id,
+            RuntimeEmbedding.source_type == "document_chunk",
+            RuntimeEmbedding.source_id.in_(chunk_ids),
+        )
+    )
+    db.flush()
 
 
 def _rewind_unindexed_document_resume_state(
