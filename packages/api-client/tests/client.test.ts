@@ -339,6 +339,67 @@ describe("createApiClient error handling", () => {
     });
   });
 
+  test("serializes thinking monologue lines for profile updates", async () => {
+    let requestBody: unknown = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            agentName: "Anima",
+            relationship: "companion",
+            personaTemplate: "default",
+            agentType: "companion",
+            avatarUrl: null,
+            agentBirthday: "2026-06-24T19:05:54",
+            thinkingMonologue: ["I am holding the context together."],
+            setupComplete: true,
+          }),
+        );
+      },
+    });
+
+    await api.consciousness.updateAgentProfile(7, {
+      thinkingMonologue: ["I am holding the context together."],
+    });
+
+    expect(requestBody).toEqual({
+      thinkingMonologue: ["I am holding the context together."],
+    });
+  });
+
+  test("requests generated thinking monologue draft", async () => {
+    let requestedUrl = "";
+    let requestedMethod = "";
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestedMethod = init?.method || "GET";
+        return new Response(
+          JSON.stringify({
+            thinkingMonologue: [
+              "I am tracing the shape of this.",
+              "Let me hold this carefully.",
+            ],
+          }),
+        );
+      },
+    });
+
+    const result = await api.consciousness.generateThinkingMonologue(7);
+
+    expect(requestedUrl).toBe(
+      "https://api.test/api/consciousness/7/agent-profile/thinking-monologue/generate",
+    );
+    expect(requestedMethod).toBe("POST");
+    expect(result.thinkingMonologue).toEqual([
+      "I am tracing the shape of this.",
+      "Let me hold this carefully.",
+    ]);
+  });
+
   test("does not model agent type as an editable profile update field", () => {
     const source = readClientSource();
 

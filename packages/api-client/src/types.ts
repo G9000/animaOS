@@ -70,6 +70,7 @@ export interface AgentProfileData {
   agentType?: string;
   avatarUrl?: string | null;
   agentBirthday?: string | null;
+  thinkingMonologue: string[];
   setupComplete: boolean;
 }
 

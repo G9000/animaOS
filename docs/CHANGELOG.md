@@ -2,6 +2,7 @@
 
 ## 2026-06-26
 
+- documented the document processing architecture, including PDF upload, checkpointed ingestion, runtime document/chunk storage, pgvector indexing, chat grounding, citation pills, and the boundary between document RAG and durable memory
 - added gateway/runtime boundary planning, local ticket workflow docs, and local runtime daemon architecture so online delivery, background runtime supervision, and repo-local ticket tracking are documented as separate initiatives
 
 ## 2026-05-17

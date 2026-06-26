@@ -908,6 +908,7 @@ export function createApiClient(options: ApiClientOptions) {
           relationship?: string;
           personaTemplate?: string;
           agentBirthday?: string;
+          thinkingMonologue?: string[];
           allowIdentityOverride?: boolean;
         },
       ) =>
@@ -915,6 +916,11 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PATCH",
           body: data,
         }),
+      generateThinkingMonologue: (userId: number) =>
+        request<{ thinkingMonologue: string[] }>(
+          `/consciousness/${userId}/agent-profile/thinking-monologue/generate`,
+          { method: "POST" },
+        ),
       uploadAgentAvatar: (userId: number, file: File | Blob) =>
         uploadFile<{ avatarUrl: string }>(
           `/consciousness/${userId}/agent-profile/avatar`,

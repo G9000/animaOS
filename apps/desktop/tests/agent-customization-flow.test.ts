@@ -34,7 +34,7 @@ describe("agent customization flow chrome", () => {
     expect(previewNode).toContain("identityDraft");
     expect(previewNode).toContain("personaDraft");
     expect(edges).not.toContain('target: "avatar"');
-    expect(edges.match(/target:\s*"preview"/g)?.length ?? 0).toBe(12);
+    expect(edges.match(/target:\s*"preview"/g)?.length ?? 0).toBe(10);
     expect(edges).toContain('source: "identity"');
     expect(edges).toContain('source: "persona"');
     expect(edges).toContain('source: "birthday"');
@@ -43,11 +43,12 @@ describe("agent customization flow chrome", () => {
     expect(edges).toContain('source: "relationship"');
     expect(edges).not.toContain('source: "agentType"');
     expect(edges).toContain('source: "origin"');
-    expect(edges).toContain('source: "revision"');
+    expect(edges).not.toContain('source: "revision"');
+    expect(edges).toContain('source: "thinkingMonologue"');
     expect(edges).toContain('source: "directive"');
     expect(edges).toContain('source: "autonomy"');
-    expect(edges).toContain('source: "growth"');
-    expect(edges).toContain('source: "intentions"');
+    expect(edges).not.toContain('source: "growth"');
+    expect(edges).not.toContain('source: "intentions"');
   });
 
   test("loads compiled backend biography preview for the preview node", () => {
@@ -85,7 +86,7 @@ describe("agent customization flow chrome", () => {
     expect(previewNode).toContain("formatAgentBirthday");
   });
 
-  test("adds optional backend-backed profile nodes without requiring them by default", () => {
+  test("adds focused optional profile nodes without inactive history nodes", () => {
     const agentPage = readSource("src/pages/agent-customization/AgentCustomization.tsx");
     const hook = readSource("src/pages/agent-customization/hooks/useAgentNodes.ts");
     const previewNode = readSource("src/pages/agent-customization/nodes/AgentPreviewNode.tsx");
@@ -96,25 +97,26 @@ describe("agent customization flow chrome", () => {
     expect(hook).toContain("onOptionalNodeToggle");
     expect(hook).toContain('directive: false');
     expect(hook).toContain('origin: false');
-    expect(hook).toContain('revision: false');
+    expect(hook).toContain('thinkingMonologue: false');
     expect(hook).toContain('autonomy: false');
-    expect(hook).toContain('growth: false');
-    expect(hook).toContain('intentions: false');
     expect(hook).toContain('id: "directive"');
     expect(hook).toContain('id: "origin"');
-    expect(hook).toContain('id: "revision"');
+    expect(hook).toContain('id: "thinkingMonologue"');
     expect(hook).toContain('id: "autonomy"');
-    expect(hook).toContain('id: "growth"');
-    expect(hook).toContain('id: "intentions"');
+    expect(hook).not.toContain('id: "revision"');
+    expect(hook).not.toContain('id: "growth"');
+    expect(hook).not.toContain('id: "intentions"');
     expect(hook).toContain('getSelfModelSection(user.id, "user_directive")');
     expect(hook).toContain('getSelfModelSection(user.id, "soul")');
-    expect(hook).toContain('getSelfModelSection(user.id, "growth_log")');
-    expect(hook).toContain('getSelfModelSection(user.id, "intentions")');
+    expect(hook).not.toContain('getSelfModelSection(user.id, "growth_log")');
+    expect(hook).not.toContain('getSelfModelSection(user.id, "intentions")');
     expect(previewNode).toContain("Agent Directive");
     expect(previewNode).toContain("Origin Story");
-    expect(previewNode).toContain("Self-Revision Inbox");
+    expect(previewNode).toContain("Thinking Monologue");
     expect(previewNode).toContain("Autonomy Policy");
-    expect(previewNode).toContain("Active Intentions");
+    expect(previewNode).not.toContain("Self-Revision Inbox");
+    expect(previewNode).not.toContain("Growth Log");
+    expect(previewNode).not.toContain("Active Intentions");
   });
 
   test("shows optional controls as a sidebar rail with obvious toggle state", () => {
@@ -130,8 +132,9 @@ describe("agent customization flow chrome", () => {
     expect(hook).toContain("position: { x: 540, y: 780 }");
     expect(hook).toContain("position: { x: 540, y: 940 }");
     expect(hook).toContain("position: { x: 540, y: 1100 }");
-    expect(hook).toContain("position: { x: 540, y: 1260 }");
-    expect(hook).toContain("position: { x: 540, y: 1420 }");
+    expect(hook).not.toContain("position: { x: 540, y: 1260 }");
+    expect(hook).not.toContain("position: { x: 540, y: 1420 }");
+    expect(hook).not.toContain("position: { x: 540, y: 1580 }");
   });
 
   test("does not let optional section failures blank core identity and persona", () => {
@@ -143,7 +146,7 @@ describe("agent customization flow chrome", () => {
     expect(hook).not.toContain('Promise.all([\n      api.consciousness.getSelfModelSection(user.id, "identity"),\n      api.consciousness.getSelfModelSection(user.id, "persona"),\n      api.consciousness.getSelfModelSection(user.id, "user_directive")');
   });
 
-  test("marks dangerous optional nodes as override gated and growth as read-only", () => {
+  test("marks dangerous optional nodes as override gated", () => {
     const hook = readSource("src/pages/agent-customization/hooks/useAgentNodes.ts");
     const textNode = readSource("src/pages/agent-customization/nodes/AgentTextNode.tsx");
     const types = readSource("src/pages/agent-customization/nodes/types.ts");
@@ -152,7 +155,6 @@ describe("agent customization flow chrome", () => {
     expect(hook).toContain("Enable identity override first");
     expect(hook).toContain("allowIdentityOverride: identityOverrideAllowed");
     expect(hook).toContain("override rewrites a protected agent profile field");
-    expect(hook).toContain("readOnly: true");
     expect(types).toContain("requiresOverride");
     expect(types).toContain("readOnly");
     expect(textNode).toContain("This node cannot be changed unless override is enabled.");
@@ -216,6 +218,46 @@ describe("agent customization flow chrome", () => {
     expect(previewNode).not.toContain("agentType");
   });
 
+  test("has a thinking monologue node that saves profile lines and can generate drafts", () => {
+    const edges = readSource("src/pages/agent-customization/nodes/index.ts");
+    const hook = readSource("src/pages/agent-customization/hooks/useAgentNodes.ts");
+    const types = readSource("src/pages/agent-customization/nodes/types.ts");
+    const textNode = readSource("src/pages/agent-customization/nodes/AgentTextNode.tsx");
+    const streamingView = readSource("src/components/chat/StreamingView.tsx");
+    const chat = readSource("src/pages/chat/Chat.tsx");
+
+    expect(edges).toContain('source: "thinkingMonologue"');
+    expect(hook).toContain("thinkingMonologueDraft");
+    expect(hook).toContain("onThinkingMonologueSave");
+    expect(hook).toContain("onThinkingMonologueGenerate");
+    expect(hook).toContain("generateThinkingMonologue");
+    expect(hook).toContain('nodeTitle: "Thinking Monologue"');
+    expect(hook).toContain("thinkingMonologue: parseThinkingMonologueDraft(thinkingMonologueDraft)");
+    expect(types).toContain("thinkingMonologueDraft");
+    expect(types).toContain("onThinkingMonologueGenerate");
+    expect(textNode).toContain("Generate");
+    expect(streamingView).toContain("thinkingMonologue");
+    expect(streamingView).toContain("DEFAULT_THINKING_MONOLOGUE");
+    expect(chat).toContain("setThinkingMonologue");
+    expect(chat).toContain("thinkingMonologue={thinkingMonologue}");
+  });
+
+  test("renders thinking monologue as a plus-button row editor", () => {
+    const hook = readSource("src/pages/agent-customization/hooks/useAgentNodes.ts");
+    const types = readSource("src/pages/agent-customization/nodes/types.ts");
+    const textNode = readSource("src/pages/agent-customization/nodes/AgentTextNode.tsx");
+
+    expect(hook).toContain("listEditor: true");
+    expect(types).toContain("listEditor?: boolean");
+    expect(textNode).toContain("thinking-monologue-row");
+    expect(textNode).toContain('aria-label="Add thinking monologue line"');
+    expect(textNode).toContain('aria-label="Remove thinking monologue line"');
+    expect(textNode).toContain("event.key === \"Enter\"");
+    expect(textNode).toContain("event.clipboardData.getData(\"text\")");
+    expect(textNode).toContain(".split(\"\\n\")");
+    expect(textNode).not.toContain(".split(\",\")");
+  });
+
   test("uses a custom solid edge with a moving pulse orb for setting links", () => {
     const edges = readSource("src/pages/agent-customization/nodes/index.ts");
     const edgeComponent = readSource("src/pages/agent-customization/nodes/AgentPulseEdge.tsx");
@@ -223,7 +265,7 @@ describe("agent customization flow chrome", () => {
     const css = readSource("src/index.css");
 
     expect(edges).toContain("edgeTypes");
-    expect(edges.match(/type:\s*"agentPulse"/g)?.length ?? 0).toBe(12);
+    expect(edges.match(/type:\s*"agentPulse"/g)?.length ?? 0).toBe(10);
     expect(edges).not.toMatch(/animated:\s*true/);
     expect(agentPage).toContain("edgeTypes={edgeTypes}");
     expect(edgeComponent).toContain("BaseEdge");

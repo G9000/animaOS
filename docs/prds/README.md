@@ -75,4 +75,4 @@ P1 ──> P2 ──> P3 ──> P4 ──> P5
 
 | PRD | Phase | Priority | Status | Summary |
 |-----|-------|----------|--------|---------|
-| [Coding TUI Short Port v1](animus/coding-tui-v1.md) | 1 | P1 | Draft | ANIMA-first coding terminal UX, protocol lifecycle fixes, approvals, and spawn visibility |
+| [Rust Coding TUI v1](animus/rust-coding-tui-v1.md) | 1 | P1 | Draft | Rust-native ANIMA-first coding terminal replacing Bun/Ink Animus |

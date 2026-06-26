@@ -21,7 +21,7 @@ export { Toggle, type ToggleProps } from "./primitives/Toggle";
 export { AttachMenu, type AttachMenuProps } from "./composed/AttachMenu";
 export { Field, type FieldProps } from "./composed/Field";
 export { PageHeader, type PageHeaderProps } from "./composed/PageHeader";
-export { PromptInput, type PromptInputProps } from "./composed/PromptInput";
+export { PromptInput, type PromptInputProps, type AttachedImageItem, type AttachedDocumentItem, type AttachedDocumentStatus } from "./composed/PromptInput";
 export { TabBar, type TabBarProps, type Tab } from "./composed/TabBar";
 export {
   ToastContainer,

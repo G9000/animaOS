@@ -11,8 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import MemoryItem
@@ -20,6 +18,7 @@ from anima_server.services.agent.pending_ops import create_pending_op
 from anima_server.services.data_crypto import df
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 
 def _register_user(
@@ -59,6 +58,69 @@ def test_register_creates_agent_profile() -> None:
         assert isinstance(data["agentBirthday"], str)
         assert "T" in data["agentBirthday"]
         assert "." not in data["agentBirthday"]
+        assert isinstance(data["thinkingMonologue"], list)
+        assert "one sec" in data["thinkingMonologue"]
+
+
+def test_agent_thinking_monologue_can_be_saved_and_sanitized() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        updated = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={
+                "thinkingMonologue": [
+                    " I am holding the context together. ",
+                    "<think>private</think>",
+                    "This line is deliberately far too long to be accepted as a small visible thinking monologue status phrase.",
+                    "I am holding the context together.",
+                    "",
+                    "Finding the cleanest way through.",
+                ],
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["thinkingMonologue"] == [
+            "I am holding the context together.",
+            "Finding the cleanest way through.",
+        ]
+
+        profile = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+        )
+        assert profile.status_code == 200
+        assert profile.json()["thinkingMonologue"] == [
+            "I am holding the context together.",
+            "Finding the cleanest way through.",
+        ]
+
+
+def test_agent_can_generate_thinking_monologue_draft() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        generated = client.post(
+            f"/api/consciousness/{user_id}/agent-profile/thinking-monologue/generate",
+            headers=h,
+        )
+        assert generated.status_code == 200
+        generated_lines = generated.json()["thinkingMonologue"]
+        assert isinstance(generated_lines, list)
+        assert 5 <= len(generated_lines) <= 12
+        assert all(isinstance(line, str) and line.strip() for line in generated_lines)
+
+        profile = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+        )
+        assert profile.status_code == 200
+        assert profile.json()["thinkingMonologue"] != generated_lines
 
 
 def test_register_seeds_soul_block() -> None:

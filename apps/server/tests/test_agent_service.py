@@ -751,6 +751,116 @@ async def test_run_agent_persists_document_attachment_and_citation_pills(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_reuses_recent_pdf_context_for_followup_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.thread_manager import (
+        get_thread_messages_for_display,
+    )
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    search_calls: list[tuple[str, tuple[int, ...]]] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        del runtime_db, user_id, limit
+        search_calls.append((query, tuple(document_ids)))
+        assert document_ids == [document_id]
+        return [
+            DocumentRagResult(
+                chunk_id=20 + len(search_calls),
+                document_id=document_id,
+                filename="Insta360-X5-technische-daten-spec-sheet.pdf",
+                content="Insta360 X5 specifications include camera sensors, video modes, battery, and phone compatibility.",
+                similarity=0.9,
+                page_start=1,
+                page_end=1,
+                section_title="Specs",
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="document-followup",
+                password_hash="not-used",
+                display_name="Document Followup",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            registered_document = register_document(
+                runtime_session,
+                DocumentRegistration(
+                    user_id=user.id,
+                    thread_id=None,
+                    workflow_run_id=None,
+                    filename="Insta360-X5-technische-daten-spec-sheet.pdf",
+                    mime_type="application/pdf",
+                    storage_path=f"users/{user.id}/attachments/insta360-x5.pdf",
+                    sha256="doc-sha-followup",
+                    size_bytes=2048,
+                    metadata_json=None,
+                ),
+            )
+            document_id = registered_document.id
+
+            await run_agent(
+                "what is this document all about",
+                user.id,
+                soul_session,
+                runtime_session,
+                document_ids=[document_id],
+            )
+            await run_agent(
+                "tell me more about it",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+
+            thread = runtime_session.query(RuntimeThread).one()
+            display = get_thread_messages_for_display(
+                runtime_session,
+                thread=thread,
+                user_id=user.id,
+                transcripts_dir=None,
+                dek=None,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert search_calls == [
+        ("what is this document all about", (document_id,)),
+        ("tell me more about it", (document_id,)),
+    ]
+    labels = [label for label, _value in runner.requests[1]["memory_blocks"]]
+    assert "document_context" in labels
+    assert "human" not in labels
+    assert display[3]["pills"] == [
+        {
+            "kind": "document_source",
+            "label": "Insta360-X5-technische-daten-spec-sheet.pdf",
+            "ref": document_id,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_persists_image_source_pill_on_assistant_reply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -798,9 +908,12 @@ async def test_run_agent_persists_image_source_pill_on_assistant_reply(
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
-    assert extract_stored_pills(messages[1].content_json) == [
-        {"kind": "image_source", "label": "USED IMAGE", "ref": None}
-    ]
+    pills = extract_stored_pills(messages[1].content_json)
+    assert len(pills) == 1
+    assert pills[0]["kind"] == "image_source"
+    assert pills[0]["label"] == "pixel.png"
+    assert isinstance(pills[0]["ref"], str)
+    assert pills[0]["ref"].startswith("img_")
 
 
 @pytest.mark.asyncio

@@ -59,8 +59,8 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
 
   const {
     avatarUrl, agentName, relationship, dominantEmotion,
-    identityDraft, personaDraft, originDraft, directiveDraft, autonomyDraft, revisionDraft, intentionsDraft,
-    agentBirthday, previewSections, onClose,
+    identityDraft, personaDraft, originDraft, directiveDraft, autonomyDraft,
+    thinkingMonologueDraft, agentBirthday, previewSections, onClose,
   } = data;
 
   const identity = identityDraft || sectionContent(previewSections, "identity");
@@ -68,14 +68,11 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
   const origin = optionalSection(originDraft, sectionContent(previewSections, "origin"));
   const directive = optionalSection(directiveDraft, sectionContent(previewSections, "user_directive"));
   const autonomy = autonomyDraft.trim();
-  const revision = revisionDraft.trim();
-  const intentions = optionalSection(intentionsDraft, sectionContent(previewSections, "intentions"));
   const optionalProfileSections = [
     { title: "Origin Story", content: origin },
     { title: "Agent Directive", content: directive },
     { title: "Autonomy Policy", content: autonomy },
-    { title: "Self-Revision Inbox", content: revision },
-    { title: "Active Intentions", content: intentions },
+    { title: "Thinking Monologue", content: thinkingMonologueDraft },
   ].filter((section) => section.content.trim());
 
   return (

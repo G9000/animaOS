@@ -88,6 +88,7 @@ from anima_server.services.agent.state import (
     StoredMessage,
     attach_serialized_pills,
     deserialize_agent_retrieval,
+    extract_stored_pills,
     extract_stored_retrieval,
     serialize_agent_retrieval,
 )
@@ -124,6 +125,7 @@ _runner_lock = Lock()
 _cached_runner: AgentRuntime | None = None
 
 _background_tasks: set[asyncio.Task[Any]] = set()
+_DOCUMENT_PILL_KINDS = frozenset({"document_attachment", "document_source"})
 
 
 def normalize_document_only_user_message(
@@ -1224,17 +1226,23 @@ async def _assemble_turn_context(
             exc_info=True,
         )
 
+    effective_document_ids = _resolve_turn_document_ids(
+        runtime_db,
+        thread_id=thread.id,
+        user_id=user_id,
+        document_ids=document_ids,
+    )
     document_context_block = _build_document_context_block(
         runtime_db,
         user_id=user_id,
         user_message=user_message,
-        document_ids=document_ids,
+        document_ids=effective_document_ids,
     )
     today_context_block = _build_today_context_block(today_context)
 
     if document_context_block is not None:
         document_turn_directive = _build_document_turn_directive(
-            document_ids=document_ids,
+            document_ids=effective_document_ids,
         )
         memory_blocks = tuple(
             block
@@ -1248,7 +1256,7 @@ async def _assemble_turn_context(
         document_source_pills = _build_document_pills(
             runtime_db,
             user_id=user_id,
-            document_ids=document_ids,
+            document_ids=effective_document_ids,
             kind="document_source",
         )
     else:
@@ -1325,6 +1333,69 @@ async def _assemble_turn_context(
     )
 
 
+def _resolve_turn_document_ids(
+    runtime_db: Session,
+    *,
+    thread_id: int,
+    user_id: int,
+    document_ids: Sequence[int],
+) -> list[int]:
+    explicit_ids = _dedupe_positive_ids(document_ids)
+    if explicit_ids:
+        return explicit_ids
+    return _recent_thread_document_ids(
+        runtime_db,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def _recent_thread_document_ids(
+    runtime_db: Session,
+    *,
+    thread_id: int,
+    user_id: int,
+    limit: int = 12,
+) -> list[int]:
+    messages = runtime_db.execute(
+        select(RuntimeMessage)
+        .where(RuntimeMessage.thread_id == thread_id)
+        .where(RuntimeMessage.user_id == user_id)
+        .order_by(RuntimeMessage.sequence_id.desc(), RuntimeMessage.id.desc())
+        .limit(limit)
+    ).scalars()
+    document_ids: list[int] = []
+    seen: set[int] = set()
+    for message in messages:
+        if message.is_internal:
+            continue
+        message_document_ids: list[int] = []
+        for pill in extract_stored_pills(message.content_json):
+            if pill.get("kind") not in _DOCUMENT_PILL_KINDS:
+                continue
+            try:
+                document_id = int(pill.get("ref"))
+            except (TypeError, ValueError):
+                continue
+            if document_id <= 0 or document_id in seen:
+                continue
+            if (
+                get_document_for_user(
+                    runtime_db,
+                    user_id=user_id,
+                    document_id=document_id,
+                )
+                is None
+            ):
+                continue
+            seen.add(document_id)
+            message_document_ids.append(document_id)
+        if message_document_ids:
+            document_ids.extend(message_document_ids)
+            break
+    return document_ids
+
+
 def _build_document_pills(
     runtime_db: Session,
     *,
@@ -1376,8 +1447,14 @@ def _build_assistant_source_pills(
             pills.append(
                 {"kind": "document_source", "label": "CITED DOCS", "ref": None}
             )
-    if turn_ctx.attachments:
-        pills.append({"kind": "image_source", "label": "USED IMAGE", "ref": None})
+    for attachment in turn_ctx.attachments:
+        pills.append(
+            {
+                "kind": "image_source",
+                "label": _truncate_pill_label(attachment.filename or "Image"),
+                "ref": attachment.id,
+            }
+        )
     return tuple(pills)
 
 

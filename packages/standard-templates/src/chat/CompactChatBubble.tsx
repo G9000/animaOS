@@ -184,7 +184,7 @@ export function CompactChatBubble({
         </div>
       )}
 
-      {/* Content — scan lines, no corner junk */}
+      {/* Content — scan lines */}
       <div className="relative bg-background/[0.28] backdrop-blur-[40px] shadow-[0_4px_28px_rgba(0,0,0,0.30)] px-4 py-3.5 text-foreground/90 overflow-hidden">
         <div className={cn("absolute inset-0 pointer-events-none opacity-50", scanLines)} />
         <div className="relative">{bubbleContent}</div>

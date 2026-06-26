@@ -1,7 +1,7 @@
-"""add agent birthday override to agent_profile
+"""add thinking monologue to agent_profile
 
-Revision ID: 20260626_0001
-Revises: 20260605_0001
+Revision ID: 20260626_0002
+Revises: 20260626_0001
 Create Date: 2026-06-26
 """
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "20260626_0001"
-down_revision = "20260605_0001"
+revision = "20260626_0002"
+down_revision = "20260626_0001"
 branch_labels = None
 depends_on = None
 
@@ -24,18 +24,18 @@ def _has_column(table_name: str, column_name: str) -> bool:
 
 
 def upgrade() -> None:
-    if _has_column("agent_profile", "agent_birthday"):
+    if _has_column("agent_profile", "thinking_monologue_json"):
         return
     if not sa.inspect(op.get_bind()).has_table("agent_profile"):
         return
     with op.batch_alter_table("agent_profile") as batch_op:
         batch_op.add_column(
-            sa.Column("agent_birthday", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("thinking_monologue_json", sa.Text(), nullable=True),
         )
 
 
 def downgrade() -> None:
-    if not _has_column("agent_profile", "agent_birthday"):
+    if not _has_column("agent_profile", "thinking_monologue_json"):
         return
     with op.batch_alter_table("agent_profile") as batch_op:
-        batch_op.drop_column("agent_birthday")
+        batch_op.drop_column("thinking_monologue_json")

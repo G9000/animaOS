@@ -5,7 +5,7 @@ Local ticket backlog for planned work that is not yet in implementation.
 ## Active Initiatives
 
 - `gateway-runtime-online`: hybrid gateway/runtime split for online and multi-device delivery
-- `animus-coding-tui`: production-grade ANIMA-first coding terminal upgrade
+- `animus-coding-tui`: Rust-native ANIMA-first coding terminal rewrite
 - `local-runtime-daemon`: local background supervisor and desktop packaging
 - `repo-workflow`: local ticketing workflow, dashboard, and legacy scratchboard migration
 

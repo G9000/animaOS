@@ -577,6 +577,7 @@ class AgentProfileUpdateRequest(BaseModel):
     relationship: str | None = None
     personaTemplate: str | None = None
     agentBirthday: str | None = None
+    thinkingMonologue: list[str] | None = None
     allowIdentityOverride: bool = False
 
 
@@ -590,6 +591,10 @@ async def get_agent_profile(
     require_unlocked_user(request, user_id)
 
     from anima_server.models import AgentProfile
+    from anima_server.services.agent.thinking_monologue import (
+        DEFAULT_THINKING_MONOLOGUE,
+        parse_thinking_monologue,
+    )
 
     profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == user_id).first()
@@ -601,6 +606,7 @@ async def get_agent_profile(
             "agentType": "companion",
             "avatarUrl": None,
             "agentBirthday": None,
+            "thinkingMonologue": list(DEFAULT_THINKING_MONOLOGUE),
             "setupComplete": False,
         }
     return {
@@ -610,6 +616,7 @@ async def get_agent_profile(
         "agentType": profile.agent_type,
         "avatarUrl": profile.avatar_url,
         "agentBirthday": _effective_agent_birthday(profile),
+        "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
         "setupComplete": profile.setup_complete,
     }
 
@@ -659,6 +666,10 @@ async def update_agent_profile(
     )
     from anima_server.services.agent.self_model import get_self_model_block, set_self_model_block
     from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
+    from anima_server.services.agent.thinking_monologue import (
+        parse_thinking_monologue,
+        serialize_thinking_monologue,
+    )
 
     profile = db.query(AgentProfile).filter(
         AgentProfile.user_id == user_id).first()
@@ -711,6 +722,11 @@ async def update_agent_profile(
                 detail="Identity override required to change agent birthday",
             )
         profile.agent_birthday = next_agent_birthday
+
+    if payload.thinkingMonologue is not None:
+        profile.thinking_monologue_json = serialize_thinking_monologue(
+            payload.thinkingMonologue,
+        )
 
     profile.setup_complete = True
 
@@ -791,7 +807,24 @@ async def update_agent_profile(
         "agentType": profile.agent_type,
         "avatarUrl": profile.avatar_url,
         "agentBirthday": _effective_agent_birthday(profile),
+        "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
         "setupComplete": True,
+    }
+
+
+@router.post("/{user_id}/agent-profile/thinking-monologue/generate")
+async def generate_agent_thinking_monologue(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Generate a draft Thinking Monologue without persisting it."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.thinking_monologue import generate_thinking_monologue
+
+    return {
+        "thinkingMonologue": await generate_thinking_monologue(db, user_id=user_id),
     }
 
 

@@ -164,6 +164,12 @@ a {
   @apply font-mono text-[9px] uppercase tracking-[0.25em] text-muted-foreground;
 }
 
+/* Thinking dots wave */
+@keyframes thinking-dot {
+  0%, 70%, 100% { opacity: 0.2; transform: translateY(0px); }
+  35% { opacity: 0.85; transform: translateY(-4px); }
+}
+
 /* Terminal cursor blink */
 @keyframes cursor-blink {
   0%,

@@ -23,7 +23,6 @@ import {
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
-import personaAvatar from "../../assets/persona-default.svg";
 
 // Chat components from standard-templates
 import {
@@ -151,18 +150,24 @@ function toDocumentSourcePill(
   };
 }
 
+function toImageSourcePill(image: PendingImageAttachment): ChatPill {
+  return {
+    kind: "image_source",
+    label: truncatePillLabel(image.file.name || "Image"),
+    ref: image.id,
+  };
+}
+
 function buildAssistantSourcePills({
   documents,
-  hasImageSources,
+  images,
 }: {
   documents: PendingDocumentAttachment[];
-  hasImageSources: boolean;
+  images: PendingImageAttachment[];
 }): ChatPill[] | undefined {
   const pills: ChatPill[] = [];
   pills.push(...documents.map(toDocumentSourcePill));
-  if (hasImageSources) {
-    pills.push({ kind: "image_source", label: "USED IMAGE", ref: null });
-  }
+  pills.push(...images.map(toImageSourcePill));
   return pills.length > 0 ? pills : undefined;
 }
 
@@ -204,31 +209,44 @@ function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
   if (!pills || pills.length === 0) return null;
   return (
     <div className="mb-2 flex flex-wrap gap-1 not-prose">
-      {pills.map((pill) => (
-        <span
-          key={`${pill.kind}:${String(pill.ref ?? "")}:${pill.label}`}
-          className={`inline-flex max-w-full items-center gap-1 border border-border/60 px-1.5 py-0.5 ${
-            pill.kind === "document_attachment" || pill.kind === "document_source"
-              ? "bg-card/70 text-foreground/80"
-              : "text-muted-foreground/55"
-          }`}
-        >
-          {pill.kind === "document_attachment" || pill.kind === "document_source" ? (
-            <>
-              <span className="font-mono text-[8px] uppercase tracking-[0.15em] text-foreground/65">
-                {pill.kind === "document_source" ? "Cited PDF" : "PDF"}
-              </span>
-              <span className="max-w-[240px] truncate text-[11px] leading-none">
+      {pills.map((pill) => {
+        const filePill =
+          pill.kind === "document_attachment" ||
+          pill.kind === "document_source" ||
+          pill.kind === "image_source";
+        const prefix =
+          pill.kind === "document_source"
+            ? "Cited PDF"
+            : pill.kind === "document_attachment"
+              ? "PDF"
+              : "Used Image";
+
+        return (
+          <span
+            key={`${pill.kind}:${String(pill.ref ?? "")}:${pill.label}`}
+            className={`inline-flex max-w-full items-center gap-1 border border-border/60 px-1.5 py-0.5 ${
+              filePill
+                ? "bg-card/70 text-foreground/80"
+                : "text-muted-foreground/55"
+            }`}
+          >
+            {filePill ? (
+              <>
+                <span className="font-mono text-[8px] uppercase tracking-[0.15em] text-foreground/65">
+                  {prefix}
+                </span>
+                <span className="max-w-[240px] truncate text-[11px] leading-none">
+                  {pill.label}
+                </span>
+              </>
+            ) : (
+              <span className="font-mono text-[8px] uppercase tracking-[0.15em]">
                 {pill.label}
               </span>
-            </>
-          ) : (
-            <span className="font-mono text-[8px] uppercase tracking-[0.15em]">
-              {pill.label}
-            </span>
-          )}
-        </span>
-      ))}
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -305,89 +323,6 @@ function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
   );
 }
 
-function SelectedImagePreviews({
-  images,
-  onRemove,
-}: {
-  images: PendingImageAttachment[];
-  onRemove: (id: string) => void;
-}) {
-  if (images.length === 0) return null;
-  return (
-    <div className="mb-2 grid grid-cols-4 gap-2">
-      {images.map((image) => (
-        <div key={image.id} className="relative border border-border bg-card">
-          <img
-            src={image.previewUrl}
-            alt={image.file.name}
-            className="h-16 w-full object-cover"
-          />
-          <button
-            type="button"
-            onClick={() => onRemove(image.id)}
-            className="absolute right-1 top-1 h-5 w-5 bg-background/90 border border-border font-mono text-[10px] text-muted-foreground hover:text-foreground"
-            title="Remove image"
-          >
-            x
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SelectedDocumentChips({
-  documents,
-  onRemove,
-}: {
-  documents: PendingDocumentAttachment[];
-  onRemove: (id: string) => void;
-}) {
-  if (documents.length === 0) return null;
-  return (
-    <div className="mb-2 flex flex-wrap gap-2">
-      {documents.map((document) => {
-        const statusLabel =
-          document.status === "indexed"
-            ? "READY"
-            : document.status === "failed"
-              ? "FAILED"
-              : "INDEXING";
-        return (
-          <div
-            key={document.id}
-            className="flex max-w-full items-center gap-2 border border-border bg-card px-2 py-1 text-xs text-muted-foreground"
-            title={document.error || document.filename}
-          >
-            <span className="font-mono text-[9px] tracking-[0.16em] text-foreground/80">
-              PDF
-            </span>
-            <span className="max-w-[180px] truncate">{document.filename}</span>
-            <span
-              className={`font-mono text-[8px] tracking-[0.16em] ${
-                document.status === "indexed"
-                  ? "text-emerald-400/80"
-                  : document.status === "failed"
-                    ? "text-destructive"
-                    : "text-accent/70"
-              }`}
-            >
-              {statusLabel}
-            </span>
-            <button
-              type="button"
-              onClick={() => onRemove(document.id)}
-              className="h-5 w-5 border border-border bg-background/80 font-mono text-[10px] text-muted-foreground hover:text-foreground"
-              title="Remove PDF"
-            >
-              x
-            </button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
@@ -506,8 +441,7 @@ export default function Chat() {
   const [contextStats, setContextStats] = useState<ThreadContextStats | null>(null);
   const currentThreadIdRef = useRef<number | null>(null);
 
-  // Avatar
-  const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
+  const [thinkingMonologue, setThinkingMonologue] = useState<string[]>([]);
 
   // Scroll state
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -544,19 +478,11 @@ export default function Chat() {
     const userId = user.id;
     let revoked = false;
 
-    // Avatar — independent of the conversation flow.
+    // Thinking monologue — independent of the conversation flow.
     api.consciousness
       .getAgentProfile(userId)
-      .then(async (profile) => {
-        if (!profile.avatarUrl || revoked) return;
-        const token = getUnlockToken();
-        const headers: Record<string, string> = token
-          ? { "x-anima-unlock": token }
-          : {};
-        const res = await fetch(`${API_BASE}${profile.avatarUrl}`, { headers });
-        if (res.ok && !revoked) {
-          setAgentAvatarUrl(URL.createObjectURL(await res.blob()));
-        }
+      .then((profile) => {
+        if (!revoked) setThinkingMonologue(profile.thinkingMonologue ?? []);
       })
       .catch(() => {});
 
@@ -1091,15 +1017,12 @@ export default function Chat() {
         traceEvents: collectedTraces.length > 0 ? collectedTraces : undefined,
         pills: buildAssistantSourcePills({
           documents: documentsForTurn,
-          hasImageSources: imagesForTurn.length > 0,
+          images: imagesForTurn,
         }),
       };
       setMessages((prev) => [...prev, assistantMsg]);
       const resolvedThreadId = currentThreadIdRef.current ?? currentThreadId;
-      if (
-        (imagesForTurn.length > 0 || documentsForTurn.length > 0) &&
-        resolvedThreadId != null
-      ) {
+      if (resolvedThreadId != null) {
         try {
           await loadThreadMessages(resolvedThreadId);
         } catch {
@@ -1215,18 +1138,19 @@ export default function Chat() {
         streaming={streaming}
         canSubmit={canSubmit}
         onAttach={handleAttach}
-        inputAccessory={
-          <>
-            <SelectedImagePreviews
-              images={selectedImages}
-              onRemove={removeSelectedImage}
-            />
-            <SelectedDocumentChips
-              documents={selectedDocuments}
-              onRemove={removeSelectedDocument}
-            />
-          </>
-        }
+        attachedImages={selectedImages.map((img) => ({
+          id: img.id,
+          url: img.previewUrl,
+          filename: img.file.name,
+          onRemove: () => removeSelectedImage(img.id),
+        }))}
+        attachedDocuments={selectedDocuments.map((doc) => ({
+          id: doc.id,
+          filename: doc.filename,
+          status: doc.status,
+          error: doc.error,
+          onRemove: () => removeSelectedDocument(doc.id),
+        }))}
         showSidebar={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         showTrace={showTrace}
@@ -1261,7 +1185,6 @@ export default function Chat() {
               <CompactChatBubble
                 key={msg.id}
                 message={msg}
-                avatarUrl={agentAvatarUrl}
                 showTrace={showTrace}
                 isGrouped={isGrouped}
                 onTranslate={(text) => translateText(text, translateLang)}
@@ -1271,7 +1194,6 @@ export default function Chat() {
               <ChatBubble
                 key={msg.id}
                 message={msg}
-                avatarUrl={agentAvatarUrl}
                 showTrace={showTrace}
                 isGrouped={isGrouped}
                 onTranslate={(text) => translateText(text, translateLang)}
@@ -1286,7 +1208,7 @@ export default function Chat() {
             reasoningBuffer={reasoningBuffer}
             traceEvents={traceEvents}
             showTrace={showTrace}
-            agentAvatarUrl={agentAvatarUrl}
+            thinkingMonologue={thinkingMonologue}
           />
 
           {/* Debug in Animus — shows after a turn with errors in the trace */}

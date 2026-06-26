@@ -3,7 +3,24 @@ import EmojiPicker, { type EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "../utils/cn";
 import { Button } from "../primitives/Button";
 import { AttachMenu } from "./AttachMenu";
-import { MicIcon, SendIcon } from "../icons";
+import { MicIcon, SendIcon, DocumentIcon } from "../icons";
+
+export interface AttachedImageItem {
+  id: string;
+  url: string;
+  filename?: string;
+  onRemove: () => void;
+}
+
+export type AttachedDocumentStatus = "indexing" | "indexed" | "failed";
+
+export interface AttachedDocumentItem {
+  id: string;
+  filename: string;
+  status: AttachedDocumentStatus;
+  error?: string;
+  onRemove: () => void;
+}
 
 export interface PromptInputProps {
   agentName?: string;
@@ -18,6 +35,8 @@ export interface PromptInputProps {
   size?: "default" | "lg";
   canSubmit?: boolean;
   onAttach?: (type: string) => void;
+  attachedImages?: AttachedImageItem[];
+  attachedDocuments?: AttachedDocumentItem[];
 }
 
 const MAX_ROWS = 6;
@@ -46,6 +65,8 @@ export function PromptInput({
   size = "default",
   canSubmit = false,
   onAttach,
+  attachedImages,
+  attachedDocuments,
 }: PromptInputProps) {
   const [internalValue, setInternalValue] = useState("");
   const [showEmoji, setShowEmoji] = useState(false);
@@ -250,6 +271,7 @@ export function PromptInput({
       <div
         className={cn(
           "flex flex-col",
+          "rounded-2xl",
           "bg-background/25 backdrop-blur-[40px]",
           "border border-foreground/[0.08]",
           "shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]",
@@ -258,6 +280,60 @@ export function PromptInput({
           disabled && "opacity-50",
         )}
       >
+        {/* Attached images and documents */}
+        {((attachedImages && attachedImages.length > 0) || (attachedDocuments && attachedDocuments.length > 0)) && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {attachedImages?.map((img) => (
+              <div key={img.id} className="relative shrink-0 w-16 h-16 rounded-xl overflow-hidden">
+                <img
+                  src={img.url}
+                  alt={img.filename ?? "Attached image"}
+                  className="w-full h-full object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={img.onRemove}
+                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/80 border border-foreground/[0.12] text-foreground/60 hover:text-foreground flex items-center justify-center text-[10px] leading-none"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {attachedDocuments?.map((doc) => {
+              const statusLabel =
+                doc.status === "indexed" ? "ready" :
+                doc.status === "failed" ? "failed" : "indexing";
+              const statusColor =
+                doc.status === "indexed" ? "text-emerald-400/80" :
+                doc.status === "failed" ? "text-destructive/80" : "text-accent/70";
+              return (
+                <div
+                  key={doc.id}
+                  title={doc.error ?? doc.filename}
+                  className="relative shrink-0 w-24 h-16 rounded-xl bg-foreground/[0.05] border border-foreground/[0.08] flex flex-col justify-between p-2 overflow-hidden"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <DocumentIcon size="sm" className="text-foreground/35 shrink-0" />
+                    <span className={cn("font-mono text-[8px] tracking-[0.12em] uppercase leading-none", statusColor)}>
+                      {statusLabel}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-foreground/55 truncate leading-tight w-full">
+                    {doc.filename}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={doc.onRemove}
+                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/80 border border-foreground/[0.12] text-foreground/60 hover:text-foreground flex items-center justify-center text-[10px] leading-none"
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Text area */}
         <div className="px-4 pt-3 pb-2">
           <textarea

@@ -8,7 +8,11 @@ import type { AgentBiographyPreviewData } from "@anima/api-client";
 import { EDGES, type AgentPulseEdgeType } from "../nodes";
 import type { AgentNode, Section } from "../nodes/types";
 
-type OptionalNodeKey = "origin" | "directive" | "autonomy" | "growth" | "revision" | "intentions";
+type OptionalNodeKey =
+  | "origin"
+  | "directive"
+  | "autonomy"
+  | "thinkingMonologue";
 
 export interface OptionalNodeToggle {
   id: OptionalNodeKey;
@@ -24,8 +28,6 @@ const EMPTY_SELF_MODEL_DRAFTS: Record<Section, string> = {
   soul: "",
   persona: "",
   user_directive: "",
-  growth_log: "",
-  intentions: "",
 };
 
 const EMPTY_SELF_MODEL_VERSIONS: Record<Section, number | null> = {
@@ -33,15 +35,12 @@ const EMPTY_SELF_MODEL_VERSIONS: Record<Section, number | null> = {
   soul: null,
   persona: null,
   user_directive: null,
-  growth_log: null,
-  intentions: null,
 };
 
 const PROTECTED_SECTIONS: ReadonlySet<Section> = new Set([
   "identity",
   "soul",
   "user_directive",
-  "intentions",
 ]);
 
 function requiresIdentityOverride(section: Section): boolean {
@@ -88,6 +87,17 @@ function toDateTimeLocalValue(value: string): string {
   ].join("T");
 }
 
+function parseThinkingMonologueDraft(value: string): string[] {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function formatThinkingMonologueDraft(value: string[]): string {
+  return value.join("\n");
+}
+
 export function useAgentNodes() {
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -95,6 +105,7 @@ export function useAgentNodes() {
     agentName,
     relationship,
     agentBirthday: profileAgentBirthday,
+    thinkingMonologue,
     avatarUrl,
     hasCustomAvatar,
   } = useAgentProfile(user?.id);
@@ -121,6 +132,10 @@ export function useAgentNodes() {
   const [agentBirthdayDraft, setAgentBirthdayDraft] = useState("");
   const [agentBirthdaySaving, setAgentBirthdaySaving] = useState(false);
   const [agentBirthdaySaved, setAgentBirthdaySaved] = useState(false);
+  const [thinkingMonologueDraft, setThinkingMonologueDraft] = useState("");
+  const [thinkingMonologueSaving, setThinkingMonologueSaving] = useState(false);
+  const [thinkingMonologueGenerating, setThinkingMonologueGenerating] = useState(false);
+  const [thinkingMonologueSaved, setThinkingMonologueSaved] = useState(false);
   const [identityOverrideAllowed, setIdentityOverrideAllowed] = useState(false);
   const [directiveDraft, setDirectiveDraft] = useState("");
   const [autonomyDraft, setAutonomyDraft] = useState("");
@@ -128,9 +143,7 @@ export function useAgentNodes() {
     origin: false,
     directive: false,
     autonomy: false,
-    growth: false,
-    revision: false,
-    intentions: false,
+    thinkingMonologue: false,
   });
 
   const onOptionalNodeToggle = useCallback((key: OptionalNodeKey) => {
@@ -164,28 +177,12 @@ export function useAgentNodes() {
         onToggle: () => onOptionalNodeToggle("autonomy"),
       },
       {
-        id: "growth",
-        label: "Growth Log",
-        description: "Corrections & milestones.",
+        id: "thinkingMonologue",
+        label: "Thinking",
+        description: "Visible waiting monologue.",
         dangerous: false,
-        active: optionalNodeVisibility.growth,
-        onToggle: () => onOptionalNodeToggle("growth"),
-      },
-      {
-        id: "revision",
-        label: "Revision Inbox",
-        description: "Self-change history feed.",
-        dangerous: false,
-        active: optionalNodeVisibility.revision,
-        onToggle: () => onOptionalNodeToggle("revision"),
-      },
-      {
-        id: "intentions",
-        label: "Intentions",
-        description: "Goal-driven constraints.",
-        dangerous: true,
-        active: optionalNodeVisibility.intentions,
-        onToggle: () => onOptionalNodeToggle("intentions"),
+        active: optionalNodeVisibility.thinkingMonologue,
+        onToggle: () => onOptionalNodeToggle("thinkingMonologue"),
       },
     ],
     [onOptionalNodeToggle, optionalNodeVisibility],
@@ -224,7 +221,7 @@ export function useAgentNodes() {
   }, []);
 
   const onSelfModelSave = useCallback(async (section: Section) => {
-    if (user?.id == null || selfModelSaving != null || section === "growth_log") return;
+    if (user?.id == null || selfModelSaving != null) return;
     if (requiresIdentityOverride(section) && !identityOverrideAllowed) {
       setError("Enable identity override first");
       return;
@@ -406,6 +403,45 @@ export function useAgentNodes() {
     }
   }, [agentBirthdayDraft, agentBirthdaySaving, identityOverrideAllowed, user?.id]);
 
+  const onThinkingMonologueSave = useCallback(async () => {
+    if (user?.id == null || thinkingMonologueSaving) return;
+    setThinkingMonologueSaving(true);
+    setThinkingMonologueSaved(false);
+    setError("");
+    try {
+      const updated = await api.consciousness.updateAgentProfile(user.id, {
+        thinkingMonologue: parseThinkingMonologueDraft(thinkingMonologueDraft),
+      });
+      setThinkingMonologueDraft(
+        formatThinkingMonologueDraft(updated.thinkingMonologue ?? []),
+      );
+      dispatchAgentProfileChanged();
+      setThinkingMonologueSaved(true);
+      window.setTimeout(() => setThinkingMonologueSaved(false), 2000);
+    } catch (err: any) {
+      setError(err.message || "Failed to save thinking monologue");
+    } finally {
+      setThinkingMonologueSaving(false);
+    }
+  }, [thinkingMonologueDraft, thinkingMonologueSaving, user?.id]);
+
+  const onThinkingMonologueGenerate = useCallback(async () => {
+    if (user?.id == null || thinkingMonologueGenerating) return;
+    setThinkingMonologueGenerating(true);
+    setThinkingMonologueSaved(false);
+    setError("");
+    try {
+      const generated = await api.consciousness.generateThinkingMonologue(user.id);
+      setThinkingMonologueDraft(
+        formatThinkingMonologueDraft(generated.thinkingMonologue ?? []),
+      );
+    } catch (err: any) {
+      setError(err.message || "Failed to generate thinking monologue");
+    } finally {
+      setThinkingMonologueGenerating(false);
+    }
+  }, [thinkingMonologueGenerating, user?.id]);
+
   const onNodeClose = useCallback(() => {}, []);
 
   const protectedOverrideDescription = "Override rewrites a protected agent profile field.";
@@ -425,9 +461,6 @@ export function useAgentNodes() {
       }
       if (section.id === "user_directive") {
         return { ...section, content: userDirectiveContent };
-      }
-      if (section.id === "intentions") {
-        return { ...section, content: selfModelDrafts.intentions };
       }
       return section;
     });
@@ -640,87 +673,30 @@ export function useAgentNodes() {
       });
     }
 
-    if (optionalNodeVisibility.growth) {
+    if (optionalNodeVisibility.thinkingMonologue) {
       baseNodes.push({
-        id: "growth",
+        id: "thinkingMonologue",
         type: "agentText",
         position: { x: 540, y: 1100 },
         width: 420,
         height: 300,
         data: {
-          nodeTitle: "Growth Log",
-          description: "Read-only history of profile and self-model changes.",
-          draft: selfModelDrafts.growth_log,
-          version: selfModelVersions.growth_log,
-          loading: selfModelLoading,
-          saving: false,
-          saved: false,
+          nodeTitle: "Thinking Monologue",
+          description: "Short visible status lines shown while the agent is preparing a reply. One line per row.",
+          draft: thinkingMonologueDraft,
+          version: null,
+          loading: false,
+          saving: thinkingMonologueSaving,
+          generating: thinkingMonologueGenerating,
+          saved: thinkingMonologueSaved,
           hasWarmer: false,
           required: false,
-          readOnly: true,
-          onChange: () => undefined,
-          onSave: () => undefined,
+          listEditor: true,
+          onChange: setThinkingMonologueDraft,
+          onSave: onThinkingMonologueSave,
+          onThinkingMonologueGenerate,
           onWarmer: onWarmerBaseline,
-          onClose: () => onOptionalNodeToggle("growth"),
-          cardWidth: "w-[420px]",
-          inputRows: 8,
-        },
-      });
-    }
-
-    if (optionalNodeVisibility.revision) {
-      baseNodes.push({
-        id: "revision",
-        type: "agentText",
-        position: { x: 540, y: 1260 },
-        width: 420,
-        height: 300,
-        data: {
-          nodeTitle: "Self-Revision Inbox",
-          description: "Read-only feed of profile changes and self-model edits awaiting future agent reflection.",
-          draft: selfModelDrafts.growth_log,
-          version: selfModelVersions.growth_log,
-          loading: selfModelLoading,
-          saving: false,
-          saved: false,
-          hasWarmer: false,
-          required: false,
-          readOnly: true,
-          onChange: () => undefined,
-          onSave: () => undefined,
-          onWarmer: onWarmerBaseline,
-          onClose: () => onOptionalNodeToggle("revision"),
-          cardWidth: "w-[420px]",
-          inputRows: 8,
-        },
-      });
-    }
-
-    if (optionalNodeVisibility.intentions) {
-      baseNodes.push({
-        id: "intentions",
-        type: "agentText",
-        position: { x: 540, y: 1420 },
-        width: 420,
-        height: 300,
-        data: {
-          nodeTitle: "Active Intentions",
-          description: "Ongoing aims the agent is trying to maintain across sessions.",
-          draft: selfModelDrafts.intentions,
-          version: selfModelVersions.intentions,
-          loading: selfModelLoading,
-          saving: selfModelSaving === "intentions",
-          saved: selfModelSaved === "intentions",
-          hasWarmer: false,
-          required: false,
-          requiresOverride: true,
-          identityOverrideAllowed,
-          overrideDescription: protectedOverrideDescription,
-          onIdentityOverrideAllowedChange: setIdentityOverrideAllowed,
-          onChange: (val) => onSelfModelDraftChange("intentions", val),
-          onSave: () => onSelfModelSave("intentions"),
-          onWarmer: onWarmerBaseline,
-          onClose: () => onOptionalNodeToggle("intentions"),
+          onClose: () => onOptionalNodeToggle("thinkingMonologue"),
           cardWidth: "w-[420px]",
           inputRows: 8,
         },
@@ -741,8 +717,7 @@ export function useAgentNodes() {
         originDraft: selfModelDrafts.soul,
         directiveDraft,
         autonomyDraft,
-        revisionDraft: selfModelDrafts.growth_log,
-        intentionsDraft: selfModelDrafts.intentions,
+        thinkingMonologueDraft,
         agentBirthday,
         biography: biographyPreview?.biography ?? "",
         previewSections,
@@ -779,6 +754,8 @@ export function useAgentNodes() {
     onRelationshipSave,
     onSelfModelDraftChange,
     onSelfModelSave,
+    onThinkingMonologueGenerate,
+    onThinkingMonologueSave,
     onUploadClick,
     onWarmerBaseline,
     optionalNodeVisibility,
@@ -791,6 +768,10 @@ export function useAgentNodes() {
     selfModelSaved,
     selfModelSaving,
     selfModelVersions,
+    thinkingMonologueDraft,
+    thinkingMonologueGenerating,
+    thinkingMonologueSaved,
+    thinkingMonologueSaving,
     uploading,
   ]);
 
@@ -820,17 +801,19 @@ export function useAgentNodes() {
   }, [biographyPreview?.agentBirthday, profileAgentBirthday]);
 
   useEffect(() => {
+    setThinkingMonologueDraft(formatThinkingMonologueDraft(thinkingMonologue));
+  }, [thinkingMonologue]);
+
+  useEffect(() => {
     if (user?.id == null) return;
     let cancelled = false;
     setSelfModelLoading(true);
     setError("");
 
     const loadOptionalSelfModelSections = async () => {
-      const [origin, directive, growth, intentions] = await Promise.allSettled([
+      const [origin, directive] = await Promise.allSettled([
         api.consciousness.getSelfModelSection(user.id, "soul"),
         api.consciousness.getSelfModelSection(user.id, "user_directive"),
-        api.consciousness.getSelfModelSection(user.id, "growth_log"),
-        api.consciousness.getSelfModelSection(user.id, "intentions"),
       ]);
       if (cancelled) return;
 
@@ -859,27 +842,6 @@ export function useAgentNodes() {
         }));
       }
 
-      if (growth.status === "fulfilled") {
-        setSelfModelDrafts((current) => ({
-          ...current,
-          growth_log: growth.value.content,
-        }));
-        setSelfModelVersions((current) => ({
-          ...current,
-          growth_log: growth.value.version,
-        }));
-      }
-
-      if (intentions.status === "fulfilled") {
-        setSelfModelDrafts((current) => ({
-          ...current,
-          intentions: intentions.value.content,
-        }));
-        setSelfModelVersions((current) => ({
-          ...current,
-          intentions: intentions.value.version,
-        }));
-      }
     };
 
     Promise.all([

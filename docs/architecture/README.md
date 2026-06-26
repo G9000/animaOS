@@ -31,6 +31,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Agent Runtime](agent/agent-runtime.md) | Deep dive into the cognitive loop, step execution, tool orchestration, compaction, approval flow |
+| [Document Processing](agent/document-processing.md) | PDF upload, checkpointed ingestion, runtime document storage, pgvector RAG, chat grounding, and citation pills |
 | [Agent Tools](agent/agent-tools.md) | The 17 tools available to the LLM agent |
 
 ### Memory Architecture (`memory/`)

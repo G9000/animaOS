@@ -1,5 +1,5 @@
 import { type ReactNode, type RefObject } from "react";
-import { PromptInput, ChevronRightIcon, cn } from "@anima/standard-templates";
+import { type AttachedImageItem, type AttachedDocumentItem, PromptInput, ChevronRightIcon, cn } from "@anima/standard-templates";
 
 const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]";
 
@@ -10,8 +10,9 @@ interface ChatLayoutProps {
   onSubmit: () => void;
   streaming: boolean;
   canSubmit?: boolean;
-  inputAccessory?: ReactNode;
   onAttach?: (type: string) => void;
+  attachedImages?: AttachedImageItem[];
+  attachedDocuments?: AttachedDocumentItem[];
   sidebar?: ReactNode;
   showSidebar: boolean;
   onToggleSidebar: () => void;
@@ -30,8 +31,9 @@ export function ChatLayout({
   onSubmit,
   streaming,
   canSubmit = false,
-  inputAccessory,
   onAttach,
+  attachedImages,
+  attachedDocuments,
   sidebar,
   showSidebar,
   onToggleSidebar,
@@ -84,7 +86,6 @@ export function ChatLayout({
         {/* Floating input — absolute, overlays the scroll area */}
         <div className="absolute bottom-0 left-0 right-0 z-10 px-4 pt-8 pb-5 pointer-events-none">
           <div className="max-w-3xl mx-auto w-full pointer-events-auto">
-            {inputAccessory}
             <PromptInput
               value={input}
               onChange={onInputChange}
@@ -94,6 +95,8 @@ export function ChatLayout({
               showMic={true}
               canSubmit={canSubmit}
               onAttach={onAttach}
+              attachedImages={attachedImages}
+              attachedDocuments={attachedDocuments}
             />
             <div className="mt-2 h-4 flex items-center justify-center">
               {streaming && (

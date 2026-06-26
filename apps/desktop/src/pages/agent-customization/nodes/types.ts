@@ -41,8 +41,7 @@ export interface BiographyPreviewData extends Record<string, unknown> {
   originDraft: string;
   directiveDraft: string;
   autonomyDraft: string;
-  revisionDraft: string;
-  intentionsDraft: string;
+  thinkingMonologueDraft: string;
   agentBirthday: string;
   biography: string;
   previewSections: BiographyPreviewSection[];
@@ -56,15 +55,18 @@ export interface TextData extends Record<string, unknown> {
   version: number | null;
   loading: boolean;
   saving: boolean;
+  generating?: boolean;
   saved: boolean;
   hasWarmer: boolean;
   readOnly?: boolean;
   required?: boolean;
+  listEditor?: boolean;
   requiresOverride?: boolean;
   identityOverrideAllowed?: boolean;
   overrideDescription?: string;
   onChange: (val: string) => void;
   onSave: () => void;
+  onThinkingMonologueGenerate?: () => void;
   onWarmer: () => void;
   onIdentityOverrideAllowedChange?: (val: boolean) => void;
   onClose: () => void;
@@ -103,7 +105,7 @@ export type RelationshipNode  = Node<RelationshipData,     "agentRelationship">;
 export type BiographyPreviewNode = Node<BiographyPreviewData, "agentPreview">;
 export type AgentNode = AvatarNode | AgentNameNode | TextNode | BirthdayNode | RelationshipNode | BiographyPreviewNode;
 
-export type Section = "identity" | "soul" | "persona" | "user_directive" | "growth_log" | "intentions";
+export type Section = "identity" | "soul" | "persona" | "user_directive";
 
 // ── Shared textarea class ─────────────────────────────────────────────────────
 
