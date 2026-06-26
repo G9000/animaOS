@@ -1,6 +1,7 @@
 import { dispatchSettingsChanged } from "./events";
 
 const DB_VIEWER_KEY = "anima-debug-db-viewer";
+const SHOW_TRACE_KEY = "anima-show-trace";
 const TRANSLATE_LANG_KEY = "anima-translate-lang";
 
 export const LANGUAGES = [
@@ -22,6 +23,21 @@ export const LANGUAGES = [
 ] as const;
 
 export type LanguageCode = typeof LANGUAGES[number]["code"];
+
+export function getShowTrace(): boolean {
+  try {
+    return localStorage.getItem(SHOW_TRACE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setShowTrace(enabled: boolean): void {
+  try {
+    localStorage.setItem(SHOW_TRACE_KEY, String(enabled));
+  } catch {}
+  dispatchSettingsChanged();
+}
 
 export function getDbViewerEnabled(): boolean {
   try {

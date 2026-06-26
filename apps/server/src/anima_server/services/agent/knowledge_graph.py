@@ -252,10 +252,13 @@ def _semantic_entity_names_from_query(
     *,
     user_id: int,
     query: str,
+    query_embedding: list[float] | None = None,
+    allow_blocking_embedding: bool = True,
     limit: int = _SEMANTIC_ENTITY_LIMIT,
     similarity_threshold: float = _SEMANTIC_ENTITY_THRESHOLD,
 ) -> list[str]:
-    query_embedding = _generate_query_embedding_sync(query)
+    if query_embedding is None and allow_blocking_embedding:
+        query_embedding = _generate_query_embedding_sync(query)
     if query_embedding is None:
         return []
 
@@ -622,14 +625,27 @@ def graph_context_for_query(
     *,
     user_id: int,
     query: str,
+    query_embedding: list[float] | None = None,
+    allow_blocking_embedding: bool = True,
     limit: int = 10,
 ) -> list[str]:
     """Extract entity names from query, traverse graph, BM25-rerank,
     return formatted context strings for the knowledge_graph memory block.
 
+    Pass ``query_embedding`` when one already exists (the turn pipeline
+    computes it for hybrid retrieval) — otherwise the semantic entity
+    fallback generates one synchronously, blocking the calling thread on
+    an embeddings HTTP request.
+
     Output: ["Alice (person, User's sister) -> lives_in -> Munich", ...]
     """
-    entity_names = _extract_entity_names_from_query(db, user_id=user_id, query=query)
+    entity_names = _extract_entity_names_from_query(
+        db,
+        user_id=user_id,
+        query=query,
+        query_embedding=query_embedding,
+        allow_blocking_embedding=allow_blocking_embedding,
+    )
     if not entity_names:
         return []
 
@@ -672,6 +688,8 @@ def _extract_entity_names_from_query(
     *,
     user_id: int,
     query: str,
+    query_embedding: list[float] | None = None,
+    allow_blocking_embedding: bool = True,
 ) -> list[str]:
     """Find entity names from the query by matching against known entities.
 
@@ -691,7 +709,13 @@ def _extract_entity_names_from_query(
     if matched:
         return matched
 
-    return _semantic_entity_names_from_query(db, user_id=user_id, query=query)
+    return _semantic_entity_names_from_query(
+        db,
+        user_id=user_id,
+        query=query,
+        query_embedding=query_embedding,
+        allow_blocking_embedding=allow_blocking_embedding,
+    )
 
 
 def _normalize_graph_entity_type(entity_type: str) -> str:
@@ -951,10 +975,7 @@ async def extract_entities_and_relations(
         return rule_entities, rule_relations
 
     try:
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
-        llm = create_llm()
+        from anima_server.services.agent.llm_json import call_llm_for_json
         from anima_server.services.agent.prompt_loader import PromptLoader
 
         prompt_loader = PromptLoader(agent_name="Anima")
@@ -962,19 +983,10 @@ async def extract_entities_and_relations(
             user_message=msg,
             assistant_response=resp,
         )
-        response = await llm.ainvoke(
-            [
-                SystemMessage(
-                    content="You extract entities and relationships. Respond only with JSON.",
-                ),
-                HumanMessage(content=prompt),
-            ]
+        parsed = await call_llm_for_json(
+            "You extract entities and relationships. Respond only with JSON.",
+            prompt,
         )
-        content = getattr(response, "content", "")
-        if not isinstance(content, str):
-            content = str(content)
-
-        parsed = _parse_json_object(content)
         if parsed is None:
             return rule_entities, rule_relations
 
@@ -1092,10 +1104,7 @@ async def prune_stale_relations(
     facts_text = "\n".join(f"- {f}" for f in new_facts)
 
     try:
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
-
-        llm = create_llm()
+        from anima_server.services.agent.llm_json import call_llm_for_json
         from anima_server.services.agent.prompt_loader import PromptLoader
 
         prompt_loader = PromptLoader(agent_name="Anima")
@@ -1103,19 +1112,10 @@ async def prune_stale_relations(
             existing_relations=rel_text,
             new_facts=facts_text,
         )
-        response = await llm.ainvoke(
-            [
-                SystemMessage(
-                    content="You evaluate knowledge graph relations. Respond only with JSON."
-                ),
-                HumanMessage(content=prompt),
-            ]
+        parsed = await call_llm_for_json(
+            "You evaluate knowledge graph relations. Respond only with JSON.",
+            prompt,
         )
-        content = getattr(response, "content", "")
-        if not isinstance(content, str):
-            content = str(content)
-
-        parsed = _parse_json_object(content)
         if parsed is None:
             return []
 
@@ -1276,10 +1276,3 @@ async def ingest_conversation_graph(
 
     db.flush()
     return entities_upserted, relations_upserted, relations_pruned
-
-
-# ── JSON parsing helpers ─────────────────────────────────────────────
-
-from anima_server.services.agent.json_utils import (
-    parse_json_object as _parse_json_object,
-)

@@ -18,6 +18,8 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Directory Structure](system/directory-structure.md) | Top-level folder layout and purpose of each directory |
+| [Gateway + Runtime Boundary](system/gateway-runtime-boundary.md) | Product boundary for single-user local-first, gateway-auth split, and future multi-device extensions |
+| [Local Runtime Daemon](system/local-runtime-daemon.md) | Background runtime supervisor so Anima can keep running after the desktop UI closes |
 | [API Routes](system/api-routes.md) | All REST endpoints grouped by router, dependency injection |
 | [Services](system/services.md) | Agent runtime, memory stack, consciousness layer, LLM clients |
 | [Database Schema](system/database-schema.md) | All 19 tables, ER diagram, column details |
@@ -29,6 +31,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Agent Runtime](agent/agent-runtime.md) | Deep dive into the cognitive loop, step execution, tool orchestration, compaction, approval flow |
+| [Document Processing](agent/document-processing.md) | PDF upload, checkpointed ingestion, runtime document storage, pgvector RAG, chat grounding, and citation pills |
 | [Agent Tools](agent/agent-tools.md) | The 17 tools available to the LLM agent |
 
 ### Memory Architecture (`memory/`)

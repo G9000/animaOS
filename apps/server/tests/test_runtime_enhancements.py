@@ -555,6 +555,7 @@ async def test_streaming_retry_blocked_after_content_streamed() -> None:
 
     with patch("anima_server.services.agent.runtime.settings") as mock_settings:
         mock_settings.agent_llm_timeout = 5.0
+        mock_settings.agent_llm_stream_inactivity_timeout = 5.0
         mock_settings.agent_llm_retry_limit = 3
         mock_settings.agent_llm_retry_backoff_factor = 0.01
         mock_settings.agent_llm_retry_max_delay = 0.05

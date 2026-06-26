@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings  # noqa: F401 — tests patch this attribute
 from anima_server.models import AgentProfile, MemoryEpisode, User
 from anima_server.models.runtime import RuntimeMessage
-from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
@@ -284,8 +283,15 @@ def _build_episode_from_parsed(
         )
 
     summary = parsed.get("summary", "")
-    if not summary or not isinstance(summary, str):
-        summary = "Conversation session"
+    if not isinstance(summary, str) or not summary.strip():
+        return _create_fallback_episode(
+            db,
+            user_id=user_id,
+            thread_id=thread_id,
+            pairs=pairs,
+            today=today,
+        )
+    summary = summary.strip()
     topics = parsed.get("topics", [])
     if not isinstance(topics, list):
         topics = []
@@ -325,8 +331,7 @@ async def _call_llm_for_episode(
     user_name: str = "the user",
     agent_name: str = "Anima",
 ) -> dict[str, Any]:
-    from anima_server.services.agent.llm import create_llm
-    from anima_server.services.agent.messages import HumanMessage, SystemMessage
+    from anima_server.services.agent.llm_json import call_llm_for_json
     from anima_server.services.agent.prompt_loader import PromptLoader
 
     # Create a prompt loader with the agent name (no db access needed)
@@ -340,21 +345,11 @@ async def _call_llm_for_episode(
     # Use templated prompt
     prompt = prompt_loader.episode_generation(turns=turns_text, user_name=user_name)
 
-    llm = create_llm()
-    response = await llm.ainvoke(
-        [
-            SystemMessage(content="You generate episode summaries. Respond only with JSON."),
-            HumanMessage(content=prompt),
-        ]
+    parsed = await call_llm_for_json(
+        "You generate episode summaries. Respond only with JSON.",
+        prompt,
     )
-    content = getattr(response, "content", "")
-    if not isinstance(content, str):
-        content = str(content)
-    return _parse_json_object(content)
-
-
-def _parse_json_object(text: str) -> dict[str, Any]:
-    return parse_json_object(text) or {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 async def _call_llm_for_episode_safe(

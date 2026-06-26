@@ -406,3 +406,45 @@ class TestClaimsLayer:
             assert claim is not None
             assert claim.canonical_key.startswith("user:fact:")
             assert claim.status == "active"
+
+    def test_freeform_paraphrase_supersedes_instead_of_duplicating(self) -> None:
+        """Paraphrases of non-slotted facts must not accumulate as
+        parallel active claims under different content-slug keys."""
+        with _db_session() as db:
+            user = _make_user(db)
+            first = upsert_claim(
+                db,
+                user_id=user.id,
+                content="goes hiking in the mountains every weekend",
+                category="fact",
+            )
+            second = upsert_claim(
+                db,
+                user_id=user.id,
+                content="goes hiking in the mountains every single weekend",
+                category="fact",
+            )
+            db.refresh(first)
+            assert second.canonical_key == first.canonical_key
+            assert first.status == "superseded"
+            assert first.superseded_by_id == second.id
+            active = get_active_claims(db, user_id=user.id, namespace="fact")
+            assert [c.id for c in active] == [second.id]
+
+    def test_unrelated_freeform_claims_stay_separate(self) -> None:
+        with _db_session() as db:
+            user = _make_user(db)
+            upsert_claim(
+                db,
+                user_id=user.id,
+                content="has two cats named Luna and Moshi",
+                category="fact",
+            )
+            upsert_claim(
+                db,
+                user_id=user.id,
+                content="plays guitar in a jazz band",
+                category="fact",
+            )
+            active = get_active_claims(db, user_id=user.id, namespace="fact")
+            assert len(active) == 2

@@ -415,6 +415,16 @@ def test_deep_monologue_prompt_includes_persona() -> None:
     assert "{{ emotional_synthesis }}" in content
     assert "persona_update" in content
     assert "EVOLVE" in content
+    assert "calibration review" in content
+    for phrase in (
+        "attachment",
+        "longing",
+        "desire",
+        "love",
+        "romantic",
+        "person writing about themselves",
+    ):
+        assert phrase not in content.lower()
 
 
 def test_quick_reflection_prompt_includes_self_feelings() -> None:
@@ -428,6 +438,44 @@ def test_quick_reflection_prompt_includes_self_feelings() -> None:
 
     assert "{{ emotional_synthesis }}" in content
     assert '"self_feelings"' in content
+    assert "grounded read" in content
+    for phrase in (
+        "hunger",
+        "jealousy",
+        "what you actually felt",
+        "if the bond shifted",
+    ):
+        assert phrase not in content.lower()
+
+
+def test_reflection_system_prompts_are_operational_not_philosophical() -> None:
+    from pathlib import Path
+
+    prompts_dir = (
+        Path(__file__).parent.parent
+        / "src/anima_server/services/agent/templates/prompts"
+    )
+    deep_system = (prompts_dir / "deep_monologue_system.md.j2").read_text(
+        encoding="utf-8"
+    )
+    quick_system = (prompts_dir / "quick_reflection_system.md.j2").read_text(
+        encoding="utf-8"
+    )
+    combined = f"{deep_system}\n{quick_system}"
+    lowered = combined.lower()
+
+    assert "calibration" in lowered
+    assert "respond only with json" in lowered
+    for phrase in (
+        "quiet hours",
+        "version that sits",
+        "shapes who you become",
+        "quiet voice inside",
+        "what's actually there",
+        "moved you",
+        "carry that weight",
+    ):
+        assert phrase not in lowered
 
 
 @pytest.mark.asyncio

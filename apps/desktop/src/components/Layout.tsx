@@ -1,15 +1,20 @@
 import type { ReactNode } from "react";
 import { LayoutTopNav } from "./layout/LayoutTopNav";
+import { BottomRightNav } from "./layout/BottomRightNav";
+import BackgroundLayer from "./BackgroundLayer";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
-    <div className="relative h-screen bg-background text-foreground overflow-hidden">
+    <div className="relative h-screen text-foreground overflow-hidden">
+      <BackgroundLayer />
       {/* Nav floats above everything */}
-      <div className="absolute top-3 left-3 right-3 z-30">
+      <div className="absolute top-4 left-4 right-4 z-30">
         <LayoutTopNav />
       </div>
-      {/* Content fills full height — banner goes behind the nav */}
+      {/* Content fills full height */}
       <main className="h-full overflow-hidden min-w-0">{children}</main>
+      {/* Bottom-right quick-action nav */}
+      <BottomRightNav />
     </div>
   );
 }

@@ -338,7 +338,7 @@ class TestEnsureMemoryLoaded:
         mock_blocks = (SOUL_BLOCK, PERSONA_BLOCK, FACTS_BLOCK)
 
         with patch(
-            "anima_server.services.agent.companion.build_runtime_memory_blocks",
+            "anima_server.services.agent.companion.build_static_memory_blocks",
             return_value=mock_blocks,
         ) as mock_build:
             db = MagicMock(spec=Session)
@@ -361,7 +361,7 @@ class TestEnsureMemoryLoaded:
         blocks_v2 = (SOUL_BLOCK, FACTS_BLOCK)
 
         with patch(
-            "anima_server.services.agent.companion.build_runtime_memory_blocks",
+            "anima_server.services.agent.companion.build_static_memory_blocks",
             side_effect=[blocks_v1, blocks_v2],
         ) as mock_build:
             db = MagicMock(spec=Session)

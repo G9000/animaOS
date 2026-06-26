@@ -16,6 +16,7 @@ from anima_server.services.agent.state import (
     StoredAttachment,
     StoredMessage,
     attach_serialized_attachments,
+    attach_serialized_pills,
     attach_serialized_retrieval,
     deserialize_stored_attachments,
     serialize_agent_retrieval,
@@ -112,7 +113,14 @@ def list_transcript_messages(
         raise TypeError(
             "list_transcript_messages requires thread_id or user_id with limit")
 
-    thread = get_or_create_thread(db, user_id)
+    thread = db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.user_id == user_id,
+            RuntimeThread.status == "active",
+        )
+    )
+    if thread is None:
+        return []
 
     rows = db.scalars(
         select(RuntimeMessage)
@@ -180,7 +188,10 @@ def append_user_message(
     sequence_id: int,
     source: str | None = None,
     attachments: tuple[StoredAttachment, ...] = (),
+    pills: tuple[dict[str, object], ...] = (),
 ) -> RuntimeMessage:
+    content_json = attach_serialized_attachments(None, attachments)
+    content_json = attach_serialized_pills(content_json, list(pills))
     return append_message(
         db,
         thread=thread,
@@ -189,7 +200,7 @@ def append_user_message(
         sequence_id=sequence_id,
         role="user",
         content_text=content,
-        content_json=attach_serialized_attachments(None, attachments),
+        content_json=content_json,
         source=source,
     )
 
@@ -202,6 +213,7 @@ def persist_agent_result(
     result: AgentResult,
     initial_sequence_id: int | None,
     record_feedback: bool = True,
+    assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> None:
     if _refresh_run_status(db, run) in TERMINAL_RUN_STATUSES:
         return
@@ -262,6 +274,10 @@ def persist_agent_result(
                     content_json=content_json,
                     retrieval=serialized_retrieval,
                 )
+            content_json = attach_serialized_pills(
+                content_json,
+                list(assistant_pills),
+            )
             append_message(
                 db,
                 thread=thread,
@@ -278,6 +294,19 @@ def persist_agent_result(
             if sequence_id is None:
                 raise RuntimeError(
                     "Missing reserved message sequence for tool output.")
+            tool_content_json = (
+                attach_serialized_retrieval(
+                    content_json=None,
+                    retrieval=serialized_retrieval,
+                )
+                if tool_result.name == "send_message"
+                else None
+            )
+            if tool_result.name == "send_message":
+                tool_content_json = attach_serialized_pills(
+                    tool_content_json,
+                    list(assistant_pills),
+                )
             append_message(
                 db,
                 thread=thread,
@@ -286,12 +315,7 @@ def persist_agent_result(
                 sequence_id=sequence_id,
                 role="tool",
                 content_text=tool_result.output,
-                content_json=attach_serialized_retrieval(
-                    content_json=None,
-                    retrieval=serialized_retrieval,
-                )
-                if tool_result.name == "send_message"
-                else None,
+                content_json=tool_content_json,
                 tool_name=tool_result.name,
                 tool_call_id=tool_result.call_id,
             )

@@ -192,11 +192,16 @@ def _python_normalize_text(text: str, limit: int) -> tuple[str, bool] | None:
 
 def _normalize_text(text: str, *, limit: int) -> str:
     if anima_core_bindings.rust_normalize_text is not None:
-        result = anima_core_bindings.rust_normalize_text(text, limit)
-        if result is None:
-            return ""
-        normalized, _truncated = result
-        return normalized
+        try:
+            result = anima_core_bindings.rust_normalize_text(text, limit)
+            if result is not None:
+                normalized, _truncated = result
+                return normalized
+        except Exception:
+            logger.debug(
+                "Rust text normalization failed; falling back to Python",
+                exc_info=True,
+            )
 
     result = _python_normalize_text(text, limit)
     if result is None:
@@ -217,9 +222,18 @@ def prepare_memory_text(
     prepared = text
     if apply_pdf_spacing:
         if anima_core_bindings.rust_fix_pdf_spacing is not None:
-            prepared = anima_core_bindings.rust_fix_pdf_spacing(prepared)
+            try:
+                prepared = anima_core_bindings.rust_fix_pdf_spacing(prepared)
+            except Exception:
+                logger.debug(
+                    "Rust PDF spacing fix failed; falling back to Python",
+                    exc_info=True,
+                )
+                prepared = _python_fix_pdf_spacing(prepared)
         else:
             prepared = _python_fix_pdf_spacing(prepared)
+    # PDF spacing normalization is intentionally opt-in. Leave plain text untouched
+    # when callers do not explicitly request spacing fixes.
 
     return _normalize_text(prepared, limit=limit)
 

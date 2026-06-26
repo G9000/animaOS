@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import struct
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embedding_integrity import (
@@ -22,6 +25,14 @@ from anima_server.services.agent.embedding_integrity import (
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
 
 logger = logging.getLogger(__name__)
+
+
+def _canonicalize_runtime_embedding(embedding: Sequence[float]) -> list[float]:
+    """Match pgvector's float4 storage before hashing or persisting values."""
+    return [
+        struct.unpack("!f", struct.pack("!f", float(value)))[0]
+        for value in embedding
+    ]
 
 
 class PgVecStore(VectorStore):
@@ -40,15 +51,37 @@ class PgVecStore(VectorStore):
         category: str = "fact",
         importance: int = 3,
     ) -> None:
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
-        embedding_checksum = compute_embedding_checksum(embedding)
-        stmt = pg_insert(RuntimeEmbedding).values(
-            user_id=user_id,
+        self.upsert_source(
+            user_id,
             source_type="memory_item",
             source_id=item_id,
+            content=content,
+            embedding=embedding,
+            category=category,
+            importance=importance,
+        )
+
+    def upsert_source(
+        self,
+        user_id: int,
+        *,
+        source_type: str,
+        source_id: int,
+        content: str,
+        embedding: list[float],
+        category: str = "document",
+        importance: int = 3,
+    ) -> None:
+        runtime_embedding = _canonicalize_runtime_embedding(embedding)
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        embedding_checksum = compute_embedding_checksum(runtime_embedding)
+        stmt = pg_insert(RuntimeEmbedding).values(
+            user_id=user_id,
+            source_type=source_type,
+            source_id=source_id,
             content_hash=content_hash,
             embedding_checksum=embedding_checksum,
-            embedding=embedding,
+            embedding=runtime_embedding,
             content_preview=content[:200],
             category=category,
             importance=importance,
@@ -69,11 +102,14 @@ class PgVecStore(VectorStore):
         self._db.flush()
 
     def delete(self, user_id: int, *, item_id: int) -> None:
+        self.delete_source(user_id, source_type="memory_item", source_id=item_id)
+
+    def delete_source(self, user_id: int, *, source_type: str, source_id: int) -> None:
         self._db.execute(
             delete(RuntimeEmbedding).where(
                 RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "memory_item",
-                RuntimeEmbedding.source_id == item_id,
+                RuntimeEmbedding.source_type == source_type,
+                RuntimeEmbedding.source_id == source_id,
             )
         )
         self._db.flush()
@@ -85,8 +121,15 @@ class PgVecStore(VectorStore):
         query_embedding: list[float],
         limit: int = 10,
         category: str | None = None,
+        source_types: Sequence[str] | None = None,
+        source_ids: Sequence[int] | None = None,
+        source_id_query: Select[tuple[int]] | None = None,
     ) -> list[VectorSearchResult]:
         if limit <= 0:
+            return []
+        if source_ids is not None and source_id_query is not None:
+            raise ValueError("source_ids and source_id_query are mutually exclusive")
+        if source_ids is not None and not source_ids:
             return []
 
         distance = RuntimeEmbedding.embedding.cosine_distance(query_embedding)
@@ -99,10 +142,16 @@ class PgVecStore(VectorStore):
         )
         if category is not None:
             stmt = stmt.where(RuntimeEmbedding.category == category)
+        if source_types is not None:
+            stmt = stmt.where(RuntimeEmbedding.source_type.in_(source_types))
+        if source_ids is not None:
+            stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_ids))
+        if source_id_query is not None:
+            stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_id_query))
         rows = self._db.execute(stmt).all()
 
         results: list[VectorSearchResult] = []
-        checksum_mismatch_count = 0
+        repaired_checksum_count = 0
         invalid_checksum_count = 0
         for row in rows:
             checked = check_embedding(
@@ -110,8 +159,11 @@ class PgVecStore(VectorStore):
                 row.RuntimeEmbedding.embedding_checksum,
             )
             if checked.status == "checksum_mismatch":
-                checksum_mismatch_count += 1
-                continue
+                if checked.actual_checksum is None:
+                    invalid_checksum_count += 1
+                    continue
+                row.RuntimeEmbedding.embedding_checksum = checked.actual_checksum
+                repaired_checksum_count += 1
             if checked.status in {"invalid", "missing_checksum"}:
                 invalid_checksum_count += 1
                 continue
@@ -122,14 +174,16 @@ class PgVecStore(VectorStore):
                     category=row.RuntimeEmbedding.category,
                     importance=row.RuntimeEmbedding.importance,
                     similarity=round(float(row.similarity), 4),
+                    source_type=getattr(row.RuntimeEmbedding, "source_type", "memory_item"),
                 )
             )
             if len(results) >= limit:
                 break
-        if checksum_mismatch_count:
-            logger.warning(
-                "Skipped %d runtime embeddings for user %d due to checksum mismatch",
-                checksum_mismatch_count,
+        if repaired_checksum_count:
+            self._db.flush()
+            logger.info(
+                "Repaired %d runtime embeddings for user %d by resyncing checksum to stored pgvector payload",
+                repaired_checksum_count,
                 user_id,
             )
         if invalid_checksum_count:
@@ -147,6 +201,7 @@ class PgVecStore(VectorStore):
         query_text: str,
         limit: int = 10,
         category: str | None = None,
+        source_types: Sequence[str] | None = None,
     ) -> list[VectorSearchResult]:
         return []
 
@@ -158,18 +213,20 @@ class PgVecStore(VectorStore):
         self._db.execute(
             delete(RuntimeEmbedding).where(
                 RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == "memory_item",
             )
         )
         for item_id, content, embedding, category, importance in items:
             content_hash = hashlib.sha256(content.encode()).hexdigest()
+            runtime_embedding = _canonicalize_runtime_embedding(embedding)
             self._db.add(
                 RuntimeEmbedding(
                     user_id=user_id,
                     source_type="memory_item",
                     source_id=item_id,
                     content_hash=content_hash,
-                    embedding_checksum=compute_embedding_checksum(embedding),
-                    embedding=embedding,
+                    embedding_checksum=compute_embedding_checksum(runtime_embedding),
+                    embedding=runtime_embedding,
                     content_preview=content[:200],
                     category=category,
                     importance=importance,
@@ -184,6 +241,19 @@ class PgVecStore(VectorStore):
                 select(func.count())
                 .select_from(RuntimeEmbedding)
                 .where(RuntimeEmbedding.user_id == user_id)
+            )
+            or 0
+        )
+
+    def count_source(self, user_id: int, *, source_type: str) -> int:
+        return (
+            self._db.scalar(
+                select(func.count())
+                .select_from(RuntimeEmbedding)
+                .where(
+                    RuntimeEmbedding.user_id == user_id,
+                    RuntimeEmbedding.source_type == source_type,
+                )
             )
             or 0
         )

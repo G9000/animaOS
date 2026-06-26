@@ -163,8 +163,8 @@ export default function Register() {
   useEffect(() => {
     api.config.personaTemplates().then(setPersonas).catch(() =>
       setPersonas([
-        { id: "default", name: "Default", description: "Thoughtful and capable" },
-        { id: "companion", name: "Companion", description: "Warm and emotionally attuned" },
+        { id: "default", name: "Default", description: "Neutral and practical" },
+        { id: "companion", name: "Companion", description: "Warm and grounded" },
       ])
     );
   }, []);

@@ -1,8 +1,10 @@
 import type {
   ApiClientOptions,
   AgentConfig,
+  AgentBiographyPreviewData,
   AgentProfileData,
   AgentResponse,
+  AgentStateData,
   AuthResponse,
   ChangePasswordResponse,
   ChatMessage,
@@ -13,6 +15,11 @@ import type {
   DbQueryResult,
   DbTableData,
   DbTableInfo,
+  DiaryAttachmentData,
+  DiaryEntryCreateData,
+  DiaryEntryData,
+  DocumentWorkflow,
+  DocumentWorkflowActionResponse,
   EmotionalContextData,
   GraphEntity,
   GraphEntityDetail,
@@ -20,6 +27,7 @@ import type {
   GraphRelation,
   GraphSearchResult,
   Greeting,
+  Reflection,
   HomeData,
   LoginResponse,
   MemoryEpisodeData,
@@ -39,8 +47,10 @@ import type {
   SelfModelData,
   SelfModelSection,
   TaskItem,
+  ThreadContextStats,
   ThreadListResponse,
   ThreadMessagesResponse,
+  TodayContext,
   TraceEvent,
   TraceMessagePreview,
   User,
@@ -216,6 +226,7 @@ export function createApiClient(options: ApiClientOptions) {
     endpoint: string,
     file: File | Blob,
     fieldName = "file",
+    fields: Record<string, string> = {},
   ): Promise<T> {
     const token = getUnlockToken?.() || null;
     const headers: Record<string, string> = {};
@@ -228,6 +239,9 @@ export function createApiClient(options: ApiClientOptions) {
     }
 
     const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      form.append(key, value);
+    }
     form.append(fieldName, file);
 
     const response = await fetchImpl(`${normalizedBaseUrl}${endpoint}`, {
@@ -244,12 +258,39 @@ export function createApiClient(options: ApiClientOptions) {
     return data as T;
   }
 
+  async function downloadBlob(endpoint: string): Promise<Blob> {
+    const token = getUnlockToken?.() || null;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["x-anima-unlock"] = token;
+    }
+    const nonce = getNonce?.() || null;
+    if (nonce) {
+      headers["x-anima-nonce"] = nonce;
+    }
+
+    const response = await fetchImpl(`${normalizedBaseUrl}${endpoint}`, {
+      method: "GET",
+      credentials,
+      headers,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(extractErrorMessage(data, "Something went wrong"));
+    }
+
+    return response.blob();
+  }
+
   async function* streamChat(
     message: string,
     userId: number,
     threadId?: number,
     attachments: ChatRequestAttachment[] = [],
     contextMessages: ChatContextMessage[] = [],
+    todayContext?: TodayContext | null,
+    documentIds: number[] = [],
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
     const streamNonce = getNonce?.() || null;
@@ -268,6 +309,8 @@ export function createApiClient(options: ApiClientOptions) {
         ...(threadId !== undefined ? { threadId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(contextMessages.length > 0 ? { contextMessages } : {}),
+        ...(todayContext ? { todayContext } : {}),
+        ...(documentIds.length > 0 ? { documentIds } : {}),
       }),
     });
 
@@ -535,6 +578,8 @@ export function createApiClient(options: ApiClientOptions) {
         threadId?: number,
         attachments: ChatRequestAttachment[] = [],
         contextMessages: ChatContextMessage[] = [],
+        todayContext?: TodayContext | null,
+        documentIds: number[] = [],
       ) =>
         request<AgentResponse>("/chat", {
           method: "POST",
@@ -545,6 +590,8 @@ export function createApiClient(options: ApiClientOptions) {
             ...(threadId !== undefined ? { threadId } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(contextMessages.length > 0 ? { contextMessages } : {}),
+            ...(todayContext ? { todayContext } : {}),
+            ...(documentIds.length > 0 ? { documentIds } : {}),
           },
         }),
       stream: (
@@ -553,7 +600,18 @@ export function createApiClient(options: ApiClientOptions) {
         threadId?: number,
         attachments: ChatRequestAttachment[] = [],
         contextMessages: ChatContextMessage[] = [],
-      ) => streamChat(message, userId, threadId, attachments, contextMessages),
+        todayContext?: TodayContext | null,
+        documentIds: number[] = [],
+      ) =>
+        streamChat(
+          message,
+          userId,
+          threadId,
+          attachments,
+          contextMessages,
+          todayContext,
+          documentIds,
+        ),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
       clearHistory: (userId: number) =>
@@ -565,6 +623,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<DailyBrief>(`/chat/brief?userId=${userId}`),
       greeting: (userId: number) =>
         request<Greeting>(`/chat/greeting?userId=${userId}`),
+      reflection: (userId: number) =>
+        request<Reflection>(`/chat/reflection?userId=${userId}`),
       nudges: (userId: number) =>
         request<{ nudges: Nudge[] }>(`/chat/nudges?userId=${userId}`),
       proactiveNotice: (userId: number, instruction?: string) => {
@@ -593,6 +653,25 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { userId },
         }),
+    },
+    documents: {
+      uploadPdf: (userId: number, file: File | Blob, threadId?: number) =>
+        uploadFile<DocumentWorkflowActionResponse>(
+          "/documents/pdf",
+          file,
+          "file",
+          {
+            userId: String(userId),
+            ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
+          },
+        ),
+      getWorkflow: (workflowId: number) =>
+        request<DocumentWorkflow>(`/documents/workflows/${workflowId}`),
+      resumeWorkflow: (workflowId: number) =>
+        request<DocumentWorkflowActionResponse>(
+          `/documents/workflows/${workflowId}/resume`,
+          { method: "POST" },
+        ),
     },
     config: {
       providers: () => request<ProviderInfo[]>("/config/providers"),
@@ -680,6 +759,28 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ query: string; context: string[]; count: number }>(
           `/graph/${userId}/context?q=${encodeURIComponent(query)}&limit=${limit}`,
         ),
+    },
+    diary: {
+      list: (userId: number, limit = 50) =>
+        request<DiaryEntryData[]>(`/diary?userId=${userId}&limit=${limit}`),
+      create: (userId: number, data: DiaryEntryCreateData) =>
+        request<DiaryEntryData>("/diary", {
+          method: "POST",
+          body: { userId, ...data },
+        }),
+      uploadAttachment: (entryId: number, file: File | Blob, caption?: string) =>
+        uploadFile<DiaryAttachmentData>(
+          `/diary/${entryId}/attachments`,
+          file,
+          "file",
+          caption?.trim() ? { caption: caption.trim() } : {},
+        ),
+      downloadAttachment: (entryId: number, attachmentId: number) =>
+        downloadBlob(`/diary/${entryId}/attachments/${attachmentId}`),
+      delete: (entryId: number) =>
+        request<{ deleted: boolean }>(`/diary/${entryId}`, {
+          method: "DELETE",
+        }),
     },
     memory: {
       overview: (userId: number) =>
@@ -772,31 +873,54 @@ export function createApiClient(options: ApiClientOptions) {
         userId: number,
         section: string,
         content: string,
+        options?: { allowIdentityOverride?: boolean },
       ) =>
         request<SelfModelSection>(
           `/consciousness/${userId}/self-model/${section}`,
-          { method: "PUT", body: { content } },
+          {
+            method: "PUT",
+            body: {
+              content,
+              ...(options?.allowIdentityOverride !== undefined
+                ? { allowIdentityOverride: options.allowIdentityOverride }
+                : {}),
+            },
+          },
         ),
       getEmotions: (userId: number, limit = 10) =>
         request<EmotionalContextData>(
           `/consciousness/${userId}/emotions?limit=${limit}`,
         ),
+      getAgentState: (userId: number) =>
+        request<AgentStateData>(`/consciousness/${userId}/agent-state`),
       getIntentions: (userId: number) =>
         request<{ content: string }>(`/consciousness/${userId}/intentions`),
       getAgentProfile: (userId: number) =>
         request<AgentProfileData>(`/consciousness/${userId}/agent-profile`),
+      getAgentBiographyPreview: (userId: number) =>
+        request<AgentBiographyPreviewData>(
+          `/consciousness/${userId}/agent-biography-preview`,
+        ),
       updateAgentProfile: (
         userId: number,
         data: {
           agentName?: string;
           relationship?: string;
           personaTemplate?: string;
+          agentBirthday?: string;
+          thinkingMonologue?: string[];
+          allowIdentityOverride?: boolean;
         },
       ) =>
         request<AgentProfileData>(`/consciousness/${userId}/agent-profile`, {
           method: "PATCH",
           body: data,
         }),
+      generateThinkingMonologue: (userId: number) =>
+        request<{ thinkingMonologue: string[] }>(
+          `/consciousness/${userId}/agent-profile/thinking-monologue/generate`,
+          { method: "POST" },
+        ),
       uploadAgentAvatar: (userId: number, file: File | Blob) =>
         uploadFile<{ avatarUrl: string }>(
           `/consciousness/${userId}/agent-profile/avatar`,
@@ -861,6 +985,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ status: string; threadId: number }>(`/threads/${threadId}`, {
           method: "DELETE",
         }),
+      contextStats: (threadId: number) =>
+        request<ThreadContextStats>(`/threads/${threadId}/context-stats`),
     },
     system: {
       health: () =>

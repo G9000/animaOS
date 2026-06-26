@@ -2,6 +2,12 @@
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
+export interface MessagePill {
+  kind: string;
+  label: string;
+  ref?: string | number | null;
+}
+
 export interface ChatMessage {
   id: number;
   userId: number;
@@ -13,6 +19,7 @@ export interface ChatMessage {
   retrieval?: RetrievalTrace | null;
   attachments?: ChatAttachment[];
   source?: string | null;
+  pills?: MessagePill[];
 }
 
 export type TraceEventType =

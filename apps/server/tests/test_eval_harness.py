@@ -22,9 +22,13 @@ from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models import (
     MemoryItem,
     MemoryItemEvidence,
+    RuntimeDocument,
+    RuntimeDocumentChunk,
     RuntimeMessage,
     RuntimeRun,
     RuntimeThread,
+    RuntimeWorkflowCheckpoint,
+    RuntimeWorkflowRun,
     User,
 )
 from anima_server.models.runtime_memory import MemoryCandidate
@@ -1131,6 +1135,95 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                 ]
             )
             runtime_db.flush()
+            runtime_db.add_all(
+                [
+                    RuntimeWorkflowRun(
+                        id=101,
+                        user_id=1,
+                        thread_id=10,
+                        workflow_type="document_ingestion",
+                        status="completed",
+                        current_state="indexed",
+                    ),
+                    RuntimeWorkflowRun(
+                        id=201,
+                        user_id=2,
+                        thread_id=20,
+                        workflow_type="document_ingestion",
+                        status="completed",
+                        current_state="indexed",
+                    ),
+                ]
+            )
+            runtime_db.flush()
+            runtime_db.add_all(
+                [
+                    RuntimeWorkflowCheckpoint(
+                        id=1001,
+                        workflow_run_id=101,
+                        checkpoint_index=1,
+                        state_name="extract",
+                        status="completed",
+                        idempotency_key="eval-extract",
+                        output_json={"chunks": 1},
+                    ),
+                    RuntimeWorkflowCheckpoint(
+                        id=2001,
+                        workflow_run_id=201,
+                        checkpoint_index=1,
+                        state_name="extract",
+                        status="completed",
+                        idempotency_key="other-extract",
+                        output_json={"chunks": 1},
+                    ),
+                    RuntimeDocument(
+                        id=10001,
+                        user_id=1,
+                        thread_id=10,
+                        workflow_run_id=101,
+                        filename="eval.pdf",
+                        mime_type="application/pdf",
+                        storage_path=".anima/documents/1/eval.pdf",
+                        sha256="a" * 64,
+                        size_bytes=128,
+                        status="indexed",
+                    ),
+                    RuntimeDocument(
+                        id=20001,
+                        user_id=2,
+                        thread_id=20,
+                        workflow_run_id=201,
+                        filename="other.pdf",
+                        mime_type="application/pdf",
+                        storage_path=".anima/documents/2/other.pdf",
+                        sha256="b" * 64,
+                        size_bytes=256,
+                        status="indexed",
+                    ),
+                ]
+            )
+            runtime_db.flush()
+            runtime_db.add_all(
+                [
+                    RuntimeDocumentChunk(
+                        id=100001,
+                        document_id=10001,
+                        user_id=1,
+                        chunk_index=0,
+                        content_text="Eval PDF chunk text",
+                        content_hash="c" * 64,
+                    ),
+                    RuntimeDocumentChunk(
+                        id=200001,
+                        document_id=20001,
+                        user_id=2,
+                        chunk_index=0,
+                        content_text="Other PDF chunk text",
+                        content_hash="d" * 64,
+                    ),
+                ]
+            )
+            runtime_db.flush()
             runtime_db.add(
                 RuntimeRun(
                     id=11,
@@ -1165,6 +1258,10 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert deleted["memory_item_evidence"] == 1
             assert deleted["runtime_threads"] == 1
             assert deleted["memory_candidates"] == 1
+            assert deleted["runtime_document_chunks"] == 1
+            assert deleted["runtime_documents"] == 1
+            assert deleted["runtime_workflow_checkpoints"] == 1
+            assert deleted["runtime_workflow_runs"] == 1
             assert soul_db.scalars(
                 select(MemoryItem).where(MemoryItem.user_id == 1)
             ).all() == []
@@ -1182,9 +1279,45 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert runtime_db.scalars(
                 select(RuntimeThread).where(RuntimeThread.user_id == 1)
             ).all() == []
+            assert runtime_db.scalars(
+                select(RuntimeDocument).where(RuntimeDocument.user_id == 1)
+            ).all() == []
+            assert runtime_db.scalars(
+                select(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == 1)
+            ).all() == []
+            assert runtime_db.scalars(
+                select(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == 1)
+            ).all() == []
+            assert runtime_db.scalars(
+                select(RuntimeWorkflowCheckpoint).where(
+                    RuntimeWorkflowCheckpoint.workflow_run_id == 101
+                )
+            ).all() == []
             assert len(
                 runtime_db.scalars(
                     select(RuntimeThread).where(RuntimeThread.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                runtime_db.scalars(
+                    select(RuntimeDocument).where(RuntimeDocument.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                runtime_db.scalars(
+                    select(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                runtime_db.scalars(
+                    select(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                runtime_db.scalars(
+                    select(RuntimeWorkflowCheckpoint).where(
+                        RuntimeWorkflowCheckpoint.workflow_run_id == 201
+                    )
                 ).all()
             ) == 1
     finally:

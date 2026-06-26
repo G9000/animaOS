@@ -135,3 +135,39 @@ def test_adaptive_retrieval_logs_and_falls_back_on_non_import_errors(caplog: pyt
     )
 
     _import_fresh("anima_server.services.agent.adaptive_retrieval")
+
+
+def test_text_processing_falls_back_when_rust_normalize_text_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _import_fresh_preserving_anima_core("anima_server.services.agent.text_processing")
+
+    def _broken_normalize(_text: str, _limit: int):
+        raise RuntimeError("normalize failed")
+
+    def _broken_fix_pdf(_text: str):
+        raise RuntimeError("fix failed")
+
+    monkeypatch.setattr(module.anima_core_bindings, "rust_normalize_text", _broken_normalize)
+    monkeypatch.setattr(module.anima_core_bindings, "rust_fix_pdf_spacing", _broken_fix_pdf)
+
+    assert (
+        module.prepare_memory_text("  Hello    world!  ", apply_pdf_spacing=True)
+        == "Hello world!"
+    )
+
+    _import_fresh("anima_server.services.agent.text_processing")
+
+
+def test_graph_triplets_falls_back_when_rust_extract_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _import_fresh_preserving_anima_core("anima_server.services.agent.graph_triplets")
+
+    def _broken_triplets(_text: str):
+        raise RuntimeError("triplet failed")
+
+    monkeypatch.setattr(module.anima_core_bindings, "rust_extract_triplets", _broken_triplets)
+
+    triplets = module.extract_triplets("I work at OpenAI")
+    assert triplets and triplets[0]["predicate"] == "works_at"
+
+    _import_fresh("anima_server.services.agent.graph_triplets")

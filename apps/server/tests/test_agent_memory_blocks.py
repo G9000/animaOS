@@ -234,3 +234,110 @@ def test_load_thread_history_excludes_summary_messages() -> None:
 
     assert [message.role for message in history] == ["assistant"]
     assert history[0].content == "Latest assistant message."
+
+
+def test_semantic_block_items_excluded_from_category_blocks() -> None:
+    """Items rendered in relevant_memories must not be duplicated in the
+    facts/preferences category blocks."""
+    with _db_session() as session:
+        user = User(
+            username="dedup-blocks",
+            password_hash="not-used",
+            display_name="Dedup Blocks",
+        )
+        session.add(user)
+        session.flush()
+
+        thread = AgentThread(user_id=user.id, status="active")
+        session.add(thread)
+        session.flush()
+
+        shown = MemoryItem(
+            user_id=user.id,
+            content="Works as a software engineer",
+            category="fact",
+            importance=4,
+            source="extraction",
+        )
+        other = MemoryItem(
+            user_id=user.id,
+            content="Has a dog named Biscuit",
+            category="fact",
+            importance=3,
+            source="extraction",
+        )
+        session.add_all([shown, other])
+        session.commit()
+
+        blocks = build_runtime_memory_blocks(
+            session,
+            user_id=user.id,
+            thread_id=thread.id,
+            semantic_results=[
+                (shown.id, "Works as a software engineer", 0.92)],
+        )
+
+    semantic_block = next(b for b in blocks if b.label == "relevant_memories")
+    facts_block = next(b for b in blocks if b.label == "facts")
+    assert "software engineer" in semantic_block.value
+    assert "software engineer" not in facts_block.value
+    assert "Biscuit" in facts_block.value
+
+
+def test_static_and_turn_block_partition() -> None:
+    """Static blocks hold slow-changing identity; per-turn blocks hold
+    query-ranked and volatile state. Their composition matches the full
+    builder."""
+    from anima_server.services.agent.memory_blocks import (
+        build_static_memory_blocks,
+        build_turn_memory_blocks,
+    )
+
+    with _db_session() as session:
+        user = User(
+            username="partition",
+            password_hash="not-used",
+            display_name="Partition",
+        )
+        session.add(user)
+        session.flush()
+        thread = AgentThread(user_id=user.id, status="active")
+        session.add(thread)
+        session.flush()
+        session.add(
+            MemoryItem(
+                user_id=user.id,
+                content="Works as a software engineer",
+                category="fact",
+                importance=4,
+                source="extraction",
+            )
+        )
+        session.commit()
+
+        static = build_static_memory_blocks(session, user_id=user.id)
+        turn = build_turn_memory_blocks(
+            session, user_id=user.id, thread_id=thread.id)
+        full = build_runtime_memory_blocks(
+            session, user_id=user.id, thread_id=thread.id)
+
+    static_labels = {b.label for b in static}
+    turn_labels = {b.label for b in turn}
+    assert "human" in static_labels
+    assert "facts" not in static_labels
+    assert "facts" in turn_labels
+    assert "human" not in turn_labels
+    # No overlap, and composition covers the full set.
+    assert not (static_labels & turn_labels)
+    assert {b.label for b in full} == static_labels | turn_labels
+
+    # Safety invariant: only blocks whose writers invalidate the companion
+    # cache may be cached as static.  Blocks written by background tasks
+    # (self-model, emotional patterns, current focus, episodes) MUST stay
+    # per-turn or they go stale — this guards against that regression.
+    SAFE_STATIC = {
+        "soul", "persona", "human", "world_context", "user_directive",
+    }
+    assert static_labels <= SAFE_STATIC, (
+        f"unsafe blocks cached as static: {static_labels - SAFE_STATIC}"
+    )

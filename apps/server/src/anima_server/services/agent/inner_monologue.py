@@ -51,15 +51,9 @@ class DeepMonologueResult:
 async def _call_llm(prompt: str, system: str) -> str | None:
     """Call the configured LLM with the given prompt and system message."""
     try:
-        from anima_server.services.agent.llm import create_llm
-        from anima_server.services.agent.messages import HumanMessage, SystemMessage
+        from anima_server.services.agent.llm_json import call_llm_for_text
 
-        llm = create_llm()
-        response = await llm.ainvoke(
-            [SystemMessage(content=system), HumanMessage(content=prompt)]
-        )
-        content = getattr(response, "content", "")
-        return content if isinstance(content, str) else str(content)
+        return await call_llm_for_text(system, prompt)
     except Exception:
         logger.exception("LLM call failed in inner monologue")
         return None

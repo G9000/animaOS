@@ -1,25 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  HomeIcon,
-  TasksIcon,
-  ChatIcon,
-  MemoryIcon,
-  PresenceIcon,
-  MindIcon,
-  ModsIcon,
-  ConfigIcon,
-  DatabaseIcon,
   ChevronRightIcon,
   cn,
-  type IconProps,
 } from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
 import { getDbViewerEnabled } from "../../lib/preferences";
-import { getTheme, toggleTheme, type Theme } from "../../lib/theme";
+import { useTheme } from "../../hooks/useTheme";
+import { DATABASE_NAV_ITEM, SIDEBAR_NAV_ITEMS } from "./nav-items";
 
 
 const POSITIVE_MOODS = new Set(["happy", "excited", "hopeful", "grateful", "content", "playful", "affectionate", "calm"]);
@@ -38,31 +29,6 @@ function moodDotClass(emotion: string): string {
   if (NEGATIVE_MOODS.has(e)) return "bg-destructive ring-2 ring-sidebar ring-offset-0";
   return "bg-muted-foreground ring-2 ring-sidebar ring-offset-0";
 }
-
-interface NavItem {
-  to: string;
-  label: string;
-  Icon: React.ComponentType<IconProps>;
-  description: string;
-}
-
-const STATIC_NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "Home", Icon: HomeIcon, description: "dashboard" },
-  { to: "/tasks", label: "Tasks", Icon: TasksIcon, description: "queue" },
-  { to: "/chat", label: "Chat", Icon: ChatIcon, description: "console" },
-  { to: "/memory", label: "Memory", Icon: MemoryIcon, description: "archive" },
-  { to: "/presence", label: "Presence", Icon: PresenceIcon, description: "signals" },
-  { to: "/consciousness", label: "Mind", Icon: MindIcon, description: "consciousness" },
-  { to: "/mods", label: "Mods", Icon: ModsIcon, description: "extensions" },
-  { to: "/settings", label: "Settings", Icon: ConfigIcon, description: "system" },
-];
-
-const DATABASE_NAV_ITEM: NavItem = {
-  to: "/database",
-  label: "Database",
-  Icon: DatabaseIcon,
-  description: "inspector",
-};
 
 const SIDEBAR_STORAGE_KEY = "anima-sidebar-collapsed";
 
@@ -88,7 +54,7 @@ export function LayoutSidebar() {
   const [dbEnabled, setDbEnabled] = useState(getDbViewerEnabled);
   const [collapsed, setCollapsed] = useState(readCollapsedState);
   const [showUser, setShowUser] = useState(false);
-  const [theme, setTheme] = useState<Theme>(getTheme);
+  const { effective: theme, toggle: toggleTheme } = useTheme();
   const { agentName, avatarUrl, relationship } = useAgentProfile(user?.id);
   const [dominantEmotion, setDominantEmotion] = useState<string | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -141,7 +107,7 @@ export function LayoutSidebar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showUser]);
 
-  const navItems = dbEnabled ? [...STATIC_NAV_ITEMS, DATABASE_NAV_ITEM] : STATIC_NAV_ITEMS;
+  const navItems = dbEnabled ? [...SIDEBAR_NAV_ITEMS, DATABASE_NAV_ITEM] : SIDEBAR_NAV_ITEMS;
 
   return (
     <aside
@@ -239,7 +205,7 @@ export function LayoutSidebar() {
         {/* Theme + Collapse row */}
         <div className={cn("flex gap-1 p-1.5", collapsed ? "flex-col" : "flex-row")}>
           <button
-            onClick={() => setTheme(toggleTheme())}
+            onClick={toggleTheme}
             title={theme === "dark" ? "Switch to light" : "Switch to dark"}
             className={cn(
               "flex items-center justify-center gap-2 py-2 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors rounded-md",

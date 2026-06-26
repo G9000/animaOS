@@ -7,6 +7,7 @@ import math
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Literal
 
 
@@ -16,7 +17,7 @@ def _normalize_embedding_values(values: list[Any]) -> list[float] | None:
 
     normalized: list[float] = []
     for value in values:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, Real):
             return None
         numeric = float(value)
         if not math.isfinite(numeric):

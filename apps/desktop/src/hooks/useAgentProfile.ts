@@ -8,6 +8,8 @@ export interface AgentProfileState {
   agentName: string;
   relationship: string;
   agentType: string;
+  agentBirthday: string;
+  thinkingMonologue: string[];
   avatarUrl: string;
   hasCustomAvatar: boolean;
 }
@@ -24,6 +26,8 @@ const DEFAULT_AGENT_PROFILE_STATE: AgentProfileState = {
   agentName: "ANIMA",
   relationship: "",
   agentType: "",
+  agentBirthday: "",
+  thinkingMonologue: [],
   avatarUrl: personaAvatar,
   hasCustomAvatar: false,
 };
@@ -70,6 +74,8 @@ async function loadAgentProfile(userId: number): Promise<LoadedAgentProfile> {
       profile.agentName?.trim() || DEFAULT_AGENT_PROFILE_STATE.agentName,
     relationship: profile.relationship ?? "",
     agentType: profile.agentType ?? "",
+    agentBirthday: profile.agentBirthday ?? "",
+    thinkingMonologue: profile.thinkingMonologue ?? [],
     avatarUrl: avatar.avatarUrl,
     hasCustomAvatar: avatar.hasCustomAvatar,
     objectUrl: avatar.objectUrl,
@@ -123,6 +129,8 @@ export function useAgentProfile(
         agentName: nextProfile.agentName,
         relationship: nextProfile.relationship,
         agentType: nextProfile.agentType,
+        agentBirthday: nextProfile.agentBirthday,
+        thinkingMonologue: nextProfile.thinkingMonologue,
         avatarUrl: nextProfile.avatarUrl,
         hasCustomAvatar: nextProfile.hasCustomAvatar,
       });

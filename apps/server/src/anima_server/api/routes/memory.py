@@ -30,6 +30,8 @@ from anima_server.services.data_crypto import df
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_EPISODE_SUMMARIES = {"conversation session"}
+
 
 def _item_to_response(item: MemoryItem, user_id: int = 0) -> MemoryItemResponse:
     return MemoryItemResponse(
@@ -41,6 +43,32 @@ def _item_to_response(item: MemoryItem, user_id: int = 0) -> MemoryItemResponse:
         isSuperseded=item.superseded_by is not None,
         createdAt=item.created_at,
         updatedAt=item.updated_at,
+    )
+
+
+def _is_placeholder_episode_summary(summary: str) -> bool:
+    normalized = " ".join(summary.split()).casefold()
+    return normalized in _PLACEHOLDER_EPISODE_SUMMARIES
+
+
+def _episode_to_response(ep: MemoryEpisode, user_id: int = 0) -> MemoryEpisodeResponse | None:
+    summary = df(user_id, ep.summary, table="memory_episodes", field="summary")
+    if _is_placeholder_episode_summary(summary):
+        return None
+    return MemoryEpisodeResponse(
+        id=ep.id,
+        date=ep.date,
+        time=ep.time,
+        summary=summary,
+        topics=ep.topics_json or [],
+        emotionalArc=df(
+            user_id, ep.emotional_arc, table="memory_episodes", field="emotional_arc"
+        )
+        if ep.emotional_arc
+        else None,
+        significanceScore=ep.significance_score,
+        turnCount=ep.turn_count,
+        createdAt=ep.created_at,
     )
 
 
@@ -418,29 +446,21 @@ async def list_episodes(
     db: Session = Depends(get_db),
 ) -> list[MemoryEpisodeResponse]:
     require_unlocked_user(request, user_id)
+    fetch_limit = min(max(limit * 5, limit + 20), 500)
     episodes = list(
         db.scalars(
             select(MemoryEpisode)
             .where(MemoryEpisode.user_id == user_id)
             .order_by(MemoryEpisode.created_at.desc())
-            .limit(limit)
+            .limit(fetch_limit)
         ).all()
     )
-    return [
-        MemoryEpisodeResponse(
-            id=ep.id,
-            date=ep.date,
-            time=ep.time,
-            summary=df(user_id, ep.summary, table="memory_episodes", field="summary"),
-            topics=ep.topics_json or [],
-            emotionalArc=df(
-                user_id, ep.emotional_arc, table="memory_episodes", field="emotional_arc"
-            )
-            if ep.emotional_arc
-            else None,
-            significanceScore=ep.significance_score,
-            turnCount=ep.turn_count,
-            createdAt=ep.created_at,
-        )
-        for ep in episodes
-    ]
+    responses: list[MemoryEpisodeResponse] = []
+    for ep in episodes:
+        response = _episode_to_response(ep, user_id)
+        if response is None:
+            continue
+        responses.append(response)
+        if len(responses) >= limit:
+            break
+    return responses

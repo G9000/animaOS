@@ -188,6 +188,50 @@ def test_append_user_message_stores_attachment_metadata() -> None:
         }
 
 
+def test_append_user_message_stores_attachment_metadata_and_pills() -> None:
+    from anima_server.services.agent.state import StoredAttachment, extract_stored_pills
+
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+        msg = append_user_message(
+            db,
+            thread=thread,
+            run_id=run.id,
+            content="Use the PDF",
+            sequence_id=1,
+            attachments=(
+                StoredAttachment(
+                    id="img_test",
+                    kind="image",
+                    mime_type="image/png",
+                    path="/tmp/pixel.png",
+                    storage_path="users/1/attachments/chat/img_test.png",
+                    filename="pixel.png",
+                    size_bytes=24,
+                    sha256="abc123",
+                ),
+            ),
+            pills=(
+                {"kind": "document_attachment", "label": "price-list.pdf", "ref": 4},
+            ),
+        )
+
+        assert msg.content_json is not None
+        assert msg.content_json["attachments"][0]["id"] == "img_test"
+        assert extract_stored_pills(msg.content_json) == [
+            {"kind": "document_attachment", "label": "price-list.pdf", "ref": 4}
+        ]
+
+
 def test_append_message_tool() -> None:
     with _db_session() as db:
         user = _make_user(db)
@@ -871,6 +915,71 @@ def test_persist_agent_result_simple_stores_retrieval_metadata() -> None:
         assert message.content_json["retrieval"]["contextFragments"][0]["text"] == "Remembered detail"
 
 
+def test_persist_agent_result_simple_stores_retrieval_metadata_and_pills() -> None:
+    from anima_server.services.agent.state import extract_stored_pills
+
+    with _db_session() as db:
+        user = _make_user(db)
+        thread = get_or_create_thread(db, user.id)
+        run = create_run(
+            db,
+            thread_id=thread.id,
+            user_id=user.id,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+
+        result = AgentResult(
+            response="Hello!",
+            model="test-model",
+            provider="test-provider",
+            stop_reason="end_turn",
+            retrieval=AgentRetrievalTrace(
+                retriever="hybrid",
+                citations=(),
+                context_fragments=(),
+                stats=AgentRetrievalStats(
+                    retrieval_ms=10.0,
+                    total_considered=2,
+                    returned=1,
+                    cutoff_index=1,
+                    cutoff_score=0.88,
+                    top_score=0.88,
+                    cutoff_ratio=1.0,
+                    triggered_by="adaptive_ratio",
+                ),
+            ),
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="Hello!",
+                    tool_calls=(),
+                    tool_results=(),
+                ),
+            ],
+        )
+
+        persist_agent_result(
+            db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=1,
+            assistant_pills=(
+                {"kind": "document_source", "label": "CITED DOCS", "ref": None},
+            ),
+        )
+        db.commit()
+
+        message = db.query(RuntimeMessage).filter_by(thread_id=thread.id).one()
+        assert message.content_json is not None
+        assert message.content_json["retrieval"]["retriever"] == "hybrid"
+        assert extract_stored_pills(message.content_json) == [
+            {"kind": "document_source", "label": "CITED DOCS", "ref": None}
+        ]
+
+
 def test_persist_agent_result_with_tool_calls() -> None:
     with _db_session() as db:
         user = _make_user(db)
@@ -930,6 +1039,8 @@ def test_persist_agent_result_with_tool_calls() -> None:
 
 
 def test_persist_agent_result_stores_retrieval_on_send_message_output() -> None:
+    from anima_server.services.agent.state import extract_stored_pills
+
     with _db_session() as db:
         user = _make_user(db)
         thread = get_or_create_thread(db, user.id)
@@ -980,6 +1091,9 @@ def test_persist_agent_result_stores_retrieval_on_send_message_output() -> None:
             run=run,
             result=result,
             initial_sequence_id=1,
+            assistant_pills=(
+                {"kind": "document_source", "label": "CITED DOCS", "ref": None},
+            ),
         )
         db.commit()
 
@@ -1000,11 +1114,20 @@ def test_persist_agent_result_stores_retrieval_on_send_message_output() -> None:
                     "parse_error": None,
                     "raw_arguments": None,
                 }
-            ]
+            ],
+            "pills": [
+                {"kind": "document_source", "label": "CITED DOCS", "ref": None}
+            ],
         }
+        assert extract_stored_pills(messages[0].content_json) == [
+            {"kind": "document_source", "label": "CITED DOCS", "ref": None}
+        ]
         assert messages[1].role == "tool"
         assert messages[1].tool_name == "send_message"
         assert messages[1].content_json is not None
+        assert extract_stored_pills(messages[1].content_json) == [
+            {"kind": "document_source", "label": "CITED DOCS", "ref": None}
+        ]
         assert messages[1].content_json["retrieval"]["citations"] == [
             {
                 "index": 1,

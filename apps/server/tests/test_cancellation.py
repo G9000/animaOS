@@ -275,16 +275,20 @@ class TestCompanionCancelEvents:
         # so late checks still see the cancellation
         assert companion.is_cancelled(99)
 
-    def test_create_replaces_existing(self) -> None:
-        """Creating a new cancel event replaces any existing one."""
+    def test_create_reuses_existing_preset_event(self) -> None:
+        """A cancel that arrives before the turn registers its event
+        (set_cancel creates a pre-set event) must not be lost when the
+        turn then calls create_cancel_event."""
         companion = AnimaCompanion.__new__(AnimaCompanion)
         companion._cancel_events = {}
 
-        ev1 = companion.create_cancel_event(42)
-        ev1.set()
-        ev2 = companion.create_cancel_event(42)
+        companion.set_cancel(42)
+        ev = companion.create_cancel_event(42)
+        assert ev.is_set()
+
+        # A fresh run id still gets a fresh, unset event.
+        ev2 = companion.create_cancel_event(43)
         assert not ev2.is_set()
-        assert ev1 is not ev2
 
 
 # ---- No cancel_event → normal behaviour ---
@@ -299,3 +303,71 @@ async def test_no_cancel_event_runs_normally() -> None:
     assert isinstance(result, AgentResult)
     assert result.stop_reason == StopReason.TERMINAL_TOOL.value
     assert result.response == "hello world"
+
+
+# ---- Stream inactivity timeout ----
+
+
+class StallingAdapter(BaseLLMAdapter):
+    """Yields one chunk then hangs forever."""
+
+    provider = "test"
+    model = "test-model"
+
+    async def invoke(self, request: LLMRequest) -> StepExecutionResult:
+        raise AssertionError("invoke should not be called")
+
+    async def stream(self, request: LLMRequest):
+        yield type("StreamEvent", (), {"content_delta": "partial", "result": None})()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_stalled_stream_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent.llm import LLMInvocationError
+    from anima_server.services.agent.runtime_types import StepFailedError
+
+    monkeypatch.setattr(
+        settings, "agent_llm_stream_inactivity_timeout", 0.05)
+
+    runtime = _build_runtime(StallingAdapter())
+    events: list[AgentStreamEvent] = []
+
+    async def collect(event: AgentStreamEvent) -> None:
+        events.append(event)
+
+    with pytest.raises(StepFailedError) as excinfo:
+        await asyncio.wait_for(
+            runtime.invoke("hi", user_id=1, history=[], event_callback=collect),
+            timeout=5,
+        )
+    assert isinstance(excinfo.value.cause, LLMInvocationError)
+    assert "stalled" in str(excinfo.value.cause)
+
+
+@pytest.mark.asyncio
+async def test_cancel_wakes_stalled_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancellation must be honoured even when no chunks are arriving."""
+    from anima_server.config import settings
+    from anima_server.services.agent.runtime_types import StopReason
+
+    monkeypatch.setattr(
+        settings, "agent_llm_stream_inactivity_timeout", 30.0)
+
+    runtime = _build_runtime(StallingAdapter())
+    cancel_event = asyncio.Event()
+
+    async def collect(event: AgentStreamEvent) -> None:
+        pass
+
+    task = asyncio.create_task(
+        runtime.invoke(
+            "hi", user_id=1, history=[],
+            event_callback=collect, cancel_event=cancel_event,
+        )
+    )
+    await asyncio.sleep(0.05)
+    cancel_event.set()
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result.stop_reason == StopReason.CANCELLED.value

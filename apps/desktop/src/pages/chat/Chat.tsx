@@ -6,17 +6,23 @@ import type {
   ChatContextMessage,
   ChatMessage,
   ChatRequestAttachment,
-  ProactiveNotice,
+  DocumentWorkflowActionResponse,
+  ThreadContextStats,
+  TodayContext,
   Thread,
   TraceEvent,
 } from "@anima/api-client";
 import { api } from "../../lib/api";
 import { API_BASE, API_ORIGIN } from "../../lib/runtime";
 import { getUnlockToken } from "../../lib/api";
+import {
+  loadTodayContext,
+  saveTodayContext,
+  todayIso,
+} from "../../lib/today-context";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
-import personaAvatar from "../../assets/persona-default.svg";
 
 // Chat components from standard-templates
 import {
@@ -24,13 +30,16 @@ import {
   CompactChatBubble,
   shouldGroupMessages,
 } from "@anima/standard-templates";
-import { getTranslateLang } from "../../lib/preferences";
+import {
+  getTranslateLang,
+  getShowTrace,
+  setShowTrace as persistShowTrace,
+} from "../../lib/preferences";
 
 // Local chat components
 import {
   ThreadSidebar,
   StreamingView,
-  ChatEmptyState,
   ChatLayout,
 } from "../../components/chat";
 
@@ -43,9 +52,15 @@ const ACCEPTED_IMAGE_TYPES = new Set([
   "image/gif",
 ]);
 const MAX_SELECTED_IMAGES = 4;
+const MAX_SELECTED_DOCUMENTS = 4;
 
 interface ChatLocationState {
   contextMessages?: ChatContextMessage[];
+  // When true, open a fresh thread and show contextMessages as the opening
+  // assistant message(s) without auto-sending a user prompt.
+  seedThread?: boolean;
+  // Open and display a specific existing thread by ID.
+  resumeThreadId?: number;
 }
 
 interface PendingImageAttachment {
@@ -53,6 +68,20 @@ interface PendingImageAttachment {
   file: File;
   previewUrl: string;
 }
+
+type PendingDocumentStatus = "indexing" | "indexed" | "failed";
+
+interface PendingDocumentAttachment {
+  id: string;
+  file: File;
+  filename: string;
+  status: PendingDocumentStatus;
+  workflowId?: number;
+  documentId?: number;
+  error?: string;
+}
+
+type ChatPill = NonNullable<ChatMessage["pills"]>[number];
 
 function attachmentFetchUrl(url: string): string {
   if (url.startsWith("blob:") || url.startsWith("data:")) return url;
@@ -95,6 +124,133 @@ function toPreviewAttachment(image: PendingImageAttachment): ChatAttachment {
   };
 }
 
+function truncatePillLabel(label: string, limit = 64): string {
+  const cleaned = label.trim().replace(/\s+/g, " ");
+  if (cleaned.length <= limit) return cleaned;
+  return `${cleaned.slice(0, Math.max(limit - 3, 1)).trimEnd()}...`;
+}
+
+function toDocumentAttachmentPill(
+  document: Pick<PendingDocumentAttachment, "filename" | "documentId">,
+): ChatPill {
+  return {
+    kind: "document_attachment",
+    label: truncatePillLabel(document.filename),
+    ref: document.documentId ?? null,
+  };
+}
+
+function toDocumentSourcePill(
+  document: Pick<PendingDocumentAttachment, "filename" | "documentId">,
+): ChatPill {
+  return {
+    kind: "document_source",
+    label: truncatePillLabel(document.filename),
+    ref: document.documentId ?? null,
+  };
+}
+
+function toImageSourcePill(image: PendingImageAttachment): ChatPill {
+  return {
+    kind: "image_source",
+    label: truncatePillLabel(image.file.name || "Image"),
+    ref: image.id,
+  };
+}
+
+function buildAssistantSourcePills({
+  documents,
+  images,
+}: {
+  documents: PendingDocumentAttachment[];
+  images: PendingImageAttachment[];
+}): ChatPill[] | undefined {
+  const pills: ChatPill[] = [];
+  pills.push(...documents.map(toDocumentSourcePill));
+  pills.push(...images.map(toImageSourcePill));
+  return pills.length > 0 ? pills : undefined;
+}
+
+function isPdfFile(file: File): boolean {
+  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+}
+
+function asPdfUploadFile(file: File): File {
+  if (file.type === "application/pdf") return file;
+  return new File([file], file.name, { type: "application/pdf" });
+}
+
+function documentIdFromWorkflowResponse(
+  response: DocumentWorkflowActionResponse,
+): number | null {
+  const result = response.workflow?.result;
+  const resultId = readDocumentId(result);
+  if (resultId !== null) return resultId;
+
+  const checkpoints = response.workflow?.checkpoints ?? [];
+  for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
+    const checkpoint = checkpoints[index];
+    const artifactId = readDocumentId(checkpoint.artifacts);
+    if (artifactId !== null) return artifactId;
+    const outputId = readDocumentId(checkpoint.output);
+    if (outputId !== null) return outputId;
+  }
+  return null;
+}
+
+function readDocumentId(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as { document_id?: unknown; documentId?: unknown };
+  const raw = payload.document_id ?? payload.documentId;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
+  if (!pills || pills.length === 0) return null;
+  return (
+    <div className="mb-2 flex flex-wrap gap-1 not-prose">
+      {pills.map((pill) => {
+        const filePill =
+          pill.kind === "document_attachment" ||
+          pill.kind === "document_source" ||
+          pill.kind === "image_source";
+        const prefix =
+          pill.kind === "document_source"
+            ? "Cited PDF"
+            : pill.kind === "document_attachment"
+              ? "PDF"
+              : "Used Image";
+
+        return (
+          <span
+            key={`${pill.kind}:${String(pill.ref ?? "")}:${pill.label}`}
+            className={`inline-flex max-w-full items-center gap-1 border border-border/60 px-1.5 py-0.5 ${
+              filePill
+                ? "bg-card/70 text-foreground/80"
+                : "text-muted-foreground/55"
+            }`}
+          >
+            {filePill ? (
+              <>
+                <span className="font-mono text-[8px] uppercase tracking-[0.15em] text-foreground/65">
+                  {prefix}
+                </span>
+                <span className="max-w-[240px] truncate text-[11px] leading-none">
+                  {pill.label}
+                </span>
+              </>
+            ) : (
+              <span className="font-mono text-[8px] uppercase tracking-[0.15em]">
+                {pill.label}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function ChatImageAttachments({
   attachments,
 }: {
@@ -102,7 +258,7 @@ function ChatImageAttachments({
 }) {
   if (!attachments || attachments.length === 0) return null;
   return (
-    <div className="mb-2 grid grid-cols-2 gap-2 max-w-sm">
+    <div className="mb-2 flex flex-wrap gap-1.5">
       {attachments.map((attachment) => (
         <AttachmentImage key={attachment.id} attachment={attachment} />
       ))}
@@ -162,90 +318,11 @@ function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
     <img
       src={src}
       alt={attachment.filename || "Attached image"}
-      className="aspect-video w-full object-cover border border-primary-foreground/20 bg-primary-foreground/10"
+      className="h-20 w-auto max-w-[140px] object-cover border border-foreground/[0.08]"
     />
   );
 }
 
-function SelectedImagePreviews({
-  images,
-  onRemove,
-}: {
-  images: PendingImageAttachment[];
-  onRemove: (id: string) => void;
-}) {
-  if (images.length === 0) return null;
-  return (
-    <div className="mb-2 grid grid-cols-4 gap-2">
-      {images.map((image) => (
-        <div key={image.id} className="relative border border-border bg-card">
-          <img
-            src={image.previewUrl}
-            alt={image.file.name}
-            className="h-16 w-full object-cover"
-          />
-          <button
-            type="button"
-            onClick={() => onRemove(image.id)}
-            className="absolute right-1 top-1 h-5 w-5 bg-background/90 border border-border font-mono text-[10px] text-muted-foreground hover:text-foreground"
-            title="Remove image"
-          >
-            x
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ProactiveNoticeCard({
-  notice,
-  draft,
-  loading,
-  onDraftChange,
-  onRegenerate,
-  onDismiss,
-}: {
-  notice: ProactiveNotice;
-  draft: string;
-  loading: boolean;
-  onDraftChange: (value: string) => void;
-  onRegenerate: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="mb-2 border border-border bg-card px-3 py-2.5">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {notice.message}
-        </p>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
-        >
-          DISMISS
-        </button>
-      </div>
-      <div className="mt-2 flex items-center gap-2">
-        <input
-          value={draft}
-          onChange={(event) => onDraftChange(event.currentTarget.value)}
-          placeholder="customize notice..."
-          className="min-w-0 flex-1 bg-background border border-border px-2 py-1.5 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/30 outline-none focus:border-muted-foreground/40"
-        />
-        <button
-          type="button"
-          onClick={onRegenerate}
-          disabled={loading}
-          className="shrink-0 border border-border px-2.5 py-1.5 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
-        >
-          {loading ? "..." : "REGEN"}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
@@ -276,6 +353,7 @@ function mapThreadMessages(
     ts?: string | null;
     retrieval?: ChatMessage["retrieval"];
     attachments?: ChatAttachment[];
+    pills?: ChatMessage["pills"];
   }>,
   userId: number,
 ): ChatMessage[] {
@@ -289,6 +367,25 @@ function mapThreadMessages(
       createdAt: message.ts ?? undefined,
       retrieval: message.retrieval ?? undefined,
       attachments: message.attachments ?? [],
+      pills: message.pills ?? undefined,
+    }));
+}
+
+// Render context messages (the companion's opening thought/notice) as assistant
+// bubbles that seed a fresh thread before the user has replied.
+function contextToSeedMessages(
+  contextMessages: ChatContextMessage[],
+  userId: number,
+): ChatMessage[] {
+  return contextMessages
+    .filter((message) => message.content.trim())
+    .map((message, index) => ({
+      id: Date.now() + index,
+      userId,
+      role: "assistant" as const,
+      content: message.content.trim(),
+      source: message.source ?? null,
+      pills: message.pills ?? undefined,
     }));
 }
 
@@ -306,12 +403,22 @@ export default function Chat() {
   const pendingContextRef = useRef<ChatContextMessage[]>(
     locationState?.contextMessages ?? [],
   );
+  // True while showing an unsent seeded thread (opened via the dashboard
+  // "ask"/"start chat" actions). Cleared once the user sends or switches threads.
+  const seedActiveRef = useRef(locationState?.seedThread === true);
+  const resumeThreadIdRef = useRef<number | null>(locationState?.resumeThreadId ?? null);
 
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [selectedImages, setSelectedImages] = useState<PendingImageAttachment[]>(
     [],
+  );
+  const [selectedDocuments, setSelectedDocuments] = useState<
+    PendingDocumentAttachment[]
+  >([]);
+  const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
+    loadTodayContext(),
   );
   const [error, setError] = useState("");
   const [translateLang] = useState(getTranslateLang());
@@ -320,24 +427,21 @@ export default function Chat() {
 
   // Streaming state
   const [streaming, setStreaming] = useState(false);
+  const streamingRef = useRef(false);
   const [streamBuffer, setStreamBuffer] = useState("");
   const [reasoningBuffer, setReasoningBuffer] = useState("");
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
-  const [showTrace] = useState(false);
-  const [proactiveNotice, setProactiveNotice] =
-    useState<ProactiveNotice | null>(null);
-  const [proactiveDraft, setProactiveDraft] = useState("");
-  const [proactiveLoading, setProactiveLoading] = useState(false);
+  const [showTrace, setShowTrace] = useState(() => getShowTrace());
 
   // Thread state
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [threadSearch, setThreadSearch] = useState("");
+  const [contextStats, setContextStats] = useState<ThreadContextStats | null>(null);
   const currentThreadIdRef = useRef<number | null>(null);
 
-  // Avatar
-  const [agentAvatarUrl, setAgentAvatarUrl] = useState<string>(personaAvatar);
+  const [thinkingMonologue, setThinkingMonologue] = useState<string[]>([]);
 
   // Scroll state
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -361,96 +465,111 @@ export default function Chat() {
     }
   }, []);
 
-  const loadProactiveNotice = useCallback(
-    async (instruction?: string) => {
-      if (user?.id == null) return;
-      setProactiveLoading(true);
-      try {
-        const result = await api.chat.proactiveNotice(user.id, instruction);
-        setProactiveNotice(result.notice);
-      } catch {
-        setProactiveNotice(null);
-      } finally {
-        setProactiveLoading(false);
-      }
-    },
-    [user?.id],
-  );
-
-  // ===== CONSOLIDATED: Initial data loading =====
+  // ===== Initial data loading =====
+  // One coherent landing flow. The chat always shows a single thread:
+  //   1. seeded (opened from the dashboard) → fresh thread, companion's
+  //      thought/episode as the opening bubble;
+  //   2. pending msg (?msg=) → load the active thread, then auto-send;
+  //   3. existing active thread with messages → resume it;
+  //   4. otherwise a fresh start → let the companion open with a proactive
+  //      message as the first bubble, if it has one.
   useEffect(() => {
     if (user?.id == null) return;
-
+    const userId = user.id;
     let revoked = false;
 
-    // Load all initial data in parallel
-    Promise.all([
-      // Load avatar
-      api.consciousness
-        .getAgentProfile(user.id)
-        .then(async (profile) => {
-          if (!profile.avatarUrl || revoked) return;
-          const token = getUnlockToken();
-          const headers: Record<string, string> = token
-            ? { "x-anima-unlock": token }
-            : {};
-          const res = await fetch(`${API_BASE}${profile.avatarUrl}`, {
-            headers,
-          });
-          if (res.ok && !revoked) {
-            setAgentAvatarUrl(URL.createObjectURL(await res.blob()));
-          }
-        })
-        .catch(() => {}),
+    // Thinking monologue — independent of the conversation flow.
+    api.consciousness
+      .getAgentProfile(userId)
+      .then((profile) => {
+        if (!revoked) setThinkingMonologue(profile.thinkingMonologue ?? []);
+      })
+      .catch(() => {});
 
-      // Load chat history
-      api.chat
-        .history(user.id)
-        .then((hist) => {
-          if (revoked) return;
-          setMessages(hist);
-          const pending = pendingMsgRef.current;
-          if (pending) {
-            const pendingContext = pendingContextRef.current;
-            pendingMsgRef.current = null;
-            pendingContextRef.current = [];
-            setSearchParams({}, { replace: true });
-            setTimeout(() => sendMessage(pending, pendingContext), 100);
-          }
-        })
-        .catch(console.error),
+    const seedFreshThread = (context: ChatContextMessage[]) => {
+      currentThreadIdRef.current = null;
+      setCurrentThreadId(null);
+      setMessages(contextToSeedMessages(context, userId));
+    };
 
-      // Load threads
-      api.threads
-        .list()
-        .then((res) => {
-          if (revoked) return;
-          const nextThreads = dedupeThreads(res.threads);
-          setThreads(nextThreads);
-          const active = nextThreads.find((t) => t.status === "active");
-          if (active) {
-            setCurrentThreadId(active.id);
-            currentThreadIdRef.current = active.id;
-          }
-        })
-        .catch(() => {}),
-    ]);
+    void (async () => {
+      // /history returns the active thread's messages, so it and the thread
+      // list describe the same thread — load them together.
+      const [threadsRes, hist] = await Promise.all([
+        api.threads.list().catch(() => null),
+        api.chat.history(userId).catch(() => null),
+      ]);
+      if (revoked) return;
 
-    if (!pendingMsgRef.current) {
-      void loadProactiveNotice();
-    }
+      const nextThreads = threadsRes ? dedupeThreads(threadsRes.threads) : [];
+      setThreads(nextThreads);
+      const active = nextThreads.find((t) => t.status === "active") ?? null;
+
+      // 0. Opened from the dashboard "Recent Chats" node with a specific thread.
+      const resumeId = resumeThreadIdRef.current;
+      if (resumeId != null) {
+        resumeThreadIdRef.current = null;
+        const target = nextThreads.find((t) => t.id === resumeId);
+        if (target) {
+          currentThreadIdRef.current = resumeId;
+          setCurrentThreadId(resumeId);
+          setMessages([]);
+          try {
+            const res = await api.threads.messages(resumeId);
+            if (!revoked) setMessages(mapThreadMessages(res.messages, userId));
+          } catch {
+            /* fall through to fresh start */
+          }
+          return;
+        }
+      }
+
+      // 1. Seeded open from the dashboard.
+      if (seedActiveRef.current) {
+        seedFreshThread(pendingContextRef.current);
+        return;
+      }
+
+      // 2. Pending auto-send (e.g. /chat?msg=...).
+      const pending = pendingMsgRef.current;
+      if (pending) {
+        setMessages(hist ?? []);
+        if (active) {
+          setCurrentThreadId(active.id);
+          currentThreadIdRef.current = active.id;
+        }
+        const pendingContext = pendingContextRef.current;
+        pendingMsgRef.current = null;
+        pendingContextRef.current = [];
+        setSearchParams({}, { replace: true });
+        setTimeout(() => sendMessage(pending, pendingContext), 100);
+        return;
+      }
+
+      // 3. Resume an existing conversation.
+      if (active && (hist?.length ?? 0) > 0) {
+        setCurrentThreadId(active.id);
+        currentThreadIdRef.current = active.id;
+        setMessages(hist ?? []);
+        return;
+      }
+
+      // 4. Fresh start — empty slate.
+      setMessages([]);
+    })();
 
     return () => {
       revoked = true;
     };
-  }, [loadProactiveNotice, user?.id]);
+  }, [user?.id]);
 
   // ===== CONSOLIDATED: Polling for updates =====
   useEffect(() => {
     if (user?.id == null) return;
 
     const interval = setInterval(async () => {
-      if (streaming || currentThreadIdRef.current != null) return;
+      if (streaming || currentThreadIdRef.current != null || seedActiveRef.current)
+        return;
       try {
         const hist = await api.chat.history(user.id);
         setMessages((prev) => (hist.length > prev.length ? hist : prev));
@@ -462,13 +581,16 @@ export default function Chat() {
 
   // ===== CONSOLIDATED: Auto-scroll =====
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
   useEffect(() => {
     if (!historyHydratedRef.current && messages.length > 0) {
       scrollToBottom("auto");
       historyHydratedRef.current = true;
+      return;
     }
     if (streaming || isAtBottom) {
       scrollToBottom(streaming ? "auto" : "smooth");
@@ -481,20 +603,30 @@ export default function Chat() {
     setIsAtBottom(el.scrollHeight - (el.scrollTop + el.clientHeight) < 40);
   }, []);
 
-  // ===== CONSOLIDATED: Visibility change =====
+  // ===== Close the active thread when leaving the chat page =====
+  // Closing a thread triggers server-side consolidation (episode/memory
+  // extraction), so we mark the session boundary on unmount — i.e. when the
+  // user navigates away from chat. Previously this fired on tab-hide, which
+  // closed the thread the moment you alt-tabbed away mid-conversation.
   useEffect(() => {
     if (user?.id == null) return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden" && currentThreadIdRef.current) {
+    return () => {
+      // Skip close when a stream is in-flight — the server is still generating.
+      // Consolidation will fire on the next natural thread close instead.
+      if (currentThreadIdRef.current && !streamingRef.current) {
         api.threads.close(currentThreadIdRef.current).catch(() => {});
       }
     };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [user?.id]);
+
+  // Fetch context stats whenever the active thread changes or streaming ends
+  useEffect(() => {
+    if (!currentThreadId) { setContextStats(null); return; }
+    if (streaming) return;
+    api.threads.contextStats(currentThreadId)
+      .then(setContextStats)
+      .catch(() => setContextStats(null));
+  }, [currentThreadId, streaming]);
 
   // Thread actions
   const loadThreadMessages = useCallback(
@@ -506,9 +638,12 @@ export default function Chat() {
   );
 
   const handleSelectThread = async (threadId: number) => {
+    seedActiveRef.current = false;
+    pendingContextRef.current = [];
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
+    historyHydratedRef.current = false;
     try {
       await loadThreadMessages(threadId);
     } catch {
@@ -518,11 +653,23 @@ export default function Chat() {
     }
   };
 
-  const handleNewThread = () => {
+  const handleNewThread = async () => {
+    seedActiveRef.current = false;
+    pendingContextRef.current = [];
+
+    const threadToClose = currentThreadIdRef.current;
     currentThreadIdRef.current = null;
     setCurrentThreadId(null);
     setMessages([]);
     setError("");
+
+    // Close the current thread to fire consolidation, but don't eagerly
+    // create a new one — it will be created on the first message send.
+    try {
+      if (threadToClose) await api.threads.close(threadToClose);
+      const list = await api.threads.list();
+      setThreads(dedupeThreads(list.threads));
+    } catch {}
   };
 
   const handleDeleteThread = async (threadId: number) => {
@@ -539,33 +686,128 @@ export default function Chat() {
     }
   };
 
-  const handleAttach = useCallback((type: string) => {
-    if (type === "image") {
-      fileInputRef.current?.click();
-    }
+  const handleToggleTrace = useCallback(() => {
+    setShowTrace((prev) => {
+      const next = !prev;
+      persistShowTrace(next);
+      return next;
+    });
   }, []);
 
-  const handleImageSelection = (files: FileList | null) => {
+  // Ctrl+Shift+T — toggle trace panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "T") {
+        e.preventDefault();
+        handleToggleTrace();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [handleToggleTrace]);
+
+  // Send the last run's trace to Animus for debugging.
+  // TODO: when Animus is connected, route directly to Animus session instead of chat.
+  const handleDebugInAnimus = () => {
+    const errorEvents = traceEvents.filter(
+      (e) =>
+        (e as any).type === "error" ||
+        ((e as any).type === "warning" && (e as any).code === "empty_step_result") ||
+        ((e as any).type === "tool_return" && (e as any).isError),
+    );
+    if (errorEvents.length === 0) return;
+
+    const lines: string[] = ["Execution trace from last run:"];
+    for (const e of traceEvents) {
+      const ev = e as any;
+      if (ev.type === "tool_call") {
+        lines.push(`  → ${ev.name}(${JSON.stringify(ev.arguments ?? {})})`);
+      } else if (ev.type === "tool_return") {
+        lines.push(
+          `  ← ${ev.name}: ${ev.isError ? "ERROR — " : ""}${String(ev.output ?? "").slice(0, 400)}`,
+        );
+      } else if (ev.type === "error") {
+        lines.push(`  !! ${ev.error}`);
+      } else if (ev.type === "warning") {
+        lines.push(`  ⚠ [${ev.code}] ${ev.message}`);
+      }
+    }
+
+    void sendMessage(
+      `Debug the last run. Here's the trace:\n\`\`\`\n${lines.join("\n")}\n\`\`\`\nDiagnose what went wrong and fix it.`,
+    );
+  };
+
+  const handleAttach = useCallback((_type: string) => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const uploadAndIndexDocument = useCallback(
+    async (id: string, file: File) => {
+      if (user?.id == null) return;
+      try {
+        const upload = await api.documents.uploadPdf(
+          user.id,
+          asPdfUploadFile(file),
+          currentThreadIdRef.current ?? undefined,
+        );
+        const resumed = await api.documents.resumeWorkflow(upload.workflowId);
+        const documentId =
+          documentIdFromWorkflowResponse(resumed) ??
+          documentIdFromWorkflowResponse(upload);
+        if (documentId == null) {
+          throw new Error("PDF indexed without returning a document id.");
+        }
+        setSelectedDocuments((prev) =>
+          prev.map((document) =>
+            document.id === id
+              ? {
+                  ...document,
+                  status: "indexed",
+                  workflowId: upload.workflowId,
+                  documentId,
+                  error: undefined,
+                }
+              : document,
+          ),
+        );
+      } catch (err: any) {
+        setSelectedDocuments((prev) =>
+          prev.map((document) =>
+            document.id === id
+              ? {
+                  ...document,
+                  status: "failed",
+                  error: err?.message || "PDF indexing failed.",
+                }
+              : document,
+          ),
+        );
+      }
+    },
+    [user?.id],
+  );
+
+  const handleFileSelection = (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
-    const acceptedFiles = Array.from(files).filter((file) =>
+    const incomingFiles = Array.from(files);
+    const acceptedImageFiles = incomingFiles.filter((file) =>
       ACCEPTED_IMAGE_TYPES.has(file.type),
     );
-    if (acceptedFiles.length !== files.length) {
-      setError("Unsupported image type. Use PNG, JPEG, WebP, or GIF.");
+    const acceptedPdfFiles = incomingFiles.filter(isPdfFile);
+    if (acceptedImageFiles.length + acceptedPdfFiles.length !== incomingFiles.length) {
+      setError("Unsupported attachment type. Use PNG, JPEG, WebP, GIF, or PDF.");
     }
 
     const availableSlots = MAX_SELECTED_IMAGES - selectedImages.length;
-    if (availableSlots <= 0) {
+    if (acceptedImageFiles.length > 0 && availableSlots <= 0) {
       setError(`Attach at most ${MAX_SELECTED_IMAGES} images.`);
-      return;
-    }
-
-    if (acceptedFiles.length > availableSlots) {
+    } else if (acceptedImageFiles.length > availableSlots) {
       setError(`Attach at most ${MAX_SELECTED_IMAGES} images.`);
     }
 
-    const nextImages = acceptedFiles.slice(0, availableSlots).map((file) => {
+    const nextImages = acceptedImageFiles.slice(0, Math.max(availableSlots, 0)).map((file) => {
       const previewUrl = URL.createObjectURL(file);
       objectUrlsRef.current.add(previewUrl);
       return {
@@ -575,7 +817,33 @@ export default function Chat() {
       };
     });
 
-    setSelectedImages((prev) => [...prev, ...nextImages]);
+    if (nextImages.length > 0) {
+      setSelectedImages((prev) => [...prev, ...nextImages]);
+    }
+
+    const availableDocumentSlots = MAX_SELECTED_DOCUMENTS - selectedDocuments.length;
+    if (acceptedPdfFiles.length > 0 && availableDocumentSlots <= 0) {
+      setError(`Attach at most ${MAX_SELECTED_DOCUMENTS} PDFs.`);
+    } else if (acceptedPdfFiles.length > availableDocumentSlots) {
+      setError(`Attach at most ${MAX_SELECTED_DOCUMENTS} PDFs.`);
+    }
+
+    const nextDocuments = acceptedPdfFiles
+      .slice(0, Math.max(availableDocumentSlots, 0))
+      .map((file) => ({
+        id: `document_${crypto.randomUUID()}`,
+        file,
+        filename: file.name,
+        status: "indexing" as const,
+      }));
+
+    if (nextDocuments.length > 0) {
+      setSelectedDocuments((prev) => [...prev, ...nextDocuments]);
+      for (const document of nextDocuments) {
+        void uploadAndIndexDocument(document.id, document.file);
+      }
+    }
+
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -589,24 +857,57 @@ export default function Chat() {
     });
   }, [revokeImagePreviews]);
 
+  const removeSelectedDocument = useCallback((id: string) => {
+    setSelectedDocuments((prev) =>
+      prev.filter((document) => document.id !== id),
+    );
+  }, []);
+
   // Send message
   const sendMessage = async (
     text: string,
     contextMessages: ChatContextMessage[] = [],
+    opts: { skipContextDisplay?: boolean } = {},
   ) => {
-    if ((!text.trim() && selectedImages.length === 0) || user?.id == null || streaming) {
+    const documentsForTurn = selectedDocuments.filter(
+      (document) => document.status === "indexed" && document.documentId != null,
+    );
+    const hasIndexingDocuments = selectedDocuments.some(
+      (document) => document.status === "indexing",
+    );
+    const hasFailedDocuments = selectedDocuments.some(
+      (document) => document.status === "failed",
+    );
+    if (hasIndexingDocuments) {
+      setError("Wait for PDF indexing to finish before sending.");
+      return;
+    }
+    if (hasFailedDocuments) {
+      setError("Remove failed PDFs before sending.");
+      return;
+    }
+    if (
+      (!text.trim() && selectedImages.length === 0 && documentsForTurn.length === 0) ||
+      user?.id == null ||
+      streaming
+    ) {
       return;
     }
 
-    const userMsg = text.trim();
-    const implicitContextMessages =
-      contextMessages.length > 0
-        ? contextMessages
-        : proactiveNotice?.contextMessages ?? [];
-    const turnContextMessages = implicitContextMessages.filter((message) =>
+    const userMsg = text.trim() || "Summarize the selected document.";
+    const turnContextMessages = contextMessages.filter((message) =>
       message.content.trim(),
     );
+    const activeTodayContext =
+      todayContext?.date === todayIso() ? todayContext : null;
+    if (todayContext && !activeTodayContext) {
+      setTodayContext(null);
+      saveTodayContext(null);
+    }
     const imagesForTurn = selectedImages;
+    const documentIdsForTurn = documentsForTurn.map(
+      (document) => document.documentId as number,
+    );
     let requestAttachments: ChatRequestAttachment[] = [];
     try {
       requestAttachments = await Promise.all(
@@ -619,29 +920,33 @@ export default function Chat() {
 
     setInput("");
     setError("");
-    if (turnContextMessages.length > 0) {
-      setProactiveNotice(null);
-    }
+    setSelectedImages([]);
+    setSelectedDocuments([]);
 
     const now = Date.now();
-    const optimisticContextMessages: ChatMessage[] = turnContextMessages.map(
-      (message, index) => ({
-        id: now + index,
-        userId: user.id,
-        role: "assistant",
-        content: message.content.trim(),
-        source: message.source ?? null,
-      }),
-    );
+    // When the context is already on screen (e.g. a seeded thread's opening
+    // thought), skip re-rendering it — but still send it to the server below.
+    const optimisticContextMessages: ChatMessage[] = opts.skipContextDisplay
+      ? []
+      : turnContextMessages.map((message, index) => ({
+          id: now + index,
+          userId: user.id,
+          role: "assistant",
+          content: message.content.trim(),
+          source: message.source ?? null,
+          pills: message.pills ?? undefined,
+        }));
     const tempUserMsg: ChatMessage = {
       id: now + optimisticContextMessages.length + 1,
       userId: user.id,
       role: "user",
       content: userMsg,
       attachments: imagesForTurn.map((image) => toPreviewAttachment(image)),
+      pills: documentsForTurn.map(toDocumentAttachmentPill),
     };
     setMessages((prev) => [...prev, ...optimisticContextMessages, tempUserMsg]);
     setStreaming(true);
+    streamingRef.current = true;
     setStreamBuffer("");
     setReasoningBuffer("");
     setTraceEvents([]);
@@ -661,6 +966,8 @@ export default function Chat() {
         currentThreadId ?? undefined,
         requestAttachments,
         turnContextMessages,
+        activeTodayContext,
+        documentIdsForTurn,
       )) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
@@ -708,10 +1015,14 @@ export default function Chat() {
           (emptyStepWarning ? "[empty model output]" : "[no response]"),
         reasoning: fullReasoning || undefined,
         traceEvents: collectedTraces.length > 0 ? collectedTraces : undefined,
+        pills: buildAssistantSourcePills({
+          documents: documentsForTurn,
+          images: imagesForTurn,
+        }),
       };
       setMessages((prev) => [...prev, assistantMsg]);
       const resolvedThreadId = currentThreadIdRef.current ?? currentThreadId;
-      if (imagesForTurn.length > 0 && resolvedThreadId != null) {
+      if (resolvedThreadId != null) {
         try {
           await loadThreadMessages(resolvedThreadId);
         } catch {
@@ -721,7 +1032,6 @@ export default function Chat() {
       setStreamBuffer("");
       setReasoningBuffer("");
       revokeImagePreviews(imagesForTurn);
-      setSelectedImages([]);
     } catch (err: any) {
       setError(err.message || "Connection failed");
       setStreamBuffer((partial) => {
@@ -738,7 +1048,22 @@ export default function Chat() {
       });
     } finally {
       setStreaming(false);
+      streamingRef.current = false;
       setReasoningBuffer("");
+    }
+  };
+
+  // Submit handler — on the first reply to a seeded thread, carry the seeded
+  // thought along as context (it's already shown, so don't re-render it).
+  const handleSubmit = () => {
+    const seedContext = pendingContextRef.current;
+    const wasSeed = seedActiveRef.current && seedContext.length > 0;
+    pendingContextRef.current = [];
+    seedActiveRef.current = false;
+    if (wasSeed) {
+      void sendMessage(input, seedContext, { skipContextDisplay: true });
+    } else {
+      void sendMessage(input);
     }
   };
 
@@ -746,11 +1071,12 @@ export default function Chat() {
   const renderMessageContent = (
     content: string,
     role: string,
-    message?: { attachments?: ChatAttachment[] },
+    message?: { attachments?: ChatAttachment[]; pills?: ChatMessage["pills"] },
   ) => {
     if (role === "user") {
       return (
         <div className="pr-6">
+          <MessagePills pills={message?.pills} />
           <ChatImageAttachments attachments={message?.attachments} />
           {content && (
             <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
@@ -762,11 +1088,12 @@ export default function Chat() {
     }
     return (
       <div className="prose prose-invert prose-sm md:prose-base max-w-none">
+        <MessagePills pills={message?.pills} />
         <ReactMarkdown
           rehypePlugins={[rehypeHighlight]}
           components={{
             pre: ({ children }) => (
-              <pre className="bg-black/30 p-3 overflow-x-auto my-2">
+              <pre className="bg-foreground/[0.06] p-3 overflow-x-auto my-2">
                 {children}
               </pre>
             ),
@@ -788,45 +1115,50 @@ export default function Chat() {
     );
   };
 
+  const canSubmit =
+    (Boolean(input.trim()) ||
+      selectedImages.length > 0 ||
+      selectedDocuments.some((document) => document.status === "indexed")) &&
+    !selectedDocuments.some((document) => document.status === "indexing");
+
   return (
     <>
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
+        accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf"
         multiple
         className="hidden"
-        onChange={(event) => handleImageSelection(event.currentTarget.files)}
+        onChange={(event) => handleFileSelection(event.currentTarget.files)}
       />
       <ChatLayout
         input={input}
         onInputChange={setInput}
-        onSubmit={() => sendMessage(input)}
+        onSubmit={handleSubmit}
         streaming={streaming}
-        canSubmit={Boolean(input.trim()) || selectedImages.length > 0}
+        canSubmit={canSubmit}
         onAttach={handleAttach}
-        inputAccessory={
-          <>
-            {proactiveNotice && (
-              <ProactiveNoticeCard
-                notice={proactiveNotice}
-                draft={proactiveDraft}
-                loading={proactiveLoading}
-                onDraftChange={setProactiveDraft}
-                onRegenerate={() => loadProactiveNotice(proactiveDraft)}
-                onDismiss={() => setProactiveNotice(null)}
-              />
-            )}
-            <SelectedImagePreviews
-              images={selectedImages}
-              onRemove={removeSelectedImage}
-            />
-          </>
-        }
+        attachedImages={selectedImages.map((img) => ({
+          id: img.id,
+          url: img.previewUrl,
+          filename: img.file.name,
+          onRemove: () => removeSelectedImage(img.id),
+        }))}
+        attachedDocuments={selectedDocuments.map((doc) => ({
+          id: doc.id,
+          filename: doc.filename,
+          status: doc.status,
+          error: doc.error,
+          onRemove: () => removeSelectedDocument(doc.id),
+        }))}
         showSidebar={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        showTrace={showTrace}
+        onToggleTrace={handleToggleTrace}
         showScrollButton={!isAtBottom}
         onScrollToBottom={() => scrollToBottom("smooth")}
+        scrollContainerRef={scrollRef}
+        onScroll={updateScrollState}
         sidebar={
           sidebarOpen ? (
             <ThreadSidebar
@@ -838,16 +1170,13 @@ export default function Chat() {
               onNewThread={handleNewThread}
               onDeleteThread={handleDeleteThread}
               onToggleSidebar={() => setSidebarOpen(false)}
+              contextStats={contextStats}
             />
           ) : undefined
         }
       >
-        <div
-          ref={scrollRef}
-          onScroll={updateScrollState}
-          className="max-w-5xl mx-auto w-full space-y-1 pb-24"
-        >
-          {messages.length === 0 && !streaming && <ChatEmptyState />}
+        <div className="max-w-5xl mx-auto w-full space-y-1">
+          {/* empty state intentionally blank */}
 
           {messages.map((msg, index) => {
             const prevMsg = index > 0 ? messages[index - 1] : null;
@@ -856,7 +1185,6 @@ export default function Chat() {
               <CompactChatBubble
                 key={msg.id}
                 message={msg}
-                avatarUrl={agentAvatarUrl}
                 showTrace={showTrace}
                 isGrouped={isGrouped}
                 onTranslate={(text) => translateText(text, translateLang)}
@@ -866,7 +1194,6 @@ export default function Chat() {
               <ChatBubble
                 key={msg.id}
                 message={msg}
-                avatarUrl={agentAvatarUrl}
                 showTrace={showTrace}
                 isGrouped={isGrouped}
                 onTranslate={(text) => translateText(text, translateLang)}
@@ -881,8 +1208,32 @@ export default function Chat() {
             reasoningBuffer={reasoningBuffer}
             traceEvents={traceEvents}
             showTrace={showTrace}
-            agentAvatarUrl={agentAvatarUrl}
+            thinkingMonologue={thinkingMonologue}
           />
+
+          {/* Debug in Animus — shows after a turn with errors in the trace */}
+          {!streaming &&
+            traceEvents.some(
+              (e) =>
+                (e as any).type === "error" ||
+                ((e as any).type === "warning" &&
+                  (e as any).code === "empty_step_result") ||
+                ((e as any).type === "tool_return" && (e as any).isError),
+            ) && (
+              <div className="flex items-center gap-3 pt-1 pb-2 px-1">
+                <div className="shrink-0 w-12" />
+                <button
+                  type="button"
+                  onClick={handleDebugInAnimus}
+                  className="font-mono text-[9px] tracking-[0.18em] uppercase text-yellow-400/70 hover:text-yellow-400 border border-yellow-400/30 hover:border-yellow-400/60 px-3 py-1.5 bg-yellow-400/5 hover:bg-yellow-400/10 transition-all"
+                >
+                  ⬡ DEBUG IN ANIMUS
+                </button>
+                <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                  sends trace as context
+                </span>
+              </div>
+            )}
 
           {error && (
             <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-[11px] tracking-wider">

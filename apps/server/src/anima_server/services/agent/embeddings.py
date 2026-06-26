@@ -19,6 +19,7 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
@@ -89,13 +90,23 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
     configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
         return configured
-    configured = _setting_text(getattr(settings, "agent_api_key", ""))
-    if configured:
-        return configured
     resolved_provider = provider or _resolve_embedding_provider()
     env_name = _EMBEDDING_API_KEY_ENV.get(resolved_provider)
     if env_name is not None:
-        return os.getenv(env_name, "").strip()
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            return configured
+
+    from anima_server.config import get_provider_api_key, has_provider_api_keys
+
+    configured = get_provider_api_key(resolved_provider).strip()
+    if configured:
+        return configured
+
+    if not has_provider_api_keys():
+        configured = _setting_text(getattr(settings, "agent_api_key", ""))
+        if configured:
+            return configured
     return ""
 
 
@@ -134,11 +145,14 @@ def _validate_embedding_provider_configuration(provider: str) -> None:
         "openai",
         "doubleword",
     ) and not _resolve_embedding_api_key(provider):
-        key_hint = "ANIMA_AGENT_EMBEDDING_API_KEY (or ANIMA_AGENT_API_KEY)"
+        key_hint = (
+            "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, "
+            "or ANIMA_AGENT_API_KEY"
+        )
         env_name = _EMBEDDING_API_KEY_ENV.get(provider)
         if env_name is not None:
             key_hint = (
-                "ANIMA_AGENT_EMBEDDING_API_KEY, "
+                "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, "
                 f"ANIMA_AGENT_API_KEY, or {env_name}"
             )
         raise LLMConfigError(
@@ -969,6 +983,53 @@ def _bm25_rerank(
     return combined
 
 
+def recency_heat_rerank(
+    results: list[tuple[MemoryItem, float]],
+    *,
+    now: datetime | None = None,
+) -> list[tuple[MemoryItem, float]]:
+    """Blend relevance scores with recency and heat.
+
+    Pure RRF fusion has no time signal, so "what did I say I'd do this
+    week?" can surface a semantically similar item from months ago over
+    the relevant recent one.  Blends:
+
+        final = w_rel * relevance + w_recency * exp(-days/tau) + w_heat * heat_norm
+
+    Weights come from settings (``agent_retrieval_*_weight``); heat is
+    normalised against the hottest item in the pool so the term is
+    scale-free.  Input scores are assumed normalised to [0, 1] (the
+    post-rerank hybrid_search scale).
+    """
+    if not results:
+        return results
+
+    w_rel = settings.agent_retrieval_relevance_weight
+    w_recency = settings.agent_retrieval_recency_weight
+    w_heat = settings.agent_retrieval_heat_weight
+    tau_days = max(0.1, settings.agent_retrieval_recency_tau_days)
+
+    ref_now = now or datetime.now(UTC)
+    max_heat = max((item.heat or 0.0) for item, _score in results)
+
+    blended: list[tuple[MemoryItem, float]] = []
+    for item, score in results:
+        recency_ref = item.updated_at or item.created_at
+        recency = 0.0
+        if recency_ref is not None:
+            if recency_ref.tzinfo is None:
+                recency_ref = recency_ref.replace(tzinfo=UTC)
+            days = max(0.0, (ref_now - recency_ref).total_seconds() / 86400.0)
+            recency = math.exp(-days / tau_days)
+        heat_norm = (item.heat or 0.0) / max_heat if max_heat > 0.0 else 0.0
+        blended.append(
+            (item, w_rel * score + w_recency * recency + w_heat * heat_norm)
+        )
+
+    blended.sort(key=lambda pair: pair[1], reverse=True)
+    return blended
+
+
 def _reciprocal_rank_fusion(
     semantic_ranked: list[tuple[int, float]],
     keyword_ranked: list[tuple[int, float]],
@@ -1019,11 +1080,17 @@ async def hybrid_search(
     tags: list[str] | None = None,
     tag_match_mode: str = "any",
     runtime_db: Session | None = None,
+    recency_heat_blend: bool = False,
 ) -> HybridSearchResult:
     """Combined semantic + keyword search over memory items using RRF merge.
 
     When *tags* is provided, post-filters results to only include items
     that match the given tags (using "any" or "all" match mode).
+
+    With ``recency_heat_blend=True`` the final scores additionally factor
+    in item recency and heat (used by the automatic per-turn retrieval,
+    which otherwise has no time signal; explicit searches keep pure
+    relevance ranking).
 
     Returns a HybridSearchResult containing:
     - items: list of (MemoryItem, rrf_score) sorted by relevance
@@ -1121,6 +1188,9 @@ async def hybrid_search(
     # --- BM25 rerank stage ---
     if results:
         results = _bm25_rerank(results, prepared_query, user_id)
+
+    if results and recency_heat_blend:
+        results = recency_heat_rerank(results)
 
     return HybridSearchResult(items=results, query_embedding=query_embedding)
 

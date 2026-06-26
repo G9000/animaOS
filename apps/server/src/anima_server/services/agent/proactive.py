@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 from sqlalchemy import select
@@ -31,9 +32,17 @@ logger = logging.getLogger(__name__)
 
 _GREETING_LLM_TIMEOUT_SECONDS = 8.0
 _PROACTIVE_NOTICE_LLM_TIMEOUT_SECONDS = 2.0
+_GREETING_PILLS_LLM_TIMEOUT_SECONDS = 6.0
 _GREETING_LLM_MAX_TOKENS = 64
 _PROACTIVE_NOTICE_LLM_MAX_TOKENS = 64
+_GREETING_PILLS_LLM_MAX_TOKENS = 120
 _OLLAMA_NATIVE_KEEP_ALIVE = "10m"
+
+# Tags the greeting LLM is allowed to emit. Anything else is dropped so a
+# stray hallucinated kind can't leak into the UI.
+_GREETING_PILL_KINDS = frozenset({"topic", "emotion", "memory", "task", "time"})
+_MAX_GREETING_PILLS = 4
+_MAX_GREETING_PILL_LABEL_CHARS = 22
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,7 @@ class GreetingResult:
     message: str
     context: GreetingContext
     llm_generated: bool = False
+    pills: list[dict[str, str]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -68,6 +78,75 @@ class ProactiveNoticeResult:
     source: str = "proactive_notice"
     llm_generated: bool = False
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AgentStateResult:
+    user_id: int
+    dominant_emotion: str | None
+    thought: str
+    thought_source: str
+    chat_prompt: str
+    context_messages: list[dict[str, str]]
+
+
+_STATE_THOUGHT_MAX_CHARS = 72
+
+_EMOTION_STATE_LINES = {
+    "calm": "quietly present",
+    "curious": "following a thread",
+    "excited": "holding momentum",
+    "hopeful": "keeping a door open",
+    "grateful": "noticing what matters",
+    "content": "settled for now",
+    "playful": "light on the edge",
+    "affectionate": "close and attentive",
+    "anxious": "holding steady",
+    "stressed": "keeping things contained",
+    "overwhelmed": "staying with one thread",
+    "frustrated": "working through friction",
+    "disappointed": "letting the signal settle",
+    "sad": "softly present",
+    "lonely": "staying near",
+    "tired": "low power, still here",
+    "relieved": "letting the pressure drop",
+}
+
+
+def _dominant_emotion_from_summary(summary: str | None) -> str | None:
+    if not summary:
+        return None
+    emotion = summary.split("(", 1)[0].strip().lower()
+    return emotion or None
+
+
+def _compact_state_line(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[#>*\-\s]+", "", line).strip()
+        line = re.sub(r"^[A-Za-z][A-Za-z\s_-]{1,32}:\s+", "", line).strip()
+        line = re.sub(r"\s+", " ", line)
+        if not line:
+            continue
+        if len(line) <= _STATE_THOUGHT_MAX_CHARS:
+            return line
+        shortened = line[: _STATE_THOUGHT_MAX_CHARS + 1].rsplit(" ", 1)[0].strip()
+        return f"{shortened}..." if shortened else f"{line[:_STATE_THOUGHT_MAX_CHARS]}..."
+
+    return None
+
+
+def _state_context_message(*, thought: str, dominant_emotion: str | None) -> str:
+    sentence = thought.rstrip(".!?")
+    content = f"Current companion state: {sentence}."
+    if dominant_emotion:
+        content += f" Recent emotion: {dominant_emotion}."
+    return content
 
 
 def _birthday_context(birthday_str: str | None, today: date) -> tuple[bool, int | None]:
@@ -384,6 +463,52 @@ def build_static_proactive_notice(
     return None
 
 
+def build_agent_state(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_db: Session | None = None,
+) -> AgentStateResult:
+    """Build a compact, backend-grounded state line for ambient UI."""
+    ctx = gather_greeting_context(db, user_id=user_id, runtime_db=runtime_db)
+    dominant_emotion = _dominant_emotion_from_summary(ctx.emotional_summary)
+
+    thought_source = "fallback"
+    thought = "listening"
+    for source, summary in (
+        ("working_memory", ctx.working_memory_summary),
+        ("inner_state", ctx.inner_state_summary),
+        ("recent_episode", ctx.recent_episode_summary),
+    ):
+        compact = _compact_state_line(summary)
+        if compact:
+            thought = compact
+            thought_source = source
+            break
+    else:
+        if dominant_emotion:
+            thought = _EMOTION_STATE_LINES.get(dominant_emotion, f"feeling {dominant_emotion}")
+            thought_source = "emotion"
+
+    return AgentStateResult(
+        user_id=user_id,
+        dominant_emotion=dominant_emotion,
+        thought=thought,
+        thought_source=thought_source,
+        chat_prompt="What's behind that thought?",
+        context_messages=[
+            {
+                "role": "assistant",
+                "content": _state_context_message(
+                    thought=thought,
+                    dominant_emotion=dominant_emotion,
+                ),
+                "source": "agent_state",
+            },
+        ],
+    )
+
+
 async def generate_greeting(
     db: Session,
     *,
@@ -504,13 +629,129 @@ async def generate_greeting(
             )
             content = getattr(response, "content", "")
         if isinstance(content, str) and content.strip():
-            return GreetingResult(message=content.strip(), context=ctx, llm_generated=True)
+            message = content.strip()
+            pills = await generate_thought_pills(
+                prompt_loader, greeting_message=message, ctx=ctx
+            )
+            return GreetingResult(
+                message=message,
+                context=ctx,
+                llm_generated=True,
+                pills=pills,
+            )
     except Exception as e:
         logger.debug("LLM greeting generation failed: %s", e)
         errors.append(str(e))
 
     # Fallback to static
     return GreetingResult(message=build_static_greeting(ctx), context=ctx, errors=errors)
+
+
+def _normalize_greeting_pills(raw: object) -> list[dict[str, str]]:
+    """Coerce the LLM's tag output into validated pill dicts.
+
+    Accepts either a bare JSON array or an object with a ``tags``/``pills``
+    key. Drops anything malformed, out-of-vocabulary, or empty, and caps the
+    count — so a misbehaving model degrades to fewer/no pills, never garbage.
+    """
+    if isinstance(raw, dict):
+        raw = raw.get("tags") or raw.get("pills") or []
+    if not isinstance(raw, list):
+        return []
+
+    pills: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        kind = str(entry.get("kind", "")).strip().lower()
+        label = str(entry.get("label", "")).strip().upper()
+        if kind not in _GREETING_PILL_KINDS or not label:
+            continue
+        label = label[:_MAX_GREETING_PILL_LABEL_CHARS]
+        if label in seen:
+            continue
+        seen.add(label)
+        pills.append({"kind": kind, "label": label})
+        if len(pills) >= _MAX_GREETING_PILLS:
+            break
+    return pills
+
+
+async def generate_thought_pills(
+    prompt_loader: object,
+    *,
+    greeting_message: str,
+    ctx: GreetingContext,
+) -> list[dict[str, str]]:
+    """Ask the LLM for a few short tags describing what the greeting is about.
+
+    Best-effort and self-contained: any failure (provider down, timeout, bad
+    JSON) returns an empty list so the greeting itself is never affected.
+    """
+    if settings.agent_provider == "scaffold":
+        return []
+
+    context_lines: list[str] = []
+    if ctx.current_focus:
+        context_lines.append(f"Current focus: {ctx.current_focus}")
+    if ctx.emotional_summary:
+        context_lines.append(f"Emotional read: {ctx.emotional_summary}")
+    if ctx.recent_episode_summary:
+        context_lines.append(f"Recent conversations: {ctx.recent_episode_summary}")
+    if ctx.working_memory_summary:
+        context_lines.append(f"Holding in mind: {ctx.working_memory_summary}")
+    context_block = "\n".join(context_lines) if context_lines else "(no extra context)"
+
+    prompt = prompt_loader.greeting_pills(  # type: ignore[attr-defined]
+        greeting_message=greeting_message,
+        context=context_block,
+    )
+    system_content = (
+        "You label a greeting with 2-4 short tags. "
+        "Respond with ONLY a JSON array, no prose."
+    )
+
+    try:
+        from anima_server.services.agent.json_utils import parse_json_array, parse_json_object
+
+        if settings.agent_provider == "ollama":
+            content = await asyncio.wait_for(
+                _invoke_ollama_native_chat(
+                    [
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": prompt},
+                    ],
+                    timeout=_GREETING_PILLS_LLM_TIMEOUT_SECONDS,
+                    max_tokens=_GREETING_PILLS_LLM_MAX_TOKENS,
+                ),
+                timeout=_GREETING_PILLS_LLM_TIMEOUT_SECONDS,
+            )
+        else:
+            from anima_server.services.agent.llm import create_llm
+            from anima_server.services.agent.messages import HumanMessage, SystemMessage
+
+            llm = create_llm()
+            response = await asyncio.wait_for(
+                llm.ainvoke(
+                    [
+                        SystemMessage(content=system_content),
+                        HumanMessage(content=prompt),
+                    ]
+                ),
+                timeout=_GREETING_PILLS_LLM_TIMEOUT_SECONDS,
+            )
+            content = getattr(response, "content", "")
+
+        if not isinstance(content, str) or not content.strip():
+            return []
+        parsed: object = parse_json_array(content)
+        if not parsed:
+            parsed = parse_json_object(content) or []
+        return _normalize_greeting_pills(parsed)
+    except Exception as e:
+        logger.debug("LLM greeting pill generation failed: %s", e)
+        return []
 
 
 async def generate_proactive_notice(
@@ -617,3 +858,170 @@ async def generate_proactive_notice(
         context=ctx,
         errors=errors,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reflection question
+# ---------------------------------------------------------------------------
+
+_REFLECTION_LLM_TIMEOUT_SECONDS = 8.0
+_REFLECTION_LLM_MAX_TOKENS = 80
+
+@dataclass(frozen=True)
+class ReflectionResult:
+    question: str | None = None
+    llm_generated: bool = False
+    curiosity_type: str = "question"  # "question" | "memory"
+    source_episode_id: int | None = None
+    source_episode_date: str | None = None
+    errors: list[str] = field(default_factory=list)
+
+
+def _find_curiosity_anchor(db: Session, user_id: int) -> MemoryEpisode | None:
+    """Find a past episode to anchor a memory-curiosity reflection.
+
+    Priority:
+    1. Episodes within ±45 days of this date last year (anniversary window).
+    2. High-significance episodes (score >= 4) from more than 3 months ago.
+    """
+    today = date.today()
+    try:
+        anniversary = date(today.year - 1, today.month, today.day)
+    except ValueError:
+        anniversary = date(today.year - 1, today.month, today.day - 1)
+
+    window_start = (anniversary - timedelta(days=45)).isoformat()
+    window_end = (anniversary + timedelta(days=45)).isoformat()
+
+    anniversary_ep = db.scalar(
+        select(MemoryEpisode)
+        .where(
+            MemoryEpisode.user_id == user_id,
+            MemoryEpisode.date >= window_start,
+            MemoryEpisode.date <= window_end,
+        )
+        .order_by(MemoryEpisode.significance_score.desc(), MemoryEpisode.date.desc())
+    )
+    if anniversary_ep:
+        return anniversary_ep
+
+    cutoff = (today - timedelta(days=90)).isoformat()
+    return db.scalar(
+        select(MemoryEpisode)
+        .where(
+            MemoryEpisode.user_id == user_id,
+            MemoryEpisode.date < cutoff,
+            MemoryEpisode.significance_score >= 4,
+        )
+        .order_by(MemoryEpisode.significance_score.desc(), MemoryEpisode.date.desc())
+    )
+
+
+async def _invoke_reflection_llm(system_content: str, prompt: str) -> str | None:
+    """Invoke the LLM for a short reflection-type prompt, return stripped text or None."""
+    from anima_server.services.agent.llm import create_llm
+    from anima_server.services.agent.messages import HumanMessage, SystemMessage
+
+    if settings.agent_provider == "ollama":
+        content = await asyncio.wait_for(
+            _invoke_ollama_native_chat(
+                [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt},
+                ],
+                timeout=_REFLECTION_LLM_TIMEOUT_SECONDS,
+                max_tokens=_REFLECTION_LLM_MAX_TOKENS,
+            ),
+            timeout=_REFLECTION_LLM_TIMEOUT_SECONDS,
+        )
+    else:
+        llm = create_llm()
+        response = await asyncio.wait_for(
+            llm.ainvoke(
+                [
+                    SystemMessage(content=system_content),
+                    HumanMessage(content=prompt),
+                ]
+            ),
+            timeout=_REFLECTION_LLM_TIMEOUT_SECONDS,
+        )
+        content = getattr(response, "content", "")
+    return content.strip() if isinstance(content, str) and content.strip() else None
+
+
+async def generate_reflection(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_db: Session | None = None,
+) -> ReflectionResult:
+    """Generate a personalised reflection or memory-curiosity. Returns empty result if LLM unavailable."""
+    from anima_server.services.agent.prompt_loader import get_prompt_loader
+
+    prompt_loader = get_prompt_loader(db, user_id)
+    ctx = gather_greeting_context(db, user_id=user_id, runtime_db=runtime_db)
+
+    if settings.agent_provider == "scaffold":
+        return ReflectionResult()
+
+    identity_context = ctx.identity_summary or "You're still getting to know this person."
+
+    # --- Attempt memory-curiosity anchor first ---
+    anchor = _find_curiosity_anchor(db, user_id)
+    if anchor:
+        anchor_summary = df(
+            user_id, anchor.summary, table="memory_episodes", field="summary"
+        )
+        try:
+            prompt = prompt_loader.memory_curiosity(
+                identity_context=identity_context,
+                episode_summary=anchor_summary or "",
+                episode_date=anchor.date,
+            )
+            system_content = (
+                f"You are {prompt_loader.agent_name}, expressing genuine curiosity "
+                "about a specific memory. Respond with ONLY the statement (1-2 sentences)."
+            )
+            content = await _invoke_reflection_llm(system_content, prompt)
+            if content:
+                return ReflectionResult(
+                    question=content,
+                    llm_generated=True,
+                    curiosity_type="memory",
+                    source_episode_id=anchor.id,
+                    source_episode_date=anchor.date,
+                )
+        except Exception as e:
+            logger.debug("LLM memory curiosity generation failed: %s", e)
+
+    # --- Generic reflection question ---
+    emotional_context = (
+        f"Last emotional read:\n{ctx.emotional_summary}" if ctx.emotional_summary else ""
+    )
+    memory_context_parts: list[str] = []
+    if ctx.inner_state_summary:
+        memory_context_parts.append(f"Your inner state:\n{ctx.inner_state_summary}")
+    if ctx.recent_episode_summary:
+        memory_context_parts.append(f"Recent conversations:\n{ctx.recent_episode_summary}")
+    memory_context = "\n\n".join(memory_context_parts)
+
+    prompt = prompt_loader.reflection(
+        identity_context=identity_context,
+        emotional_context=emotional_context,
+        memory_context=memory_context,
+    )
+    system_content = (
+        f"You are {prompt_loader.agent_name}, generating a single reflection question. "
+        "Respond with ONLY the question text."
+    )
+
+    errors: list[str] = []
+    try:
+        content = await _invoke_reflection_llm(system_content, prompt)
+        if content:
+            return ReflectionResult(question=content, llm_generated=True)
+    except Exception as e:
+        logger.debug("LLM reflection generation failed: %s", e)
+        errors.append(str(e))
+
+    return ReflectionResult(errors=errors)

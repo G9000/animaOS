@@ -115,7 +115,11 @@ def get_or_build_index(
 
             if _fallback_store is not None:
                 user_store = _fallback_store._data.get(user_id, {})
-                docs = [(rec.item_id, rec.content) for rec in user_store.values()]
+                docs = [
+                    (rec.item_id, rec.content)
+                    for rec in user_store.values()
+                    if getattr(rec, "source_type", "memory_item") == "memory_item"
+                ]
         except Exception:
             pass
 
@@ -175,7 +179,8 @@ def _load_runtime_embedding_documents(
     try:
         rows = active_runtime_db.execute(
             select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
-                RuntimeEmbedding.user_id == user_id
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == "memory_item",
             )
         ).all()
         docs = [(row[0], row[1]) for row in rows]

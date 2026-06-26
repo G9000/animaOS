@@ -117,4 +117,11 @@ async def update_user_directive(
     require_unlocked_user(request, user_id)
     _set_user_directive_block(db, user_id, payload.content)
     db.commit()
+    # The directive is rendered in the cached static memory blocks; bump
+    # the companion version so the next turn picks up the edit.
+    from anima_server.services.agent.companion import get_companion
+
+    companion = get_companion(user_id)
+    if companion is not None:
+        companion.invalidate_memory()
     return {"status": "updated"}

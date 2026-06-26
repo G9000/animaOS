@@ -139,15 +139,15 @@ export function ChatBubble({
           <div className="flex items-center gap-2 mb-1 px-1 select-none">
             <span
               className={cn(
-                "font-mono text-[10px] font-medium tracking-wide",
-                isUser ? "text-primary/80" : "text-muted-foreground/80",
+                "font-mono text-[9px] tracking-[0.18em] uppercase",
+                isUser ? "text-foreground/40" : "text-foreground/30",
               )}
             >
               {isUser ? "You" : isSystem ? "System" : "Anima"}
             </span>
             {fullTimestamp && (
               <span
-                className="font-mono text-[9px] text-muted-foreground/30"
+                className="font-mono text-[9px] text-foreground/20"
                 title={fullTimestamp}
               >
                 {timestamp}
@@ -161,10 +161,10 @@ export function ChatBubble({
           className={cn(
             "relative group/bubble",
             isUser
-              ? "bg-primary text-primary-foreground"
+              ? "bg-foreground/[0.09] border border-foreground/[0.08]"
               : isSystem
-                ? "bg-muted/50 border border-border/60"
-                : "bg-card border border-border/80 hover:transition-shadow",
+                ? "bg-foreground/[0.04] border border-foreground/[0.06]"
+                : "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08]",
           )}
         >
           {/* Copy button - appears on hover */}
@@ -177,16 +177,16 @@ export function ChatBubble({
 
         {/* Translation */}
         {translating && (
-          <div className="mt-2 px-3 py-2 bg-card/50 border border-border/60 rounded-none font-mono text-[10px] text-muted-foreground/60 animate-pulse tracking-wider flex items-center gap-2">
-            <span className="w-3 h-3 border border-primary/30 border-t-primary/60 animate-spin" />
+          <div className="mt-2 px-3 py-2 bg-foreground/[0.04] border border-foreground/[0.06] font-mono text-[10px] text-foreground/40 animate-pulse tracking-[0.18em] uppercase flex items-center gap-2">
+            <span className="w-3 h-3 border border-foreground/20 border-t-foreground/50 animate-spin" />
             Translating...
           </div>
         )}
         {translation && !translating && (
-          <div className="mt-2 px-3 py-2 bg-card/50 border border-border/60 rounded-none">
+          <div className="mt-2 px-3 py-2 bg-foreground/[0.04] border border-foreground/[0.06]">
             <div className="flex items-center gap-2 mb-1">
-              <span className="font-mono text-[9px] text-primary/60 tracking-wider">
-                TRANSLATION
+              <span className="font-mono text-[9px] text-foreground/30 tracking-[0.18em] uppercase">
+                Translation
               </span>
               <button
                 onClick={() => setTranslation(null)}
@@ -195,7 +195,7 @@ export function ChatBubble({
                 <XIcon className="w-3 h-3" />
               </button>
             </div>
-            <p className="text-sm text-muted-foreground leading-relaxed">
+            <p className="text-sm text-foreground/60 leading-relaxed">
               {translation}
             </p>
           </div>
@@ -205,9 +205,9 @@ export function ChatBubble({
         {showReasoning && message.reasoning && (
           <div className="mt-2 w-full px-3 py-3 bg-primary/[0.04] border border-primary/20 rounded-none">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-mono text-[9px] text-primary/60 tracking-wider flex items-center gap-1.5">
+              <span className="font-mono text-[9px] text-primary/50 tracking-[0.18em] uppercase flex items-center gap-1.5">
                 <LightbulbIcon className="w-3 h-3" />
-                REASONING
+                Reasoning
               </span>
               <button
                 onClick={() => setShowReasoning(false)}
@@ -224,14 +224,14 @@ export function ChatBubble({
 
         {/* Retrieval */}
         {showRetrieval && retrieval && (
-          <div className="mt-2 w-full bg-card/50 border border-emerald-400/20 rounded-none px-3 py-2.5">
+          <div className="mt-2 w-full bg-foreground/[0.04] border border-emerald-400/20 px-3 py-2.5">
             <RetrievalPanel retrieval={retrieval} />
           </div>
         )}
 
         {/* Trace */}
         {(showTrace || showMsgTrace) && hasTrace && (
-          <div className="mt-2 w-full bg-card/50 border border-yellow-400/30 rounded-none px-3 py-2.5 max-h-80 overflow-y-auto">
+          <div className="mt-2 w-full bg-foreground/[0.04] border border-yellow-400/30 px-3 py-2.5 max-h-80 overflow-y-auto">
             <TracePanel events={message.traceEvents!} />
           </div>
         )}
