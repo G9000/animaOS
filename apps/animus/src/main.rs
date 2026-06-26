@@ -6,6 +6,7 @@ use clap::Parser;
 use config::{load_config, AnimusConfig, ConfigOverrides};
 
 mod app;
+mod approvals;
 mod client;
 mod commands;
 mod config;

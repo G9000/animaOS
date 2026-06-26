@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Terminal;
 
 use crate::app::{AppEvent, AppState};
+use crate::approvals::ApprovalDecision;
 use crate::commands::parse_command;
 
 type AnimusTerminal = Terminal<CrosstermBackend<Stdout>>;
@@ -76,8 +77,13 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
     frame.render_widget(transcript, chunks[0]);
 
     let status = status_line(app);
-    let input = Paragraph::new(format!("{status}\ninput: {}", app.input))
-        .block(Block::default().borders(Borders::ALL));
+    let approval = approval_prompt_text(app);
+    let body = if approval.is_empty() {
+        format!("{status}\ninput: {}", app.input)
+    } else {
+        format!("{status}\n{approval}\ninput: {}", app.input)
+    };
+    let input = Paragraph::new(body).block(Block::default().borders(Borders::ALL));
     frame.render_widget(input, chunks[1]);
 }
 
@@ -90,6 +96,11 @@ pub fn render_to_text(app: &AppState, width: u16, height: u16) -> Vec<String> {
         app.transcript
             .iter()
             .map(|item| truncate_line(item.render_plain(), max_width)),
+    );
+    rows.extend(
+        approval_prompt_rows(app)
+            .into_iter()
+            .map(|row| truncate_line(row, max_width)),
     );
     rows.push(truncate_line(format!("input: {}", app.input), max_width));
     rows.truncate(max_rows);
@@ -123,10 +134,48 @@ pub fn status_line(app: &AppState) -> String {
     )
 }
 
+fn approval_prompt_text(app: &AppState) -> String {
+    approval_prompt_rows(app).join("\n")
+}
+
+fn approval_prompt_rows(app: &AppState) -> Vec<String> {
+    let Some(pending) = app.approvals.pending() else {
+        return Vec::new();
+    };
+    vec![
+        format!("approve: {}", pending.summary()),
+        "[a] approve [s] session [d] deny [esc] cancel".to_string(),
+    ]
+}
+
 fn handle_key(app: &mut AppState, key: KeyEvent) {
     if is_quit_key(key) {
         app.apply(AppEvent::Quit);
         return;
+    }
+
+    if app.approvals.pending().is_some() {
+        match key.code {
+            KeyCode::Char('a') => {
+                app.decide_approval(ApprovalDecision::Approve);
+                return;
+            }
+            KeyCode::Char('s') => {
+                app.decide_approval(ApprovalDecision::ApproveForSession);
+                return;
+            }
+            KeyCode::Char('d') => {
+                app.decide_approval(ApprovalDecision::Deny {
+                    reason: "denied by user".to_string(),
+                });
+                return;
+            }
+            KeyCode::Esc => {
+                app.decide_approval(ApprovalDecision::Cancel);
+                return;
+            }
+            _ => {}
+        }
     }
 
     match key.code {
@@ -206,5 +255,25 @@ mod tests {
         assert!(status.contains("run: 7"));
         assert!(status.contains("spawns: 2"));
         assert!(status.contains("bg: 1"));
+    }
+
+    #[test]
+    fn render_text_shows_pending_approval_controls() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+
+        let rows = render_to_text(&app, 120, 12);
+
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("approve: bash git status")));
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("[a] approve [s] session [d] deny")));
     }
 }

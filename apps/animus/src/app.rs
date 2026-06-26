@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::approvals::{ApprovalDecision, ApprovalOutcome, ApprovalState, PendingApproval};
 use crate::commands::{CommandEffect, CommandInvocation, SlashCommand};
 use crate::config::{AnimusConfig, DEFAULT_SERVER_URL};
 use crate::protocol::ServerFrame;
@@ -32,6 +33,7 @@ pub struct AppState {
     pub approval_mode: String,
     pub spawn_count: usize,
     pub background_process_count: usize,
+    pub approvals: ApprovalState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +60,7 @@ impl AppState {
             approval_mode: "manual".to_string(),
             spawn_count: 0,
             background_process_count: 0,
+            approvals: ApprovalState::default(),
         }
     }
 
@@ -149,6 +152,13 @@ impl AppState {
                 tool_name,
                 args,
             } => {
+                self.approvals.set_pending(PendingApproval::new(
+                    run_id,
+                    tool_call_id.clone(),
+                    tool_name.clone(),
+                    args.clone(),
+                ));
+                self.approval_mode = "pending".to_string();
                 self.transcript.push(TranscriptItem::Approval {
                     run_id,
                     tool_call_id,
@@ -202,6 +212,19 @@ impl AppState {
                 });
             }
         }
+    }
+
+    pub fn decide_approval(&mut self, decision: ApprovalDecision) -> Option<ApprovalOutcome> {
+        let outcome = self.approvals.decide(decision)?;
+        if self.approvals.pending().is_none() {
+            self.approval_mode = "manual".to_string();
+        }
+        if let Some(remembered) = &outcome.remembered {
+            self.transcript.push(TranscriptItem::Notice {
+                message: format!("remembered approval for session: {remembered:?}"),
+            });
+        }
+        Some(outcome)
     }
 
     pub fn handle_command(&mut self, invocation: CommandInvocation) -> CommandEffect {
@@ -396,5 +419,39 @@ mod tests {
             crate::commands::CommandEffect::Quit
         );
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn approval_required_sets_pending_state_and_decision_frame() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+
+        assert_eq!(app.approval_mode, "pending");
+        assert!(app.approvals.pending().is_some());
+        assert!(app
+            .transcript
+            .iter()
+            .any(|item| item.render_plain().contains("approval 42 call-1 bash")));
+
+        let frame = app
+            .decide_approval(crate::approvals::ApprovalDecision::Approve)
+            .unwrap()
+            .frame;
+
+        assert_eq!(
+            frame,
+            crate::protocol::ClientFrame::ApprovalResponse {
+                run_id: 42,
+                tool_call_id: "call-1".to_string(),
+                approved: true,
+                reason: None,
+            }
+        );
+        assert_eq!(app.approval_mode, "manual");
     }
 }
