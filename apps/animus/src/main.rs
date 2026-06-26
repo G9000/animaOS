@@ -5,9 +5,12 @@ use clap::Parser;
 
 use config::{load_config, AnimusConfig, ConfigOverrides};
 
+mod app;
 mod client;
 mod config;
 mod protocol;
+mod transcript;
+mod tui;
 
 #[derive(Debug, Parser)]
 #[command(name = "animus", about = "ANIMA Rust coding terminal")]
@@ -26,7 +29,8 @@ struct Cli {
     headless: bool,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = load_config(ConfigOverrides::from(&cli))?;
     if cli.headless {
@@ -34,10 +38,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "Animus Rust TUI scaffold is ready. Use --headless for a non-interactive startup check."
-    );
-    Ok(())
+    tui::run_tui(app::AppState::new(config)).await
 }
 
 impl From<&Cli> for ConfigOverrides {
