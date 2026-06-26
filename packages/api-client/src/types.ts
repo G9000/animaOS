@@ -64,7 +64,32 @@ export interface AgentProfileData {
   personaTemplate: string;
   agentType?: string;
   avatarUrl?: string | null;
+  agentBirthday?: string | null;
   setupComplete: boolean;
+}
+
+export interface AgentBiographyPreviewSection {
+  id: string;
+  title: string;
+  content: string;
+  source: string;
+}
+
+export interface AgentBiographyPreviewData {
+  userId: number;
+  agentName: string;
+  relationship: string;
+  agentType: string;
+  avatarUrl?: string | null;
+  agentBirthday?: string | null;
+  birthday?: string | null;
+  dominantEmotion?: string | null;
+  identityDraft: string;
+  personaDraft: string;
+  biography: string;
+  contextLine: string;
+  sections: AgentBiographyPreviewSection[];
+  promptBlockLabels: string[];
 }
 
 export interface TraceMessagePreview {

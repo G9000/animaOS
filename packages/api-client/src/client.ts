@@ -1,6 +1,7 @@
 import type {
   ApiClientOptions,
   AgentConfig,
+  AgentBiographyPreviewData,
   AgentProfileData,
   AgentResponse,
   AgentStateData,
@@ -845,10 +846,19 @@ export function createApiClient(options: ApiClientOptions) {
         userId: number,
         section: string,
         content: string,
+        options?: { allowIdentityOverride?: boolean },
       ) =>
         request<SelfModelSection>(
           `/consciousness/${userId}/self-model/${section}`,
-          { method: "PUT", body: { content } },
+          {
+            method: "PUT",
+            body: {
+              content,
+              ...(options?.allowIdentityOverride !== undefined
+                ? { allowIdentityOverride: options.allowIdentityOverride }
+                : {}),
+            },
+          },
         ),
       getEmotions: (userId: number, limit = 10) =>
         request<EmotionalContextData>(
@@ -860,12 +870,17 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ content: string }>(`/consciousness/${userId}/intentions`),
       getAgentProfile: (userId: number) =>
         request<AgentProfileData>(`/consciousness/${userId}/agent-profile`),
+      getAgentBiographyPreview: (userId: number) =>
+        request<AgentBiographyPreviewData>(
+          `/consciousness/${userId}/agent-biography-preview`,
+        ),
       updateAgentProfile: (
         userId: number,
         data: {
           agentName?: string;
           relationship?: string;
           personaTemplate?: string;
+          allowIdentityOverride?: boolean;
         },
       ) =>
         request<AgentProfileData>(`/consciousness/${userId}/agent-profile`, {

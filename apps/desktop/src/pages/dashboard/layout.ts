@@ -7,6 +7,8 @@ import type {
   EmotionalContextData,
   MessagePill,
   Nudge,
+  Thread,
+  DiaryEntryData,
 } from "@anima/api-client";
 import type {
   DashboardNode,
@@ -17,6 +19,9 @@ import type {
   NudgeNode,
   ReflectionNode,
   GalleryViewerNode,
+  RecentChatsNode,
+  QuickCaptureNode,
+  JournalNode,
   ProfileNodeData,
   GreetingNodeData,
   TasksNodeData,
@@ -24,6 +29,9 @@ import type {
   NudgeNodeData,
   ReflectionNodeData,
   GalleryViewerNodeData,
+  RecentChatsNodeData,
+  QuickCaptureNodeData,
+  JournalNodeData,
   GalleryImage,
 } from "./nodes/node-types";
 
@@ -43,6 +51,10 @@ export interface DashboardCallbacks {
   onExploreMemory: (episodeId: number) => void;
   onCloseNode: (id: string) => void;
   onImageClick: (images: GalleryImage[], index: number) => void;
+  onOpenThread: (threadId: number) => void;
+  onNewChat: () => void;
+  onSaveCapture: (text: string) => Promise<void>;
+  onNewEntry: () => void;
 }
 
 export interface DashboardInput {
@@ -62,6 +74,8 @@ export interface DashboardInput {
   mood: EmotionalContextData | null;
   nudges: Nudge[];
   galleryImages: GalleryImage[];
+  threads: Thread[];
+  journalEntries: DiaryEntryData[];
 }
 
 function makeNode<Data extends Record<string, unknown>>(
@@ -98,6 +112,8 @@ export function buildInitialNodes(
     mood,
     nudges,
     galleryImages,
+    threads,
+    journalEntries,
   } = input;
 
   const nodes: DashboardNode[] = [];
@@ -120,7 +136,7 @@ export function buildInitialNodes(
     }) as ProfileNode,
   );
 
-  // Column 1 — greeting, mood, nudges
+  // Column 1 — greeting, nudges, reflection
   nodes.push(
     makeNode<GreetingNodeData>("greeting", "greeting", {
       type: "greeting",
@@ -158,7 +174,7 @@ export function buildInitialNodes(
     );
   }
 
-  // Column 2 — tasks
+  // Column 2 — tasks + quick capture
   const tasksNode = makeNode<TasksNodeData>("tasks", "tasks", {
     type: "tasks",
     tasks,
@@ -173,7 +189,16 @@ export function buildInitialNodes(
   tasksNode.height = 320;
   nodes.push(tasksNode);
 
-  // Column 3 — memories
+  const captureNode = makeNode<QuickCaptureNodeData>("quickCapture", "quickCapture", {
+    type: "quickCapture",
+    onSave: callbacks.onSaveCapture,
+    onClose: () => callbacks.onCloseNode("quickCapture"),
+  }) as QuickCaptureNode;
+  captureNode.width = 256;
+  captureNode.height = 200;
+  nodes.push(captureNode);
+
+  // Column 3 — memories + gallery
   if (episodes.length > 0) {
     const memoryNode = makeNode<MemoryNodeData>("memory", "memory", {
       type: "memory",
@@ -190,7 +215,6 @@ export function buildInitialNodes(
     nodes.push(memoryNode);
   }
 
-  // Column 3 — gallery (images from journal); starts at a fixed size, user can resize
   const galleryNode = makeNode<GalleryViewerNodeData>("gallery", "gallery", {
     type: "gallery",
     images: galleryImages,
@@ -202,16 +226,44 @@ export function buildInitialNodes(
   galleryNode.height = 380;
   nodes.push(galleryNode);
 
-  // Masonry-style layout across 4 columns
-  const columnHeights = [0, 0, 0, 0];
+  // Column 4 — recent chats + journal
+  const recentChatsNode = makeNode<RecentChatsNodeData>("recentChats", "recentChats", {
+    type: "recentChats",
+    threads,
+    onOpenThread: callbacks.onOpenThread,
+    onNewChat: callbacks.onNewChat,
+    onClose: () => callbacks.onCloseNode("recentChats"),
+  }) as RecentChatsNode;
+  recentChatsNode.width = COLUMN_WIDTH - 20;
+  recentChatsNode.height = 280;
+  nodes.push(recentChatsNode);
+
+  if (journalEntries.length > 0) {
+    const journalNode = makeNode<JournalNodeData>("journal", "journal", {
+      type: "journal",
+      entries: journalEntries,
+      onNavigate: callbacks.onNavigate,
+      onNewEntry: callbacks.onNewEntry,
+      onClose: () => callbacks.onCloseNode("journal"),
+    }) as JournalNode;
+    journalNode.width = COLUMN_WIDTH - 20;
+    journalNode.height = 340;
+    nodes.push(journalNode);
+  }
+
+  // Masonry layout across 5 columns
+  const columnHeights = [0, 0, 0, 0, 0];
   const columnForType: Partial<Record<string, number>> = {
     profile: 0,
     greeting: 1,
     nudge: 1,
     reflection: 1,
     tasks: 2,
+    quickCapture: 2,
     memory: 3,
     gallery: 3,
+    recentChats: 4,
+    journal: 4,
   };
 
   const estimatedHeights: Partial<Record<string, number>> = {
@@ -219,9 +271,12 @@ export function buildInitialNodes(
     greeting: 140,
     nudge: 90 + nudges.length * 30,
     reflection: 130,
-    tasks: 220,
+    tasks: 320,
+    quickCapture: 200,
     memory: 340,
     gallery: galleryImages.length === 0 ? 90 : Math.min(3, Math.ceil(galleryImages.length / 3)) * 108 + 56,
+    recentChats: 280,
+    journal: 340,
   };
 
   for (const node of nodes) {

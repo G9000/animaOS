@@ -7,6 +7,7 @@ import {
   type BackgroundConfig,
   type BackgroundType,
 } from "../../hooks/useBackground";
+import { useClockFormat } from "../../hooks/useClockFormat";
 import { inferBackgroundType } from "../../lib/background";
 import { cn } from "@anima/standard-templates";
 
@@ -108,6 +109,7 @@ function Slider({ label, value, min, max, step, onChange, format }: {
 export default function AppearanceSettings() {
   const { theme, effective, set: setTheme } = useTheme();
   const { config: bgConfig, set: setBgConfig, saveFile: saveBgFile, url: bgUrl, loading: bgLoading } = useBackground();
+  const { format: clockFormat, setFormat: setClockFormat } = useClockFormat();
   const [bgUploading, setBgUploading] = useState(false);
   const [bgError, setBgError] = useState("");
   const bgInputRef = useRef<HTMLInputElement>(null);
@@ -318,6 +320,47 @@ export default function AppearanceSettings() {
           {bgError && <p className="font-mono text-[9px] text-destructive/70 tracking-wide">{bgError}</p>}
         </div>
       </div>
+
+      {/* ── Clock ── */}
+      <div className={glass}>
+        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
+          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Clock</h2>
+          <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-foreground/20">
+            Nav bar display
+          </span>
+        </div>
+        <div className="p-4 flex gap-2">
+          {([
+            { value: "24h" as const, label: "24H", preview: "13:45" },
+            { value: "12h" as const, label: "12H", preview: "01:45 PM" },
+          ]).map(({ value, label, preview }) => (
+            <button
+              key={value}
+              onClick={() => setClockFormat(value)}
+              className={cn(
+                "flex-1 flex flex-col gap-2.5 p-3 border transition-all duration-150",
+                clockFormat === value
+                  ? "border-accent/60 bg-accent/[0.06]"
+                  : "border-foreground/[0.07] hover:border-foreground/[0.15] hover:bg-foreground/[0.03]",
+              )}
+            >
+              <span className="font-mono text-[18px] tracking-[0.12em] text-foreground/50 leading-none">
+                {preview}
+              </span>
+              <div className="flex items-center justify-between">
+                <span className={cn(
+                  "font-mono text-[10px] tracking-[0.1em] transition-colors",
+                  clockFormat === value ? "text-accent" : "text-foreground/50",
+                )}>
+                  {label}
+                </span>
+              </div>
+              {clockFormat === value && <div className="w-full h-px bg-accent/40" />}
+            </button>
+          ))}
+        </div>
+      </div>
+
     </div>
   );
 }

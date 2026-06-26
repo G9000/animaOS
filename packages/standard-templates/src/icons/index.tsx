@@ -29,3 +29,9 @@ export { VaultIcon } from "./VaultIcon";
 export { LanguageIcon } from "./LanguageIcon";
 export { AppearanceIcon } from "./AppearanceIcon";
 export { AdvancedIcon } from "./AdvancedIcon";
+
+// Time of day
+export { SunIcon } from "./SunIcon";
+export { MoonIcon } from "./MoonIcon";
+export { SunriseIcon } from "./SunriseIcon";
+export { SunsetIcon } from "./SunsetIcon";

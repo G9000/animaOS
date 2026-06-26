@@ -59,6 +59,8 @@ interface ChatLocationState {
   // When true, open a fresh thread and show contextMessages as the opening
   // assistant message(s) without auto-sending a user prompt.
   seedThread?: boolean;
+  // Open and display a specific existing thread by ID.
+  resumeThreadId?: number;
 }
 
 interface PendingImageAttachment {
@@ -309,6 +311,7 @@ export default function Chat() {
   // True while showing an unsent seeded thread (opened via the dashboard
   // "ask"/"start chat" actions). Cleared once the user sends or switches threads.
   const seedActiveRef = useRef(locationState?.seedThread === true);
+  const resumeThreadIdRef = useRef<number | null>(locationState?.resumeThreadId ?? null);
 
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -412,6 +415,25 @@ export default function Chat() {
       const nextThreads = threadsRes ? dedupeThreads(threadsRes.threads) : [];
       setThreads(nextThreads);
       const active = nextThreads.find((t) => t.status === "active") ?? null;
+
+      // 0. Opened from the dashboard "Recent Chats" node with a specific thread.
+      const resumeId = resumeThreadIdRef.current;
+      if (resumeId != null) {
+        resumeThreadIdRef.current = null;
+        const target = nextThreads.find((t) => t.id === resumeId);
+        if (target) {
+          currentThreadIdRef.current = resumeId;
+          setCurrentThreadId(resumeId);
+          setMessages([]);
+          try {
+            const res = await api.threads.messages(resumeId);
+            if (!revoked) setMessages(mapThreadMessages(res.messages, userId));
+          } catch {
+            /* fall through to fresh start */
+          }
+          return;
+        }
+      }
 
       // 1. Seeded open from the dashboard.
       if (seedActiveRef.current) {

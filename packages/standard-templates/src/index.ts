@@ -59,6 +59,10 @@ export {
   LanguageIcon,
   AppearanceIcon,
   AdvancedIcon,
+  SunIcon,
+  MoonIcon,
+  SunriseIcon,
+  SunsetIcon,
 } from "./icons";
 export {
   HomeIcon,

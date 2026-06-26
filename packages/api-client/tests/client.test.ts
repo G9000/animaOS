@@ -200,6 +200,81 @@ describe("createApiClient error handling", () => {
     expect(state.contextMessages[0]?.source).toBe("agent_state");
   });
 
+  test("requests compiled agent biography preview", async () => {
+    let requestedUrl = "";
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input) => {
+        requestedUrl = String(input);
+        return new Response(
+          JSON.stringify({
+            userId: 7,
+            agentName: "Anima",
+            relationship: "companion",
+            agentType: "mirror",
+            avatarUrl: null,
+            agentBirthday: "2026-06-24T19:05:54+00:00",
+            birthday: "1995-05-23",
+            dominantEmotion: "curious",
+            identityDraft: "Identity",
+            personaDraft: "Persona",
+            biography: "Identity\n\nPersona",
+            contextLine: "Holding settings context.",
+            sections: [
+              {
+                id: "identity",
+                title: "Core Identity",
+                content: "Identity",
+                source: "self_identity",
+              },
+            ],
+            promptBlockLabels: ["self_identity"],
+          }),
+        );
+      },
+    });
+
+    const preview = await api.consciousness.getAgentBiographyPreview(7);
+
+    expect(requestedUrl).toBe(
+      "https://api.test/api/consciousness/7/agent-biography-preview",
+    );
+    expect(preview.agentName).toBe("Anima");
+    expect(preview.agentBirthday).toBe("2026-06-24T19:05:54+00:00");
+    expect(preview.sections[0]?.source).toBe("self_identity");
+  });
+
+  test("serializes identity override for protected self-model updates", async () => {
+    let requestBody: unknown = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            section: "user_directive",
+            content: "Protect identity changes.",
+            version: 2,
+            updatedBy: "user_edit",
+            updatedAt: null,
+          }),
+        );
+      },
+    });
+
+    await api.consciousness.updateSelfModelSection(
+      7,
+      "user_directive",
+      "Protect identity changes.",
+      { allowIdentityOverride: true },
+    );
+
+    expect(requestBody).toEqual({
+      content: "Protect identity changes.",
+      allowIdentityOverride: true,
+    });
+  });
+
   test("requests diary entries and uploads diary attachments", async () => {
     const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
     const api = createApiClient({

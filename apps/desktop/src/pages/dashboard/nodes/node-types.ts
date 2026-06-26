@@ -8,6 +8,8 @@ import type {
   MessagePill,
   TodayContext,
   Nudge,
+  Thread,
+  DiaryEntryData,
 } from "@anima/api-client";
 
 export interface GalleryImage {
@@ -29,7 +31,10 @@ export type NodeType =
   | "todayContext"
   | "nudge"
   | "reflection"
-  | "gallery";
+  | "gallery"
+  | "recentChats"
+  | "quickCapture"
+  | "journal";
 
 export interface BaseNodeData extends Record<string, unknown> {
   type: NodeType;
@@ -121,6 +126,29 @@ export interface GalleryViewerNodeData extends BaseNodeData {
 
 export type GalleryViewerNode = Node<GalleryViewerNodeData, "gallery">;
 
+export interface RecentChatsNodeData extends BaseNodeData {
+  type: "recentChats";
+  threads: Thread[];
+  onOpenThread: (threadId: number) => void;
+  onNewChat: () => void;
+}
+
+export interface QuickCaptureNodeData extends BaseNodeData {
+  type: "quickCapture";
+  onSave: (text: string) => Promise<void>;
+}
+
+export interface JournalNodeData extends BaseNodeData {
+  type: "journal";
+  entries: DiaryEntryData[];
+  onNavigate: (path: string) => void;
+  onNewEntry: () => void;
+}
+
+export type RecentChatsNode = Node<RecentChatsNodeData, "recentChats">;
+export type QuickCaptureNode = Node<QuickCaptureNodeData, "quickCapture">;
+export type JournalNode = Node<JournalNodeData, "journal">;
+
 export type DashboardNode =
   | ProfileNode
   | GreetingNode
@@ -129,4 +157,7 @@ export type DashboardNode =
   | TodayContextNode
   | NudgeNode
   | ReflectionNode
-  | GalleryViewerNode;
+  | GalleryViewerNode
+  | RecentChatsNode
+  | QuickCaptureNode
+  | JournalNode;

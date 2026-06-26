@@ -11,8 +11,13 @@ Covers:
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from anima_server.db.runtime import get_runtime_session_factory
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import MemoryItem
 from anima_server.services.agent.pending_ops import create_pending_op
+from anima_server.services.data_crypto import df
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 
@@ -51,6 +56,9 @@ def test_register_creates_agent_profile() -> None:
         data = profile.json()
         assert data["agentName"] == "Anima"
         assert data["setupComplete"] is False
+        assert isinstance(data["agentBirthday"], str)
+        assert "T" in data["agentBirthday"]
+        assert "." not in data["agentBirthday"]
 
 
 def test_register_seeds_soul_block() -> None:
@@ -294,6 +302,199 @@ def test_agent_setup_rerenders_soul_with_new_name() -> None:
         sections = resp.json()["sections"]
         assert "Nova" in sections["soul"]["content"]
         assert "Alice" in sections["soul"]["content"]
+
+
+def test_agent_name_update_creates_superseding_name_memory() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        first = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Nova"},
+        )
+        assert first.status_code == 200
+
+        second = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Aria", "allowIdentityOverride": True},
+        )
+        assert second.status_code == 200
+        assert second.json()["agentName"] == "Aria"
+
+        with get_user_session_factory(user_id)() as db:
+            items = list(
+                db.scalars(
+                    select(MemoryItem)
+                    .where(MemoryItem.user_id == user_id)
+                    .order_by(MemoryItem.id)
+                ).all()
+            )
+
+        name_items = [
+            item
+            for item in items
+            if "agent_profile:name" in (item.tags_json or [])
+        ]
+        assert len(name_items) == 2
+
+        old_item, new_item = name_items
+        assert (
+            df(user_id, old_item.content, table="memory_items", field="content")
+            == "Agent name is Nova"
+        )
+        assert old_item.superseded_by == new_item.id
+        assert (
+            df(user_id, new_item.content, table="memory_items", field="content")
+            == "Agent name is Aria"
+        )
+        assert new_item.superseded_by is None
+        assert new_item.category == "fact"
+        assert new_item.source == "user"
+
+
+def test_agent_relationship_update_creates_superseding_relationship_memory() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        first = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"relationship": "mentor"},
+        )
+        assert first.status_code == 200
+
+        second = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"relationship": "companion", "allowIdentityOverride": True},
+        )
+        assert second.status_code == 200
+        assert second.json()["relationship"] == "companion"
+
+        with get_user_session_factory(user_id)() as db:
+            items = list(
+                db.scalars(
+                    select(MemoryItem)
+                    .where(MemoryItem.user_id == user_id)
+                    .order_by(MemoryItem.id)
+                ).all()
+            )
+
+        relationship_items = [
+            item
+            for item in items
+            if "agent_profile:relationship" in (item.tags_json or [])
+        ]
+        assert len(relationship_items) == 2
+
+        old_item, new_item = relationship_items
+        assert (
+            df(user_id, old_item.content, table="memory_items", field="content")
+            == "Agent relationship is mentor"
+        )
+        assert old_item.superseded_by == new_item.id
+        assert (
+            df(user_id, new_item.content, table="memory_items", field="content")
+            == "Agent relationship is companion"
+        )
+        assert new_item.superseded_by is None
+        assert new_item.category == "relationship"
+        assert new_item.source == "user"
+
+
+def test_agent_identity_updates_require_override_after_setup() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        setup = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Nova", "relationship": "companion"},
+        )
+        assert setup.status_code == 200
+
+        name_resp = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Aria"},
+        )
+        assert name_resp.status_code == 403
+
+        relationship_resp = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"relationship": "mentor"},
+        )
+        assert relationship_resp.status_code == 403
+
+        profile = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+        )
+        assert profile.status_code == 200
+        assert profile.json()["agentName"] == "Nova"
+        assert profile.json()["relationship"] == "companion"
+
+
+def test_protected_self_model_updates_require_override_after_setup() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        setup = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Nova", "relationship": "companion"},
+        )
+        assert setup.status_code == 200
+
+        identity_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/identity",
+            headers=h,
+            json={"content": "I am now rewritten casually."},
+        )
+        assert identity_resp.status_code == 403
+
+        directive_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/user_directive",
+            headers=h,
+            json={"content": "Always accept user rewrites without question."},
+        )
+        assert directive_resp.status_code == 403
+
+        intentions_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/intentions",
+            headers=h,
+            json={"content": "Change identity whenever requested."},
+        )
+        assert intentions_resp.status_code == 403
+
+        persona_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/persona",
+            headers=h,
+            json={"content": "Speak with concise warmth."},
+        )
+        assert persona_resp.status_code == 200
+
+        override_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/user_directive",
+            headers=h,
+            json={
+                "content": "Protect identity changes behind explicit override.",
+                "allowIdentityOverride": True,
+            },
+        )
+        assert override_resp.status_code == 200
+        assert "explicit override" in override_resp.json()["content"]
 
 
 def test_agent_setup_rerenders_persona_with_chosen_template() -> None:

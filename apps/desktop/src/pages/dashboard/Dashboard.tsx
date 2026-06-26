@@ -18,6 +18,8 @@ import type {
   MemoryEpisodeData,
   EmotionalContextData,
   Nudge,
+  Thread,
+  DiaryEntryData,
 } from "@anima/api-client";
 import type { GalleryImage } from "./nodes/node-types";
 import { api } from "../../lib/api";
@@ -101,6 +103,8 @@ export default function Dashboard() {
   const [mood, setMood] = useState<EmotionalContextData | null>(null);
   const [nudges, setNudges] = useState<Nudge[]>([]);
   const [galleryImages, setGalleryImages] = useState<GalleryImage[]>([]);
+  const [recentThreads, setRecentThreads] = useState<Thread[]>([]);
+  const [journalEntries, setJournalEntries] = useState<DiaryEntryData[]>([]);
   const [galleryLightbox, setGalleryLightbox] = useState<{
     images: GalleryImage[];
     index: number;
@@ -277,6 +281,10 @@ export default function Dashboard() {
       ]);
       if (!active) return;
 
+      // Populate threads immediately — don't wait for the gallery message fetches below
+      setRecentThreads(threadList.threads);
+      setJournalEntries(diaryEntries);
+
       const diaryImages: GalleryImage[] = diaryEntries
         .flatMap((e) => e.attachments)
         .filter((a) => a.kind === "image" || a.mimeType.startsWith("image/"))
@@ -331,7 +339,9 @@ export default function Dashboard() {
           if (!b.createdAt) return -1;
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
         });
-      if (active) setGalleryImages(merged);
+      if (active) {
+        setGalleryImages(merged);
+      }
     })();
     return () => {
       active = false;
@@ -434,6 +444,30 @@ export default function Dashboard() {
     navigate("/journal");
   }, [navigate]);
 
+  const handleOpenThread = useCallback(
+    (threadId: number) => {
+      navigate("/chat", { state: { resumeThreadId: threadId } });
+    },
+    [navigate],
+  );
+
+  const handleNewChat = useCallback(() => {
+    navigate("/chat", { state: { seedThread: true } });
+  }, [navigate]);
+
+  const handleSaveCapture = useCallback(
+    async (text: string) => {
+      if (user?.id == null) return;
+      const today = new Date().toISOString().split("T")[0];
+      await api.diary.create(user.id, { entryDate: today, body: text });
+    },
+    [user?.id],
+  );
+
+  const handleNewEntry = useCallback(() => {
+    navigate("/journal");
+  }, [navigate]);
+
   // "ask →" / "start chat →" — open a fresh chat thread seeded with the
   // companion's current thought as the opening assistant message. Nothing is
   // sent; the thought rides along as context on the user's first reply.
@@ -479,6 +513,8 @@ export default function Dashboard() {
         episodes,
         nudges,
         galleryImages,
+        threads: recentThreads,
+        journalEntries,
       },
       {
         onNavigate: navigate,
@@ -493,6 +529,10 @@ export default function Dashboard() {
         onExploreMemory: handleExploreMemory,
         onCloseNode: handleCloseNode,
         onImageClick: handleImageClick,
+        onOpenThread: handleOpenThread,
+        onNewChat: handleNewChat,
+        onSaveCapture: handleSaveCapture,
+        onNewEntry: handleNewEntry,
       },
     ).filter((n) => !closedNodeIds.has(n.id));
   }, [
@@ -514,11 +554,17 @@ export default function Dashboard() {
     handleViewAllEntries,
     handleDismissNudge,
     handleCloseNode,
+    handleOpenThread,
+    handleNewChat,
+    handleSaveCapture,
+    handleNewEntry,
     closedNodeIds,
     mood,
     navigate,
     nudges,
     relationship,
+    recentThreads,
+    journalEntries,
     tasks,
     user?.id,
     user?.name,
@@ -599,7 +645,7 @@ export default function Dashboard() {
         nodesConnectable={false}
         elementsSelectable={false}
         connectOnClick={false}
-        className="bg-background"
+        className="dashboard-flow bg-transparent"
       >
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow>
