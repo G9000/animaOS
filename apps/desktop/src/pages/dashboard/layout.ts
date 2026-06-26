@@ -6,7 +6,6 @@ import type {
   MemoryEpisodeData,
   EmotionalContextData,
   MessagePill,
-  TodayContext,
   Nudge,
 } from "@anima/api-client";
 import type {
@@ -15,18 +14,17 @@ import type {
   GreetingNode,
   TasksNode,
   MemoryNode,
-  MoodNode,
-  TodayContextNode,
   NudgeNode,
   ReflectionNode,
+  GalleryViewerNode,
   ProfileNodeData,
   GreetingNodeData,
   TasksNodeData,
   MemoryNodeData,
-  MoodNodeData,
-  TodayContextNodeData,
   NudgeNodeData,
   ReflectionNodeData,
+  GalleryViewerNodeData,
+  GalleryImage,
 } from "./nodes/node-types";
 
 const COLUMN_WIDTH = 340;
@@ -41,11 +39,10 @@ export interface DashboardCallbacks {
   onEpisodeChat: (episode: MemoryEpisodeData) => void;
   onEpisodeRead: (episode: MemoryEpisodeData) => void;
   onViewAllEntries: () => void;
-  onTodayContextSave: (context: TodayContext) => void;
-  onTodayContextClear: () => void;
   onDismissNudge: (type: string) => void;
   onExploreMemory: (episodeId: number) => void;
   onCloseNode: (id: string) => void;
+  onImageClick: (images: GalleryImage[], index: number) => void;
 }
 
 export interface DashboardInput {
@@ -59,13 +56,12 @@ export interface DashboardInput {
   briefLoading: boolean;
   reflection: Reflection | null;
   reflectionLoading: boolean;
-  todayContext: TodayContext | null;
-  todayContextLine: string | null;
   tasks: TaskItem[];
   currentFocus?: string | null;
   episodes: MemoryEpisodeData[];
   mood: EmotionalContextData | null;
   nudges: Nudge[];
+  galleryImages: GalleryImage[];
 }
 
 function makeNode<Data extends Record<string, unknown>>(
@@ -96,13 +92,12 @@ export function buildInitialNodes(
     briefLoading,
     reflection,
     reflectionLoading,
-    todayContext,
-    todayContextLine,
     tasks,
     currentFocus,
     episodes,
     mood,
     nudges,
+    galleryImages,
   } = input;
 
   const nodes: DashboardNode[] = [];
@@ -119,7 +114,6 @@ export function buildInitialNodes(
       lastSession,
       brief,
       briefLoading,
-      todayContextLine,
       currentFocus,
       onExplore: callbacks.onExplore,
       onClose: () => callbacks.onCloseNode("profile"),
@@ -138,17 +132,6 @@ export function buildInitialNodes(
       onClose: () => callbacks.onCloseNode("greeting"),
     }) as GreetingNode,
   );
-
-  if (mood?.dominantEmotion) {
-    nodes.push(
-      makeNode<MoodNodeData>("mood", "mood", {
-        type: "mood",
-        mood,
-        agentName,
-        onClose: () => callbacks.onCloseNode("mood"),
-      }) as MoodNode,
-    );
-  }
 
   if (nudges.length > 0) {
     nodes.push(
@@ -175,78 +158,80 @@ export function buildInitialNodes(
     );
   }
 
-  // Column 2 — tasks, today context
-  nodes.push(
-    makeNode<TasksNodeData>("tasks", "tasks", {
-      type: "tasks",
-      tasks,
-      currentFocus,
-      onNavigate: callbacks.onNavigate,
-      onToggleTask: callbacks.onToggleTask,
-      onDeleteTask: callbacks.onDeleteTask,
-      onAddTask: callbacks.onAddTask,
-      onClose: () => callbacks.onCloseNode("tasks"),
-    }) as TasksNode,
-  );
-
-  nodes.push(
-    makeNode<TodayContextNodeData>("todayContext", "todayContext", {
-      type: "todayContext",
-      context: todayContext,
-      greeting: "How are you arriving today?",
-      onSave: callbacks.onTodayContextSave,
-      onClear: callbacks.onTodayContextClear,
-      onClose: () => callbacks.onCloseNode("todayContext"),
-    }) as TodayContextNode,
-  );
+  // Column 2 — tasks
+  const tasksNode = makeNode<TasksNodeData>("tasks", "tasks", {
+    type: "tasks",
+    tasks,
+    currentFocus,
+    onNavigate: callbacks.onNavigate,
+    onToggleTask: callbacks.onToggleTask,
+    onDeleteTask: callbacks.onDeleteTask,
+    onAddTask: callbacks.onAddTask,
+    onClose: () => callbacks.onCloseNode("tasks"),
+  }) as TasksNode;
+  tasksNode.width = COLUMN_WIDTH - 20;
+  tasksNode.height = 320;
+  nodes.push(tasksNode);
 
   // Column 3 — memories
   if (episodes.length > 0) {
-    nodes.push(
-      makeNode<MemoryNodeData>("memory", "memory", {
-        type: "memory",
-        episodes,
-        agentName,
-        avatarUrl,
-        onChat: callbacks.onEpisodeChat,
-        onRead: callbacks.onEpisodeRead,
-        onViewAll: callbacks.onViewAllEntries,
-        onClose: () => callbacks.onCloseNode("memory"),
-      }) as MemoryNode,
-    );
+    const memoryNode = makeNode<MemoryNodeData>("memory", "memory", {
+      type: "memory",
+      episodes,
+      agentName,
+      avatarUrl,
+      onChat: callbacks.onEpisodeChat,
+      onRead: callbacks.onEpisodeRead,
+      onViewAll: callbacks.onViewAllEntries,
+      onClose: () => callbacks.onCloseNode("memory"),
+    }) as MemoryNode;
+    memoryNode.width = COLUMN_WIDTH - 20;
+    memoryNode.height = 340;
+    nodes.push(memoryNode);
   }
+
+  // Column 3 — gallery (images from journal); starts at a fixed size, user can resize
+  const galleryNode = makeNode<GalleryViewerNodeData>("gallery", "gallery", {
+    type: "gallery",
+    images: galleryImages,
+    onNavigate: callbacks.onNavigate,
+    onImageClick: callbacks.onImageClick,
+    onClose: () => callbacks.onCloseNode("gallery"),
+  }) as GalleryViewerNode;
+  galleryNode.width = COLUMN_WIDTH - 20;
+  galleryNode.height = 380;
+  nodes.push(galleryNode);
 
   // Masonry-style layout across 4 columns
   const columnHeights = [0, 0, 0, 0];
-  const columnForType: Record<DashboardNode["type"], number> = {
+  const columnForType: Partial<Record<string, number>> = {
     profile: 0,
     greeting: 1,
-    mood: 1,
     nudge: 1,
     reflection: 1,
     tasks: 2,
-    todayContext: 2,
     memory: 3,
+    gallery: 3,
   };
 
-  const estimatedHeights: Record<DashboardNode["type"], number> = {
+  const estimatedHeights: Partial<Record<string, number>> = {
     profile: 560,
     greeting: 140,
-    mood: 160,
     nudge: 90 + nudges.length * 30,
     reflection: 130,
     tasks: 220,
-    todayContext: 260,
     memory: 340,
+    gallery: galleryImages.length === 0 ? 90 : Math.min(3, Math.ceil(galleryImages.length / 3)) * 108 + 56,
   };
 
   for (const node of nodes) {
-    const col = columnForType[node.type];
+    const col = columnForType[node.type] ?? 0;
+    const h = estimatedHeights[node.type] ?? 200;
     node.position = {
       x: col * COLUMN_WIDTH,
       y: columnHeights[col],
     };
-    columnHeights[col] += estimatedHeights[node.type] + GAP_Y;
+    columnHeights[col] += h + GAP_Y;
   }
 
   return nodes;

@@ -5,6 +5,7 @@ import {
   Background,
   useNodesState,
   type ReactFlowInstance,
+  type NodeChange,
 } from "@xyflow/react";
 import { useAuth } from "../../context/AuthContext";
 import type {
@@ -16,21 +17,15 @@ import type {
   TaskItem,
   MemoryEpisodeData,
   EmotionalContextData,
-  TodayContext,
   Nudge,
 } from "@anima/api-client";
+import type { GalleryImage } from "./nodes/node-types";
 import { api } from "../../lib/api";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
-import {
-  loadTodayContext,
-  normalizeTodayContext,
-  saveTodayContext,
-  todayIso,
-  type TodayContextDraft,
-} from "../../lib/today-context";
 import { dashboardNodeTypes, type DashboardNode } from "./nodes";
 import { buildInitialNodes } from "./layout";
 import { useNodePositions } from "./useNodePositions";
+import { AuthImage } from "../../components/AuthImage";
 
 const GREETING_CACHE_KEY = "anima_dashboard_greeting";
 const GREETING_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -105,6 +100,11 @@ export default function Dashboard() {
   const [episodes, setEpisodes] = useState<MemoryEpisodeData[]>([]);
   const [mood, setMood] = useState<EmotionalContextData | null>(null);
   const [nudges, setNudges] = useState<Nudge[]>([]);
+  const [galleryImages, setGalleryImages] = useState<GalleryImage[]>([]);
+  const [galleryLightbox, setGalleryLightbox] = useState<{
+    images: GalleryImage[];
+    index: number;
+  } | null>(null);
   const [closedNodeIds, setClosedNodeIds] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(CLOSED_NODES_KEY);
@@ -117,31 +117,10 @@ export default function Dashboard() {
   );
   const [selectedEpisode, setSelectedEpisode] =
     useState<MemoryEpisodeData | null>(null);
-  const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
-    loadTodayContext(),
-  );
   const [reactFlowInstance, setReactFlowInstance] =
     useState<ReactFlowInstance<DashboardNode> | null>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<DashboardNode>([]);
-
-  const handleTodayContextSave = useCallback((draft: TodayContextDraft) => {
-    const next = normalizeTodayContext(draft);
-    setTodayContext(next);
-    saveTodayContext(next);
-  }, []);
-
-  const handleTodayContextClear = useCallback(() => {
-    setTodayContext(null);
-    saveTodayContext(null);
-  }, []);
-
-  useEffect(() => {
-    if (todayContext && todayContext.date !== todayIso()) {
-      setTodayContext(null);
-      saveTodayContext(null);
-    }
-  }, [todayContext]);
 
   useEffect(() => {
     if (user?.id == null) return;
@@ -288,6 +267,77 @@ export default function Dashboard() {
     };
   }, [user?.id, needsSetup]);
 
+  useEffect(() => {
+    if (user?.id == null || needsSetup !== false) return;
+    let active = true;
+    void (async () => {
+      const [diaryEntries, threadList] = await Promise.all([
+        api.diary.list(user.id, 100).catch(() => []),
+        api.threads.list().catch(() => ({ threads: [] })),
+      ]);
+      if (!active) return;
+
+      const diaryImages: GalleryImage[] = diaryEntries
+        .flatMap((e) => e.attachments)
+        .filter((a) => a.kind === "image" || a.mimeType.startsWith("image/"))
+        .map((a) => ({
+          id: String(a.id),
+          url: a.url,
+          mimeType: a.mimeType,
+          filename: a.filename,
+          caption: a.caption,
+          createdAt: a.createdAt,
+          source: "diary" as const,
+        }));
+
+      // Fetch messages for the most recent threads (images only live in PG-backed threads)
+      const threadMessages = await Promise.all(
+        threadList.threads.slice(0, 15).map((t) =>
+          api.threads
+            .messages(t.id)
+            .then((r) => r.messages)
+            .catch(() => []),
+        ),
+      );
+      if (!active) return;
+
+      const chatImages: GalleryImage[] = threadMessages
+        .flat()
+        .filter((m) => m.role === "user" && (m.attachments?.length ?? 0) > 0)
+        .flatMap((m) =>
+          (m.attachments ?? [])
+            .filter((a) => a.kind === "image")
+            .map((a) => ({
+              id: a.id,
+              url: a.url,
+              mimeType: a.mimeType,
+              filename: a.filename ?? null,
+              caption: null,
+              createdAt: m.ts ?? null,
+              source: "chat" as const,
+            })),
+        );
+
+      const seen = new Set<string>();
+      const merged = [...chatImages, ...diaryImages]
+        .filter((img) => {
+          if (seen.has(img.url)) return false;
+          seen.add(img.url);
+          return true;
+        })
+        .sort((a, b) => {
+          if (!a.createdAt && !b.createdAt) return 0;
+          if (!a.createdAt) return 1;
+          if (!b.createdAt) return -1;
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
+      if (active) setGalleryImages(merged);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [user?.id, needsSetup]);
+
   // "chat" on a memory — open a fresh thread seeded with the episode summary as
   // the companion's opening message, then let the user reply. (No canned prompt.)
   const handleEpisodeChat = useCallback(
@@ -357,6 +407,13 @@ export default function Dashboard() {
     setNudges((current) => current.filter((n) => n.type !== type));
   }, []);
 
+  const handleImageClick = useCallback(
+    (images: GalleryImage[], index: number) => {
+      setGalleryLightbox({ images, index });
+    },
+    [],
+  );
+
   const handleCloseNode = useCallback(
     (id: string) => {
       setClosedNodeIds((current) => {
@@ -402,14 +459,6 @@ export default function Dashboard() {
     [navigate, presenceConfig],
   );
 
-  const todayContextLine = useMemo(() => {
-    return (
-      todayContext?.note ||
-      [todayContext?.mood, todayContext?.energy].filter(Boolean).join(" · ") ||
-      null
-    );
-  }, [todayContext]);
-
   const initialNodes = useMemo(() => {
     if (user?.id == null) return [];
     return buildInitialNodes(
@@ -425,12 +474,11 @@ export default function Dashboard() {
         briefLoading,
         reflection,
         reflectionLoading,
-        todayContext,
-        todayContextLine,
         tasks,
         currentFocus: brief?.context?.currentFocus ?? null,
         episodes,
         nudges,
+        galleryImages,
       },
       {
         onNavigate: navigate,
@@ -441,11 +489,10 @@ export default function Dashboard() {
         onEpisodeChat: handleEpisodeChat,
         onEpisodeRead: setSelectedEpisode,
         onViewAllEntries: handleViewAllEntries,
-        onTodayContextSave: handleTodayContextSave,
-        onTodayContextClear: handleTodayContextClear,
         onDismissNudge: handleDismissNudge,
         onExploreMemory: handleExploreMemory,
         onCloseNode: handleCloseNode,
+        onImageClick: handleImageClick,
       },
     ).filter((n) => !closedNodeIds.has(n.id));
   }, [
@@ -456,15 +503,15 @@ export default function Dashboard() {
     reflection,
     reflectionLoading,
     episodes,
+    galleryImages,
     handleAddTask,
     handleDeleteTask,
     handleEpisodeChat,
     handleExploreMemory,
     handleExplore,
+    handleImageClick,
     handleToggleTask,
     handleViewAllEntries,
-    handleTodayContextSave,
-    handleTodayContextClear,
     handleDismissNudge,
     handleCloseNode,
     closedNodeIds,
@@ -473,8 +520,6 @@ export default function Dashboard() {
     nudges,
     relationship,
     tasks,
-    todayContext,
-    todayContextLine,
     user?.id,
     user?.name,
   ]);
@@ -506,6 +551,25 @@ export default function Dashboard() {
     persistPositions(nodes);
   }, [nodes, persistPositions]);
 
+  // Intercept dimension changes from NodeResizer and persist after settling
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<DashboardNode>[]) => {
+      onNodesChange(changes);
+      if (changes.some((c) => c.type === "dimensions")) {
+        if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = setTimeout(() => {
+          // nodes ref is stale here; read from setNodes callback
+          setNodes((current) => {
+            persistPositions(current);
+            return current;
+          });
+        }, 300);
+      }
+    },
+    [onNodesChange, persistPositions, setNodes],
+  );
+
   const hasFittedView = useRef(false);
   useEffect(() => {
     if (reactFlowInstance && nodes.length > 0 && !hasFittedView.current) {
@@ -521,7 +585,7 @@ export default function Dashboard() {
     <div className="h-full w-full relative">
       <ReactFlow<DashboardNode>
         nodes={nodes}
-        onNodesChange={onNodesChange}
+        onNodesChange={handleNodesChange}
         nodeTypes={dashboardNodeTypes}
         edges={[]}
         onInit={setReactFlowInstance}
@@ -548,6 +612,80 @@ export default function Dashboard() {
       >
         Reset dashboard
       </button>
+
+      {/* ── Gallery lightbox ── */}
+      {galleryLightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/85 backdrop-blur-sm"
+          onClick={() => setGalleryLightbox(null)}
+        >
+          <div
+            className="relative flex flex-col items-center gap-3 max-w-2xl w-full mx-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <AuthImage
+              src={galleryLightbox.images[galleryLightbox.index].url}
+              alt={
+                galleryLightbox.images[galleryLightbox.index].caption ??
+                galleryLightbox.images[galleryLightbox.index].filename ??
+                ""
+              }
+              className="max-h-[75vh] max-w-full object-contain rounded shadow-2xl"
+            />
+            {galleryLightbox.images[galleryLightbox.index].caption && (
+              <p className="font-mono text-[10px] tracking-wider text-muted-foreground/60 text-center">
+                {galleryLightbox.images[galleryLightbox.index].caption}
+              </p>
+            )}
+            <div className="flex items-center gap-6">
+              <button
+                onClick={() =>
+                  setGalleryLightbox((lb) =>
+                    lb
+                      ? {
+                          ...lb,
+                          index:
+                            (lb.index - 1 + lb.images.length) %
+                            lb.images.length,
+                        }
+                      : null,
+                  )
+                }
+                className="font-mono text-sm text-muted-foreground/50 hover:text-foreground transition-colors px-2"
+                aria-label="Previous image"
+              >
+                ←
+              </button>
+              <span className="font-mono text-[9px] tracking-wider text-muted-foreground/40">
+                {galleryLightbox.index + 1} / {galleryLightbox.images.length}
+              </span>
+              <button
+                onClick={() =>
+                  setGalleryLightbox((lb) =>
+                    lb
+                      ? {
+                          ...lb,
+                          index: (lb.index + 1) % lb.images.length,
+                        }
+                      : null,
+                  )
+                }
+                className="font-mono text-sm text-muted-foreground/50 hover:text-foreground transition-colors px-2"
+                aria-label="Next image"
+              >
+                →
+              </button>
+            </div>
+          </div>
+          <button
+            onClick={() => setGalleryLightbox(null)}
+            className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-card/80 border border-border/50 text-muted-foreground/60 hover:text-foreground transition-colors text-lg leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* ── Episode detail modal ── */}
       {selectedEpisode && (

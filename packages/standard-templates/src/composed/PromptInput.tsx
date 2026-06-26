@@ -49,10 +49,45 @@ export function PromptInput({
 }: PromptInputProps) {
   const [internalValue, setInternalValue] = useState("");
   const [showEmoji, setShowEmoji] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const isControlled = controlledValue !== undefined;
   const value = isControlled ? controlledValue : internalValue;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => { recognitionRef.current?.abort(); };
+  }, []);
+
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.lang = "en-US";
+    rec.onstart = () => setIsListening(true);
+    rec.onend = () => setIsListening(false);
+    rec.onerror = () => setIsListening(false);
+    rec.onresult = (e: any) => {
+      const transcript = Array.from(e.results as any[])
+        .map((r: any) => r[0].transcript)
+        .join(" ")
+        .trim();
+      if (!transcript) return;
+      const newValue = value ? `${value} ${transcript}` : transcript;
+      if (!isControlled) setInternalValue(newValue);
+      onChange?.(newValue);
+      setTimeout(autoResize, 0);
+    };
+    recognitionRef.current = rec;
+    rec.start();
+  };
 
   useEffect(() => {
     if (!showEmoji) return;
@@ -174,11 +209,12 @@ export function PromptInput({
             {showMic && (
               <Button
                 type="button"
-                variant="ghost"
+                variant={isListening ? "accent" : "ghost"}
                 size="sm"
                 iconOnly
                 icon={<MicIcon />}
-                className="opacity-35 hover:opacity-70 transition-opacity"
+                onClick={toggleListening}
+                className={isListening ? "animate-pulse" : "opacity-35 hover:opacity-70 transition-opacity"}
               />
             )}
 
@@ -213,75 +249,66 @@ export function PromptInput({
     <form onSubmit={(e) => { e.preventDefault(); submit(); }} className={cn("w-full relative", className)}>
       <div
         className={cn(
-          "flex items-end gap-2 bg-card border transition-all duration-200",
-          "border-border/60 hover:border-border",
-          "focus-within:border-accent/50 focus-within:ring-2 focus-within:ring-accent/[0.08]",
-          "shadow-sm focus-within:shadow-md",
-          disabled && "opacity-60",
-          "px-3 py-2.5",
+          "flex flex-col",
+          "bg-background/25 backdrop-blur-[40px]",
+          "border border-foreground/[0.08]",
+          "shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]",
+          "transition-all duration-200",
+          "focus-within:border-foreground/[0.18]",
+          disabled && "opacity-50",
         )}
       >
-        {showAttach && <AttachMenu onAttach={onAttach} />}
-
-        {/* Emoji button */}
-        <div ref={emojiRef} className="relative shrink-0">
-          <button
-            type="button"
-            onClick={() => setShowEmoji((v) => !v)}
-            className={cn(
-              "w-8 h-8 flex items-center justify-center transition-all duration-150",
-              showEmoji
-                ? "text-accent"
-                : "text-muted-foreground/30 hover:text-muted-foreground/70"
-            )}
-          >
-            <EmojiIcon />
-          </button>
-          {showEmoji && (
-            <div className="absolute bottom-full mb-2 left-0 z-50 shadow-xl">
-              <EmojiPicker
-                onEmojiClick={insertEmoji}
-                theme={Theme.AUTO}
-                skinTonesDisabled
-                searchDisabled={false}
-                width={300}
-                height={360}
-                previewConfig={{ showPreview: false }}
-              />
-            </div>
-          )}
+        {/* Text area */}
+        <div className="px-4 pt-3 pb-2">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder || `talk to ${agentName}...`}
+            disabled={disabled}
+            rows={1}
+            className="w-full bg-transparent text-sm text-foreground/90 placeholder:text-foreground/25 outline-none resize-none leading-relaxed"
+          />
         </div>
 
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder || `talk to ${agentName}...`}
-          disabled={disabled}
-          rows={1}
-          className="flex-1 bg-transparent text-sm font-mono text-foreground placeholder:text-muted-foreground/35 outline-none resize-none pb-0.5 leading-6"
-        />
-        <div className="flex items-center shrink-0 gap-1">
-          {showMic && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              iconOnly
-              icon={<MicIcon />}
-              className="opacity-20 hover:opacity-50 transition-opacity"
-            />
-          )}
-          <Button
-            type="submit"
-            variant="accent"
-            size="sm"
-            iconOnly
-            icon={<SendIcon />}
-            disabled={disabled || !hasContent}
-            className={cn("transition-all duration-150", hasContent ? "opacity-100" : "opacity-20")}
-          />
+        {/* Toolbar */}
+        <div className="flex items-center gap-1 px-2.5 pb-2.5">
+          {showAttach && <AttachMenu onAttach={onAttach} />}
+
+          <div className="ml-auto flex items-center gap-1.5">
+            {value.length > 0 && (
+              <span className="font-mono text-[9px] tabular-nums text-foreground/20 select-none mr-1">
+                {value.length}
+              </span>
+            )}
+            {showMic && (
+              <button
+                type="button"
+                onClick={toggleListening}
+                className={cn(
+                  "size-7 flex items-center justify-center border transition-all duration-150",
+                  isListening
+                    ? "border-accent bg-accent text-accent-foreground animate-pulse"
+                    : "border-foreground/[0.08] text-foreground/20 hover:text-foreground/60 hover:border-foreground/[0.14]",
+                )}
+              >
+                <MicIcon size="sm" />
+              </button>
+            )}
+            <button
+              type="submit"
+              disabled={disabled || !hasContent}
+              className={cn(
+                "size-7 flex items-center justify-center transition-all duration-150 border",
+                hasContent && !disabled
+                  ? "bg-accent border-accent text-accent-foreground hover:bg-accent/90"
+                  : "border-foreground/[0.08] text-foreground/20 cursor-not-allowed",
+              )}
+            >
+              <SendIcon size="sm" />
+            </button>
+          </div>
         </div>
       </div>
     </form>

@@ -10,6 +10,16 @@ import type {
   Nudge,
 } from "@anima/api-client";
 
+export interface GalleryImage {
+  id: string;
+  url: string;
+  mimeType: string;
+  filename: string | null;
+  caption: string | null;
+  createdAt: string | null;
+  source: "chat" | "diary";
+}
+
 export type NodeType =
   | "profile"
   | "greeting"
@@ -18,7 +28,8 @@ export type NodeType =
   | "mood"
   | "todayContext"
   | "nudge"
-  | "reflection";
+  | "reflection"
+  | "gallery";
 
 export interface BaseNodeData extends Record<string, unknown> {
   type: NodeType;
@@ -69,12 +80,6 @@ export interface MemoryNodeData extends BaseNodeData {
   onViewAll: () => void;
 }
 
-export interface MoodNodeData extends BaseNodeData {
-  type: "mood";
-  mood: EmotionalContextData | null;
-  agentName: string;
-}
-
 export interface TodayContextNodeData extends BaseNodeData {
   type: "todayContext";
   context: TodayContext | null;
@@ -93,7 +98,6 @@ export type ProfileNode = Node<ProfileNodeData, "profile">;
 export type GreetingNode = Node<GreetingNodeData, "greeting">;
 export type TasksNode = Node<TasksNodeData, "tasks">;
 export type MemoryNode = Node<MemoryNodeData, "memory">;
-export type MoodNode = Node<MoodNodeData, "mood">;
 export type TodayContextNode = Node<TodayContextNodeData, "todayContext">;
 export type NudgeNode = Node<NudgeNodeData, "nudge">;
 
@@ -108,12 +112,21 @@ export interface ReflectionNodeData extends BaseNodeData {
 
 export type ReflectionNode = Node<ReflectionNodeData, "reflection">;
 
+export interface GalleryViewerNodeData extends BaseNodeData {
+  type: "gallery";
+  images: GalleryImage[];
+  onNavigate: (path: string) => void;
+  onImageClick: (images: GalleryImage[], index: number) => void;
+}
+
+export type GalleryViewerNode = Node<GalleryViewerNodeData, "gallery">;
+
 export type DashboardNode =
   | ProfileNode
   | GreetingNode
   | TasksNode
   | MemoryNode
-  | MoodNode
   | TodayContextNode
   | NudgeNode
-  | ReflectionNode;
+  | ReflectionNode
+  | GalleryViewerNode;

@@ -84,6 +84,8 @@ class EmotionalContextResponse(BaseModel):
     dominantEmotion: str | None = None
     recentSignals: list[EmotionalSignalResponse]
     synthesizedContext: str
+    valence: float | None = None
+    arousal: float | None = None
 
 
 class AgentStateContextMessageResponse(BaseModel):
@@ -807,6 +809,7 @@ async def get_emotional_state(
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.emotional_intelligence import (
+        dominant_valence_arousal,
         get_recent_signals,
         synthesize_emotional_context,
     )
@@ -823,6 +826,10 @@ async def get_emotional_state(
                 signal.emotion, 0) + signal.confidence
         if emotion_scores:
             dominant = max(emotion_scores, key=emotion_scores.get)
+
+    va = dominant_valence_arousal(dominant)
+    valence = va[0] if va else None
+    arousal = va[1] if va else None
 
     from anima_server.models import EmotionalSignal
 
@@ -848,6 +855,8 @@ async def get_emotional_state(
             for signal in signals
         ],
         synthesizedContext=context,
+        valence=valence,
+        arousal=arousal,
     )
 
 
