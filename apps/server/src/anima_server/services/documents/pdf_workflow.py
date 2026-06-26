@@ -601,8 +601,6 @@ def _reusable_indexed_document_chunks(
     run: RuntimeWorkflowRun,
     document: RuntimeDocument,
 ) -> list[RuntimeDocumentChunk] | None:
-    if document.workflow_run_id == run.id:
-        return None
     if document.status != "indexed":
         return None
 

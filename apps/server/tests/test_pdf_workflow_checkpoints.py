@@ -685,6 +685,65 @@ def test_duplicate_indexed_pdf_workflow_reuses_existing_index(
     ]
 
 
+def test_resume_original_duplicate_owner_reuses_existing_index(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    original_run_id, document = _seed_run_with_document(runtime_db, request)
+
+    duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+
+    runtime_db.refresh(document)
+    original_chunk_ids = [
+        chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+
+    assert document.workflow_run_id == original_run_id
+    assert document.status == "indexed"
+
+    resume_calls = _Calls()
+    resumed = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=original_run_id,
+        dependencies=_dependencies(
+            resume_calls,
+            fail_extract=True,
+            fail_chunk=True,
+            fail_embed=True,
+        ),
+    )
+
+    resumed_chunk_ids = [
+        chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+
+    assert resumed.id == original_run_id
+    assert resumed.status == "awaiting_input"
+    assert resume_calls.extracted == 0
+    assert resume_calls.chunked == 0
+    assert resume_calls.embedded == []
+    assert resume_calls.summarized == 1
+    assert resume_calls.proposed == 1
+    assert resumed_chunk_ids == original_chunk_ids
+    assert _checkpoint_names(runtime_db, original_run_id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "embedded",
+        "indexed",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
+    ]
+
+
 def test_partial_embedding_success_does_not_checkpoint_or_continue(
     runtime_db: Session,
     monkeypatch: Any,
