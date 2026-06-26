@@ -15,7 +15,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
-from anima_server.schemas.chat import ChatContextMessage, ChatRequestAttachment, TodayContext
+from anima_server.schemas.chat import (
+    ChatContextMessage,
+    ChatRequestAttachment,
+    TodayContext,
+)
 from anima_server.services.agent.attachments import (
     prepare_chat_attachments,
     validate_chat_attachment_inputs,
@@ -110,6 +114,7 @@ from anima_server.services.agent.tools import get_tools, prepare_action_tool_sch
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
+from anima_server.services.documents.store import get_document_for_user
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
@@ -752,6 +757,7 @@ async def _execute_agent_turn_locked(
             run=run,
             result=result,
             initial_sequence_id=initial_sequence_id,
+            assistant_pills=_build_assistant_source_pills(turn_ctx),
         )
         _refresh_companion_history(
             user_id=user_id,
@@ -789,6 +795,7 @@ async def _execute_agent_turn_locked(
             run=run,
             result=result,
             initial_sequence_id=initial_sequence_id,
+            assistant_pills=_build_assistant_source_pills(turn_ctx),
         )
     except Exception as exc:
         _fail_turn_setup(
@@ -838,6 +845,8 @@ class _TurnContext:
     attachments: tuple[StoredAttachment, ...] = ()
     context_messages: tuple[RuntimeMessage, ...] = ()
     retrieval: AgentRetrievalTrace | None = None
+    has_document_context: bool = False
+    document_source_pills: tuple[dict[str, object], ...] = ()
 
 
 async def _consolidate_displaced_threads(
@@ -995,6 +1004,11 @@ async def _prepare_turn_context(
             sequence_id=initial_sequence_id + context_sequence_count,
             source=source,
             attachments=prepared_attachments,
+            pills=_build_user_message_document_pills(
+                runtime_db,
+                user_id=user_id,
+                document_ids=document_ids,
+            ),
         )
         conversation_turn_count = count_messages_by_role(
             runtime_db, thread.id, "user")
@@ -1210,33 +1224,53 @@ async def _assemble_turn_context(
             exc_info=True,
         )
 
-    # Static identity blocks come from the companion cache (version-counter
-    # invalidated); only the query-ranked and volatile blocks are rebuilt
-    # per turn.
-    static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
-    turn_blocks = build_turn_memory_blocks(
-        db,
-        user_id=user_id,
-        thread_id=thread.id,
-        semantic_results=semantic_results,
-        query_embedding=query_embedding,
-        query=user_message,
-        runtime_db=runtime_db,
-    )
-    memory_blocks = (*static_blocks, *turn_blocks)
-
     document_context_block = _build_document_context_block(
         runtime_db,
         user_id=user_id,
         user_message=user_message,
         document_ids=document_ids,
     )
-    if document_context_block is not None:
-        memory_blocks = (*memory_blocks, document_context_block)
-
     today_context_block = _build_today_context_block(today_context)
-    if today_context_block is not None:
-        memory_blocks = (*memory_blocks, today_context_block)
+
+    if document_context_block is not None:
+        document_turn_directive = _build_document_turn_directive(
+            document_ids=document_ids,
+        )
+        memory_blocks = tuple(
+            block
+            for block in (
+                document_turn_directive,
+                document_context_block,
+                today_context_block,
+            )
+            if block is not None
+        )
+        document_source_pills = _build_document_pills(
+            runtime_db,
+            user_id=user_id,
+            document_ids=document_ids,
+            kind="document_source",
+        )
+    else:
+        # Static identity blocks come from the companion cache (version-counter
+        # invalidated); only the query-ranked and volatile blocks are rebuilt
+        # per turn.  When an indexed PDF is selected and retrieved, these blocks
+        # are intentionally excluded so ambiguous prompts like "what do you see"
+        # stay grounded in the document instead of personal memories.
+        static_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
+        turn_blocks = build_turn_memory_blocks(
+            db,
+            user_id=user_id,
+            thread_id=thread.id,
+            semantic_results=semantic_results,
+            query_embedding=query_embedding,
+            query=user_message,
+            runtime_db=runtime_db,
+        )
+        memory_blocks = (*static_blocks, *turn_blocks)
+        if today_context_block is not None:
+            memory_blocks = (*memory_blocks, today_context_block)
+        document_source_pills = ()
 
     # Feedback signals (best-effort)
     try:
@@ -1286,7 +1320,72 @@ async def _assemble_turn_context(
         attachments=prepared_attachments,
         context_messages=tuple(persisted_context_messages),
         retrieval=retrieval_trace,
+        has_document_context=document_context_block is not None,
+        document_source_pills=document_source_pills,
     )
+
+
+def _build_document_pills(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+    kind: str,
+) -> tuple[dict[str, object], ...]:
+    pills: list[dict[str, object]] = []
+    for document_id in _dedupe_positive_ids(document_ids):
+        document = get_document_for_user(
+            runtime_db,
+            user_id=user_id,
+            document_id=document_id,
+        )
+        if document is None:
+            continue
+        pills.append(
+            {
+                "kind": kind,
+                "label": _truncate_pill_label(document.filename),
+                "ref": document.id,
+            }
+        )
+    return tuple(pills)
+
+
+def _build_user_message_document_pills(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+) -> tuple[dict[str, object], ...]:
+    return _build_document_pills(
+        runtime_db,
+        user_id=user_id,
+        document_ids=document_ids,
+        kind="document_attachment",
+    )
+
+
+def _build_assistant_source_pills(
+    turn_ctx: _TurnContext,
+) -> tuple[dict[str, object], ...]:
+    pills: list[dict[str, object]] = []
+    if turn_ctx.has_document_context:
+        if turn_ctx.document_source_pills:
+            pills.extend(turn_ctx.document_source_pills)
+        else:
+            pills.append(
+                {"kind": "document_source", "label": "CITED DOCS", "ref": None}
+            )
+    if turn_ctx.attachments:
+        pills.append({"kind": "image_source", "label": "USED IMAGE", "ref": None})
+    return tuple(pills)
+
+
+def _truncate_pill_label(label: str, *, limit: int = 64) -> str:
+    cleaned = " ".join(label.strip().split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
 
 
 def _build_document_context_block(
@@ -1341,6 +1440,34 @@ def _build_document_context_block(
             "Query-relevant excerpts from PDFs the user explicitly selected for this chat turn. "
             "Ground answers in these snippets when they apply; do not treat them as long-term memory."
         ),
+    )
+
+
+def _build_document_turn_directive(
+    *,
+    document_ids: Sequence[int],
+) -> MemoryBlock | None:
+    document_count = len(_dedupe_positive_ids(document_ids))
+    if document_count <= 0:
+        return None
+
+    noun = "selected PDF" if document_count == 1 else "selected PDFs"
+    return MemoryBlock(
+        label="user_directive",
+        value=(
+            f"For this turn, the user's question is primarily about the {noun}. "
+            "Answer from the selected document context first when it is relevant. "
+            "If the wording is ambiguous, such as 'what do you see' or 'what is this', "
+            "interpret it as asking what is in the selected PDF. "
+            "Do not substitute personal memory, relationship context, or stylistic inference "
+            "when the selected document can answer the question. If the document excerpts are "
+            "insufficient, say what is missing plainly."
+        ),
+        description=(
+            "Per-turn grounding rule for explicit PDF selections. Selected document evidence "
+            "takes precedence over general memory when answering this message."
+        ),
+        read_only=True,
     )
 
 
@@ -1734,6 +1861,8 @@ def _rebuild_turn_context_after_compaction(
         attachments=turn_ctx.attachments,
         context_messages=turn_ctx.context_messages,
         retrieval=turn_ctx.retrieval,
+        has_document_context=turn_ctx.has_document_context,
+        document_source_pills=turn_ctx.document_source_pills,
     )
 
 
@@ -1793,6 +1922,7 @@ def _persist_approval_checkpoint(
     run: RuntimeRun,
     result: AgentResult,
     initial_sequence_id: int,
+    assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> ToolCall | None:
     """Persist the agent result plus a role='approval' checkpoint message.
 
@@ -1821,6 +1951,7 @@ def _persist_approval_checkpoint(
             else None
         ),
         record_feedback=False,
+        assistant_pills=assistant_pills,
     )
 
     # Find the pending tool call from the last step trace.
@@ -1871,6 +2002,7 @@ async def _persist_turn_result(
     run: RuntimeRun,
     result: AgentResult,
     initial_sequence_id: int,
+    assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> None:
     """Stage 3: Write result to DB; schedule compaction in the background.
 
@@ -1893,6 +2025,7 @@ async def _persist_turn_result(
             if result_message_count > 0
             else None
         ),
+        assistant_pills=assistant_pills,
     )
     runtime_db.commit()
 

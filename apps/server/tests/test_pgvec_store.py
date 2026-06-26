@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.vector_store import (
@@ -195,7 +196,7 @@ class TestContentHash:
         assert checksum != RuntimeEmbedding.compute_embedding_checksum([0.3, 0.2, 0.1])
 
 
-def test_pg_vec_store_search_skips_checksum_mismatch() -> None:
+def test_pg_vec_store_search_repairs_checksum_mismatch() -> None:
     from anima_server.services.agent.pgvec_store import PgVecStore
 
     bad_row = SimpleNamespace(
@@ -224,13 +225,21 @@ def test_pg_vec_store_search_skips_checksum_mismatch() -> None:
     )
 
     fake_db = SimpleNamespace(
+        flushed=False,
         execute=lambda _stmt: SimpleNamespace(all=lambda: [bad_row, good_row]),
     )
+
+    def _flush() -> None:
+        fake_db.flushed = True
+
+    fake_db.flush = _flush
 
     results = PgVecStore(fake_db).search_by_vector(1, query_embedding=[1.0, 0.0], limit=1)
 
     assert len(results) == 1
-    assert results[0].item_id == 12
+    assert results[0].item_id == 11
+    assert fake_db.flushed is True
+    assert bad_row.RuntimeEmbedding.embedding_checksum == compute_embedding_checksum([1.0, 0.0])
 
 
 def test_pg_vec_store_search_aggregates_invalid_embedding_warnings(
@@ -288,20 +297,90 @@ def test_pg_vec_store_search_aggregates_invalid_embedding_warnings(
     )
 
     fake_db = SimpleNamespace(
+        flushed=False,
         execute=lambda _stmt: SimpleNamespace(
-            all=lambda: [mismatch_row_a, mismatch_row_b, invalid_row, good_row]
+            all=lambda: [invalid_row, mismatch_row_a, mismatch_row_b, good_row]
         ),
     )
 
-    with caplog.at_level(logging.WARNING):
-        results = PgVecStore(fake_db).search_by_vector(1, query_embedding=[1.0, 0.0], limit=1)
+    def _flush() -> None:
+        fake_db.flushed = True
 
-    assert len(results) == 1
-    assert results[0].item_id == 14
+    fake_db.flush = _flush
+
+    with caplog.at_level(logging.INFO):
+        results = PgVecStore(fake_db).search_by_vector(1, query_embedding=[1.0, 0.0], limit=3)
+
+    assert len(results) == 3
+    assert [result.item_id for result in results] == [11, 12, 14]
+    assert fake_db.flushed is True
     warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
-    assert len(warnings) == 2
-    assert any("Skipped 2 runtime embeddings for user 1 due to checksum mismatch" in message for message in warnings)
+    infos = [record.message for record in caplog.records if record.levelno == logging.INFO]
     assert any(
         "Skipped 1 runtime embeddings for user 1 due to missing or invalid checksum state" in message
         for message in warnings
     )
+    assert any(
+        "Repaired 2 runtime embeddings for user 1 by resyncing checksum to stored pgvector payload"
+        in message
+        for message in infos
+    )
+
+
+def test_pg_vec_store_search_accepts_numpy_runtime_embeddings() -> None:
+    from anima_server.services.agent.pgvec_store import PgVecStore
+
+    runtime_embedding = np.array([0.9, 0.1], dtype=np.float32)
+    row = SimpleNamespace(
+        RuntimeEmbedding=SimpleNamespace(
+            id=1,
+            source_id=11,
+            content_preview="valid",
+            category="fact",
+            importance=4,
+            embedding=runtime_embedding,
+            embedding_checksum=compute_embedding_checksum(runtime_embedding.tolist()),
+        ),
+        similarity=0.95,
+    )
+
+    fake_db = SimpleNamespace(
+        execute=lambda _stmt: SimpleNamespace(all=lambda: [row]),
+    )
+
+    results = PgVecStore(fake_db).search_by_vector(1, query_embedding=[1.0, 0.0], limit=1)
+
+    assert len(results) == 1
+    assert results[0].item_id == 11
+
+
+def test_pg_vec_store_search_repairs_runtime_checksum_drift() -> None:
+    from anima_server.services.agent.pgvec_store import PgVecStore
+
+    original_embedding = [0.1, 0.2, 0.3]
+    runtime_embedding = np.array(original_embedding, dtype=np.float32)
+    runtime_row = SimpleNamespace(
+        id=1,
+        source_id=11,
+        content_preview="valid",
+        category="fact",
+        importance=4,
+        embedding=runtime_embedding,
+        embedding_checksum=compute_embedding_checksum(original_embedding),
+    )
+    fake_db = SimpleNamespace(
+        flushed=False,
+        execute=lambda _stmt: SimpleNamespace(all=lambda: [SimpleNamespace(RuntimeEmbedding=runtime_row, similarity=0.95)]),
+    )
+
+    def _flush() -> None:
+        fake_db.flushed = True
+
+    fake_db.flush = _flush
+
+    results = PgVecStore(fake_db).search_by_vector(1, query_embedding=[1.0, 0.0], limit=1)
+
+    assert len(results) == 1
+    assert results[0].item_id == 11
+    assert fake_db.flushed is True
+    assert runtime_row.embedding_checksum == compute_embedding_checksum(runtime_embedding.tolist())

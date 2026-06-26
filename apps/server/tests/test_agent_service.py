@@ -28,6 +28,7 @@ from anima_server.services.agent.prompt_budget import (
     PromptBudgetBlockDecision,
     PromptBudgetTrace,
 )
+from anima_server.services.documents.rag import DocumentRagResult
 from anima_server.services.agent.runtime_types import StepTrace
 from anima_server.services.agent.state import AgentResult
 from conftest_runtime import runtime_db_session
@@ -487,6 +488,319 @@ def test_today_context_block_guides_adaptive_checkins() -> None:
     assert "gently ask" in block.description
     assert "not every turn" in block.description
     assert "Do not store" in block.description
+
+
+@pytest.mark.asyncio
+async def test_run_agent_adds_document_priority_block_for_mixed_pdf_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        del runtime_db, user_id, query, document_ids, limit
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="Install the relay before enabling checkpoint restart.",
+                similarity=0.91,
+                page_start=2,
+                page_end=3,
+                section_title="Install",
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="document-priority",
+                password_hash="not-used",
+                display_name="Document Priority",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            await run_agent(
+                "so what inside",
+                user.id,
+                soul_session,
+                runtime_session,
+                document_ids=[4],
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    blocks = runner.requests[0]["memory_blocks"]
+    labels = [label for label, _value in blocks]
+    assert "document_context" in labels
+    assert "user_directive" in labels
+    directive_value = next(value for label, value in blocks if label == "user_directive")
+    assert "selected PDF" in directive_value or "selected document" in directive_value
+    assert "what do you see" in directive_value
+
+
+@pytest.mark.asyncio
+async def test_run_agent_omits_personal_memory_blocks_when_pdf_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    def fake_turn_memory_blocks(*args: object, **kwargs: object) -> tuple[MemoryBlock, ...]:
+        del args, kwargs
+        return (
+            MemoryBlock(
+                label="relevant_memories",
+                value="The user has platinum hair and galaxy star nails.",
+                description="Query-ranked personal memories.",
+            ),
+            MemoryBlock(
+                label="self_working_memory",
+                value="Talk about how the user looks.",
+                description="Working memory.",
+            ),
+        )
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        del runtime_db, user_id, query, document_ids, limit
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="CHCC 2026 Price List updated March.pdf",
+                content="HRT blood panel runs around RM150-300.",
+                similarity=0.91,
+                page_start=2,
+                page_end=2,
+                section_title="Blood tests",
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "build_turn_memory_blocks", fake_turn_memory_blocks)
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="document-memory-scope",
+                password_hash="not-used",
+                display_name="Document Memory Scope",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            await run_agent(
+                "so what do you see",
+                user.id,
+                soul_session,
+                runtime_session,
+                document_ids=[4],
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    labels = [label for label, _value in runner.requests[0]["memory_blocks"]]
+    assert "user_directive" in labels
+    assert "document_context" in labels
+    assert "human" not in labels
+    assert "relevant_memories" not in labels
+    assert "self_working_memory" not in labels
+
+
+@pytest.mark.asyncio
+async def test_run_agent_persists_document_attachment_and_citation_pills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.state import extract_stored_pills
+    from anima_server.services.agent.thread_manager import (
+        get_thread_messages_for_display,
+    )
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        del runtime_db, user_id, query, limit
+        assert document_ids == [document_id]
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=document_id,
+                filename="CHCC 2026 Price List updated March.pdf",
+                content="HRT blood panel runs around RM150-300.",
+                similarity=0.91,
+                page_start=2,
+                page_end=2,
+                section_title="Blood tests",
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="document-pills",
+                password_hash="not-used",
+                display_name="Document Pills",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            registered_document = register_document(
+                runtime_session,
+                DocumentRegistration(
+                    user_id=user.id,
+                    thread_id=None,
+                    workflow_run_id=None,
+                    filename="CHCC 2026 Price List updated March.pdf",
+                    mime_type="application/pdf",
+                    storage_path=f"users/{user.id}/attachments/chcc-price-list.pdf",
+                    sha256="doc-sha-1",
+                    size_bytes=1024,
+                    metadata_json=None,
+                ),
+            )
+            document_id = registered_document.id
+
+            await run_agent(
+                "how much the HRT test again",
+                user.id,
+                soul_session,
+                runtime_session,
+                document_ids=[document_id],
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+            thread = runtime_session.query(RuntimeThread).one()
+            display = get_thread_messages_for_display(
+                runtime_session,
+                thread=thread,
+                user_id=user.id,
+                transcripts_dir=None,
+                dek=None,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert extract_stored_pills(messages[0].content_json) == [
+        {
+            "kind": "document_attachment",
+            "label": "CHCC 2026 Price List updated March.pdf",
+            "ref": document_id,
+        }
+    ]
+    assert extract_stored_pills(messages[1].content_json) == [
+        {
+            "kind": "document_source",
+            "label": "CHCC 2026 Price List updated March.pdf",
+            "ref": document_id,
+        }
+    ]
+    assert display[0]["pills"] == [
+        {
+            "kind": "document_attachment",
+            "label": "CHCC 2026 Price List updated March.pdf",
+            "ref": document_id,
+        }
+    ]
+    assert display[1]["pills"] == [
+        {
+            "kind": "document_source",
+            "label": "CHCC 2026 Price List updated March.pdf",
+            "ref": document_id,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_persists_image_source_pill_on_assistant_reply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.state import extract_stored_pills
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="pixel.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="image-pills",
+                password_hash="not-used",
+                display_name="Image Pills",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            await run_agent(
+                "what is in this image?",
+                user.id,
+                soul_session,
+                runtime_session,
+                attachments=[attachment],
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert extract_stored_pills(messages[1].content_json) == [
+        {"kind": "image_source", "label": "USED IMAGE", "ref": None}
+    ]
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import hashlib
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import bm25_index as bm25_module
 from anima_server.services.agent import vector_store as vector_module
@@ -55,13 +56,15 @@ def _compiled_sql(stmt: Any) -> str:
 
 def test_pgvec_upsert_source_builds_source_aware_upsert() -> None:
     db = FakeSession()
+    embedding = [0.1, 0.2, 0.3]
+    runtime_embedding = np.array(embedding, dtype=np.float32).tolist()
 
     PgVecStore(db).upsert_source(
         7,
         source_type="document_chunk",
         source_id=42,
         content="document chunk content",
-        embedding=[0.1, 0.2, 0.3],
+        embedding=embedding,
     )
 
     assert db.flushed is True
@@ -70,7 +73,8 @@ def test_pgvec_upsert_source_builds_source_aware_upsert() -> None:
     assert params["source_type"] == "document_chunk"
     assert params["source_id"] == 42
     assert params["content_hash"] == hashlib.sha256(b"document chunk content").hexdigest()
-    assert params["embedding_checksum"] == compute_embedding_checksum([0.1, 0.2, 0.3])
+    assert params["embedding_checksum"] == compute_embedding_checksum(runtime_embedding)
+    assert params["embedding"] == runtime_embedding
     assert params["content_preview"] == "document chunk content"
     assert params["category"] == "document"
     assert params["importance"] == 3

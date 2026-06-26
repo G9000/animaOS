@@ -82,6 +82,8 @@ interface PendingDocumentAttachment {
   error?: string;
 }
 
+type ChatPill = NonNullable<ChatMessage["pills"]>[number];
+
 function attachmentFetchUrl(url: string): string {
   if (url.startsWith("blob:") || url.startsWith("data:")) return url;
   if (url.startsWith("/api/")) return `${API_ORIGIN}${url}`;
@@ -121,6 +123,47 @@ function toPreviewAttachment(image: PendingImageAttachment): ChatAttachment {
     sizeBytes: image.file.size,
     url: image.previewUrl,
   };
+}
+
+function truncatePillLabel(label: string, limit = 64): string {
+  const cleaned = label.trim().replace(/\s+/g, " ");
+  if (cleaned.length <= limit) return cleaned;
+  return `${cleaned.slice(0, Math.max(limit - 3, 1)).trimEnd()}...`;
+}
+
+function toDocumentAttachmentPill(
+  document: Pick<PendingDocumentAttachment, "filename" | "documentId">,
+): ChatPill {
+  return {
+    kind: "document_attachment",
+    label: truncatePillLabel(document.filename),
+    ref: document.documentId ?? null,
+  };
+}
+
+function toDocumentSourcePill(
+  document: Pick<PendingDocumentAttachment, "filename" | "documentId">,
+): ChatPill {
+  return {
+    kind: "document_source",
+    label: truncatePillLabel(document.filename),
+    ref: document.documentId ?? null,
+  };
+}
+
+function buildAssistantSourcePills({
+  documents,
+  hasImageSources,
+}: {
+  documents: PendingDocumentAttachment[];
+  hasImageSources: boolean;
+}): ChatPill[] | undefined {
+  const pills: ChatPill[] = [];
+  pills.push(...documents.map(toDocumentSourcePill));
+  if (hasImageSources) {
+    pills.push({ kind: "image_source", label: "USED IMAGE", ref: null });
+  }
+  return pills.length > 0 ? pills : undefined;
 }
 
 function isPdfFile(file: File): boolean {
@@ -163,10 +206,27 @@ function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
     <div className="mb-2 flex flex-wrap gap-1 not-prose">
       {pills.map((pill) => (
         <span
-          key={`${pill.kind}:${pill.label}`}
-          className="font-mono text-[8px] tracking-[0.15em] uppercase text-muted-foreground/55 border border-border/60 px-1.5 py-0.5"
+          key={`${pill.kind}:${String(pill.ref ?? "")}:${pill.label}`}
+          className={`inline-flex max-w-full items-center gap-1 border border-border/60 px-1.5 py-0.5 ${
+            pill.kind === "document_attachment" || pill.kind === "document_source"
+              ? "bg-card/70 text-foreground/80"
+              : "text-muted-foreground/55"
+          }`}
         >
-          {pill.label}
+          {pill.kind === "document_attachment" || pill.kind === "document_source" ? (
+            <>
+              <span className="font-mono text-[8px] uppercase tracking-[0.15em] text-foreground/65">
+                {pill.kind === "document_source" ? "Cited PDF" : "PDF"}
+              </span>
+              <span className="max-w-[240px] truncate text-[11px] leading-none">
+                {pill.label}
+              </span>
+            </>
+          ) : (
+            <span className="font-mono text-[8px] uppercase tracking-[0.15em]">
+              {pill.label}
+            </span>
+          )}
         </span>
       ))}
     </div>
@@ -956,6 +1016,7 @@ export default function Chat() {
       role: "user",
       content: userMsg,
       attachments: imagesForTurn.map((image) => toPreviewAttachment(image)),
+      pills: documentsForTurn.map(toDocumentAttachmentPill),
     };
     setMessages((prev) => [...prev, ...optimisticContextMessages, tempUserMsg]);
     setStreaming(true);
@@ -1028,10 +1089,17 @@ export default function Chat() {
           (emptyStepWarning ? "[empty model output]" : "[no response]"),
         reasoning: fullReasoning || undefined,
         traceEvents: collectedTraces.length > 0 ? collectedTraces : undefined,
+        pills: buildAssistantSourcePills({
+          documents: documentsForTurn,
+          hasImageSources: imagesForTurn.length > 0,
+        }),
       };
       setMessages((prev) => [...prev, assistantMsg]);
       const resolvedThreadId = currentThreadIdRef.current ?? currentThreadId;
-      if (imagesForTurn.length > 0 && resolvedThreadId != null) {
+      if (
+        (imagesForTurn.length > 0 || documentsForTurn.length > 0) &&
+        resolvedThreadId != null
+      ) {
         try {
           await loadThreadMessages(resolvedThreadId);
         } catch {
@@ -1085,6 +1153,7 @@ export default function Chat() {
     if (role === "user") {
       return (
         <div className="pr-6">
+          <MessagePills pills={message?.pills} />
           <ChatImageAttachments attachments={message?.attachments} />
           {content && (
             <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">

@@ -102,3 +102,39 @@ class TestBoundaryTruncation:
         decision = next(d for d in plan.trace.decisions if d.label == "facts")
         assert decision.status == "truncated"
         assert decision.final_chars == len("- user is vegetarian")
+
+
+class TestBlockPriority:
+    def test_document_context_precedes_personal_memory_blocks(self) -> None:
+        blocks = [
+            MemoryBlock(
+                label="relevant_memories",
+                description="Relevant memories",
+                value="The user has platinum hair and star nails.",
+            ),
+            MemoryBlock(
+                label="document_context",
+                description="Selected PDF excerpts",
+                value="2026 price list: rapid tests are RM50 each.",
+            ),
+            MemoryBlock(
+                label="self_working_memory",
+                description="Working memory",
+                value="The user recently asked about a visual look.",
+            ),
+        ]
+
+        plan = plan_prompt_budget(
+            blocks,
+            budget=BudgetConfig(
+                total_budget=4000,
+                tier_0_budget=4000,
+                tier_1_budget=4000,
+                tier_2_budget=4000,
+                tier_3_budget=4000,
+            ),
+        )
+
+        labels = [block.label for block in plan.blocks]
+        assert labels.index("document_context") < labels.index("relevant_memories")
+        assert labels.index("document_context") < labels.index("self_working_memory")

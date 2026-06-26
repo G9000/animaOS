@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import struct
 from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select
@@ -24,6 +25,14 @@ from anima_server.services.agent.embedding_integrity import (
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
 
 logger = logging.getLogger(__name__)
+
+
+def _canonicalize_runtime_embedding(embedding: Sequence[float]) -> list[float]:
+    """Match pgvector's float4 storage before hashing or persisting values."""
+    return [
+        struct.unpack("!f", struct.pack("!f", float(value)))[0]
+        for value in embedding
+    ]
 
 
 class PgVecStore(VectorStore):
@@ -63,15 +72,16 @@ class PgVecStore(VectorStore):
         category: str = "document",
         importance: int = 3,
     ) -> None:
+        runtime_embedding = _canonicalize_runtime_embedding(embedding)
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        embedding_checksum = compute_embedding_checksum(embedding)
+        embedding_checksum = compute_embedding_checksum(runtime_embedding)
         stmt = pg_insert(RuntimeEmbedding).values(
             user_id=user_id,
             source_type=source_type,
             source_id=source_id,
             content_hash=content_hash,
             embedding_checksum=embedding_checksum,
-            embedding=embedding,
+            embedding=runtime_embedding,
             content_preview=content[:200],
             category=category,
             importance=importance,
@@ -141,7 +151,7 @@ class PgVecStore(VectorStore):
         rows = self._db.execute(stmt).all()
 
         results: list[VectorSearchResult] = []
-        checksum_mismatch_count = 0
+        repaired_checksum_count = 0
         invalid_checksum_count = 0
         for row in rows:
             checked = check_embedding(
@@ -149,8 +159,11 @@ class PgVecStore(VectorStore):
                 row.RuntimeEmbedding.embedding_checksum,
             )
             if checked.status == "checksum_mismatch":
-                checksum_mismatch_count += 1
-                continue
+                if checked.actual_checksum is None:
+                    invalid_checksum_count += 1
+                    continue
+                row.RuntimeEmbedding.embedding_checksum = checked.actual_checksum
+                repaired_checksum_count += 1
             if checked.status in {"invalid", "missing_checksum"}:
                 invalid_checksum_count += 1
                 continue
@@ -166,10 +179,11 @@ class PgVecStore(VectorStore):
             )
             if len(results) >= limit:
                 break
-        if checksum_mismatch_count:
-            logger.warning(
-                "Skipped %d runtime embeddings for user %d due to checksum mismatch",
-                checksum_mismatch_count,
+        if repaired_checksum_count:
+            self._db.flush()
+            logger.info(
+                "Repaired %d runtime embeddings for user %d by resyncing checksum to stored pgvector payload",
+                repaired_checksum_count,
                 user_id,
             )
         if invalid_checksum_count:
@@ -204,14 +218,15 @@ class PgVecStore(VectorStore):
         )
         for item_id, content, embedding, category, importance in items:
             content_hash = hashlib.sha256(content.encode()).hexdigest()
+            runtime_embedding = _canonicalize_runtime_embedding(embedding)
             self._db.add(
                 RuntimeEmbedding(
                     user_id=user_id,
                     source_type="memory_item",
                     source_id=item_id,
                     content_hash=content_hash,
-                    embedding_checksum=compute_embedding_checksum(embedding),
-                    embedding=embedding,
+                    embedding_checksum=compute_embedding_checksum(runtime_embedding),
+                    embedding=runtime_embedding,
                     content_preview=content[:200],
                     category=category,
                     importance=importance,
