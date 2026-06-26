@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "packages/anima-core",
     "apps/desktop/src-tauri",
+    "apps/animus",
 ]
 
 [workspace.package]
