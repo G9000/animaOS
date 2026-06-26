@@ -19,6 +19,7 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
@@ -89,13 +90,23 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
     configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
         return configured
-    configured = _setting_text(getattr(settings, "agent_api_key", ""))
-    if configured:
-        return configured
     resolved_provider = provider or _resolve_embedding_provider()
     env_name = _EMBEDDING_API_KEY_ENV.get(resolved_provider)
     if env_name is not None:
-        return os.getenv(env_name, "").strip()
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            return configured
+
+    from anima_server.config import get_provider_api_key, has_provider_api_keys
+
+    configured = get_provider_api_key(resolved_provider).strip()
+    if configured:
+        return configured
+
+    if not has_provider_api_keys():
+        configured = _setting_text(getattr(settings, "agent_api_key", ""))
+        if configured:
+            return configured
     return ""
 
 
@@ -134,11 +145,14 @@ def _validate_embedding_provider_configuration(provider: str) -> None:
         "openai",
         "doubleword",
     ) and not _resolve_embedding_api_key(provider):
-        key_hint = "ANIMA_AGENT_EMBEDDING_API_KEY (or ANIMA_AGENT_API_KEY)"
+        key_hint = (
+            "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, "
+            "or ANIMA_AGENT_API_KEY"
+        )
         env_name = _EMBEDDING_API_KEY_ENV.get(provider)
         if env_name is not None:
             key_hint = (
-                "ANIMA_AGENT_EMBEDDING_API_KEY, "
+                "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, "
                 f"ANIMA_AGENT_API_KEY, or {env_name}"
             )
         raise LLMConfigError(
@@ -972,7 +986,7 @@ def _bm25_rerank(
 def recency_heat_rerank(
     results: list[tuple[MemoryItem, float]],
     *,
-    now: "datetime | None" = None,
+    now: datetime | None = None,
 ) -> list[tuple[MemoryItem, float]]:
     """Blend relevance scores with recency and heat.
 
@@ -987,8 +1001,6 @@ def recency_heat_rerank(
     scale-free.  Input scores are assumed normalised to [0, 1] (the
     post-rerank hybrid_search scale).
     """
-    from datetime import UTC, datetime
-
     if not results:
         return results
 

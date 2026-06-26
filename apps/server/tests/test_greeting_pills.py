@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from anima_server.config import settings
 from anima_server.services.agent import llm as llm_module
 from anima_server.services.agent import proactive

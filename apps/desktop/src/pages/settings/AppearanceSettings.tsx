@@ -33,7 +33,7 @@ const BACKGROUND_FITS: { value: "cover" | "contain" | "repeat"; label: string }[
   { value: "repeat",  label: "Repeat" },
 ];
 
-function ThemeCard({ value, label, hint, bg, fg, accent, active, isSystem, onClick }: {
+function ThemeCard({ label, hint, bg, fg, accent, active, isSystem, onClick }: {
   value: Theme; label: string; hint: string; bg: string; fg: string; accent: string;
   active: boolean; isSystem?: boolean; onClick: () => void;
 }) {

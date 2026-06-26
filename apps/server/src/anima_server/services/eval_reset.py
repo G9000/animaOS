@@ -24,11 +24,15 @@ from anima_server.models import (
     MemoryItemTag,
     MemoryVector,
     RuntimeBackgroundTaskRun,
+    RuntimeDocument,
+    RuntimeDocumentChunk,
     RuntimeEmbedding,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
     RuntimeThread,
+    RuntimeWorkflowCheckpoint,
+    RuntimeWorkflowRun,
     SelfModelBlock,
     Task,
 )
@@ -82,11 +86,40 @@ def _reset_runtime_state(
     deleted: dict[str, int],
 ) -> None:
     thread_ids = select(RuntimeThread.id).where(RuntimeThread.user_id == user_id)
+    workflow_run_ids = select(RuntimeWorkflowRun.id).where(
+        RuntimeWorkflowRun.user_id == user_id
+    )
 
     _delete(db, deleted, "runtime_session_notes", delete(RuntimeSessionNote).where(RuntimeSessionNote.user_id == user_id))
     _delete(db, deleted, "current_emotions", delete(CurrentEmotion).where(CurrentEmotion.user_id == user_id))
     _delete(db, deleted, "working_context", delete(WorkingContext).where(WorkingContext.user_id == user_id))
     _delete(db, deleted, "active_intentions", delete(ActiveIntention).where(ActiveIntention.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "runtime_document_chunks",
+        delete(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "runtime_documents",
+        delete(RuntimeDocument).where(RuntimeDocument.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "runtime_workflow_checkpoints",
+        delete(RuntimeWorkflowCheckpoint).where(
+            RuntimeWorkflowCheckpoint.workflow_run_id.in_(workflow_run_ids)
+        ),
+    )
+    _delete(
+        db,
+        deleted,
+        "runtime_workflow_runs",
+        delete(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == user_id),
+    )
     _delete(db, deleted, "runtime_steps", delete(RuntimeStep).where(RuntimeStep.thread_id.in_(thread_ids)))
     _delete(db, deleted, "runtime_messages", delete(RuntimeMessage).where(RuntimeMessage.user_id == user_id))
     _delete(db, deleted, "runtime_runs", delete(RuntimeRun).where(RuntimeRun.user_id == user_id))

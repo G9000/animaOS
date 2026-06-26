@@ -17,6 +17,8 @@ import type {
   DiaryAttachmentData,
   DiaryEntryCreateData,
   DiaryEntryData,
+  DocumentWorkflow,
+  DocumentWorkflowActionResponse,
   EmotionalContextData,
   GraphEntity,
   GraphEntityDetail,
@@ -287,6 +289,7 @@ export function createApiClient(options: ApiClientOptions) {
     attachments: ChatRequestAttachment[] = [],
     contextMessages: ChatContextMessage[] = [],
     todayContext?: TodayContext | null,
+    documentIds: number[] = [],
   ): AsyncGenerator<string> {
     const token = getUnlockToken?.() || null;
     const streamNonce = getNonce?.() || null;
@@ -306,6 +309,7 @@ export function createApiClient(options: ApiClientOptions) {
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(contextMessages.length > 0 ? { contextMessages } : {}),
         ...(todayContext ? { todayContext } : {}),
+        ...(documentIds.length > 0 ? { documentIds } : {}),
       }),
     });
 
@@ -574,6 +578,7 @@ export function createApiClient(options: ApiClientOptions) {
         attachments: ChatRequestAttachment[] = [],
         contextMessages: ChatContextMessage[] = [],
         todayContext?: TodayContext | null,
+        documentIds: number[] = [],
       ) =>
         request<AgentResponse>("/chat", {
           method: "POST",
@@ -585,6 +590,7 @@ export function createApiClient(options: ApiClientOptions) {
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(contextMessages.length > 0 ? { contextMessages } : {}),
             ...(todayContext ? { todayContext } : {}),
+            ...(documentIds.length > 0 ? { documentIds } : {}),
           },
         }),
       stream: (
@@ -594,6 +600,7 @@ export function createApiClient(options: ApiClientOptions) {
         attachments: ChatRequestAttachment[] = [],
         contextMessages: ChatContextMessage[] = [],
         todayContext?: TodayContext | null,
+        documentIds: number[] = [],
       ) =>
         streamChat(
           message,
@@ -602,6 +609,7 @@ export function createApiClient(options: ApiClientOptions) {
           attachments,
           contextMessages,
           todayContext,
+          documentIds,
         ),
       history: (userId: number, limit = 50) =>
         request<ChatMessage[]>(`/chat/history?userId=${userId}&limit=${limit}`),
@@ -644,6 +652,25 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { userId },
         }),
+    },
+    documents: {
+      uploadPdf: (userId: number, file: File | Blob, threadId?: number) =>
+        uploadFile<DocumentWorkflowActionResponse>(
+          "/documents/pdf",
+          file,
+          "file",
+          {
+            userId: String(userId),
+            ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
+          },
+        ),
+      getWorkflow: (workflowId: number) =>
+        request<DocumentWorkflow>(`/documents/workflows/${workflowId}`),
+      resumeWorkflow: (workflowId: number) =>
+        request<DocumentWorkflowActionResponse>(
+          `/documents/workflows/${workflowId}/resume`,
+          { method: "POST" },
+        ),
     },
     config: {
       providers: () => request<ProviderInfo[]>("/config/providers"),

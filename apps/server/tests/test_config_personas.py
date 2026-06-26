@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from anima_server.api.routes.config import get_persona_templates
 
 

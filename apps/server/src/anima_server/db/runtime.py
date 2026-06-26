@@ -12,7 +12,7 @@ import logging
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -137,9 +137,10 @@ def ensure_runtime_tables() -> None:
 def _reconcile_embedding_dimension(engine: Engine) -> None:
     """Drop and recreate the embeddings table if the vector dimension changed.
 
-    The PG embeddings table is a runtime cache — source of truth is
-    ``MemoryItem.embedding_json`` in SQLite.  Safe to recreate; a
-    background sync will repopulate it.
+    Memory vectors can be rebuilt from ``MemoryItem.embedding_json`` in SQLite.
+    Document vectors only live in this runtime table, so indexed documents
+    with persisted chunks are marked unindexed after a reset and can be
+    re-embedded.
 
     Uses ``create_all`` (not Alembic) to recreate the table, because
     Alembic's ``upgrade head`` is a no-op when already at head.  The
@@ -182,6 +183,7 @@ def _reconcile_embedding_dimension(engine: Engine) -> None:
         RuntimeBase.metadata.create_all(
             engine, tables=[RuntimeEmbedding.__table__]
         )
+        _mark_indexed_documents_unindexed_after_embedding_reset(engine)
         logger.info(
             "Embeddings table recreated with dimension %d. "
             "Background sync will repopulate.",
@@ -189,6 +191,56 @@ def _reconcile_embedding_dimension(engine: Engine) -> None:
         )
     except Exception:
         logger.debug("Embedding dimension check skipped", exc_info=True)
+
+
+def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> int:
+    """Clear indexed state for documents with resumable workflows."""
+    from anima_server.models.runtime import (
+        RuntimeDocument,
+        RuntimeDocumentChunk,
+        RuntimeWorkflowRun,
+    )
+
+    chunk_exists = (
+        select(RuntimeDocumentChunk.id)
+        .where(
+            RuntimeDocumentChunk.document_id == RuntimeDocument.id,
+            RuntimeDocumentChunk.user_id == RuntimeDocument.user_id,
+        )
+        .exists()
+    )
+    resumable_workflow_exists = (
+        select(RuntimeWorkflowRun.id)
+        .where(
+            RuntimeWorkflowRun.id == RuntimeDocument.workflow_run_id,
+            RuntimeWorkflowRun.user_id == RuntimeDocument.user_id,
+            ~RuntimeWorkflowRun.status.in_(("completed", "failed", "cancelled")),
+        )
+        .exists()
+    )
+    stmt = (
+        update(RuntimeDocument)
+        .where(
+            RuntimeDocument.status == "indexed",
+            chunk_exists,
+            resumable_workflow_exists,
+        )
+        .values(
+            status="registered",
+            indexed_at=None,
+            updated_at=func.now(),
+        )
+    )
+    with engine.begin() as conn:
+        result = conn.execute(stmt)
+
+    marked = int(result.rowcount or 0)
+    if marked:
+        logger.info(
+            "Marked %d resumable indexed document(s) unindexed after embeddings reset.",
+            marked,
+        )
+    return marked
 
 
 def ensure_pgvector() -> None:

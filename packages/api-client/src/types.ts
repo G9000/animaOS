@@ -227,6 +227,53 @@ export interface AgentResponse {
   retrieval?: RetrievalTrace | null;
 }
 
+export interface DocumentUploadInfo {
+  filename: string;
+  mimeType: string;
+  storagePath: string;
+  sha256: string;
+  sizeBytes: number;
+}
+
+export interface DocumentWorkflowCheckpoint {
+  id: number;
+  index: number;
+  state: string;
+  status: string;
+  input?: Record<string, unknown> | null;
+  output?: Record<string, unknown> | null;
+  artifacts?: Record<string, unknown> | null;
+  error?: Record<string, unknown> | null;
+  createdAt?: string | null;
+}
+
+export interface DocumentWorkflow {
+  id: number;
+  userId: number;
+  threadId?: number | null;
+  workflowType: string;
+  status: string;
+  currentState: string;
+  input?: Record<string, unknown> | null;
+  result?: Record<string, unknown> | null;
+  error?: Record<string, unknown> | null;
+  retryCount: number;
+  maxRetries: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  checkpoints: DocumentWorkflowCheckpoint[];
+}
+
+export interface DocumentWorkflowActionResponse {
+  workflowId: number;
+  status: string;
+  currentState: string;
+  workflow?: DocumentWorkflow;
+  document?: DocumentUploadInfo;
+}
+
 export interface ProviderInfo {
   name: string;
   defaultModel: string;

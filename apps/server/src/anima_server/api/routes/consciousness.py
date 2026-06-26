@@ -809,9 +809,9 @@ async def get_emotional_state(
     require_unlocked_user(request, user_id)
 
     from anima_server.services.agent.emotional_intelligence import (
+        dominant_valence_arousal,
         get_recent_signals,
         synthesize_emotional_context,
-        dominant_valence_arousal,
     )
 
     emotion_db = runtime_db or db

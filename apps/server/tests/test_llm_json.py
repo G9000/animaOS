@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from anima_server.services.agent.llm_json import call_llm_for_json, call_llm_for_text
 
 

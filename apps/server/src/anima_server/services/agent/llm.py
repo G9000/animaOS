@@ -199,13 +199,20 @@ def validate_provider_configuration(provider: str) -> None:
 
 def resolve_provider_api_key(provider: str) -> str:
     validate_provider(provider)
-    from anima_server.config import get_provider_api_key
+    from anima_server.config import get_provider_api_key, has_provider_api_keys
+
+    env_name = PROVIDER_API_KEY_ENV.get(provider)
+    if env_name is not None:
+        env_key = os.getenv(env_name, "").strip()
+        if env_key:
+            return env_key
+
     per_provider = get_provider_api_key(provider).strip()
     if per_provider:
         return per_provider
-    env_name = PROVIDER_API_KEY_ENV.get(provider)
-    if env_name is not None:
-        return os.getenv(env_name, "").strip()
+
+    if not has_provider_api_keys():
+        return settings.agent_api_key.strip()
     return ""
 
 
