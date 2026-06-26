@@ -564,7 +564,13 @@ def _rewind_unindexed_document_resume_state(
     context: _WorkflowContext,
     latest_completed: str,
 ) -> str:
-    if latest_completed not in {"embedded", "indexed"}:
+    try:
+        latest_index = PDF_WORKFLOW_STATES.index(latest_completed)
+        chunked_index = PDF_WORKFLOW_STATES.index("chunked")
+        memory_saved_index = PDF_WORKFLOW_STATES.index("memory_saved")
+    except ValueError:
+        return latest_completed
+    if latest_index <= chunked_index or latest_index >= memory_saved_index:
         return latest_completed
 
     document = context.require_document(refresh=True)

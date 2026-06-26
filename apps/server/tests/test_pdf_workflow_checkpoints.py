@@ -578,6 +578,53 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
 
+def test_resume_from_approval_reembeds_unindexed_document(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    first_calls = _Calls()
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(first_calls),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == run.id)
+    )
+    assert document is not None
+    assert document.status == "indexed"
+    assert first_calls.embedded == ["manual.pdf alpha", "beta"]
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+
+    for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
+        runtime_db.delete(embedding)
+    document.status = "registered"
+    document.indexed_at = None
+    runtime_db.flush()
+
+    second_calls = _Calls()
+    rerun = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(
+            second_calls,
+            fail_extract=True,
+            fail_chunk=True,
+        ),
+    )
+
+    assert rerun.status == "awaiting_input"
+    assert second_calls.embedded == ["manual.pdf alpha", "beta"]
+    refreshed = runtime_db.get(RuntimeDocument, document.id)
+    assert refreshed is not None
+    assert refreshed.status == "indexed"
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
+
+
 def test_partial_embedding_success_does_not_checkpoint_or_continue(
     runtime_db: Session,
     monkeypatch: Any,
