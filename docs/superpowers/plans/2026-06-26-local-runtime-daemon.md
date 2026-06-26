@@ -52,6 +52,49 @@ Parent tracker: `tickets/local-runtime-daemon/LRD-000-parent.md`
 3. LRD-004, LRD-005
 4. LRD-007, LRD-008
 
+## Delivery Plan (Current Branch)
+
+- Branch: `codex/lrd-000-local-runtime-daemon`
+- Worktree: `C:\Users\leoca\OneDrive\Desktop\anima\animaOS-worktrees\lrd-000-local-runtime-daemon`
+- PR cadence:
+  1. Land Phase 0 contract baseline (LRD-001, LRD-006, LRD-009) as a single draft PR.
+  2. Land runtime + daemon foundation (LRD-002, LRD-003).
+  3. Land supervisor behavior and UI control integration (LRD-004, LRD-005).
+  4. Land packaging/autostart and release pipeline (LRD-007, LRD-008).
+
+### Phase 0 — Control contract and policy
+
+Goal: finalize operational contract before implementation begins.
+
+- Deliverables:
+  - `LRD-001`: state machine, API contract, health/error taxonomy, lock/unlock semantics.
+  - `LRD-006`: background lock policy and data-retention constraints.
+  - `LRD-009`: threat model and accepted risk boundaries.
+
+### Phase 1 — Supervision foundation
+
+Goal: create a minimal, testable daemon scaffold and packaging entrypoint.
+
+- Deliverables:
+  - `LRD-002`: runnable Rust daemon binary with start/stop/restart/status.
+  - `LRD-003`: local runtime artifact path and bootstrap flow.
+
+### Phase 2 — Reliability and UI control
+
+Goal: make daemon robust and user-controllable from desktop app.
+
+- Deliverables:
+  - `LRD-004`: health checks, logs, restart policy, telemetry.
+  - `LRD-005`: desktop start/stop/restart + diagnostics controls.
+
+### Phase 3 — Shipping
+
+Goal: make local-runtime-first install and update path stable for end users.
+
+- Deliverables:
+  - `LRD-007`: OS startup/install path.
+  - `LRD-008`: release packaging pipeline and smoke-test checklist.
+
 ## Done Criteria
 
 - User can close the desktop window without killing Anima runtime when background mode is enabled.
