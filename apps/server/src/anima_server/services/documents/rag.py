@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
@@ -12,7 +12,12 @@ from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.agent.pgvec_store import PgVecStore
 from anima_server.services.agent.vector_store import VectorSearchResult
-from anima_server.services.documents.indexing import EmbeddingFn, _run_embedding
+from anima_server.services.documents.indexing import (
+    EmbeddingFn,
+    _run_embedding,
+    embed_document_chunks,
+    get_unembedded_chunks,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +70,13 @@ def search_document_chunks(
     query_embedding = _run_embedding(embed, query)
     if not query_embedding:
         return []
+
+    _repair_documents_missing_vectors_after_reset(
+        runtime_db,
+        user_id=user_id,
+        document_ids=allowed_document_ids,
+        embedding_fn=embed,
+    )
 
     search_limit = _candidate_limit(limit)
     if allowed_document_ids is not None:
@@ -171,6 +183,101 @@ def _live_document_chunk_id_query(
         stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
 
     return stmt
+
+
+def _repair_documents_missing_vectors_after_reset(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: set[int] | None,
+    embedding_fn: EmbeddingFn,
+) -> None:
+    for document_id in _indexed_documents_without_current_vectors(
+        runtime_db,
+        user_id=user_id,
+        document_ids=document_ids,
+    ):
+        embed_document_chunks(
+            runtime_db,
+            user_id=user_id,
+            document_id=document_id,
+            embedding_fn=embedding_fn,
+        )
+        if get_unembedded_chunks(
+            runtime_db,
+            user_id=user_id,
+            document_id=document_id,
+        ):
+            _delete_document_chunk_vectors(
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+
+
+def _indexed_documents_without_current_vectors(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: set[int] | None,
+) -> list[int]:
+    chunk_exists = (
+        select(RuntimeDocumentChunk.id)
+        .where(
+            RuntimeDocumentChunk.document_id == RuntimeDocument.id,
+            RuntimeDocumentChunk.user_id == RuntimeDocument.user_id,
+        )
+        .exists()
+    )
+    current_vector_exists = (
+        select(RuntimeEmbedding.id)
+        .join(
+            RuntimeDocumentChunk,
+            RuntimeEmbedding.source_id == RuntimeDocumentChunk.id,
+        )
+        .where(
+            RuntimeDocumentChunk.document_id == RuntimeDocument.id,
+            RuntimeDocumentChunk.user_id == RuntimeDocument.user_id,
+            RuntimeEmbedding.user_id == RuntimeDocument.user_id,
+            RuntimeEmbedding.source_type == "document_chunk",
+            RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash,
+        )
+        .exists()
+    )
+    stmt = (
+        select(RuntimeDocument.id)
+        .where(
+            RuntimeDocument.user_id == user_id,
+            RuntimeDocument.status == "indexed",
+            chunk_exists,
+            ~current_vector_exists,
+        )
+        .order_by(RuntimeDocument.id)
+    )
+    if document_ids is not None:
+        stmt = stmt.where(RuntimeDocument.id.in_(document_ids))
+
+    return list(runtime_db.scalars(stmt).all())
+
+
+def _delete_document_chunk_vectors(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_id: int,
+) -> None:
+    chunk_ids = select(RuntimeDocumentChunk.id).where(
+        RuntimeDocumentChunk.user_id == user_id,
+        RuntimeDocumentChunk.document_id == document_id,
+    )
+    runtime_db.execute(
+        delete(RuntimeEmbedding).where(
+            RuntimeEmbedding.user_id == user_id,
+            RuntimeEmbedding.source_type == "document_chunk",
+            RuntimeEmbedding.source_id.in_(chunk_ids),
+        )
+    )
+    runtime_db.flush()
 
 
 def _ranked_document_chunk_ids(

@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from anima_server.db import runtime as runtime_module
-from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
+from anima_server.models.runtime import (
+    RuntimeDocument,
+    RuntimeDocumentChunk,
+    RuntimeWorkflowRun,
+)
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
@@ -64,6 +68,24 @@ def _document_with_chunks(
         ],
     )
     return document, inserted
+
+
+def _workflow_run(
+    runtime_db: Session,
+    *,
+    user_id: int = 1,
+    status: str = "running",
+    current_state: str = "chunked",
+) -> RuntimeWorkflowRun:
+    run = RuntimeWorkflowRun(
+        user_id=user_id,
+        workflow_type="pdf_ingestion",
+        status=status,
+        current_state=current_state,
+    )
+    runtime_db.add(run)
+    runtime_db.flush()
+    return run
 
 
 def _document_with_extracted_chunks(
@@ -296,12 +318,15 @@ def test_embed_document_chunks_marks_document_indexed_when_embeddings_succeed(
     assert refreshed.indexed_at is not None
 
 
-def test_embedding_table_reset_marks_indexed_documents_unembedded(
+def test_embedding_table_reset_marks_resumable_indexed_documents_unembedded(
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
     _patch_pgvec_upsert(monkeypatch)
     document, chunks = _document_with_chunks(runtime_db)
+    run = _workflow_run(runtime_db, status="running", current_state="indexed")
+    document.workflow_run_id = run.id
+    runtime_db.flush()
 
     assert embed_document_chunks(
         runtime_db,
@@ -316,11 +341,12 @@ def test_embedding_table_reset_marks_indexed_documents_unembedded(
         runtime_db.delete(row)
     runtime_db.flush()
 
-    runtime_module._mark_indexed_documents_unindexed_after_embedding_reset(
+    marked = runtime_module._mark_indexed_documents_unindexed_after_embedding_reset(
         runtime_db.get_bind()
     )
     runtime_db.refresh(document)
 
+    assert marked == 1
     assert document.status == "registered"
     assert document.indexed_at is None
     assert get_unembedded_chunks(
@@ -328,6 +354,43 @@ def test_embedding_table_reset_marks_indexed_documents_unembedded(
         user_id=1,
         document_id=document.id,
     ) == chunks
+
+
+def test_embedding_table_reset_preserves_terminal_indexed_documents(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    document, _chunks = _document_with_chunks(runtime_db)
+    run = _workflow_run(
+        runtime_db,
+        status="completed",
+        current_state="memory_saved",
+    )
+    document.workflow_run_id = run.id
+    runtime_db.flush()
+
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=lambda _text: _embedding(0.2, 0.8),
+    ) == 2
+    assert document.status == "indexed"
+    assert document.indexed_at is not None
+
+    for row in _embedding_rows(runtime_db):
+        runtime_db.delete(row)
+    runtime_db.flush()
+
+    marked = runtime_module._mark_indexed_documents_unindexed_after_embedding_reset(
+        runtime_db.get_bind()
+    )
+    runtime_db.refresh(document)
+
+    assert marked == 0
+    assert document.status == "indexed"
+    assert document.indexed_at is not None
 
 
 def test_embed_document_chunks_does_not_mark_empty_document_indexed(
@@ -662,6 +725,133 @@ def test_search_document_chunks_unfiltered_search_uses_db_side_source_filter(
         }
     ]
     assert [result.chunk_id for result in results] == [chunks[0].id]
+
+
+def test_search_document_chunks_repairs_indexed_document_vectors_after_reset(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    document, chunks = _document_with_chunks(runtime_db)
+    _mark_document_indexed(runtime_db, document)
+    embedding_calls: list[str] = []
+    search_calls: list[dict[str, Any]] = []
+
+    def embedding_fn(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _embedding(float(len(embedding_calls)), 1.0)
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
+    ) -> list[VectorSearchResult]:
+        search_calls.append(
+            {
+                "query_embedding": query_embedding,
+                "source_ids": source_ids,
+                "source_query_ids": (
+                    list(runtime_db.scalars(source_id_query).all())
+                    if source_id_query is not None
+                    else None
+                ),
+                "vector_source_ids": [row.source_id for row in _embedding_rows(runtime_db)],
+            }
+        )
+        return [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="alpha preview",
+                category="document",
+                importance=3,
+                similarity=0.91,
+                source_type="document_chunk",
+            )
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="alpha",
+        embedding_fn=embedding_fn,
+    )
+
+    assert embedding_calls == ["alpha", "alpha notes", "beta notes"]
+    assert search_calls == [
+        {
+            "query_embedding": _embedding(1.0, 1.0),
+            "source_ids": None,
+            "source_query_ids": [chunk.id for chunk in chunks],
+            "vector_source_ids": [chunk.id for chunk in chunks],
+        }
+    ]
+    assert [result.chunk_id for result in results] == [chunks[0].id]
+
+
+def test_search_document_chunks_discards_partial_lazy_repair_vectors(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    document, chunks = _document_with_chunks(runtime_db)
+    _mark_document_indexed(runtime_db, document)
+
+    def embedding_fn(text: str) -> list[float] | None:
+        if text == chunks[1].content_text:
+            return None
+        return _embedding(1.0)
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
+    ) -> list[VectorSearchResult]:
+        assert _embedding_rows(runtime_db) == []
+        return [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="partial preview",
+                category="document",
+                importance=3,
+                similarity=0.91,
+                source_type="document_chunk",
+            )
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="alpha",
+            embedding_fn=embedding_fn,
+        )
+        == []
+    )
+    assert _embedding_rows(runtime_db) == []
 
 
 def test_search_document_chunks_ignores_unindexed_document_hits(

@@ -194,8 +194,12 @@ def _reconcile_embedding_dimension(engine: Engine) -> None:
 
 
 def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> int:
-    """Clear indexed state for documents whose vector rows were dropped."""
-    from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
+    """Clear indexed state for documents with resumable workflows."""
+    from anima_server.models.runtime import (
+        RuntimeDocument,
+        RuntimeDocumentChunk,
+        RuntimeWorkflowRun,
+    )
 
     chunk_exists = (
         select(RuntimeDocumentChunk.id)
@@ -205,11 +209,21 @@ def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> i
         )
         .exists()
     )
+    resumable_workflow_exists = (
+        select(RuntimeWorkflowRun.id)
+        .where(
+            RuntimeWorkflowRun.id == RuntimeDocument.workflow_run_id,
+            RuntimeWorkflowRun.user_id == RuntimeDocument.user_id,
+            ~RuntimeWorkflowRun.status.in_(("completed", "failed", "cancelled")),
+        )
+        .exists()
+    )
     stmt = (
         update(RuntimeDocument)
         .where(
             RuntimeDocument.status == "indexed",
             chunk_exists,
+            resumable_workflow_exists,
         )
         .values(
             status="registered",
@@ -223,7 +237,7 @@ def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> i
     marked = int(result.rowcount or 0)
     if marked:
         logger.info(
-            "Marked %d indexed document(s) unindexed after embeddings reset.",
+            "Marked %d resumable indexed document(s) unindexed after embeddings reset.",
             marked,
         )
     return marked
