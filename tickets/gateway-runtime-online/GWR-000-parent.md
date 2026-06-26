@@ -1,15 +1,15 @@
 # GWR-000 - Gateway Runtime Online Parent Tracker
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server`, `apps/desktop`, `apps/anima-mod`, `apps/site`, `docs`
 - Depends on: none
-- Owner: unassigned
+- Owner: codex-agent
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-gateway-runtime-online-delivery.md
 - Created: 2026-06-26 16:38 MYT
-- Updated: 2026-06-26 17:18 MYT
-- Started:
+- Updated: 2026-06-27 04:02 MYT
+- Started: 2026-06-27 04:02 MYT
 - Completed:
 
 ## Goal
@@ -20,7 +20,7 @@ Track the full gateway-runtime online initiative as one parent ticket while chil
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `GWR-001` | Extract runtime auth primitives into dedicated package | `backlog` | none |
+| `GWR-001` | Extract runtime auth primitives into dedicated package | `in_progress` | none |
 | `GWR-002` | Add gateway-style request context contract | `backlog` | `GWR-001` |
 | `GWR-010` | Add internal gateway-to-runtime contract | `backlog` | `GWR-002` |
 | `GWR-003` | Add auth and rate middleware in API layer | `backlog` | `GWR-002`, `GWR-010` |
@@ -56,6 +56,7 @@ Track the full gateway-runtime online initiative as one parent ticket while chil
 - 2026-06-26 16:38 MYT - Parent tracker created for the gateway-runtime online initiative.
 - 2026-06-26 16:57 MYT - Reordered child tickets so runtime contract work precedes gateway middleware, device trust, and external channels.
 - 2026-06-26 17:18 MYT - Added threat model ticket before final security hardening.
+- 2026-06-27 04:02 MYT - Started execution planning and opened `GWR-001` for implementation in this branch.
 
 ## Validation
 

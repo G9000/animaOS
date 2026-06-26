@@ -23,6 +23,12 @@ Parent tracker: [GWR-000-parent.md](./GWR-000-parent.md)
 13. `GWR-014` Create gateway/runtime threat model
 14. `GWR-013` Run security hardening pass
 
+## Current Cycle
+
+- `GWR-001` is active on branch `codex/gwr-000-plan`.
+- Next review gate: complete `GWR-001` activity log and dependency mapping before moving to `GWR-002`.
+- All edits in this cycle should stay scoped to the worktree branch unless blocked by cross-scope design constraints.
+
 ## Done Condition
 
 - Local single-user mode still works unchanged.

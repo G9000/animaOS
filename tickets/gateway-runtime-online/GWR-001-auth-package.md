@@ -1,16 +1,16 @@
 # GWR-001 - Extract runtime auth primitives into dedicated package
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `GWR-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: codex-agent
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-gateway-runtime-online-delivery.md
 - Created: 2026-06-26 16:38 MYT
-- Updated: 2026-06-26 17:18 MYT
-- Started:
+- Updated: 2026-06-27 04:02 MYT
+- Started: 2026-06-27 04:02 MYT
 - Completed:
 
 ## Goal
@@ -35,6 +35,7 @@ Move unlock, session, and identity primitives out of route handlers into a dedic
 ## Activity Log
 
 - 2026-06-26 16:38 MYT - Ticket created and normalized to the repo ticket workflow.
+- 2026-06-27 04:02 MYT - Ticket claimed for the first planning/implementation cycle.
 
 ## Validation
 
