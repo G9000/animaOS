@@ -264,7 +264,7 @@ async def update_config(
     if payload.apiKey is not None:
         api_key = payload.apiKey.strip()
         set_provider_api_key(payload.provider, api_key)
-    settings.agent_api_key = ""
+        settings.agent_api_key = ""
     # Only set base_url for ollama/vllm; clear for providers with fixed endpoints.
     if (payload.provider == "ollama" and payload.ollamaUrl is not None) or (
         payload.provider == "vllm" and payload.ollamaUrl is not None

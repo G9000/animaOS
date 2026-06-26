@@ -448,6 +448,47 @@ def test_config_update_accepts_doubleword_and_clears_endpoint() -> None:
             settings.agent_base_url = original_base_url
 
 
+def test_config_update_preserves_legacy_key_when_api_key_omitted() -> None:
+    original_provider = settings.agent_provider
+    original_model = settings.agent_model
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+    original_base_url = settings.agent_base_url
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+            settings.agent_api_key = "legacy-openai-key"
+            settings.agent_api_keys_json = "{}"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                },
+            )
+
+            assert resp.status_code == 200
+            assert settings.agent_provider == "openai"
+            assert settings.agent_model == "gpt-4o-mini"
+            assert settings.agent_api_key == "legacy-openai-key"
+            assert config_module.get_provider_api_key("openai") == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            assert resp.json()["hasApiKey"] is True
+        finally:
+            settings.agent_provider = original_provider
+            settings.agent_model = original_model
+            settings.agent_api_key = original_api_key
+            settings.agent_api_keys_json = original_api_keys_json
+            settings.agent_base_url = original_base_url
+
+
 def test_runtime_settings_persist_and_reload(tmp_path) -> None:
     original_data_dir = settings.data_dir
     original_provider = settings.agent_provider

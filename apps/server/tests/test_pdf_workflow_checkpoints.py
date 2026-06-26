@@ -649,7 +649,7 @@ def test_registered_pdf_storage_path_must_stay_under_data_dir(
     assert _checkpoint_names(runtime_db, workflow_run_id) == ["file_registered"]
 
 
-def test_existing_embedded_checkpoint_without_indexed_document_does_not_continue(
+def test_existing_embedded_checkpoint_without_indexed_document_reembeds(
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
@@ -667,28 +667,32 @@ def test_existing_embedded_checkpoint_without_indexed_document_does_not_continue
     )
     calls = _Calls()
 
-    with pytest.raises(ValueError, match=r"PDF document .* was not fully indexed"):
-        resume_pdf_ingestion_workflow(
-            runtime_db,
-            workflow_run_id=workflow_run_id,
-            dependencies=_dependencies(
-                calls,
-                fail_extract=True,
-                fail_chunk=True,
-                fail_embed=True,
-                fail_summarize=True,
-                fail_propose=True,
-            ),
-        )
+    result = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        dependencies=_dependencies(
+            calls,
+            fail_extract=True,
+            fail_chunk=True,
+        ),
+    )
 
-    assert calls.embedded == []
-    assert calls.summarized == 0
-    assert calls.proposed == 0
+    assert result.status == "awaiting_input"
+    assert calls.embedded == ["seed alpha", "seed beta"]
+    assert calls.summarized == 1
+    assert calls.proposed == 1
+    refreshed = runtime_db.get(RuntimeDocument, document.id)
+    assert refreshed is not None
+    assert refreshed.status == "indexed"
     assert _checkpoint_names(runtime_db, workflow_run_id) == [
         "file_registered",
         "text_extracted",
         "chunked",
         "embedded",
+        "indexed",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
     ]
 
 
@@ -907,7 +911,7 @@ def test_resume_from_indexed_stages_summary_and_fact_proposals_only(
     assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
 
 
-def test_resume_from_indexed_rechecks_document_status_before_summary(
+def test_resume_from_indexed_reembeds_unindexed_document_before_summary(
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
@@ -931,28 +935,32 @@ def test_resume_from_indexed_rechecks_document_status_before_summary(
     )
     calls = _Calls()
 
-    with pytest.raises(ValueError, match=r"PDF document .* was not fully indexed"):
-        resume_pdf_ingestion_workflow(
-            runtime_db,
-            workflow_run_id=workflow_run_id,
-            dependencies=_dependencies(
-                calls,
-                fail_extract=True,
-                fail_chunk=True,
-                fail_embed=True,
-                fail_summarize=True,
-                fail_propose=True,
-            ),
-        )
+    result = resume_pdf_ingestion_workflow(
+        runtime_db,
+        workflow_run_id=workflow_run_id,
+        dependencies=_dependencies(
+            calls,
+            fail_extract=True,
+            fail_chunk=True,
+        ),
+    )
 
-    assert calls.embedded == []
-    assert calls.summarized == 0
-    assert calls.proposed == 0
+    assert result.status == "awaiting_input"
+    assert calls.embedded == ["replacement alpha", "replacement beta"]
+    assert calls.summarized == 1
+    assert calls.proposed == 1
+    refreshed = runtime_db.get(RuntimeDocument, document.id)
+    assert refreshed is not None
+    assert refreshed.status == "indexed"
     assert _checkpoint_names(runtime_db, workflow_run_id) == [
         "file_registered",
         "text_extracted",
         "chunked",
         "indexed",
+        "embedded",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
     ]
 
 

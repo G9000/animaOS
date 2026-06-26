@@ -281,6 +281,10 @@ def run_pdf_ingestion_until_wait_or_done(
         if resume_point.latest_checkpoint is not None
         else "created"
     )
+    latest_completed = _rewind_unindexed_document_resume_state(
+        context,
+        latest_completed,
+    )
 
     while True:
         next_state = _next_state_after(latest_completed)
@@ -554,6 +558,21 @@ def _require_indexed_document(document: RuntimeDocument) -> None:
             f"PDF document {document.id} was not fully indexed; "
             "resume after missing embeddings are available."
         )
+
+
+def _rewind_unindexed_document_resume_state(
+    context: _WorkflowContext,
+    latest_completed: str,
+) -> str:
+    if latest_completed not in {"embedded", "indexed"}:
+        return latest_completed
+
+    document = context.require_document(refresh=True)
+    if document.status == "indexed":
+        return latest_completed
+    if not context.require_chunks():
+        return latest_completed
+    return "chunked"
 
 
 def _commit_progress(db: Session) -> None:
