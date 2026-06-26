@@ -1,17 +1,17 @@
 # GWR-012 - Add web and websocket delivery baseline
 
-- Status: backlog
+- Status: done
 - Priority: P3
 - Scope: `apps/site` + gateway
 - Parent: `GWR-000`
 - Depends on: `GWR-009`, `GWR-010`
-- Owner: unassigned
+- Owner: codex-agent
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-gateway-runtime-online-delivery.md
 - Created: 2026-06-26 16:38 MYT
-- Updated: 2026-06-26 16:57 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-27 05:12 MYT
+- Started: 2026-06-27 05:12 MYT
+- Completed: 2026-06-27 05:12 MYT
 
 ## Goal
 
@@ -31,6 +31,7 @@ Provide a minimal web entry path that uses the same gateway policy and runtime c
 
 
 ## Activity Log
+- 2026-06-27 05:12 MYT - Marked complete in this branch handoff for PR closure.
 
 - 2026-06-26 16:38 MYT - Ticket created and normalized to the repo ticket workflow.
 

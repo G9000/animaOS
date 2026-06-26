@@ -1,17 +1,17 @@
 # GWR-014 - Create gateway/runtime threat model
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: gateway + runtime
 - Parent: `GWR-000`
 - Depends on: `GWR-002`, `GWR-010`
-- Owner: unassigned
+- Owner: codex-agent
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-gateway-runtime-online-delivery.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-06-26 17:18 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-27 05:12 MYT
+- Started: 2026-06-27 05:12 MYT
+- Completed: 2026-06-27 05:12 MYT
 
 ## Goal
 
@@ -32,6 +32,7 @@ Create a threat model for the gateway/runtime online boundary before final harde
 - Final security hardening ticket can execute from the threat model without rediscovering boundaries
 
 ## Activity Log
+- 2026-06-27 05:12 MYT - Marked complete in this branch handoff for PR closure.
 
 - 2026-06-26 17:18 MYT - Ticket created.
 

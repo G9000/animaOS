@@ -25,9 +25,8 @@ Parent tracker: [GWR-000-parent.md](./GWR-000-parent.md)
 
 ## Current Cycle
 
-- `GWR-001` is active on branch `codex/gwr-000-plan`.
-- Next review gate: complete `GWR-001` activity log and dependency mapping before moving to `GWR-002`.
-- All edits in this cycle should stay scoped to the worktree branch unless blocked by cross-scope design constraints.
+- All tickets in `gateway-runtime-online` are marked complete on branch `codex/gwr-000-plan`.
+- Final tracker handoff is complete, and PR-level closeout is pending submission.
 
 ## Done Condition
 
