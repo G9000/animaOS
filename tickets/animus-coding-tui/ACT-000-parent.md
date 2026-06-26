@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 04:20 MYT
+- Updated: 2026-06-27 04:33 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed:
 
@@ -20,7 +20,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `ACT-001` | Fix server protocol and run lifecycle | `backlog` | none |
+| `ACT-001` | Fix server protocol and run lifecycle | `done` | none |
 | `ACT-002` | Scaffold Rust package and license notes | `backlog` | none |
 | `ACT-003` | Build ANIMA WebSocket client | `backlog` | `ACT-001`, `ACT-002` |
 | `ACT-004` | Add terminal event loop and transcript | `backlog` | `ACT-003` |
@@ -50,7 +50,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 
 ## Completed Tickets
 
-- none
+- 2026-06-27 04:33 MYT - `ACT-001` fixed websocket approval/cancel lifecycle and protocol frame translation.
 
 ## Activity Log
 
@@ -58,6 +58,8 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 03:00 MYT - Revised initiative scope to a full Rust-native rewrite replacing Bun/Ink.
 - 2026-06-27 04:10 MYT - Planning branch created; implementation plan refined with concrete ANIMA files, Codex reference paths, protocol shape, test commands, and execution rules.
 - 2026-06-27 04:20 MYT - Ran planning validation; build and health passed, full backend tests reported unrelated/environment-sensitive failures.
+- 2026-06-27 04:28 MYT - ACT-001 moved to in_progress for websocket lifecycle implementation.
+- 2026-06-27 04:33 MYT - ACT-001 completed and verified.
 
 ## Validation
 
