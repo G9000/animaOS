@@ -625,6 +625,66 @@ def test_resume_from_approval_reembeds_unindexed_document(
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
 
+def test_duplicate_indexed_pdf_workflow_reuses_existing_index(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    first_run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=first_run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == first_run.id)
+    )
+    assert document is not None
+    original_chunk_ids = [
+        chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+    assert document.status == "indexed"
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+
+    duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
+    duplicate_calls = _Calls()
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        dependencies=_dependencies(
+            duplicate_calls,
+            fail_extract=True,
+            fail_chunk=True,
+            fail_embed=True,
+        ),
+    )
+
+    runtime_db.refresh(document)
+    assert result.status == "awaiting_input"
+    assert duplicate_calls.extracted == 0
+    assert duplicate_calls.chunked == 0
+    assert duplicate_calls.embedded == []
+    assert duplicate_calls.summarized == 1
+    assert duplicate_calls.proposed == 1
+    assert document.status == "indexed"
+    duplicate_chunk_ids = [
+        chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+    assert duplicate_chunk_ids == original_chunk_ids
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert _checkpoint_names(runtime_db, duplicate_run.id) == [
+        "file_registered",
+        "text_extracted",
+        "chunked",
+        "embedded",
+        "indexed",
+        "summarized",
+        "facts_proposed",
+        "awaiting_approval",
+    ]
+
+
 def test_partial_embedding_success_does_not_checkpoint_or_continue(
     runtime_db: Session,
     monkeypatch: Any,

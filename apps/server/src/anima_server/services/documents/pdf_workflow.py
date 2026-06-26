@@ -325,11 +325,20 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "text_extracted":
             document = context.require_document()
-            storage_path = resolve_document_storage_path(
-                document.storage_path,
-                user_id=run.user_id,
+            reusable_chunks = _reusable_indexed_document_chunks(
+                db,
+                run=run,
+                document=document,
             )
-            pages = list(dependencies.extract_text(str(storage_path)))
+            if reusable_chunks is None:
+                storage_path = resolve_document_storage_path(
+                    document.storage_path,
+                    user_id=run.user_id,
+                )
+                pages = list(dependencies.extract_text(str(storage_path)))
+            else:
+                context.chunks = reusable_chunks
+                pages = []
             _append_completed(
                 db,
                 run,
@@ -340,13 +349,21 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "chunked":
             document = context.require_document()
-            pages = context.require_pages()
-            extracted_chunks = list(dependencies.chunk_text(pages))
-            chunks = replace_document_chunks(
+            reusable_chunks = context.chunks or _reusable_indexed_document_chunks(
                 db,
-                document_id=document.id,
-                chunks=extracted_chunks,
+                run=run,
+                document=document,
             )
+            if reusable_chunks is None:
+                pages = context.require_pages()
+                extracted_chunks = list(dependencies.chunk_text(pages))
+                chunks = replace_document_chunks(
+                    db,
+                    document_id=document.id,
+                    chunks=extracted_chunks,
+                )
+            else:
+                chunks = reusable_chunks
             context.chunks = chunks
             _append_completed(
                 db,
@@ -576,6 +593,29 @@ def _require_indexed_document(document: RuntimeDocument) -> None:
             f"PDF document {document.id} was not fully indexed; "
             "resume after missing embeddings are available."
         )
+
+
+def _reusable_indexed_document_chunks(
+    db: Session,
+    *,
+    run: RuntimeWorkflowRun,
+    document: RuntimeDocument,
+) -> list[RuntimeDocumentChunk] | None:
+    if document.workflow_run_id == run.id:
+        return None
+    if document.status != "indexed":
+        return None
+
+    chunks = list_document_chunks(db, document_id=document.id)
+    if not chunks:
+        return None
+    if get_unembedded_chunks(
+        db,
+        user_id=run.user_id,
+        document_id=document.id,
+    ):
+        return None
+    return chunks
 
 
 def _ensure_approval_document_indexed(
