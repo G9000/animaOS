@@ -744,6 +744,75 @@ def test_resume_original_duplicate_owner_reuses_existing_index(
     ]
 
 
+def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    indexed_run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=indexed_run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == indexed_run.id)
+    )
+    assert document is not None
+    original_chunk_ids = [
+        chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+
+    duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        state_name="file_registered",
+        output_json={"document_id": document.id},
+        artifact_refs_json={"document_id": document.id},
+    )
+    _checkpoint(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        state_name="text_extracted",
+        output_json={"document_id": document.id, "pages": []},
+        artifact_refs_json={"document_id": document.id},
+    )
+
+    for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
+        runtime_db.delete(embedding)
+    document.status = "registered"
+    document.indexed_at = None
+    runtime_db.flush()
+
+    def extract_text(_path: str) -> list[PageText]:
+        raise RuntimeError("re-extract")
+
+    def chunk_text(_pages: list[PageText]) -> list[ExtractedDocumentChunk]:
+        raise AssertionError("chunk_text should not run before re-extract")
+
+    dependencies = PDFIngestionDependencies(
+        extract_text=extract_text,
+        chunk_text=chunk_text,
+        embedding_fn=lambda _text: _embedding(1.0),
+        summarize=lambda _document, _chunks: {},
+        propose_facts=lambda _document, _chunks, _summary: [],
+    )
+
+    with pytest.raises(RuntimeError, match="re-extract"):
+        resume_pdf_ingestion_workflow(
+            runtime_db,
+            workflow_run_id=duplicate_run.id,
+            dependencies=dependencies,
+        )
+
+    resumed_chunk_ids = [
+        chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    ]
+    assert resumed_chunk_ids == original_chunk_ids
+
+
 def test_partial_embedding_success_does_not_checkpoint_or_continue(
     runtime_db: Session,
     monkeypatch: Any,

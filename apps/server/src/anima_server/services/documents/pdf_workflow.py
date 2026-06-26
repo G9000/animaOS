@@ -687,6 +687,15 @@ def _rewind_unindexed_document_resume_state(
     context: _WorkflowContext,
     latest_completed: str,
 ) -> str:
+    if latest_completed == "text_extracted":
+        document = context.require_document(refresh=True)
+        if document.status == "indexed":
+            return latest_completed
+        chunks = context.require_chunks()
+        if chunks and not context.require_pages():
+            return "file_registered"
+        return latest_completed
+
     try:
         latest_index = PDF_WORKFLOW_STATES.index(latest_completed)
         chunked_index = PDF_WORKFLOW_STATES.index("chunked")
