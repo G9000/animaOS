@@ -262,9 +262,14 @@ struct DaemonStatusResponse {
     lock: DaemonLockStatus,
     restart: DaemonRestartPolicy,
     background_enabled: bool,
-    runtime_nonce: String,
     updated_at: String,
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonRuntimeNonceResponse {
+    runtime_nonce: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -444,6 +449,7 @@ async fn main() {
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
+        .route("/v1/nonce", get(runtime_nonce))
         .route("/v1/control/:command", post(control))
         .route("/v1/logs", get(open_logs))
         .with_state(runtime)
@@ -479,9 +485,19 @@ async fn health(State(runtime): State<DaemonRuntime>) -> Json<DaemonHealthRespon
     })
 }
 
-async fn status(State(runtime): State<DaemonRuntime>) -> Json<DaemonStatusResponse> {
+async fn status(
+    State(runtime): State<DaemonRuntime>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(response) = authorize_control(&runtime.state.config, &headers) {
+        return response;
+    }
+
     let state = runtime.state.inner.lock().await;
-    Json(build_status_response(&runtime.state.config, &state))
+    (
+        StatusCode::OK,
+        Json(build_status_response(&runtime.state.config, &state)),
+    )
 }
 
 #[derive(Deserialize)]
@@ -491,8 +507,13 @@ struct OpenLogParams {
 
 async fn open_logs(
     State(runtime): State<DaemonRuntime>,
+    headers: HeaderMap,
     Query(params): Query<OpenLogParams>,
 ) -> impl IntoResponse {
+    if let Err(response) = authorize_control(&runtime.state.config, &headers) {
+        return response;
+    }
+
     let limit = params.lines.unwrap_or(120).clamp(10, 500);
     let log_path = runtime.state.config.runtime_log_file();
 
@@ -522,6 +543,22 @@ async fn open_logs(
             requested_lines: limit,
             lines,
             truncated,
+        }),
+    )
+}
+
+async fn runtime_nonce(
+    State(runtime): State<DaemonRuntime>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(response) = authorize_control(&runtime.state.config, &headers) {
+        return response;
+    }
+
+    (
+        StatusCode::OK,
+        Json(DaemonRuntimeNonceResponse {
+            runtime_nonce: runtime.state.config.runtime_nonce.clone(),
         }),
     )
 }
@@ -644,44 +681,53 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
 
     rotate_log_if_needed(&config.runtime_log_file(), config.runtime_log_rotate_bytes);
 
-    let log = OpenOptions::new()
+    let log = match OpenOptions::new()
         .create(true)
         .append(true)
         .open(&config.runtime_log_file())
-        .map_err(|err| {
-            let mut state = runtime.state.inner.blocking_lock();
+    {
+        Ok(log) => log,
+        Err(err) => {
+            let mut state = runtime.state.inner.lock().await;
             state.status = DaemonState::Failed;
             state.last_error = Some(format!(
                 "Cannot open runtime log {}: {err}",
                 config.runtime_log_file().display()
             ));
-            format!(
+            return Err(format!(
                 "Cannot open runtime log {}: {err}",
                 config.runtime_log_file().display()
-            )
-        })?;
+            ));
+        }
+    };
 
-    let stdout = Stdio::from(log.try_clone().map_err(|err| {
-        let mut state = runtime.state.inner.blocking_lock();
-        state.status = DaemonState::Failed;
-        state.last_error = Some(format!(
-            "Cannot duplicate runtime log handle {}: {err}",
-            config.runtime_log_file().display()
-        ));
-        format!(
-            "Cannot duplicate runtime log handle {}: {err}",
-            config.runtime_log_file().display()
-        )
-    })?);
+    let stdout = match log.try_clone() {
+        Ok(stdout) => Stdio::from(stdout),
+        Err(err) => {
+            let mut state = runtime.state.inner.lock().await;
+            state.status = DaemonState::Failed;
+            state.last_error = Some(format!(
+                "Cannot duplicate runtime log handle {}: {err}",
+                config.runtime_log_file().display()
+            ));
+            return Err(format!(
+                "Cannot duplicate runtime log handle {}: {err}",
+                config.runtime_log_file().display()
+            ));
+        }
+    };
     command.stdout(stdout);
     command.stderr(log.into());
 
-    let child = command.spawn().map_err(|err| {
-        let mut state = runtime.state.inner.blocking_lock();
-        state.status = DaemonState::Failed;
-        state.last_error = Some(format!("Failed to start runtime process: {err}"));
-        format!("Failed to start runtime process: {err}")
-    })?;
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let mut state = runtime.state.inner.lock().await;
+            state.status = DaemonState::Failed;
+            state.last_error = Some(format!("Failed to start runtime process: {err}"));
+            return Err(format!("Failed to start runtime process: {err}"));
+        }
+    };
 
     let pid = child.id().unwrap_or_default();
     let now = Utc::now();
@@ -1024,7 +1070,6 @@ fn build_status_response(config: &RuntimeConfig, state: &RuntimeState) -> Daemon
             next_delay_seconds: state.restart_wait_seconds.unwrap_or(0),
         },
         background_enabled: state.policy.background_enabled,
-        runtime_nonce: config.runtime_nonce.clone(),
         updated_at: Utc::now().to_rfc3339(),
         error: state.last_error.clone(),
     }

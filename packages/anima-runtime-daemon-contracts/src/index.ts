@@ -5,6 +5,7 @@ export const DAEMON_ROUTES = {
   status: `${DAEMON_CONTROL_PREFIX}/status`,
   control: `${DAEMON_CONTROL_PREFIX}/control`,
   logs: `${DAEMON_CONTROL_PREFIX}/logs`,
+  nonce: `${DAEMON_CONTROL_PREFIX}/nonce`,
   health: `${DAEMON_CONTROL_PREFIX}/health`,
 } as const;
 
@@ -72,9 +73,12 @@ export interface DaemonStatusResponse {
   readonly lock: DaemonLockStatus;
   readonly restart: DaemonRestartPolicy;
   readonly backgroundEnabled: boolean;
-  readonly runtimeNonce?: string;
   readonly updatedAt: string;
   readonly error: string | null;
+}
+
+export interface DaemonRuntimeNonceResponse {
+  readonly runtimeNonce: string;
 }
 
 export interface DaemonControlRequest {

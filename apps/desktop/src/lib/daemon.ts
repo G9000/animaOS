@@ -10,6 +10,7 @@ import type {
 import {
   DAEMON_CONTROL_TOKEN_ENV,
   DAEMON_CONTROL_TOKEN_HEADER,
+  DaemonRuntimeNonceResponse,
   DAEMON_ROUTES,
 } from "@anima/daemon-contracts";
 
@@ -112,14 +113,21 @@ export async function getDaemonHealth(): Promise<{ status: string; version: stri
 }
 
 export async function getDaemonStatus(): Promise<DaemonStatusResponse> {
-  const status = await request<DaemonStatusResponse>(`${DAEMON_ROUTES.status}`);
-  setRuntimeNonce(status.runtimeNonce ?? null);
-  return status;
+  return request<DaemonStatusResponse>(`${DAEMON_ROUTES.status}`);
 }
 
 export async function refreshDaemonRuntimeNonce(): Promise<string | null> {
-  const status = await getDaemonStatus();
-  return status.runtimeNonce ? normalizeNonce(status.runtimeNonce) : null;
+  const nonce = await getDaemonRuntimeNonce();
+  if (!nonce) {
+    return null;
+  }
+  setRuntimeNonce(nonce);
+  return nonce;
+}
+
+async function getDaemonRuntimeNonce(): Promise<string | null> {
+  const payload = await request<DaemonRuntimeNonceResponse>(DAEMON_ROUTES.nonce);
+  return normalizeNonce(payload.runtimeNonce);
 }
 
 export async function getDaemonLogs(lines = 120): Promise<DaemonLogResponse> {
