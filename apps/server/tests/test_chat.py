@@ -130,6 +130,63 @@ def test_chat_rejects_stale_today_context_date() -> None:
     assert response.status_code == 422
 
 
+def test_chat_passes_selected_document_ids_to_agent(monkeypatch) -> None:
+    captured_document_ids: tuple[int, ...] | None = None
+
+    async def fake_run_agent(*_args, document_ids=(), **_kwargs) -> AgentResult:
+        nonlocal captured_document_ids
+        captured_document_ids = tuple(document_ids)
+        return AgentResult(response="ok", model="test", provider="test")
+
+    monkeypatch.setattr(chat_routes, "run_agent", fake_run_agent)
+
+    with _client() as client:
+        user = _register_user(client, username="document-chat-user")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "What does the manual say?",
+                "userId": int(user["id"]),
+                "documentIds": [4, 9],
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured_document_ids == (4, 9)
+
+
+def test_chat_defaults_document_only_message(monkeypatch) -> None:
+    captured_message: str | None = None
+    captured_document_ids: tuple[int, ...] | None = None
+
+    async def fake_run_agent(message: str, *_args, document_ids=(), **_kwargs) -> AgentResult:
+        nonlocal captured_message, captured_document_ids
+        captured_message = message
+        captured_document_ids = tuple(document_ids)
+        return AgentResult(response="ok", model="test", provider="test")
+
+    monkeypatch.setattr(chat_routes, "run_agent", fake_run_agent)
+
+    with _client() as client:
+        user = _register_user(client, username="document-only-chat-user")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "   ",
+                "userId": int(user["id"]),
+                "documentIds": [4],
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured_message == "Summarize the selected document."
+    assert captured_document_ids == (4,)
+
+
 def test_chat_reset_clears_scaffold_thread_state() -> None:
     with _scaffold_agent_settings(), _client() as client:
         user = _register_user(client, username="reset-me")

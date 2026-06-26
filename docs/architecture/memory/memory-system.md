@@ -16,23 +16,24 @@ This document traces every path through AnimaOS's memory system: how memories ar
 
 1. [Architecture Overview](#architecture-overview)
 2. [Memory Taxonomy](#memory-taxonomy)
-3. [Write Path: How Memories Are Created](#write-path-how-memories-are-created)
-4. [Read Path: How Memories Are Retrieved](#read-path-how-memories-are-retrieved)
-5. [Memory Blocks: The System Prompt Interface](#memory-blocks-the-system-prompt-interface)
-6. [Embedding & Vector Search](#embedding--vector-search)
-7. [Retrieval Scoring](#retrieval-scoring)
-8. [Consolidation Pipeline](#consolidation-pipeline)
-9. [Conflict Resolution & Deduplication](#conflict-resolution--deduplication)
-10. [Structured Claims](#structured-claims)
-11. [Session Memory (Working Notes)](#session-memory-working-notes)
-12. [Episodic Memory](#episodic-memory)
-13. [Self-Model (Agent Identity)](#self-model-agent-identity)
-14. [Emotional Intelligence](#emotional-intelligence)
-15. [Sleep Tasks (Background Maintenance)](#sleep-tasks-background-maintenance)
-16. [Reflection & Inner Monologue](#reflection--inner-monologue)
-17. [Context Window Integration](#context-window-integration)
-18. [Encryption & Portability](#encryption--portability)
-19. [File Reference](#file-reference)
+3. [Document RAG Boundary](#document-rag-boundary)
+4. [Write Path: How Memories Are Created](#write-path-how-memories-are-created)
+5. [Read Path: How Memories Are Retrieved](#read-path-how-memories-are-retrieved)
+6. [Memory Blocks: The System Prompt Interface](#memory-blocks-the-system-prompt-interface)
+7. [Embedding & Vector Search](#embedding--vector-search)
+8. [Retrieval Scoring](#retrieval-scoring)
+9. [Consolidation Pipeline](#consolidation-pipeline)
+10. [Conflict Resolution & Deduplication](#conflict-resolution--deduplication)
+11. [Structured Claims](#structured-claims)
+12. [Session Memory (Working Notes)](#session-memory-working-notes)
+13. [Episodic Memory](#episodic-memory)
+14. [Self-Model (Agent Identity)](#self-model-agent-identity)
+15. [Emotional Intelligence](#emotional-intelligence)
+16. [Sleep Tasks (Background Maintenance)](#sleep-tasks-background-maintenance)
+17. [Reflection & Inner Monologue](#reflection--inner-monologue)
+18. [Context Window Integration](#context-window-integration)
+19. [Encryption & Portability](#encryption--portability)
+20. [File Reference](#file-reference)
 
 > **See also:** [F1-F7 Memory System Implementation](memory-f1-f7-implementation.md) — BM25 hybrid search, heat scoring, predict-calibrate, knowledge graph, async orchestrator, batch segmentation, intentional forgetting
 
@@ -113,6 +114,7 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `memory_extraction_failures` | Failed LLM extraction attempts with source message IDs | Retryable failure queue surfaced through memory pipeline health |
 | `memory_access_log`, `memory_retrieval_feedback` | Deferred read/feedback updates for ranking and heat | Synced back to durable memory metrics |
 | `embeddings` | pgvector-backed search rows for `MemoryItem` content | Cache derived from `MemoryItem.embedding_json` and rebuildable |
+| `runtime_documents`, `runtime_document_chunks` | Uploaded document metadata and chunk text for RAG | Runtime context; not durable memory unless conclusions are promoted |
 
 ### Memory Categories
 
@@ -123,6 +125,16 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `goal` | Aspirations and objectives | "Wants to learn Rust" | 1-5 |
 | `relationship` | People and connections | "Has a sister named Maya" | 1-5 |
 | `focus` | Current primary focus (singleton) | "Preparing for job interview" | 4 (fixed) |
+
+---
+
+## Document RAG Boundary
+
+Uploaded documents and their chunks are runtime context, not canonical memories. `runtime_documents` records document metadata and ingestion status; `runtime_document_chunks` stores chunk text, hashes, page ranges, and ordering for retrieval. These rows can support a workflow, a thread, and short-term document search, but they are not part of the portable SQLCipher memory authority.
+
+pgvector indexes document chunks in the runtime `embeddings` table with `source_type="document_chunk"` and `source_id` pointing at `runtime_document_chunks.id`. Document RAG search hydrates those hits back into chunks and document metadata so the agent can cite or reason over source text without converting the whole document into memory.
+
+Only approved conclusions cross into long-term memory. A PDF or document workflow may extract proposed facts, preferences, goals, or relationships, but those proposals must become `MemoryCandidate` rows and pass through the Soul Writer promotion path before they become `MemoryItem` records, structured claims, or evidence in SQLCipher. Rejected or unreviewed extracted text remains runtime document context.
 
 ---
 

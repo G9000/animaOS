@@ -980,7 +980,7 @@ async def generate_reflection(
             )
             system_content = (
                 f"You are {prompt_loader.agent_name}, expressing genuine curiosity "
-                "about a specific memory. Respond with ONLY the statement (1–2 sentences)."
+                "about a specific memory. Respond with ONLY the statement (1-2 sentences)."
             )
             content = await _invoke_reflection_llm(system_content, prompt)
             if content:

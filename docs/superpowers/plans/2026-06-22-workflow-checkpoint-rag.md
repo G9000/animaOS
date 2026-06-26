@@ -37,7 +37,7 @@ Create:
   Runtime DB CRUD for documents and chunks.
 - `apps/server/src/anima_server/services/documents/rag.py`
   Document retrieval over chunks using embeddings and source filters.
-- `apps/server/alembic_runtime/versions/016_workflow_checkpoints_documents.py`
+- `apps/server/alembic_runtime/versions/016_workflow_checkpoints.py`
   Runtime migration for workflow/document tables.
 - `apps/server/tests/test_workflow_checkpoints.py`
   Unit tests for workflow checkpoint service.
@@ -182,7 +182,7 @@ git commit -m "runtime: add workflow checkpoint models"
 ### Task 2: Add Runtime Migration
 
 **Files:**
-- Create: `apps/server/alembic_runtime/versions/016_workflow_checkpoints_documents.py`
+- Create: `apps/server/alembic_runtime/versions/016_workflow_checkpoints.py`
 - Test: existing runtime migration command
 
 - [ ] **Step 1: Write migration**
@@ -213,7 +213,7 @@ Expected: migration applies without errors.
 Run:
 
 ```bash
-git add apps/server/alembic_runtime/versions/016_workflow_checkpoints_documents.py
+git add apps/server/alembic_runtime/versions/016_workflow_checkpoints.py
 git commit -m "db: add workflow checkpoint runtime migration"
 ```
 
@@ -335,7 +335,7 @@ git commit -m "runtime: add workflow checkpoint service"
 **Files:**
 - Modify: `apps/server/src/anima_server/models/runtime.py`
 - Modify: `apps/server/src/anima_server/models/__init__.py`
-- Modify: `apps/server/alembic_runtime/versions/016_workflow_checkpoints_documents.py`
+- Modify: `apps/server/alembic_runtime/versions/016_workflow_checkpoints.py`
 - Test: `apps/server/tests/test_document_store.py`
 
 - [ ] **Step 1: Write failing model registration test**
@@ -388,7 +388,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add apps/server/src/anima_server/models/runtime.py apps/server/src/anima_server/models/__init__.py apps/server/alembic_runtime/versions/016_workflow_checkpoints_documents.py apps/server/tests/test_document_store.py
+git add apps/server/src/anima_server/models/runtime.py apps/server/src/anima_server/models/__init__.py apps/server/alembic_runtime/versions/016_workflow_checkpoints.py apps/server/tests/test_document_store.py
 git commit -m "runtime: add document chunk models"
 ```
 
@@ -1094,4 +1094,3 @@ git diff --check
 ```
 
 Expected: only intentional changes, no whitespace errors.
-

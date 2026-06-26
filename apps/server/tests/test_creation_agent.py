@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from anima_server.services.agent.system_prompt import TEMPLATES_DIR, render_template
 from anima_server.services.creation_agent import (
     CREATION_COMPLETE_MARKER,
     CreationTurnResult,
@@ -10,7 +11,6 @@ from anima_server.services.creation_agent import (
     _scaffold_turn,
     handle_creation_turn,
 )
-from anima_server.services.agent.system_prompt import TEMPLATES_DIR, render_template
 
 # --------------------------------------------------------------------------- #
 # Scaffold turn — Phase 0: greeting

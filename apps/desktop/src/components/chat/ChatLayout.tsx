@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, type RefObject } from "react";
 import { PromptInput, ChevronRightIcon, cn } from "@anima/standard-templates";
 
 const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]";
@@ -19,7 +19,7 @@ interface ChatLayoutProps {
   onScrollToBottom: () => void;
   showTrace?: boolean;
   onToggleTrace?: () => void;
-  scrollContainerRef?: React.RefObject<HTMLDivElement>;
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
   onScroll?: () => void;
 }
 
@@ -37,8 +37,6 @@ export function ChatLayout({
   onToggleSidebar,
   showScrollButton,
   onScrollToBottom,
-  showTrace,
-  onToggleTrace,
   scrollContainerRef,
   onScroll,
 }: ChatLayoutProps) {

@@ -30,10 +30,14 @@ from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.presence import PresenceConfig
 from anima_server.models.runtime import (
     RuntimeBackgroundTaskRun,
+    RuntimeDocument,
+    RuntimeDocumentChunk,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
     RuntimeThread,
+    RuntimeWorkflowCheckpoint,
+    RuntimeWorkflowRun,
 )
 from anima_server.models.runtime_consciousness import (
     ActiveIntention,
@@ -80,11 +84,15 @@ __all__ = [
     "PendingMemoryOp",
     "PresenceConfig",
     "RuntimeBackgroundTaskRun",
+    "RuntimeDocument",
+    "RuntimeDocumentChunk",
     "RuntimeEmbedding",
     "RuntimeMessage",
     "RuntimeRun",
     "RuntimeStep",
     "RuntimeThread",
+    "RuntimeWorkflowCheckpoint",
+    "RuntimeWorkflowRun",
     "SelfModelBlock",
     "Task",
     "TelegramLink",

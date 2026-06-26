@@ -302,7 +302,7 @@ export default function AiSettings() {
                             "absolute right-3 top-1/2 -translate-y-1/2 transition-colors",
                             showApiKey ? "text-accent hover:text-accent/70" : "text-foreground/25 hover:text-foreground/55",
                           )}>
-                          {showApiKey ? <EyeOffIcon size={13} /> : <EyeIcon size={13} />}
+                          {showApiKey ? <EyeOffIcon size="sm" /> : <EyeIcon size="sm" />}
                         </button>
                       </div>
                       {replacingKey ? (

@@ -14,8 +14,8 @@ from anima_server.config import settings
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
-from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.compaction import estimate_message_tokens
+from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
 from anima_server.services.sessions import get_active_dek

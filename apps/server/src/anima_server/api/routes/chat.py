@@ -35,6 +35,7 @@ from anima_server.services.agent import (
     ensure_agent_ready,
     ensure_image_attachments_supported,
     list_agent_history,
+    normalize_document_only_user_message,
     reset_agent_thread,
     run_agent,
     stream_agent,
@@ -71,14 +72,16 @@ async def send_message(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
     require_unlocked_user(request, payload.userId)
+    message = normalize_document_only_user_message(payload.message, payload.documentIds)
 
     if not payload.stream:
         try:
             result = await run_agent(
-                payload.message, payload.userId, db, runtime_db,
+                message, payload.userId, db, runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
+                document_ids=payload.documentIds,
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
             )
@@ -125,10 +128,11 @@ async def send_message(
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
             async for event in stream_agent(
-                payload.message, payload.userId, db, runtime_db,
+                message, payload.userId, db, runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
+                document_ids=payload.documentIds,
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
             ):

@@ -6,6 +6,7 @@ import type {
   ChatContextMessage,
   ChatMessage,
   ChatRequestAttachment,
+  DocumentWorkflowActionResponse,
   ThreadContextStats,
   TodayContext,
   Thread,
@@ -40,7 +41,6 @@ import {
 import {
   ThreadSidebar,
   StreamingView,
-  ChatEmptyState,
   ChatLayout,
 } from "../../components/chat";
 
@@ -53,6 +53,7 @@ const ACCEPTED_IMAGE_TYPES = new Set([
   "image/gif",
 ]);
 const MAX_SELECTED_IMAGES = 4;
+const MAX_SELECTED_DOCUMENTS = 4;
 
 interface ChatLocationState {
   contextMessages?: ChatContextMessage[];
@@ -67,6 +68,18 @@ interface PendingImageAttachment {
   id: string;
   file: File;
   previewUrl: string;
+}
+
+type PendingDocumentStatus = "indexing" | "indexed" | "failed";
+
+interface PendingDocumentAttachment {
+  id: string;
+  file: File;
+  filename: string;
+  status: PendingDocumentStatus;
+  workflowId?: number;
+  documentId?: number;
+  error?: string;
 }
 
 function attachmentFetchUrl(url: string): string {
@@ -108,6 +121,40 @@ function toPreviewAttachment(image: PendingImageAttachment): ChatAttachment {
     sizeBytes: image.file.size,
     url: image.previewUrl,
   };
+}
+
+function isPdfFile(file: File): boolean {
+  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+}
+
+function asPdfUploadFile(file: File): File {
+  if (file.type === "application/pdf") return file;
+  return new File([file], file.name, { type: "application/pdf" });
+}
+
+function documentIdFromWorkflowResponse(
+  response: DocumentWorkflowActionResponse,
+): number | null {
+  const result = response.workflow?.result;
+  const resultId = readDocumentId(result);
+  if (resultId !== null) return resultId;
+
+  const checkpoints = response.workflow?.checkpoints ?? [];
+  for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
+    const checkpoint = checkpoints[index];
+    const artifactId = readDocumentId(checkpoint.artifacts);
+    if (artifactId !== null) return artifactId;
+    const outputId = readDocumentId(checkpoint.output);
+    if (outputId !== null) return outputId;
+  }
+  return null;
+}
+
+function readDocumentId(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as { document_id?: unknown; documentId?: unknown };
+  const raw = payload.document_id ?? payload.documentId;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
 }
 
 function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
@@ -229,6 +276,59 @@ function SelectedImagePreviews({
   );
 }
 
+function SelectedDocumentChips({
+  documents,
+  onRemove,
+}: {
+  documents: PendingDocumentAttachment[];
+  onRemove: (id: string) => void;
+}) {
+  if (documents.length === 0) return null;
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {documents.map((document) => {
+        const statusLabel =
+          document.status === "indexed"
+            ? "READY"
+            : document.status === "failed"
+              ? "FAILED"
+              : "INDEXING";
+        return (
+          <div
+            key={document.id}
+            className="flex max-w-full items-center gap-2 border border-border bg-card px-2 py-1 text-xs text-muted-foreground"
+            title={document.error || document.filename}
+          >
+            <span className="font-mono text-[9px] tracking-[0.16em] text-foreground/80">
+              PDF
+            </span>
+            <span className="max-w-[180px] truncate">{document.filename}</span>
+            <span
+              className={`font-mono text-[8px] tracking-[0.16em] ${
+                document.status === "indexed"
+                  ? "text-emerald-400/80"
+                  : document.status === "failed"
+                    ? "text-destructive"
+                    : "text-accent/70"
+              }`}
+            >
+              {statusLabel}
+            </span>
+            <button
+              type="button"
+              onClick={() => onRemove(document.id)}
+              className="h-5 w-5 border border-border bg-background/80 font-mono text-[10px] text-muted-foreground hover:text-foreground"
+              title="Remove PDF"
+            >
+              x
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Thread utilities
 function sortThreads(threads: Thread[]): Thread[] {
   return [...threads].sort((left, right) => {
@@ -319,6 +419,9 @@ export default function Chat() {
   const [selectedImages, setSelectedImages] = useState<PendingImageAttachment[]>(
     [],
   );
+  const [selectedDocuments, setSelectedDocuments] = useState<
+    PendingDocumentAttachment[]
+  >([]);
   const [todayContext, setTodayContext] = useState<TodayContext | null>(() =>
     loadTodayContext(),
   );
@@ -649,33 +752,76 @@ export default function Chat() {
     );
   };
 
-  const handleAttach = useCallback((type: string) => {
-    if (type === "image") {
-      fileInputRef.current?.click();
-    }
+  const handleAttach = useCallback((_type: string) => {
+    fileInputRef.current?.click();
   }, []);
 
-  const handleImageSelection = (files: FileList | null) => {
+  const uploadAndIndexDocument = useCallback(
+    async (id: string, file: File) => {
+      if (user?.id == null) return;
+      try {
+        const upload = await api.documents.uploadPdf(
+          user.id,
+          asPdfUploadFile(file),
+          currentThreadIdRef.current ?? undefined,
+        );
+        const resumed = await api.documents.resumeWorkflow(upload.workflowId);
+        const documentId =
+          documentIdFromWorkflowResponse(resumed) ??
+          documentIdFromWorkflowResponse(upload);
+        if (documentId == null) {
+          throw new Error("PDF indexed without returning a document id.");
+        }
+        setSelectedDocuments((prev) =>
+          prev.map((document) =>
+            document.id === id
+              ? {
+                  ...document,
+                  status: "indexed",
+                  workflowId: upload.workflowId,
+                  documentId,
+                  error: undefined,
+                }
+              : document,
+          ),
+        );
+      } catch (err: any) {
+        setSelectedDocuments((prev) =>
+          prev.map((document) =>
+            document.id === id
+              ? {
+                  ...document,
+                  status: "failed",
+                  error: err?.message || "PDF indexing failed.",
+                }
+              : document,
+          ),
+        );
+      }
+    },
+    [user?.id],
+  );
+
+  const handleFileSelection = (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
-    const acceptedFiles = Array.from(files).filter((file) =>
+    const incomingFiles = Array.from(files);
+    const acceptedImageFiles = incomingFiles.filter((file) =>
       ACCEPTED_IMAGE_TYPES.has(file.type),
     );
-    if (acceptedFiles.length !== files.length) {
-      setError("Unsupported image type. Use PNG, JPEG, WebP, or GIF.");
+    const acceptedPdfFiles = incomingFiles.filter(isPdfFile);
+    if (acceptedImageFiles.length + acceptedPdfFiles.length !== incomingFiles.length) {
+      setError("Unsupported attachment type. Use PNG, JPEG, WebP, GIF, or PDF.");
     }
 
     const availableSlots = MAX_SELECTED_IMAGES - selectedImages.length;
-    if (availableSlots <= 0) {
+    if (acceptedImageFiles.length > 0 && availableSlots <= 0) {
       setError(`Attach at most ${MAX_SELECTED_IMAGES} images.`);
-      return;
-    }
-
-    if (acceptedFiles.length > availableSlots) {
+    } else if (acceptedImageFiles.length > availableSlots) {
       setError(`Attach at most ${MAX_SELECTED_IMAGES} images.`);
     }
 
-    const nextImages = acceptedFiles.slice(0, availableSlots).map((file) => {
+    const nextImages = acceptedImageFiles.slice(0, Math.max(availableSlots, 0)).map((file) => {
       const previewUrl = URL.createObjectURL(file);
       objectUrlsRef.current.add(previewUrl);
       return {
@@ -685,7 +831,33 @@ export default function Chat() {
       };
     });
 
-    setSelectedImages((prev) => [...prev, ...nextImages]);
+    if (nextImages.length > 0) {
+      setSelectedImages((prev) => [...prev, ...nextImages]);
+    }
+
+    const availableDocumentSlots = MAX_SELECTED_DOCUMENTS - selectedDocuments.length;
+    if (acceptedPdfFiles.length > 0 && availableDocumentSlots <= 0) {
+      setError(`Attach at most ${MAX_SELECTED_DOCUMENTS} PDFs.`);
+    } else if (acceptedPdfFiles.length > availableDocumentSlots) {
+      setError(`Attach at most ${MAX_SELECTED_DOCUMENTS} PDFs.`);
+    }
+
+    const nextDocuments = acceptedPdfFiles
+      .slice(0, Math.max(availableDocumentSlots, 0))
+      .map((file) => ({
+        id: `document_${crypto.randomUUID()}`,
+        file,
+        filename: file.name,
+        status: "indexing" as const,
+      }));
+
+    if (nextDocuments.length > 0) {
+      setSelectedDocuments((prev) => [...prev, ...nextDocuments]);
+      for (const document of nextDocuments) {
+        void uploadAndIndexDocument(document.id, document.file);
+      }
+    }
+
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -699,17 +871,44 @@ export default function Chat() {
     });
   }, [revokeImagePreviews]);
 
+  const removeSelectedDocument = useCallback((id: string) => {
+    setSelectedDocuments((prev) =>
+      prev.filter((document) => document.id !== id),
+    );
+  }, []);
+
   // Send message
   const sendMessage = async (
     text: string,
     contextMessages: ChatContextMessage[] = [],
     opts: { skipContextDisplay?: boolean } = {},
   ) => {
-    if ((!text.trim() && selectedImages.length === 0) || user?.id == null || streaming) {
+    const documentsForTurn = selectedDocuments.filter(
+      (document) => document.status === "indexed" && document.documentId != null,
+    );
+    const hasIndexingDocuments = selectedDocuments.some(
+      (document) => document.status === "indexing",
+    );
+    const hasFailedDocuments = selectedDocuments.some(
+      (document) => document.status === "failed",
+    );
+    if (hasIndexingDocuments) {
+      setError("Wait for PDF indexing to finish before sending.");
+      return;
+    }
+    if (hasFailedDocuments) {
+      setError("Remove failed PDFs before sending.");
+      return;
+    }
+    if (
+      (!text.trim() && selectedImages.length === 0 && documentsForTurn.length === 0) ||
+      user?.id == null ||
+      streaming
+    ) {
       return;
     }
 
-    const userMsg = text.trim();
+    const userMsg = text.trim() || "Summarize the selected document.";
     const turnContextMessages = contextMessages.filter((message) =>
       message.content.trim(),
     );
@@ -720,6 +919,9 @@ export default function Chat() {
       saveTodayContext(null);
     }
     const imagesForTurn = selectedImages;
+    const documentIdsForTurn = documentsForTurn.map(
+      (document) => document.documentId as number,
+    );
     let requestAttachments: ChatRequestAttachment[] = [];
     try {
       requestAttachments = await Promise.all(
@@ -733,6 +935,7 @@ export default function Chat() {
     setInput("");
     setError("");
     setSelectedImages([]);
+    setSelectedDocuments([]);
 
     const now = Date.now();
     // When the context is already on screen (e.g. a seeded thread's opening
@@ -777,6 +980,7 @@ export default function Chat() {
         requestAttachments,
         turnContextMessages,
         activeTodayContext,
+        documentIdsForTurn,
       )) {
         if (chunk.startsWith(REASONING_PREFIX)) {
           fullReasoning += chunk.slice(REASONING_PREFIX.length);
@@ -919,28 +1123,40 @@ export default function Chat() {
     );
   };
 
+  const canSubmit =
+    (Boolean(input.trim()) ||
+      selectedImages.length > 0 ||
+      selectedDocuments.some((document) => document.status === "indexed")) &&
+    !selectedDocuments.some((document) => document.status === "indexing");
+
   return (
     <>
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
+        accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf"
         multiple
         className="hidden"
-        onChange={(event) => handleImageSelection(event.currentTarget.files)}
+        onChange={(event) => handleFileSelection(event.currentTarget.files)}
       />
       <ChatLayout
         input={input}
         onInputChange={setInput}
         onSubmit={handleSubmit}
         streaming={streaming}
-        canSubmit={Boolean(input.trim()) || selectedImages.length > 0}
+        canSubmit={canSubmit}
         onAttach={handleAttach}
         inputAccessory={
-          <SelectedImagePreviews
-            images={selectedImages}
-            onRemove={removeSelectedImage}
-          />
+          <>
+            <SelectedImagePreviews
+              images={selectedImages}
+              onRemove={removeSelectedImage}
+            />
+            <SelectedDocumentChips
+              documents={selectedDocuments}
+              onRemove={removeSelectedDocument}
+            />
+          </>
         }
         showSidebar={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
