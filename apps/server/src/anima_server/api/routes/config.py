@@ -11,6 +11,7 @@ from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.config import (
     get_provider_api_key,
+    has_provider_api_keys,
     persist_runtime_settings,
     set_provider_api_key,
     settings,
@@ -234,7 +235,8 @@ async def get_config(
         extractionModel=settings.agent_extraction_model or None,
         ollamaUrl=settings.agent_base_url or None,
         hasApiKey=bool(
-            get_provider_api_key(settings.agent_provider) or settings.agent_api_key.strip()
+            get_provider_api_key(settings.agent_provider)
+            or (settings.agent_api_key.strip() if not has_provider_api_keys() else "")
         ),
     )
 
@@ -262,7 +264,7 @@ async def update_config(
     if payload.apiKey is not None:
         api_key = payload.apiKey.strip()
         set_provider_api_key(payload.provider, api_key)
-        settings.agent_api_key = api_key
+    settings.agent_api_key = ""
     # Only set base_url for ollama/vllm; clear for providers with fixed endpoints.
     if (payload.provider == "ollama" and payload.ollamaUrl is not None) or (
         payload.provider == "vllm" and payload.ollamaUrl is not None

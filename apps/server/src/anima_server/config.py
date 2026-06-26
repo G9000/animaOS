@@ -127,6 +127,10 @@ def get_provider_api_key(provider: str) -> str:
     return _parse_api_keys().get(provider, "")
 
 
+def has_provider_api_keys() -> bool:
+    return bool(_parse_api_keys())
+
+
 def set_provider_api_key(provider: str, key: str) -> None:
     keys = _parse_api_keys()
     if key:

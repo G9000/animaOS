@@ -14,6 +14,7 @@ from anima_server.services.agent.llm import (
     create_provider_chat_client,
     invalidate_llm_cache,
     resolve_base_url,
+    resolve_provider_api_key,
 )
 
 
@@ -232,6 +233,21 @@ def test_doubleword_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
             build_provider_headers("doubleword")
     finally:
         settings.agent_api_key = original_api_key
+
+
+def test_provider_key_map_prevents_legacy_key_leakage() -> None:
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+
+    try:
+        settings.agent_api_key = "legacy-key"
+        settings.agent_api_keys_json = '{"openai": "openai-key"}'
+
+        assert resolve_provider_api_key("openai") == "openai-key"
+        assert resolve_provider_api_key("anthropic") == ""
+    finally:
+        settings.agent_api_key = original_api_key
+        settings.agent_api_keys_json = original_api_keys_json
 
 
 def test_create_llm_uses_openai_compatible_client_for_doubleword() -> None:

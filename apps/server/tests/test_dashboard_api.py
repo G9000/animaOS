@@ -350,6 +350,7 @@ def test_config_get_update() -> None:
     original_provider = settings.agent_provider
     original_model = settings.agent_model
     original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
     original_base_url = settings.agent_base_url
 
     with managed_test_client("anima-dashboard-test-") as client:
@@ -379,23 +380,27 @@ def test_config_get_update() -> None:
             assert settings.agent_provider == "openai"
             assert settings.agent_model == "gpt-4o-mini"
             assert settings.agent_extraction_model == "qwen3:14b"
-            assert settings.agent_api_key == "test-openai-key"
+            assert settings.agent_api_key == ""
+            assert config_module.get_provider_api_key("openai") == "test-openai-key"
 
             settings.agent_provider = "ollama"
             settings.agent_model = "vaultbox/qwen3.5-uncensored:35b"
             settings.agent_api_key = ""
+            settings.agent_api_keys_json = "{}"
             settings.agent_base_url = ""
 
             config_module.load_persisted_runtime_settings()
 
             assert settings.agent_provider == "openai"
             assert settings.agent_model == "gpt-4o-mini"
-            assert settings.agent_api_key == "test-openai-key"
+            assert settings.agent_api_key == ""
+            assert config_module.get_provider_api_key("openai") == "test-openai-key"
             assert settings.agent_base_url == ""
         finally:
             settings.agent_provider = original_provider
             settings.agent_model = original_model
             settings.agent_api_key = original_api_key
+            settings.agent_api_keys_json = original_api_keys_json
             settings.agent_base_url = original_base_url
 
 
@@ -404,6 +409,7 @@ def test_config_update_accepts_doubleword_and_clears_endpoint() -> None:
     original_model = settings.agent_model
     original_extraction_model = settings.agent_extraction_model
     original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
     original_base_url = settings.agent_base_url
 
     with managed_test_client("anima-dashboard-test-") as client:
@@ -427,13 +433,18 @@ def test_config_update_accepts_doubleword_and_clears_endpoint() -> None:
             assert resp.status_code == 200
             assert settings.agent_provider == "doubleword"
             assert settings.agent_model == "Qwen/Qwen3.6-35B-A3B-FP8"
-            assert settings.agent_api_key == "test-doubleword-key"
+            assert settings.agent_api_key == ""
+            assert (
+                config_module.get_provider_api_key("doubleword")
+                == "test-doubleword-key"
+            )
             assert settings.agent_base_url == ""
         finally:
             settings.agent_provider = original_provider
             settings.agent_model = original_model
             settings.agent_extraction_model = original_extraction_model
             settings.agent_api_key = original_api_key
+            settings.agent_api_keys_json = original_api_keys_json
             settings.agent_base_url = original_base_url
 
 
