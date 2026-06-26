@@ -4,6 +4,7 @@ use crate::approvals::{ApprovalDecision, ApprovalOutcome, ApprovalState, Pending
 use crate::commands::{CommandEffect, CommandInvocation, SlashCommand};
 use crate::config::{AnimusConfig, DEFAULT_SERVER_URL};
 use crate::protocol::ServerFrame;
+use crate::spawns::SpawnState;
 use crate::transcript::{append_assistant_token, finish_streaming_assistant, TranscriptItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct AppState {
     pub spawn_count: usize,
     pub background_process_count: usize,
     pub approvals: ApprovalState,
+    pub spawns: SpawnState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +63,7 @@ impl AppState {
             spawn_count: 0,
             background_process_count: 0,
             approvals: ApprovalState::default(),
+            spawns: SpawnState::default(),
         }
     }
 
@@ -197,8 +200,14 @@ impl AppState {
                 });
             }
             ServerFrame::SpawnEvent { spawn } => {
+                self.spawns.apply_frame(spawn.clone());
+                self.spawn_count = self.spawns.active_count();
                 self.transcript.push(TranscriptItem::Notice {
-                    message: format!("spawn {} {}", spawn.id, spawn.status),
+                    message: format!(
+                        "background process {} [{}]",
+                        spawn.id,
+                        spawn.status.as_str()
+                    ),
                 });
             }
             ServerFrame::Error { message, code } => {
@@ -265,10 +274,22 @@ impl AppState {
                 CommandEffect::ShowStatus
             }
             SlashCommand::Diff => CommandEffect::ShowDiff,
-            SlashCommand::Spawns => CommandEffect::ShowSpawns,
-            SlashCommand::CancelSpawn => CommandEffect::CancelSpawn {
-                id: invocation.args,
-            },
+            SlashCommand::Spawns => {
+                self.transcript.push(TranscriptItem::Notice {
+                    message: self.spawns.render_list(),
+                });
+                CommandEffect::ShowSpawns
+            }
+            SlashCommand::CancelSpawn => {
+                let id = invocation.args;
+                match self.spawns.cancel_spawn(&id) {
+                    Ok(()) => CommandEffect::CancelSpawn { id },
+                    Err(message) => {
+                        self.transcript.push(TranscriptItem::Notice { message });
+                        CommandEffect::CancelSpawnUnsupported { id }
+                    }
+                }
+            }
             SlashCommand::Quit => {
                 self.should_quit = true;
                 CommandEffect::Quit
@@ -453,5 +474,36 @@ mod tests {
             }
         );
         assert_eq!(app.approval_mode, "manual");
+    }
+
+    #[test]
+    fn spawn_events_update_background_process_state_and_commands_render_list() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::SpawnEvent {
+            spawn: crate::protocol::SpawnFrame {
+                id: "spawn-1".to_string(),
+                status: crate::protocol::SpawnStatus::Running,
+                task: Some("scan files".to_string()),
+                started_at: None,
+                completed_at: None,
+                extra: Default::default(),
+            },
+        }));
+
+        assert_eq!(app.spawn_count, 1);
+        assert_eq!(
+            app.handle_command(crate::commands::parse_command("/spawns").unwrap()),
+            crate::commands::CommandEffect::ShowSpawns
+        );
+        assert!(app
+            .transcript
+            .iter()
+            .any(|item| item.render_plain().contains("background process spawn-1")));
+        assert_eq!(
+            app.handle_command(crate::commands::parse_command("/cancel-spawn spawn-1").unwrap()),
+            crate::commands::CommandEffect::CancelSpawnUnsupported {
+                id: "spawn-1".to_string(),
+            }
+        );
     }
 }

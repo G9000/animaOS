@@ -55,6 +55,7 @@ pub enum CommandEffect {
     ShowDiff,
     ShowSpawns,
     CancelSpawn { id: String },
+    CancelSpawnUnsupported { id: String },
     Quit,
 }
 

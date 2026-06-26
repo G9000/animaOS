@@ -8,9 +8,35 @@ pub struct AuthUser {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpawnStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl SpawnStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SpawnStatus::Queued => "queued",
+            SpawnStatus::Running => "running",
+            SpawnStatus::Completed => "completed",
+            SpawnStatus::Failed => "failed",
+            SpawnStatus::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        matches!(self, SpawnStatus::Queued | SpawnStatus::Running)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpawnFrame {
     pub id: String,
-    pub status: String,
+    pub status: SpawnStatus,
     #[serde(default)]
     pub task: Option<String>,
     #[serde(default, rename = "startedAt")]
@@ -221,7 +247,7 @@ mod tests {
                 ServerFrame::SpawnEvent {
                     spawn: SpawnFrame {
                         id: "spawn-1".to_string(),
-                        status: "running".to_string(),
+                        status: SpawnStatus::Running,
                         task: Some("search".to_string()),
                         started_at: None,
                         completed_at: None,
@@ -241,6 +267,22 @@ mod tests {
         for (raw, expected) in frames {
             assert_eq!(
                 serde_json::from_value::<ServerFrame>(raw).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn deserializes_all_spawn_statuses() {
+        for (raw, expected) in [
+            ("queued", SpawnStatus::Queued),
+            ("running", SpawnStatus::Running),
+            ("completed", SpawnStatus::Completed),
+            ("failed", SpawnStatus::Failed),
+            ("cancelled", SpawnStatus::Cancelled),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<SpawnStatus>(json!(raw)).unwrap(),
                 expected
             );
         }

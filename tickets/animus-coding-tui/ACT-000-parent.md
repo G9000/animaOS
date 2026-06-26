@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 05:03 MYT
+- Updated: 2026-06-27 06:20 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed:
 
@@ -27,7 +27,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 | `ACT-005` | Add local tools and permissions | `done` | `ACT-003` |
 | `ACT-006` | Add input, slash commands, and status line | `done` | `ACT-004` |
 | `ACT-007` | Add inline approvals | `done` | `ACT-001`, `ACT-004`, `ACT-005` |
-| `ACT-008` | Add ANIMA spawn/thread visibility | `backlog` | `ACT-004` |
+| `ACT-008` | Add ANIMA spawn/thread visibility | `done` | `ACT-004` |
 | `ACT-009` | Replace Bun wiring, smoke tests, and docs | `backlog` | `ACT-005`, `ACT-006`, `ACT-007`, `ACT-008` |
 
 ## Deliverables
@@ -57,6 +57,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 04:55 MYT - `ACT-005` added local tools, permission checks, and tool-result dispatch.
 - 2026-06-27 04:59 MYT - `ACT-006` added input buffer, slash commands, command routing, and status line.
 - 2026-06-27 05:03 MYT - `ACT-007` added inline approval state, decision frames, and TUI prompts.
+- 2026-06-27 06:20 MYT - `ACT-008` added background spawn visibility and typed spawn statuses.
 
 ## Activity Log
 
@@ -78,6 +79,8 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 04:59 MYT - ACT-006 completed and verified.
 - 2026-06-27 05:00 MYT - ACT-007 moved to in_progress for inline approval flow.
 - 2026-06-27 05:03 MYT - ACT-007 completed and verified.
+- 2026-06-27 05:04 MYT - ACT-008 moved to in_progress for background spawn visibility.
+- 2026-06-27 06:20 MYT - ACT-008 completed and verified.
 
 ## Validation
 

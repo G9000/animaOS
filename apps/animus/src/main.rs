@@ -13,6 +13,7 @@ mod config;
 mod input;
 mod permissions;
 mod protocol;
+mod spawns;
 mod tools;
 mod transcript;
 mod tui;
