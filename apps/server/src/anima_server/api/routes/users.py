@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
 from anima_server.db.user_store import delete_account_storage, username_exists
-from anima_server.schemas.auth import UserResponse
+from anima_server.contracts.auth import UserResponse
 from anima_server.schemas.users import DeleteUserResponse, UserUpdateRequest
 from anima_server.services.auth import get_user_by_id, normalize_username, serialize_user
 from anima_server.services.sessions import unlock_session_store

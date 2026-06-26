@@ -1,3 +1,19 @@
+import type {
+  AuthUser,
+  ChangePasswordRequest as ContractChangePasswordRequest,
+  ChangePasswordResponse as ContractChangePasswordResponse,
+  CreateAiChatResponse as ContractCreateAiChatResponse,
+  CreateAiChatRequest as ContractCreateAiChatRequest,
+  LoginResponse as ContractLoginResponse,
+  LoginRequest as ContractLoginRequest,
+  LogoutResponse as ContractLogoutResponse,
+  RegisterResponse as ContractRegisterResponse,
+  RegisterRequest as ContractRegisterRequest,
+  RecoverRequest as ContractRecoverRequest,
+  RecoverResponse as ContractRecoverResponse,
+  UserResponse as ContractUserResponse,
+} from "@anima/auth-contracts";
+
 export interface ApiClientOptions {
   baseUrl: string;
   getUnlockToken?: () => string | null;
@@ -6,31 +22,20 @@ export interface ApiClientOptions {
   credentials?: RequestCredentials;
 }
 
-export interface User {
-  id: number;
-  username: string;
-  name: string;
-  gender?: string | null;
-  age?: number | null;
-  birthday?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-}
-
-export interface LoginResponse extends User {
-  message: string;
-  unlockToken: string;
-}
-
-export interface AuthResponse extends User {
-  unlockToken: string;
-  recoveryPhrase?: string;
-}
-
-export interface ChangePasswordResponse {
-  success: boolean;
-  unlockToken: string;
-}
+export type User = AuthUser;
+export interface LoginResponse extends ContractLoginResponse {}
+export interface AuthResponse extends ContractRegisterResponse {}
+export interface RegisterResponse extends ContractRegisterResponse {}
+export interface ChangePasswordResponse extends ContractChangePasswordResponse {}
+export interface LogoutResponse extends ContractLogoutResponse {}
+export interface RecoverRequest extends ContractRecoverRequest {}
+export interface RecoverResponse extends ContractRecoverResponse {}
+export interface ChangePasswordRequest extends ContractChangePasswordRequest {}
+export interface LoginRequest extends ContractLoginRequest {}
+export interface RegisterRequest extends ContractRegisterRequest {}
+export interface UserResponse extends ContractUserResponse {}
+export interface CreateAiChatRequest extends ContractCreateAiChatRequest {}
+export interface CreateAiChatResponse extends ContractCreateAiChatResponse {}
 
 export type VaultTransferFormat = "vault_json" | "anima_capsule";
 

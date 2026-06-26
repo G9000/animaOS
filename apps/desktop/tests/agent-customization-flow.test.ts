@@ -27,19 +27,23 @@ describe("agent customization flow chrome", () => {
     expect(nodes).toContain('id: "avatar"');
     expect(nodes).toContain('id: "agentName"');
     expect(nodes).toContain('id: "relationship"');
+    expect(nodes).not.toContain('id: "agentType"');
     expect(nodes).toContain('id: "preview"');
     expect(nodeTypes).toContain("agentPreview");
     expect(previewNode).toContain("Biography");
     expect(previewNode).toContain("identityDraft");
     expect(previewNode).toContain("personaDraft");
     expect(edges).not.toContain('target: "avatar"');
-    expect(edges.match(/target:\s*"preview"/g)?.length ?? 0).toBe(10);
+    expect(edges.match(/target:\s*"preview"/g)?.length ?? 0).toBe(12);
     expect(edges).toContain('source: "identity"');
     expect(edges).toContain('source: "persona"');
     expect(edges).toContain('source: "birthday"');
     expect(edges).toContain('source: "avatar"');
     expect(edges).toContain('source: "agentName"');
     expect(edges).toContain('source: "relationship"');
+    expect(edges).not.toContain('source: "agentType"');
+    expect(edges).toContain('source: "origin"');
+    expect(edges).toContain('source: "revision"');
     expect(edges).toContain('source: "directive"');
     expect(edges).toContain('source: "autonomy"');
     expect(edges).toContain('source: "growth"');
@@ -59,21 +63,25 @@ describe("agent customization flow chrome", () => {
     expect(previewNode).not.toContain("Context");
   });
 
-  test("uses agent profile creation time as a read-only agent birthday", () => {
+  test("allows agent birthday override behind identity override", () => {
     const hook = readSource("src/pages/agent-customization/hooks/useAgentNodes.ts");
     const types = readSource("src/pages/agent-customization/nodes/types.ts");
     const birthdayNode = readSource("src/pages/agent-customization/nodes/AgentBirthdayNode.tsx");
     const previewNode = readSource("src/pages/agent-customization/nodes/AgentPreviewNode.tsx");
 
     expect(hook).toContain("agentBirthday");
+    expect(hook).toContain("agentBirthdayDraft");
+    expect(hook).toContain("onAgentBirthdaySave");
     expect(hook).toContain("biographyPreview?.agentBirthday");
+    expect(hook).toContain("allowIdentityOverride: identityOverrideAllowed");
     expect(hook).not.toContain("api.users.update(user.id, { birthday");
     expect(hook).not.toContain("setBirthdayDraft(user?.birthday");
     expect(types).toContain("agentBirthday: string");
-    expect(types).not.toMatch(/export interface BirthdayData[\s\S]*onChange/);
-    expect(types).not.toMatch(/export interface BirthdayData[\s\S]*onSave/);
+    expect(types).toContain("identityOverrideAllowed");
+    expect(types).toContain("onAgentBirthdaySave");
     expect(birthdayNode).toContain('title="Agent Birthday"');
-    expect(birthdayNode).not.toContain('type="date"');
+    expect(birthdayNode).toContain('type="datetime-local"');
+    expect(birthdayNode).toContain("cannot be changed after setup unless override is enabled");
     expect(previewNode).toContain("formatAgentBirthday");
   });
 
@@ -87,17 +95,24 @@ describe("agent customization flow chrome", () => {
     expect(hook).toContain("optionalNodeVisibility");
     expect(hook).toContain("onOptionalNodeToggle");
     expect(hook).toContain('directive: false');
+    expect(hook).toContain('origin: false');
+    expect(hook).toContain('revision: false');
     expect(hook).toContain('autonomy: false');
     expect(hook).toContain('growth: false');
     expect(hook).toContain('intentions: false');
     expect(hook).toContain('id: "directive"');
+    expect(hook).toContain('id: "origin"');
+    expect(hook).toContain('id: "revision"');
     expect(hook).toContain('id: "autonomy"');
     expect(hook).toContain('id: "growth"');
     expect(hook).toContain('id: "intentions"');
     expect(hook).toContain('getSelfModelSection(user.id, "user_directive")');
+    expect(hook).toContain('getSelfModelSection(user.id, "soul")');
     expect(hook).toContain('getSelfModelSection(user.id, "growth_log")');
     expect(hook).toContain('getSelfModelSection(user.id, "intentions")');
     expect(previewNode).toContain("Agent Directive");
+    expect(previewNode).toContain("Origin Story");
+    expect(previewNode).toContain("Self-Revision Inbox");
     expect(previewNode).toContain("Autonomy Policy");
     expect(previewNode).toContain("Active Intentions");
   });
@@ -115,6 +130,8 @@ describe("agent customization flow chrome", () => {
     expect(hook).toContain("position: { x: 540, y: 780 }");
     expect(hook).toContain("position: { x: 540, y: 940 }");
     expect(hook).toContain("position: { x: 540, y: 1100 }");
+    expect(hook).toContain("position: { x: 540, y: 1260 }");
+    expect(hook).toContain("position: { x: 540, y: 1420 }");
   });
 
   test("does not let optional section failures blank core identity and persona", () => {
@@ -184,6 +201,21 @@ describe("agent customization flow chrome", () => {
     expect(relationshipNode).toContain("onClick: onRelationshipSave");
   });
 
+  test("does not expose agent type as an editable or visible agent setting", () => {
+    const edges = readSource("src/pages/agent-customization/nodes/index.ts");
+    const hook = readSource("src/pages/agent-customization/hooks/useAgentNodes.ts");
+    const types = readSource("src/pages/agent-customization/nodes/types.ts");
+    const previewNode = readSource("src/pages/agent-customization/nodes/AgentPreviewNode.tsx");
+
+    expect(edges).not.toContain("AgentTypeNode");
+    expect(edges).not.toContain("agentType");
+    expect(hook).not.toContain("agentTypeDraft");
+    expect(hook).not.toContain("onAgentTypeSave");
+    expect(types).not.toContain("AgentTypeNode");
+    expect(types).not.toContain("onAgentTypeSave");
+    expect(previewNode).not.toContain("agentType");
+  });
+
   test("uses a custom solid edge with a moving pulse orb for setting links", () => {
     const edges = readSource("src/pages/agent-customization/nodes/index.ts");
     const edgeComponent = readSource("src/pages/agent-customization/nodes/AgentPulseEdge.tsx");
@@ -191,7 +223,7 @@ describe("agent customization flow chrome", () => {
     const css = readSource("src/index.css");
 
     expect(edges).toContain("edgeTypes");
-    expect(edges.match(/type:\s*"agentPulse"/g)?.length ?? 0).toBe(10);
+    expect(edges.match(/type:\s*"agentPulse"/g)?.length ?? 0).toBe(12);
     expect(edges).not.toMatch(/animated:\s*true/);
     expect(agentPage).toContain("edgeTypes={edgeTypes}");
     expect(edgeComponent).toContain("BaseEdge");

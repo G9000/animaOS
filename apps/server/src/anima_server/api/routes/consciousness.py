@@ -168,6 +168,20 @@ def _iso_seconds(value: datetime | None) -> str | None:
     return value.replace(microsecond=0).isoformat()
 
 
+def _effective_agent_birthday(profile) -> str | None:
+    return _iso_seconds(profile.agent_birthday or profile.created_at)
+
+
+def _parse_agent_birthday(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="agentBirthday must be an ISO datetime",
+        ) from exc
+
+
 def _pending_op_dict(*, op) -> dict[str, object]:
     return {
         "id": op.id,
@@ -487,7 +501,7 @@ async def update_self_model_section(
 
     ensure_self_model_exists(db, user_id=user_id)
 
-    if section in {"identity", "user_directive", "intentions"}:
+    if section in {"identity", "soul", "user_directive", "intentions"}:
         from anima_server.models import AgentProfile
 
         profile = db.query(AgentProfile).filter(
@@ -562,6 +576,7 @@ class AgentProfileUpdateRequest(BaseModel):
     agentName: str | None = None
     relationship: str | None = None
     personaTemplate: str | None = None
+    agentBirthday: str | None = None
     allowIdentityOverride: bool = False
 
 
@@ -594,7 +609,7 @@ async def get_agent_profile(
         "personaTemplate": "default",
         "agentType": profile.agent_type,
         "avatarUrl": profile.avatar_url,
-        "agentBirthday": _iso_seconds(profile.created_at),
+        "agentBirthday": _effective_agent_birthday(profile),
         "setupComplete": profile.setup_complete,
     }
 
@@ -683,6 +698,20 @@ async def update_agent_profile(
         profile.relationship = next_relationship
         relationship_changed = next_relationship != old_relationship
 
+    if payload.agentBirthday is not None:
+        next_agent_birthday = _parse_agent_birthday(payload.agentBirthday)
+        next_agent_birthday_text = _iso_seconds(next_agent_birthday)
+        if (
+            profile.setup_complete
+            and next_agent_birthday_text != _effective_agent_birthday(profile)
+            and not payload.allowIdentityOverride
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Identity override required to change agent birthday",
+            )
+        profile.agent_birthday = next_agent_birthday
+
     profile.setup_complete = True
 
     if name_changed:
@@ -698,6 +727,7 @@ async def update_agent_profile(
             content=origin_content,
             updated_by="agent_setup",
         )
+
         record_agent_name_memory(
             db,
             user_id=user_id,
@@ -760,7 +790,7 @@ async def update_agent_profile(
         "relationship": profile.relationship,
         "agentType": profile.agent_type,
         "avatarUrl": profile.avatar_url,
-        "agentBirthday": _iso_seconds(profile.created_at),
+        "agentBirthday": _effective_agent_birthday(profile),
         "setupComplete": True,
     }
 

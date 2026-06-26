@@ -86,6 +86,14 @@ export const EDGES: AgentPulseEdgeType[] = [
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--accent)", width: 16, height: 16 },
   },
   {
+    id: "origin-preview",
+    source: "origin", target: "preview",
+    type: "agentPulse",
+    className: "agent-setting-edge",
+    data: accent("1.65s"),
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--accent)", width: 16, height: 16 },
+  },
+  {
     id: "directive-preview",
     source: "directive", target: "preview",
     type: "agentPulse",
@@ -107,6 +115,14 @@ export const EDGES: AgentPulseEdgeType[] = [
     type: "agentPulse",
     className: "agent-setting-edge",
     data: accent("2.4s"),
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--accent)", width: 16, height: 16 },
+  },
+  {
+    id: "revision-preview",
+    source: "revision", target: "preview",
+    type: "agentPulse",
+    className: "agent-setting-edge",
+    data: accent("2.55s"),
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--accent)", width: 16, height: 16 },
   },
   {

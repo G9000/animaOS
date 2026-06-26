@@ -111,7 +111,7 @@ def compute_heat(
                         interaction_depth=interaction_depth,
                         importance=importance,
                         seconds_since_access=seconds_since_access,
-                        superseded=False,
+                        superseded=superseded,
                     )
                 ),
                 floor,

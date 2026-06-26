@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { createApiClient } from "../src/client";
+
+function readClientSource(): string {
+  return readFileSync(join(import.meta.dir, "../src/client.ts"), "utf8");
+}
 
 describe("createApiClient error handling", () => {
   test("surfaces normalized validation details arrays", async () => {
@@ -300,6 +306,43 @@ describe("createApiClient error handling", () => {
       content: "Protect identity changes.",
       allowIdentityOverride: true,
     });
+  });
+
+  test("serializes agent birthday override for profile updates", async () => {
+    let requestBody: unknown = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            agentName: "Anima",
+            relationship: "companion",
+            personaTemplate: "default",
+            agentType: "mirror",
+            avatarUrl: null,
+            agentBirthday: "2026-06-24T19:05:54",
+            setupComplete: true,
+          }),
+        );
+      },
+    });
+
+    await api.consciousness.updateAgentProfile(7, {
+      agentBirthday: "2026-06-24T19:05:54",
+      allowIdentityOverride: true,
+    });
+
+    expect(requestBody).toEqual({
+      agentBirthday: "2026-06-24T19:05:54",
+      allowIdentityOverride: true,
+    });
+  });
+
+  test("does not model agent type as an editable profile update field", () => {
+    const source = readClientSource();
+
+    expect(source).not.toMatch(/updateAgentProfile:[\s\S]*agentType\?: string;/);
   });
 
   test("requests diary entries and uploads diary attachments", async () => {

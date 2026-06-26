@@ -94,7 +94,9 @@ def build_agent_biography_preview(
         "relationship": _profile_value(profile.relationship if profile else None, "companion"),
         "agentType": agent_type,
         "avatarUrl": profile.avatar_url if profile is not None else None,
-        "agentBirthday": _iso_seconds(profile.created_at if profile is not None else None),
+        "agentBirthday": _iso_seconds(
+            (profile.agent_birthday or profile.created_at) if profile is not None else None
+        ),
         "birthday": user.birthday if user is not None else None,
         "dominantEmotion": _dominant_emotion(runtime_db or db, user_id=user_id),
         "identityDraft": identity,

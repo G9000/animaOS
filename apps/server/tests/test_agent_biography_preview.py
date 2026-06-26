@@ -60,6 +60,7 @@ def test_agent_biography_preview_compiles_profile_and_prompt_context() -> None:
                 avatar_url="/consciousness/1/agent-profile/avatar",
                 setup_complete=True,
                 created_at=datetime(2026, 6, 24, 19, 5, 54, 987654, tzinfo=UTC),
+                agent_birthday=datetime(2026, 6, 25, 8, 30, 15, tzinfo=UTC),
             )
         )
 
@@ -150,7 +151,7 @@ def test_agent_biography_preview_compiles_profile_and_prompt_context() -> None:
     assert preview["relationship"] == "companion"
     assert preview["agentType"] == "mirror"
     assert preview["avatarUrl"] == "/consciousness/1/agent-profile/avatar"
-    assert preview["agentBirthday"] == "2026-06-24T19:05:54"
+    assert preview["agentBirthday"] == "2026-06-25T08:30:15"
     assert preview["dominantEmotion"] == "curious"
     assert preview["identityDraft"] == "I am a precise reflection built through shared memory."
     assert preview["personaDraft"] == "Warm, direct, a little playful, never generic."

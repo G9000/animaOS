@@ -63,6 +63,14 @@ export {
   MoonIcon,
   SunriseIcon,
   SunsetIcon,
+  UserIcon,
+  LinkIcon,
+  SparkleIcon,
+  CompassIcon,
+  GearIcon,
+  TrendIcon,
+  InboxIcon,
+  TargetIcon,
 } from "./icons";
 export {
   HomeIcon,

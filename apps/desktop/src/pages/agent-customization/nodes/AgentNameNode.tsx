@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { NodeShell, type NodeAction } from "../../dashboard/nodes/NodeShell";
 import type { AgentNameNode as AgentNameNodeType } from "./types";
+import { UserIcon } from "@anima/standard-templates";
 
 const AT_RIGHT: React.CSSProperties = {
   position: "absolute",
@@ -39,6 +40,7 @@ export function AgentNameNode({ data, id }: NodeProps<AgentNameNodeType>) {
     <div style={{ position: "relative" }}>
       <NodeShell
         title="Agent Name"
+        icon={<UserIcon size="sm" className="text-foreground/25" />}
         headerExtra={
           agentNameSaved
             ? <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-accent/70">Saved</span>

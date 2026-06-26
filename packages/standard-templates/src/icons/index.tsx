@@ -35,3 +35,13 @@ export { SunIcon } from "./SunIcon";
 export { MoonIcon } from "./MoonIcon";
 export { SunriseIcon } from "./SunriseIcon";
 export { SunsetIcon } from "./SunsetIcon";
+
+// Agent / content
+export { UserIcon } from "./UserIcon";
+export { LinkIcon } from "./LinkIcon";
+export { SparkleIcon } from "./SparkleIcon";
+export { CompassIcon } from "./CompassIcon";
+export { GearIcon } from "./GearIcon";
+export { TrendIcon } from "./TrendIcon";
+export { InboxIcon } from "./InboxIcon";
+export { TargetIcon } from "./TargetIcon";

@@ -7,6 +7,7 @@ import {
 } from "@xyflow/react";
 import { NodeShell } from "../../dashboard/nodes/NodeShell";
 import type { BiographyPreviewNode } from "./types";
+import { DocumentIcon } from "@anima/standard-templates";
 
 const TARGET_HANDLE: React.CSSProperties = {
   position: "absolute",
@@ -57,25 +58,29 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
   useEffect(() => { updateNodeInternals(id); }, [id, updateNodeInternals]);
 
   const {
-    avatarUrl, agentName, relationship, agentType, dominantEmotion,
-    identityDraft, personaDraft, directiveDraft, autonomyDraft, intentionsDraft,
+    avatarUrl, agentName, relationship, dominantEmotion,
+    identityDraft, personaDraft, originDraft, directiveDraft, autonomyDraft, revisionDraft, intentionsDraft,
     agentBirthday, previewSections, onClose,
   } = data;
 
   const identity = identityDraft || sectionContent(previewSections, "identity");
   const persona = personaDraft || sectionContent(previewSections, "persona");
+  const origin = optionalSection(originDraft, sectionContent(previewSections, "origin"));
   const directive = optionalSection(directiveDraft, sectionContent(previewSections, "user_directive"));
   const autonomy = autonomyDraft.trim();
+  const revision = revisionDraft.trim();
   const intentions = optionalSection(intentionsDraft, sectionContent(previewSections, "intentions"));
   const optionalProfileSections = [
+    { title: "Origin Story", content: origin },
     { title: "Agent Directive", content: directive },
     { title: "Autonomy Policy", content: autonomy },
+    { title: "Self-Revision Inbox", content: revision },
     { title: "Active Intentions", content: intentions },
   ].filter((section) => section.content.trim());
 
   return (
     <div style={{ position: "relative" }} className="agent-preview-wrapper">
-      <NodeShell title="Biography" onClose={onClose} required className="w-[340px]">
+      <NodeShell title="Biography" icon={<DocumentIcon size="sm" className="text-foreground/25" />} onClose={onClose} required className="w-[340px]">
         <div className="p-4 space-y-4">
           <div className="flex items-center gap-3">
             <div className="h-12 w-12 shrink-0 overflow-hidden border border-foreground/[0.08] bg-foreground/[0.04]">
@@ -85,7 +90,7 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
               <p className="text-[14px] font-semibold leading-snug text-foreground truncate">
                 {agentName || "Anima"}
               </p>
-              {(dominantEmotion || relationship || agentType) && (
+              {(dominantEmotion || relationship) && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {dominantEmotion && (
                     <span className="font-mono text-[7px] tracking-[0.18em] uppercase px-1.5 py-0.5 border border-accent/35 text-accent/70">
@@ -95,11 +100,6 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
                   {relationship && (
                     <span className="font-mono text-[7px] tracking-[0.16em] uppercase px-1.5 py-0.5 bg-foreground/[0.04] text-foreground/40 border border-foreground/[0.06]">
                       {relationship}
-                    </span>
-                  )}
-                  {agentType && (
-                    <span className="font-mono text-[7px] tracking-[0.16em] uppercase px-1.5 py-0.5 bg-foreground/[0.03] text-foreground/30 border border-foreground/[0.05]">
-                      {agentType}
                     </span>
                   )}
                 </div>

@@ -10,6 +10,7 @@ export interface NodeAction {
 
 interface NodeShellProps {
   title?: ReactNode;
+  icon?: ReactNode;
   headerExtra?: ReactNode;
   media?: ReactNode;
   children: ReactNode;
@@ -25,6 +26,7 @@ interface NodeShellProps {
 
 export function NodeShell({
   title,
+  icon,
   headerExtra,
   media,
   children,
@@ -85,7 +87,8 @@ export function NodeShell({
 
       {!hideHeader && (
         <div className="px-3.5 h-9 flex items-center justify-between border-b border-foreground/[0.06]">
-          <div className="min-w-0 flex items-center gap-2 pr-4">
+          <div className="min-w-0 flex items-center gap-1.5 pr-4">
+            {icon}
             {typeof title === "string" ? (
               <span className="font-mono text-[8px] tracking-[0.3em] uppercase text-foreground/30 truncate block">
                 {title}

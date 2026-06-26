@@ -16,7 +16,7 @@ from anima_server.db.user_store import (
     recover_account_with_phrase,
     register_account,
 )
-from anima_server.schemas.auth import (
+from anima_server.contracts.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
     CreateAIChatRequest,

@@ -70,3 +70,9 @@ P1 ──> P2 ──> P3 ──> P4 ──> P5
 |-----|-------|----------|--------|---------|
 | [Encrypted Core v1](crypto/encrypted-core-v1.md) | 1 | P0 | Draft | Encrypted-by-default Core with SQLCipher |
 | [Cryptographic Hardening](crypto/crypto-hardening-plan.md) | 1.5 | P1 | Draft | Per-domain DEKs, core identity keypair, vault hardening |
+
+## Animus (`animus/`)
+
+| PRD | Phase | Priority | Status | Summary |
+|-----|-------|----------|--------|---------|
+| [Coding TUI Short Port v1](animus/coding-tui-v1.md) | 1 | P1 | Draft | ANIMA-first coding terminal UX, protocol lifecycle fixes, approvals, and spawn visibility |

@@ -97,6 +97,8 @@ class AgentProfile(Base):
         String(32), nullable=False, default="companion", server_default="companion"
     )  # companion, mirror
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    agent_birthday: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     setup_complete: Mapped[bool] = mapped_column(
         default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(

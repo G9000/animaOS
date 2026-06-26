@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { NodeShell, type NodeAction } from "../../dashboard/nodes/NodeShell";
 import type { AvatarNode } from "./types";
+import { UserIcon } from "@anima/standard-templates";
 
 const AT_RIGHT: React.CSSProperties = {
   position: "absolute",
@@ -119,6 +120,7 @@ export function AgentAvatarNode({ data, id }: NodeProps<AvatarNode>) {
     <div style={{ position: "relative" }}>
       <NodeShell
         title={agentName || "Anima"}
+        icon={<UserIcon size="sm" className="text-foreground/25" />}
         onClose={onClose}
         actions={actions}
         required

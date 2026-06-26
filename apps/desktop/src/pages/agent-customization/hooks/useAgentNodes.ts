@@ -8,7 +8,7 @@ import type { AgentBiographyPreviewData } from "@anima/api-client";
 import { EDGES, type AgentPulseEdgeType } from "../nodes";
 import type { AgentNode, Section } from "../nodes/types";
 
-type OptionalNodeKey = "directive" | "autonomy" | "growth" | "intentions";
+type OptionalNodeKey = "origin" | "directive" | "autonomy" | "growth" | "revision" | "intentions";
 
 export interface OptionalNodeToggle {
   id: OptionalNodeKey;
@@ -21,6 +21,7 @@ export interface OptionalNodeToggle {
 
 const EMPTY_SELF_MODEL_DRAFTS: Record<Section, string> = {
   identity: "",
+  soul: "",
   persona: "",
   user_directive: "",
   growth_log: "",
@@ -29,6 +30,7 @@ const EMPTY_SELF_MODEL_DRAFTS: Record<Section, string> = {
 
 const EMPTY_SELF_MODEL_VERSIONS: Record<Section, number | null> = {
   identity: null,
+  soul: null,
   persona: null,
   user_directive: null,
   growth_log: null,
@@ -37,6 +39,7 @@ const EMPTY_SELF_MODEL_VERSIONS: Record<Section, number | null> = {
 
 const PROTECTED_SECTIONS: ReadonlySet<Section> = new Set([
   "identity",
+  "soul",
   "user_directive",
   "intentions",
 ]);
@@ -73,13 +76,24 @@ function filterEdgesForNodes(nodes: AgentNode[]): AgentPulseEdgeType[] {
   return EDGES.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 }
 
+function toDateTimeLocalValue(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value.slice(0, 19);
+
+  const pad = (part: number) => part.toString().padStart(2, "0");
+  return [
+    `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`,
+    `${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`,
+  ].join("T");
+}
+
 export function useAgentNodes() {
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     agentName,
     relationship,
-    agentType,
     agentBirthday: profileAgentBirthday,
     avatarUrl,
     hasCustomAvatar,
@@ -104,13 +118,18 @@ export function useAgentNodes() {
   const [relationshipDraft, setRelationshipDraft] = useState("");
   const [relationshipSaving, setRelationshipSaving] = useState(false);
   const [relationshipSaved, setRelationshipSaved] = useState(false);
+  const [agentBirthdayDraft, setAgentBirthdayDraft] = useState("");
+  const [agentBirthdaySaving, setAgentBirthdaySaving] = useState(false);
+  const [agentBirthdaySaved, setAgentBirthdaySaved] = useState(false);
   const [identityOverrideAllowed, setIdentityOverrideAllowed] = useState(false);
   const [directiveDraft, setDirectiveDraft] = useState("");
   const [autonomyDraft, setAutonomyDraft] = useState("");
   const [optionalNodeVisibility, setOptionalNodeVisibility] = useState<Record<OptionalNodeKey, boolean>>({
+    origin: false,
     directive: false,
     autonomy: false,
     growth: false,
+    revision: false,
     intentions: false,
   });
 
@@ -120,6 +139,14 @@ export function useAgentNodes() {
 
   const optionalNodeToggles = useMemo<OptionalNodeToggle[]>(
     () => [
+      {
+        id: "origin",
+        label: "Origin",
+        description: "Birth story & agent role.",
+        dangerous: true,
+        active: optionalNodeVisibility.origin,
+        onToggle: () => onOptionalNodeToggle("origin"),
+      },
       {
         id: "directive",
         label: "Directive",
@@ -143,6 +170,14 @@ export function useAgentNodes() {
         dangerous: false,
         active: optionalNodeVisibility.growth,
         onToggle: () => onOptionalNodeToggle("growth"),
+      },
+      {
+        id: "revision",
+        label: "Revision Inbox",
+        description: "Self-change history feed.",
+        dangerous: false,
+        active: optionalNodeVisibility.revision,
+        onToggle: () => onOptionalNodeToggle("revision"),
       },
       {
         id: "intentions",
@@ -337,6 +372,40 @@ export function useAgentNodes() {
     }
   }, [identityOverrideAllowed, relationshipDraft, relationshipSaving, user?.id]);
 
+  const onAgentBirthdayChange = useCallback((val: string) => {
+    setAgentBirthdayDraft(val);
+    setAgentBirthdaySaved(false);
+  }, []);
+
+  const onAgentBirthdaySave = useCallback(async () => {
+    if (user?.id == null || agentBirthdaySaving) return;
+    if (!identityOverrideAllowed) {
+      setError("Enable identity override first");
+      return;
+    }
+    setAgentBirthdaySaving(true);
+    setAgentBirthdaySaved(false);
+    setError("");
+    try {
+      const updated = await api.consciousness.updateAgentProfile(user.id, {
+        agentBirthday: agentBirthdayDraft,
+        allowIdentityOverride: identityOverrideAllowed,
+      });
+      const nextBirthday = updated.agentBirthday ?? agentBirthdayDraft;
+      setAgentBirthdayDraft(toDateTimeLocalValue(nextBirthday));
+      setBiographyPreview((current) =>
+        current ? { ...current, agentBirthday: nextBirthday } : current,
+      );
+      dispatchAgentProfileChanged();
+      setAgentBirthdaySaved(true);
+      window.setTimeout(() => setAgentBirthdaySaved(false), 2000);
+    } catch (err: any) {
+      setError(err.message || "Failed to save agent birthday");
+    } finally {
+      setAgentBirthdaySaving(false);
+    }
+  }, [agentBirthdayDraft, agentBirthdaySaving, identityOverrideAllowed, user?.id]);
+
   const onNodeClose = useCallback(() => {}, []);
 
   const protectedOverrideDescription = "Override rewrites a protected agent profile field.";
@@ -350,6 +419,9 @@ export function useAgentNodes() {
       }
       if (section.id === "persona") {
         return { ...section, content: selfModelDrafts.persona };
+      }
+      if (section.id === "origin") {
+        return { ...section, content: selfModelDrafts.soul };
       }
       if (section.id === "user_directive") {
         return { ...section, content: userDirectiveContent };
@@ -418,6 +490,13 @@ export function useAgentNodes() {
         position: { x: 20, y: 1060 },
         data: {
           agentBirthday,
+          agentBirthdayDraft,
+          agentBirthdaySaving,
+          agentBirthdaySaved,
+          identityOverrideAllowed,
+          onAgentBirthdayChange,
+          onAgentBirthdaySave,
+          onIdentityOverrideAllowedChange: setIdentityOverrideAllowed,
           onClose: onNodeClose,
         },
       },
@@ -468,11 +547,42 @@ export function useAgentNodes() {
       },
     ];
 
+    if (optionalNodeVisibility.origin) {
+      baseNodes.push({
+        id: "origin",
+        type: "agentText",
+        position: { x: 540, y: 620 },
+        width: 420,
+        height: 300,
+        data: {
+          nodeTitle: "Origin Story",
+          description: "The agent's origin, birth framing, and type-specific identity anchor.",
+          draft: selfModelDrafts.soul,
+          version: selfModelVersions.soul,
+          loading: selfModelLoading,
+          saving: selfModelSaving === "soul",
+          saved: selfModelSaved === "soul",
+          hasWarmer: false,
+          required: false,
+          requiresOverride: true,
+          identityOverrideAllowed,
+          overrideDescription: protectedOverrideDescriptionLower,
+          onIdentityOverrideAllowedChange: setIdentityOverrideAllowed,
+          onChange: (val) => onSelfModelDraftChange("soul", val),
+          onSave: () => onSelfModelSave("soul"),
+          onWarmer: onWarmerBaseline,
+          onClose: () => onOptionalNodeToggle("origin"),
+          cardWidth: "w-[420px]",
+          inputRows: 8,
+        },
+      });
+    }
+
     if (optionalNodeVisibility.directive) {
       baseNodes.push({
         id: "directive",
         type: "agentText",
-        position: { x: 540, y: 620 },
+        position: { x: 540, y: 780 },
         width: 420,
         height: 300,
         data: {
@@ -503,7 +613,7 @@ export function useAgentNodes() {
       baseNodes.push({
         id: "autonomy",
         type: "agentText",
-        position: { x: 540, y: 780 },
+        position: { x: 540, y: 940 },
         width: 420,
         height: 300,
         data: {
@@ -534,7 +644,7 @@ export function useAgentNodes() {
       baseNodes.push({
         id: "growth",
         type: "agentText",
-        position: { x: 540, y: 940 },
+        position: { x: 540, y: 1100 },
         width: 420,
         height: 300,
         data: {
@@ -558,11 +668,39 @@ export function useAgentNodes() {
       });
     }
 
+    if (optionalNodeVisibility.revision) {
+      baseNodes.push({
+        id: "revision",
+        type: "agentText",
+        position: { x: 540, y: 1260 },
+        width: 420,
+        height: 300,
+        data: {
+          nodeTitle: "Self-Revision Inbox",
+          description: "Read-only feed of profile changes and self-model edits awaiting future agent reflection.",
+          draft: selfModelDrafts.growth_log,
+          version: selfModelVersions.growth_log,
+          loading: selfModelLoading,
+          saving: false,
+          saved: false,
+          hasWarmer: false,
+          required: false,
+          readOnly: true,
+          onChange: () => undefined,
+          onSave: () => undefined,
+          onWarmer: onWarmerBaseline,
+          onClose: () => onOptionalNodeToggle("revision"),
+          cardWidth: "w-[420px]",
+          inputRows: 8,
+        },
+      });
+    }
+
     if (optionalNodeVisibility.intentions) {
       baseNodes.push({
         id: "intentions",
         type: "agentText",
-        position: { x: 540, y: 1100 },
+        position: { x: 540, y: 1420 },
         width: 420,
         height: 300,
         data: {
@@ -597,12 +735,13 @@ export function useAgentNodes() {
         avatarUrl,
         agentName: agentNameDraft || biographyPreview?.agentName || agentName,
         relationship: relationshipDraft,
-        agentType: biographyPreview?.agentType ?? agentType,
         dominantEmotion: dominantEmotion ?? biographyPreview?.dominantEmotion ?? null,
         identityDraft: selfModelDrafts.identity,
         personaDraft: selfModelDrafts.persona,
+        originDraft: selfModelDrafts.soul,
         directiveDraft,
         autonomyDraft,
+        revisionDraft: selfModelDrafts.growth_log,
         intentionsDraft: selfModelDrafts.intentions,
         agentBirthday,
         biography: biographyPreview?.biography ?? "",
@@ -617,7 +756,9 @@ export function useAgentNodes() {
     agentNameDraft,
     agentNameSaved,
     agentNameSaving,
-    agentType,
+    agentBirthdayDraft,
+    agentBirthdaySaved,
+    agentBirthdaySaving,
     autonomyDraft,
     avatarUrl,
     biographyPreview,
@@ -625,6 +766,8 @@ export function useAgentNodes() {
     dominantEmotion,
     hasCustomAvatar,
     identityOverrideAllowed,
+    onAgentBirthdayChange,
+    onAgentBirthdaySave,
     onAgentNameChange,
     onAgentNameSave,
     onCropSave,
@@ -673,18 +816,34 @@ export function useAgentNodes() {
   }, [relationship]);
 
   useEffect(() => {
+    setAgentBirthdayDraft(toDateTimeLocalValue(biographyPreview?.agentBirthday ?? profileAgentBirthday));
+  }, [biographyPreview?.agentBirthday, profileAgentBirthday]);
+
+  useEffect(() => {
     if (user?.id == null) return;
     let cancelled = false;
     setSelfModelLoading(true);
     setError("");
 
     const loadOptionalSelfModelSections = async () => {
-      const [directive, growth, intentions] = await Promise.allSettled([
+      const [origin, directive, growth, intentions] = await Promise.allSettled([
+        api.consciousness.getSelfModelSection(user.id, "soul"),
         api.consciousness.getSelfModelSection(user.id, "user_directive"),
         api.consciousness.getSelfModelSection(user.id, "growth_log"),
         api.consciousness.getSelfModelSection(user.id, "intentions"),
       ]);
       if (cancelled) return;
+
+      if (origin.status === "fulfilled") {
+        setSelfModelDrafts((current) => ({
+          ...current,
+          soul: origin.value.content,
+        }));
+        setSelfModelVersions((current) => ({
+          ...current,
+          soul: origin.value.version,
+        }));
+      }
 
       if (directive.status === "fulfilled") {
         const parsedDirective = parseDirectiveContent(directive.value.content);

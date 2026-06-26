@@ -1,7 +1,31 @@
 import { useEffect } from "react";
+import type { ReactNode } from "react";
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
+import {
+  SecurityIcon,
+  MicIcon,
+  SparkleIcon,
+  CompassIcon,
+  GearIcon,
+  TrendIcon,
+  InboxIcon,
+  TargetIcon,
+} from "@anima/standard-templates";
 import { NodeShell, type NodeAction } from "../../dashboard/nodes/NodeShell";
 import { TA, type TextNode } from "./types";
+
+const IC = "text-foreground/25";
+
+const TITLE_ICONS: Record<string, ReactNode> = {
+  "Core Identity":     <SecurityIcon  size="sm" className={IC} />,
+  "Voice & Persona":   <MicIcon       size="sm" className={IC} />,
+  "Origin Story":      <SparkleIcon   size="sm" className={IC} />,
+  "Agent Directive":   <CompassIcon   size="sm" className={IC} />,
+  "Autonomy Policy":   <GearIcon      size="sm" className={IC} />,
+  "Growth Log":        <TrendIcon     size="sm" className={IC} />,
+  "Self-Revision Inbox": <InboxIcon   size="sm" className={IC} />,
+  "Active Intentions": <TargetIcon    size="sm" className={IC} />,
+};
 
 const AT_RIGHT: React.CSSProperties = {
   position: "absolute",
@@ -54,6 +78,7 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
       )}
       <NodeShell
         title={nodeTitle}
+        icon={TITLE_ICONS[nodeTitle]}
         headerExtra={
           <div className="flex items-center gap-2">
             {version != null && (

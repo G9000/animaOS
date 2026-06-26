@@ -233,21 +233,24 @@ def extract_triplets(text: str, *, limit: int = 8_192) -> list[dict[str, Any]]:
         return []
 
     if anima_core_bindings.rust_extract_triplets is not None:
-        triplets: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
-        for item in anima_core_bindings.rust_extract_triplets(prepared):
-            triplet = _coerce_rust_triplet(item)
-            if triplet is None:
-                continue
-            key = (
-                triplet["subject"].lower(),
-                triplet["predicate"].lower(),
-                triplet["object"].lower(),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            triplets.append(triplet)
-        return triplets
+        try:
+            triplets: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
+            for item in anima_core_bindings.rust_extract_triplets(prepared):
+                triplet = _coerce_rust_triplet(item)
+                if triplet is None:
+                    continue
+                key = (
+                    triplet["subject"].lower(),
+                    triplet["predicate"].lower(),
+                    triplet["object"].lower(),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                triplets.append(triplet)
+            return triplets
+        except Exception:
+            logger.debug("Rust triplet extraction failed; falling back to Python", exc_info=True)
 
     return _python_extract_triplets(prepared)

@@ -444,6 +444,81 @@ def test_agent_identity_updates_require_override_after_setup() -> None:
         assert profile.json()["relationship"] == "companion"
 
 
+def test_agent_type_is_creation_metadata_not_profile_update_field() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client, name="Alice")
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        setup = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Nova", "relationship": "companion"},
+        )
+        assert setup.status_code == 200
+        assert setup.json()["agentType"] == "companion"
+
+        ignored = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentType": "mirror"},
+        )
+        assert ignored.status_code == 200
+        assert ignored.json()["agentType"] == "companion"
+
+        resp = client.get(
+            f"/api/consciousness/{user_id}/self-model/soul", headers=h)
+        assert resp.status_code == 200
+        assert "reflection" not in resp.json()["content"].lower()
+
+
+def test_agent_birthday_update_requires_override_after_setup() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        setup = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Nova", "relationship": "companion"},
+        )
+        assert setup.status_code == 200
+        original_birthday = setup.json()["agentBirthday"]
+
+        blocked = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentBirthday": "2026-06-24T19:05:54"},
+        )
+        assert blocked.status_code == 403
+
+        unchanged = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+        )
+        assert unchanged.status_code == 200
+        assert unchanged.json()["agentBirthday"] == original_birthday
+
+        updated = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={
+                "agentBirthday": "2026-06-24T19:05:54",
+                "allowIdentityOverride": True,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["agentBirthday"] == "2026-06-24T19:05:54"
+
+        profile = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+        )
+        assert profile.status_code == 200
+        assert profile.json()["agentBirthday"] == "2026-06-24T19:05:54"
+
+
 def test_protected_self_model_updates_require_override_after_setup() -> None:
     with managed_test_client("anima-creation-test-") as client:
         payload = _register_user(client)
@@ -463,6 +538,13 @@ def test_protected_self_model_updates_require_override_after_setup() -> None:
             json={"content": "I am now rewritten casually."},
         )
         assert identity_resp.status_code == 403
+
+        soul_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/soul",
+            headers=h,
+            json={"content": "I was rewritten without override."},
+        )
+        assert soul_resp.status_code == 403
 
         directive_resp = client.put(
             f"/api/consciousness/{user_id}/self-model/user_directive",
@@ -495,6 +577,17 @@ def test_protected_self_model_updates_require_override_after_setup() -> None:
         )
         assert override_resp.status_code == 200
         assert "explicit override" in override_resp.json()["content"]
+
+        origin_resp = client.put(
+            f"/api/consciousness/{user_id}/self-model/soul",
+            headers=h,
+            json={
+                "content": "I remember this as my origin story.",
+                "allowIdentityOverride": True,
+            },
+        )
+        assert origin_resp.status_code == 200
+        assert "origin story" in origin_resp.json()["content"]
 
 
 def test_agent_setup_rerenders_persona_with_chosen_template() -> None:

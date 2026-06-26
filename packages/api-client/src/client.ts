@@ -907,6 +907,7 @@ export function createApiClient(options: ApiClientOptions) {
           agentName?: string;
           relationship?: string;
           personaTemplate?: string;
+          agentBirthday?: string;
           allowIdentityOverride?: boolean;
         },
       ) =>
