@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-local-runtime-daemon.md
 - Created: 2026-06-26 17:06 MYT
-- Updated: 2026-06-27 04:03 MYT
+- Updated: 2026-06-27 04:26 MYT
 - Started: 2026-06-27 04:03 MYT
 - Completed:
 
@@ -20,7 +20,7 @@ Track the local runtime daemon initiative as a separate project from gateway/run
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `LRD-001` | Define daemon lifecycle and control contract | `backlog` | none |
+| `LRD-001` | Define daemon lifecycle and control contract | `in_progress` | none |
 | `LRD-006` | Define lock/unlock and background job policy | `backlog` | `LRD-001` |
 | `LRD-009` | Create local daemon threat model | `backlog` | `LRD-001`, `LRD-006` |
 | `LRD-002` | Scaffold Rust daemon binary | `backlog` | `LRD-001` |
@@ -47,11 +47,16 @@ Track the local runtime daemon initiative as a separate project from gateway/run
 
 - none
 
+## In-Flight Tickets
+
+- LRD-001
+
 ## Activity Log
 
 - 2026-06-26 17:06 MYT - Parent tracker created for local runtime daemon initiative.
 - 2026-06-26 17:18 MYT - Added daemon threat model ticket before lifecycle implementation hardening.
 - 2026-06-27 04:03 MYT - Started execution planning on dedicated branch/worktree `codex/lrd-000-local-runtime-daemon` and updated phase plan.
+- 2026-06-27 04:26 MYT - Started `LRD-001` implementation. Added shared daemon contract package, desktop control client scaffold, and control contract architecture spec.
 
 ## Validation
 
@@ -59,5 +64,12 @@ Track the local runtime daemon initiative as a separate project from gateway/run
   - not run yet
 - Changed paths:
   - tickets/local-runtime-daemon/LRD-000-parent.md
+  - tickets/local-runtime-daemon/LRD-001-daemon-control-contract.md
+  - docs/architecture/README.md
+  - docs/architecture/system/local-runtime-daemon-control-contract.md
+  - packages/anima-runtime-daemon-contracts/package.json
+  - packages/anima-runtime-daemon-contracts/src/index.ts
+  - apps/desktop/package.json
+  - apps/desktop/src/lib/daemon-control.ts
 - Notes:
   - tracker only
