@@ -3,13 +3,19 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
+use config::{load_config, AnimusConfig, ConfigOverrides};
+
+mod client;
+mod config;
+mod protocol;
+
 #[derive(Debug, Parser)]
 #[command(name = "animus", about = "ANIMA Rust coding terminal")]
 struct Cli {
-    #[arg(long, default_value = "http://127.0.0.1:3031")]
-    server_url: String,
-    #[arg(long, default_value = ".")]
-    workspace: PathBuf,
+    #[arg(long)]
+    server_url: Option<String>,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
     #[arg(long)]
     token: Option<String>,
     #[arg(long)]
@@ -22,8 +28,9 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config = load_config(ConfigOverrides::from(&cli))?;
     if cli.headless {
-        println!("{}", startup_summary(&cli));
+        println!("{}", startup_summary(&config));
         return Ok(());
     }
 
@@ -33,12 +40,24 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn startup_summary(cli: &Cli) -> String {
-    let auth_mode = if cli.token.is_some() {
+impl From<&Cli> for ConfigOverrides {
+    fn from(cli: &Cli) -> Self {
+        Self {
+            server_url: cli.server_url.clone(),
+            workspace: cli.workspace.clone(),
+            unlock_token: cli.token.clone(),
+            username: cli.username.clone(),
+            password: cli.password.clone(),
+        }
+    }
+}
+
+fn startup_summary(config: &AnimusConfig) -> String {
+    let auth_mode = if config.unlock_token.is_some() {
         "token"
-    } else if cli.username.is_some() && cli.password.is_some() {
+    } else if config.username.is_some() && config.password.is_some() {
         "username/password"
-    } else if cli.username.is_some() {
+    } else if config.username.is_some() {
         "username"
     } else {
         "none"
@@ -46,8 +65,8 @@ fn startup_summary(cli: &Cli) -> String {
 
     format!(
         "Animus Rust TUI\nserver_url: {}\nworkspace: {}\nauth: {}",
-        cli.server_url,
-        cli.workspace.display(),
+        config.server_url,
+        config.workspace.display(),
         auth_mode
     )
 }
@@ -69,8 +88,11 @@ mod tests {
             "--headless",
         ]);
 
-        assert_eq!(cli.server_url, "http://localhost:3031");
-        assert_eq!(cli.workspace.display().to_string(), "C:/work/anima");
+        assert_eq!(cli.server_url.as_deref(), Some("http://localhost:3031"));
+        assert_eq!(
+            cli.workspace.as_ref().unwrap().display().to_string(),
+            "C:/work/anima"
+        );
         assert_eq!(cli.token.as_deref(), Some("secret-token"));
         assert!(cli.headless);
     }
@@ -88,7 +110,13 @@ mod tests {
             "--headless",
         ]);
 
-        let summary = startup_summary(&cli);
+        let summary = startup_summary(&AnimusConfig {
+            server_url: "http://127.0.0.1:3031".to_string(),
+            workspace: cli.workspace.clone().unwrap(),
+            unlock_token: cli.token.clone(),
+            username: cli.username.clone(),
+            password: cli.password.clone(),
+        });
 
         assert!(summary.contains("Animus Rust TUI"));
         assert!(summary.contains("auth: username/password"));
