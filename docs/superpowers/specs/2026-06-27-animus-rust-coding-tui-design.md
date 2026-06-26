@@ -84,6 +84,18 @@ Rewrite around ANIMA where the code is product-specific:
 - Cloud/web/desktop links.
 - Upstream brand text, names, logos, and ASCII art.
 
+## Concrete Codex Reference Boundary
+
+Use the local Codex checkout at `C:\Users\leoca\OneDrive\Desktop\anima\codex` as a reference implementation for Rust TUI structure, not as a product template. The implementation plan maps specific Codex files to Animus tasks; the key boundaries are:
+
+- Terminal lifecycle/event-loop patterns may be adapted from `codex-rs/tui/src/tui.rs`, `codex-rs/tui/src/tui/event_stream.rs`, and `codex-rs/tui/src/tui/frame_requester.rs`.
+- Transcript/history-cell patterns may be adapted from `codex-rs/tui/src/history_cell/*.rs`, but Animus cells must be ANIMA event cells.
+- Slash-command and status-line patterns may be adapted from `codex-rs/tui/src/slash_command.rs`, `codex-rs/tui/src/bottom_pane/slash_commands.rs`, `codex-rs/tui/src/bottom_pane/footer.rs`, and `codex-rs/tui/src/status/*`.
+- Approval display and decision modeling may be adapted from `codex-rs/tui/src/approval_events.rs`, `codex-rs/tui/src/bottom_pane/approval_overlay.rs`, and `codex-rs/tui/src/history_cell/approvals.rs`.
+- Background thread navigation concepts may be adapted from `codex-rs/tui/src/multi_agents.rs` and `codex-rs/tui/src/app/agent_navigation.rs`, but labels and behavior must remain ANIMA single-identity spawn semantics.
+
+Do not copy provider login, ChatGPT/OpenAI account state, cloud task APIs, remote thread stores, app-server session assumptions, product names, logos, ASCII art, marketing copy, or model-provider defaults. Any adapted source file must be listed in `apps/animus/NOTICE.md` before merge.
+
 ## Reference Architecture Alignment
 
 The Rust rewrite should deliberately follow the local Apache-2.0 Rust coding-agent reference architecture in these areas:

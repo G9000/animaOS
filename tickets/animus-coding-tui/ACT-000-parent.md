@@ -1,15 +1,15 @@
 # ACT-000 - Animus Rust Coding TUI Parent Tracker
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/animus`, `apps/server`, `docs/prds/animus`
 - Depends on: none
-- Owner: unassigned
+- Owner: codex
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 03:00 MYT
-- Started:
+- Updated: 2026-06-27 04:20 MYT
+- Started: 2026-06-27 04:10 MYT
 - Completed:
 
 ## Goal
@@ -56,12 +56,22 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 
 - 2026-06-26 18:51 MYT - Parent tracker created for Animus coding TUI work.
 - 2026-06-27 03:00 MYT - Revised initiative scope to a full Rust-native rewrite replacing Bun/Ink.
+- 2026-06-27 04:10 MYT - Planning branch created; implementation plan refined with concrete ANIMA files, Codex reference paths, protocol shape, test commands, and execution rules.
+- 2026-06-27 04:20 MYT - Ran planning validation; build and health passed, full backend tests reported unrelated/environment-sensitive failures.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `bun install --frozen-lockfile` - passed
+  - `bun run build` - passed for `server` and `desktop`
+  - `git diff --check` - passed with Windows line-ending warnings
+  - `bun run test` - failed before collection until `ANIMA_CORE_REQUIRE_ENCRYPTION=false` was set
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - timed out after 301s with 4 reported failures, 1638 passed, 1 skipped
+  - `GET /health` against a dev server started from this worktree - HTTP 200
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
+  - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
+  - docs/superpowers/specs/2026-06-27-animus-rust-coding-tui-design.md
 - Notes:
-  - tracker only
+  - planning-only update; implementation child tickets remain backlog
+  - full-suite failures reported before timeout: `test_bm25_search_uses_rust_memory_index_when_clean`, `test_agent_can_generate_thinking_monologue_draft`, and two `test_accepts_plus_or_minus_one_day_for_timezone_skew` cases
