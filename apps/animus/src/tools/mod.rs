@@ -19,7 +19,6 @@ pub const ACTION_TOOL_NAMES: &[&str] = &[
     "glob",
     "list_dir",
     "multi_edit",
-    "ask_user",
     "todo_write",
     "todo_read",
     "bg_start",
@@ -336,7 +335,6 @@ mod tests {
                 "glob",
                 "list_dir",
                 "multi_edit",
-                "ask_user",
                 "todo_write",
                 "todo_read",
                 "bg_start",
@@ -379,6 +377,16 @@ mod tests {
             schema("todo_write").parameters["required"],
             json!(["todos"])
         );
+    }
+
+    #[test]
+    fn action_tool_schemas_do_not_publish_unimplemented_ask_user() {
+        let names: Vec<String> = action_tool_schemas()
+            .into_iter()
+            .map(|schema| schema.name)
+            .collect();
+
+        assert!(!names.contains(&"ask_user".to_string()));
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ use crate::approvals::{ApprovalDecision, ApprovalOutcome, ApprovalState, Pending
 use crate::commands::{CommandEffect, CommandInvocation, SlashCommand};
 use crate::config::{AnimusConfig, DEFAULT_SERVER_URL};
 use crate::permissions::PermissionPolicy;
-use crate::protocol::ServerFrame;
+use crate::protocol::{ClientFrame, ServerFrame};
 use crate::spawns::SpawnState;
 use crate::transcript::{append_assistant_token, finish_streaming_assistant, TranscriptItem};
 
@@ -96,17 +96,20 @@ impl AppState {
             AppEvent::Quit => {
                 self.should_quit = true;
             }
-            AppEvent::ServerFrame(frame) => self.apply_server_frame(frame),
+            AppEvent::ServerFrame(frame) => {
+                self.handle_server_frame(frame);
+            }
         }
     }
 
-    fn apply_server_frame(&mut self, frame: ServerFrame) {
+    pub fn handle_server_frame(&mut self, frame: ServerFrame) -> Option<ClientFrame> {
         match frame {
             ServerFrame::AuthOk { user } => {
                 self.connection = ConnectionState::Connected;
                 self.transcript.push(TranscriptItem::Session {
                     message: format!("authenticated as {}", user.username),
                 });
+                None
             }
             ServerFrame::RunStarted { run_id, thread_id } => {
                 self.run.current_run_id = Some(run_id);
@@ -114,12 +117,15 @@ impl AppState {
                 self.transcript.push(TranscriptItem::Session {
                     message: format!("run {run_id} started"),
                 });
+                None
             }
             ServerFrame::StreamToken { token } => {
                 append_assistant_token(&mut self.transcript, &token);
+                None
             }
             ServerFrame::Reasoning { content } => {
                 self.transcript.push(TranscriptItem::Reasoning { content });
+                None
             }
             ServerFrame::ToolExecute {
                 tool_call_id,
@@ -136,6 +142,7 @@ impl AppState {
                     tool_name,
                     args,
                 });
+                None
             }
             ServerFrame::ToolReturn {
                 tool_call_id,
@@ -149,6 +156,7 @@ impl AppState {
                     result,
                     is_error: is_error.unwrap_or(false),
                 });
+                None
             }
             ServerFrame::ApprovalRequired {
                 run_id,
@@ -156,12 +164,26 @@ impl AppState {
                 tool_name,
                 args,
             } => {
-                self.approvals.set_pending(PendingApproval::new(
+                let pending = PendingApproval::new(
                     run_id,
                     tool_call_id.clone(),
                     tool_name.clone(),
                     args.clone(),
-                ));
+                );
+                if let Some(outcome) = self.approvals.approval_for_remembered_session(&pending) {
+                    self.approval_mode = "manual".to_string();
+                    self.transcript.push(TranscriptItem::Approval {
+                        run_id,
+                        tool_call_id,
+                        tool_name,
+                        args,
+                    });
+                    self.transcript.push(TranscriptItem::Notice {
+                        message: "auto-approved remembered session approval".to_string(),
+                    });
+                    return Some(outcome.frame);
+                }
+                self.approvals.set_pending(pending);
                 self.approval_mode = "pending".to_string();
                 self.transcript.push(TranscriptItem::Approval {
                     run_id,
@@ -169,6 +191,7 @@ impl AppState {
                     tool_name,
                     args,
                 });
+                None
             }
             ServerFrame::Cancelled { run_id } => {
                 if self.run.current_run_id == Some(run_id) {
@@ -177,6 +200,7 @@ impl AppState {
                 self.transcript.push(TranscriptItem::Session {
                     message: format!("run {run_id} cancelled"),
                 });
+                None
             }
             ServerFrame::TurnComplete {
                 response,
@@ -199,6 +223,7 @@ impl AppState {
                         tools_used.join(", ")
                     ),
                 });
+                None
             }
             ServerFrame::SpawnEvent { spawn } => {
                 self.spawns.apply_frame(spawn.clone());
@@ -210,16 +235,19 @@ impl AppState {
                         spawn.status.as_str()
                     ),
                 });
+                None
             }
             ServerFrame::Error { message, code } => {
                 self.errors.push(format!("{code}: {message}"));
                 self.transcript
                     .push(TranscriptItem::Error { code, message });
+                None
             }
             ServerFrame::Unknown => {
                 self.transcript.push(TranscriptItem::Notice {
                     message: "ignored unknown server frame".to_string(),
                 });
+                None
             }
         }
     }
@@ -310,6 +338,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::protocol::ClientFrame;
     use crate::protocol::ServerFrame;
     use crate::transcript::TranscriptItem;
 
@@ -480,6 +509,38 @@ mod tests {
                 reason: None,
             }
         );
+        assert_eq!(app.approval_mode, "manual");
+    }
+
+    #[test]
+    fn remembered_session_approval_auto_approves_matching_request() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+        app.decide_approval(crate::approvals::ApprovalDecision::ApproveForSession)
+            .unwrap();
+
+        let frame = app.handle_server_frame(ServerFrame::ApprovalRequired {
+            run_id: 43,
+            tool_call_id: "call-2".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        });
+
+        assert_eq!(
+            frame,
+            Some(ClientFrame::ApprovalResponse {
+                run_id: 43,
+                tool_call_id: "call-2".to_string(),
+                approved: true,
+                reason: None,
+            })
+        );
+        assert!(app.approvals.pending().is_none());
         assert_eq!(app.approval_mode, "manual");
     }
 

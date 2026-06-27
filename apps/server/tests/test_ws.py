@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import Any
 
 import pytest
@@ -19,6 +21,7 @@ from anima_server.services.agent.streaming import (
 )
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 
 def _register_user(
@@ -104,6 +107,22 @@ class _FakeWebSocket:
 
     async def send_json(self, payload: dict[str, Any]) -> None:
         self.sent.append(payload)
+
+
+class _QueueWebSocket(_FakeWebSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.accepted = False
+        self.incoming: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def receive_json(self) -> dict[str, Any]:
+        message = await self.incoming.get()
+        if message is None:
+            raise WebSocketDisconnect()
+        return message
 
 
 class _FakeDb:
@@ -202,6 +221,52 @@ class TestWebSocketFrameTranslation:
 
 
 class TestWebSocketRunHandlers:
+    @pytest.mark.asyncio
+    async def test_ws_agent_processes_cancel_while_approval_resume_streams(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_ws = _QueueWebSocket()
+        approval_started = asyncio.Event()
+        release_approval = asyncio.Event()
+        cancel_called = asyncio.Event()
+
+        async def fake_authenticate(websocket: Any) -> ActionToolConnection:
+            return ActionToolConnection(websocket=websocket, user_id=5, username="alice")
+
+        async def fake_approval_response(
+            conn: ActionToolConnection,
+            data: dict[str, Any],
+        ) -> None:
+            approval_started.set()
+            await release_approval.wait()
+
+        async def fake_cancel(conn: ActionToolConnection, data: dict[str, Any]) -> None:
+            cancel_called.set()
+            raise WebSocketDisconnect()
+
+        monkeypatch.setattr(ws_route, "_authenticate", fake_authenticate)
+        monkeypatch.setattr(ws_route, "_handle_approval_response", fake_approval_response)
+        monkeypatch.setattr(ws_route, "_handle_cancel", fake_cancel)
+
+        task = asyncio.create_task(ws_route.ws_agent(fake_ws))  # type: ignore[arg-type]
+        try:
+            await fake_ws.incoming.put(
+                {"type": "approval_response", "run_id": 42, "approved": True}
+            )
+            await asyncio.wait_for(approval_started.wait(), timeout=1)
+
+            await fake_ws.incoming.put({"type": "cancel", "run_id": 42})
+
+            await asyncio.wait_for(cancel_called.wait(), timeout=1)
+        finally:
+            release_approval.set()
+            await fake_ws.incoming.put(None)
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                await task
+
     @pytest.mark.asyncio
     async def test_handle_approval_response_streams_translated_resume_events(
         self,

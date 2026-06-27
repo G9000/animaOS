@@ -129,6 +129,7 @@ async def ws_agent(websocket: WebSocket) -> None:
     logger.info("WebSocket client connected: user_id=%d", conn.user_id)
 
     turn_task: asyncio.Task[None] | None = None
+    approval_task: asyncio.Task[None] | None = None
 
     try:
         while True:
@@ -147,7 +148,9 @@ async def ws_agent(websocket: WebSocket) -> None:
             elif msg_type == "user_message":
                 # Reject if a turn is already in progress — the reader
                 # loop must stay free to receive tool_result messages.
-                if turn_task is not None and not turn_task.done():
+                if (turn_task is not None and not turn_task.done()) or (
+                    approval_task is not None and not approval_task.done()
+                ):
                     await conn.websocket.send_json(
                         {
                             "type": "error",
@@ -164,7 +167,18 @@ async def ws_agent(websocket: WebSocket) -> None:
                 _handle_tool_result(conn, data)
 
             elif msg_type == "approval_response":
-                await _handle_approval_response(conn, data)
+                if approval_task is not None and not approval_task.done():
+                    await conn.websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Approval resume already in progress",
+                            "code": "BUSY",
+                        }
+                    )
+                    continue
+                approval_task = asyncio.create_task(
+                    _handle_approval_response(conn, data),
+                )
 
             elif msg_type == "cancel":
                 await _handle_cancel(conn, data)
@@ -174,6 +188,8 @@ async def ws_agent(websocket: WebSocket) -> None:
     finally:
         if turn_task is not None and not turn_task.done():
             turn_task.cancel()
+        if approval_task is not None and not approval_task.done():
+            approval_task.cancel()
         registry.remove(conn)
 
 
@@ -318,8 +334,7 @@ async def _handle_approval_response(conn: ClientConnection, data: dict) -> None:
             }
         )
     except Exception as exc:
-        logger.exception("Approval response failed for run %s (user %s)",
-                         run_id, conn.user_id)
+        logger.exception("Approval response failed for run %s (user %s)", run_id, conn.user_id)
         await conn.websocket.send_json(
             {
                 "type": "error",
@@ -371,8 +386,7 @@ async def _handle_cancel(conn: ClientConnection, data: dict) -> None:
                 }
             )
     except Exception:
-        logger.exception("Cancel failed for run %s (user %s)",
-                         run_id, conn.user_id)
+        logger.exception("Cancel failed for run %s (user %s)", run_id, conn.user_id)
     finally:
         runtime_db.close()
 

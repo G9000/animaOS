@@ -63,8 +63,8 @@ pub fn edit_file(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         Ok(raw) => raw,
         Err(err) => return ToolOutput::error(format!("failed to read {}: {err}", path.display())),
     };
-    if !raw.contains(old_string) {
-        return ToolOutput::error("old_string was not found");
+    if let Err(output) = require_unique_match(&raw, old_string) {
+        return output;
     }
     let edited = raw.replacen(old_string, new_string, 1);
     match fs::write(&path, edited) {
@@ -89,8 +89,11 @@ pub fn multi_edit(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         let Some(old_string) = string_arg(edit, "old_string") else {
             return ToolOutput::error("each edit requires old_string");
         };
-        if !raw.contains(old_string) {
-            return ToolOutput::error(format!("old_string was not found: {old_string}"));
+        if string_arg(edit, "new_string").is_none() {
+            return ToolOutput::error("each edit requires new_string");
+        }
+        if let Err(output) = require_unique_match(&raw, old_string) {
+            return output;
         }
     }
     let mut edited = raw;
@@ -166,8 +169,10 @@ pub fn glob(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     let mut matches = walk_files(&path)
         .into_iter()
         .filter(|file| matches!(policy.check_file_read(file), PermissionDecision::Allow))
-        .filter(|file| matches_simple_glob(file, pattern))
-        .map(|file| display_workspace_path(policy, &file))
+        .filter_map(|file| {
+            let display_path = display_workspace_path(policy, &file);
+            matches_simple_glob(&display_path, pattern).then_some(display_path)
+        })
         .collect::<Vec<_>>();
     matches.sort();
     ToolOutput::success(matches.join("\n"))
@@ -236,21 +241,62 @@ fn walk_files(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn matches_simple_glob(path: &Path, pattern: &str) -> bool {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
+fn require_unique_match(raw: &str, old_string: &str) -> Result<(), ToolOutput> {
+    if old_string.is_empty() {
+        return Err(ToolOutput::error("old_string must not be empty"));
+    }
+    let count = raw.matches(old_string).count();
+    match count {
+        0 => Err(ToolOutput::error(format!(
+            "old_string was not found: {old_string}"
+        ))),
+        1 => Ok(()),
+        _ => Err(ToolOutput::error(format!(
+            "old_string is not unique: {old_string}"
+        ))),
+    }
+}
+
+fn matches_simple_glob(path: &str, pattern: &str) -> bool {
+    let candidate = path.replace('\\', "/");
+    let pattern = pattern.replace('\\', "/");
+    let file_name = candidate.rsplit('/').next().unwrap_or("");
     if pattern == "*" || pattern == "**/*" {
         return true;
     }
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        return path.extension().and_then(|ext| ext.to_str()) == Some(suffix);
+    wildcard_match(&pattern, &candidate) || wildcard_match(&pattern, file_name)
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+    let (mut pattern_index, mut text_index) = (0usize, 0usize);
+    let mut star_index = None;
+    let mut star_text_index = 0usize;
+
+    while text_index < text.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == text[text_index] || pattern[pattern_index] == b'?')
+        {
+            pattern_index += 1;
+            text_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            star_text_index = text_index;
+            pattern_index += 1;
+        } else if let Some(index) = star_index {
+            pattern_index = index + 1;
+            star_text_index += 1;
+            text_index = star_text_index;
+        } else {
+            return false;
+        }
     }
-    if let Some(suffix) = pattern.strip_prefix("**/*.") {
-        return path.extension().and_then(|ext| ext.to_str()) == Some(suffix);
+
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
     }
-    file_name == pattern
+    pattern_index == pattern.len()
 }
 
 fn display_workspace_path(policy: &PermissionPolicy, path: &Path) -> String {
@@ -324,6 +370,64 @@ mod tests {
             std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
             "alpha beta"
         );
+    }
+
+    #[test]
+    fn edit_file_rejects_ambiguous_old_string_before_writing() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "alpha beta alpha").unwrap();
+
+        let result = edit_file(
+            &json!({"file_path": "src/lib.rs", "old_string": "alpha", "new_string": "one"}),
+            &policy,
+        );
+
+        assert!(result.is_error);
+        assert!(result.content.contains("not unique"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "alpha beta alpha"
+        );
+    }
+
+    #[test]
+    fn multi_edit_rejects_ambiguous_old_string_before_writing() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "alpha beta alpha").unwrap();
+
+        let result = multi_edit(
+            &json!({
+                "file_path": "src/lib.rs",
+                "edits": [
+                    {"old_string": "alpha", "new_string": "one"}
+                ]
+            }),
+            &policy,
+        );
+
+        assert!(result.is_error);
+        assert!(result.content.contains("not unique"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "alpha beta alpha"
+        );
+    }
+
+    #[test]
+    fn glob_matches_workspace_relative_paths() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn main() {}").unwrap();
+
+        let result = glob(&json!({"pattern": "src/*.rs"}), &policy);
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("src/lib.rs"));
     }
 
     fn test_workspace() -> std::path::PathBuf {

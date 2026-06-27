@@ -108,6 +108,24 @@ impl ApprovalState {
         self.session_approvals.contains(approval)
     }
 
+    pub fn approval_for_remembered_session(
+        &self,
+        pending: &PendingApproval,
+    ) -> Option<ApprovalOutcome> {
+        let rule = session_rule_for(pending)?;
+        self.session_approvals
+            .contains(&rule)
+            .then(|| ApprovalOutcome {
+                frame: ClientFrame::ApprovalResponse {
+                    run_id: pending.run_id,
+                    tool_call_id: pending.tool_call_id.clone(),
+                    approved: true,
+                    reason: None,
+                },
+                remembered: None,
+            })
+    }
+
     pub fn reconcile_after_reconnect(&mut self, active_run_ids: &[i64]) {
         if let Some(pending) = &self.pending {
             if !active_run_ids.contains(&pending.run_id) {

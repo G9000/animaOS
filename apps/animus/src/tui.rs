@@ -228,8 +228,11 @@ async fn handle_ws_event(
         }
         WsEvent::Frame(frame) => {
             let tool_result = tool_executor.execute_frame(&frame).await;
-            app.apply(AppEvent::ServerFrame(frame));
+            let auto_approval = app.handle_server_frame(frame);
             if let Some(frame) = tool_result {
+                let _ = outbound_tx.send(OutboundMessage::Frame(frame));
+            }
+            if let Some(frame) = auto_approval {
                 let _ = outbound_tx.send(OutboundMessage::Frame(frame));
             }
         }
