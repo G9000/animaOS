@@ -123,7 +123,15 @@ pub fn append_assistant_token(items: &mut Vec<TranscriptItem>, token: &str) {
 }
 
 pub fn finish_streaming_assistant(items: &mut [TranscriptItem]) {
-    if let Some(TranscriptItem::Assistant { streaming, .. }) = items.last_mut() {
+    if let Some(TranscriptItem::Assistant { streaming, .. }) = items.iter_mut().rev().find(|item| {
+        matches!(
+            item,
+            TranscriptItem::Assistant {
+                streaming: true,
+                ..
+            }
+        )
+    }) {
         *streaming = false;
     }
 }
@@ -196,5 +204,36 @@ mod tests {
                 streaming: true,
             }]
         );
+    }
+
+    #[test]
+    fn finish_streaming_assistant_finishes_latest_assistant_before_tool_rows() {
+        let mut items = vec![
+            TranscriptItem::Assistant {
+                content: "checking".to_string(),
+                streaming: true,
+            },
+            TranscriptItem::ToolCall {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                args: serde_json::json!({"command":"cargo test"}),
+            },
+            TranscriptItem::ToolReturn {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                result: "ok".to_string(),
+                is_error: false,
+            },
+        ];
+
+        finish_streaming_assistant(&mut items);
+
+        assert!(matches!(
+            &items[0],
+            TranscriptItem::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
     }
 }

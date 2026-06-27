@@ -249,7 +249,7 @@ mod tests {
         let id = start.content.trim().to_string();
 
         let mut output = String::new();
-        for _ in 0..20 {
+        for _ in 0..100 {
             output = registry
                 .output(&json!({"id": id.clone(), "all": true}))
                 .content;

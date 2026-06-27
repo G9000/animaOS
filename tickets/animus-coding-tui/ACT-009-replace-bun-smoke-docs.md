@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 23:19 MYT
+- Updated: 2026-06-27 23:42 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -54,6 +54,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 22:42 MYT - Addressed the twelfth Codex review round: websocket reconnects now replay pending approval frames and clear unresumable approval rows, and delegated `bash`/`bg_start` commands substitute saved Animus secrets before permission checks and spawn.
 - 2026-06-27 23:08 MYT - Addressed the thirteenth Codex review round: pending approval prompts now block normal composer submission, and dangerous shell commands chained after separators are denied before shell execution.
 - 2026-06-27 23:19 MYT - Reran final thirteenth-round validation, including full server tests and a health smoke on a temporary free port.
+- 2026-06-27 23:42 MYT - Addressed the fourteenth Codex review round: auth failures now stop reconnect loops, reconnect auth clears stale local approval prompts before replay, and turn completion finishes interrupted streaming assistant rows.
 
 ## Validation
 
@@ -187,6 +188,19 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run build` - passed after thirteenth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after thirteenth review fixes: 1650 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:64124/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; temporary server was stopped after the smoke check
+  - `cargo test -p animus finish_streaming_assistant_finishes_latest_assistant_before_tool_rows -- --nocapture` - failed before finishing the latest streaming assistant before tool rows, passed after the fix
+  - `cargo test -p animus reconnect_auth_clears_stale_pending_approval_before_replay -- --nocapture` - failed before reconnect auth cleared stale local approvals, passed after the fix
+  - `cargo test -p animus websocket_driver_stops_after_authentication_failure -- --nocapture` - failed before terminal auth errors stopped reconnect retries, passed after the fix
+  - `cargo test -p animus background_process_substitutes_saved_secrets_before_spawning -- --nocapture` - passed while isolating the full-suite timing failure
+  - `cargo fmt -p animus` - completed after fourteenth review fixes
+  - `cargo test -p animus` - passed after fourteenth review fixes: 93 passed
+  - `git diff --check` - passed after fourteenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after fourteenth review fixes
+  - `bun run test:animus` - failed before lengthening the Windows background-process polling window, then passed after fourteenth review fixes: 93 passed
+  - `bun run lint` - passed after fourteenth review fixes for server and desktop
+  - `bun run build` - passed after fourteenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fourteenth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:53780/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; temporary server was stopped after the smoke check
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -206,6 +220,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - apps/animus/src/tools/redaction.rs
   - apps/animus/src/tools/secrets.rs
   - apps/animus/src/tools/shell.rs
+  - apps/animus/src/transcript.rs
   - apps/animus/src/tui.rs
   - apps/server/src/anima_server/api/routes/ws.py
   - apps/server/src/anima_server/api/routes/auth.py
@@ -240,5 +255,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Eleventh review fixes keep stale unlock-session tokens from shadowing explicit password login, and surface background process exit codes after output has already been consumed.
   - Twelfth review fixes replay persisted approval prompts to reconnecting websocket clients, clean up malformed awaiting-approval rows, and restore saved-secret substitution for delegated shell-like tools before permission checks and execution.
   - Thirteenth review fixes prevent pending approval prompts from sending optimistic user messages, and make shell permission checks inspect quote-aware command segments after `;`, `&&`, `||`, pipes, newlines, and PowerShell separators.
+  - Fourteenth review fixes treat `AUTH_FAILED`/`AUTH_REQUIRED` connection errors as terminal, clear stale pending approvals on reconnect auth before replayed approval frames arrive, finish the most recent streaming assistant transcript even after tool rows, and make the background secret substitution test wait robustly under parallel Windows load.
   - No database schema changes; Alembic was not run.
 

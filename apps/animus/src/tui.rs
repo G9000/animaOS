@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::app::{AppEvent, AppState, ConnectionState};
 use crate::approvals::ApprovalDecision;
-use crate::client::{reconnect_delay, AnimaWsClient};
+use crate::client::{is_terminal_authentication_error, reconnect_delay, AnimaWsClient};
 use crate::commands::{parse_command, CommandEffect};
 use crate::input::InputBuffer;
 use crate::permissions::PermissionPolicy;
@@ -216,6 +216,9 @@ async fn websocket_driver(
             }
             Err(err) => {
                 let _ = ui_tx.send(WsEvent::Disconnected(format!("connection failed: {err}")));
+                if is_terminal_authentication_error(&err) {
+                    return;
+                }
             }
         }
 
@@ -261,6 +264,10 @@ async fn handle_ws_event(
             app.apply(AppEvent::ConnectionChanged(state));
         }
         WsEvent::Authenticated(user) => {
+            app.approvals.reconcile_after_reconnect(&[]);
+            if app.approvals.pending().is_none() && app.approval_mode == "pending" {
+                app.approval_mode = "manual".to_string();
+            }
             app.apply(AppEvent::ServerFrame(ServerFrame::AuthOk { user }));
         }
         WsEvent::Frame(frame) => {
@@ -771,6 +778,82 @@ mod tests {
             }
         ));
         assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn websocket_driver_stops_after_authentication_failure() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = websocket.next().await;
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "error",
+                        "code": "AUTH_FAILED",
+                        "message": "bad token"
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+        });
+        let mut config = AppState::for_test().config;
+        config.server_url = format!("http://127.0.0.1:{port}");
+        let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+
+        let driver = tokio::spawn(websocket_driver(config, ui_tx, outbound_rx));
+
+        assert!(matches!(
+            ui_rx.recv().await,
+            Some(WsEvent::ConnectionChanged(ConnectionState::Connecting))
+        ));
+        assert!(matches!(
+            ui_rx.recv().await,
+            Some(WsEvent::Disconnected(message)) if message.contains("AUTH_FAILED")
+        ));
+
+        let _ = outbound_tx.send(OutboundMessage::Reconnect);
+        let next_event =
+            tokio::time::timeout(std::time::Duration::from_millis(250), ui_rx.recv()).await;
+        assert!(matches!(next_event, Err(_) | Ok(None)));
+        assert!(driver.is_finished());
+    }
+
+    #[tokio::test]
+    async fn reconnect_auth_clears_stale_pending_approval_before_replay() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"cargo test"}),
+        }));
+        let executor = Arc::new(Mutex::new(ToolExecutor::new(
+            PermissionPolicy::workspace_write(app.config.workspace.clone()),
+        )));
+        let (outbound_tx, _outbound_rx) = mpsc::unbounded_channel();
+
+        handle_ws_event(
+            &mut app,
+            executor,
+            &outbound_tx,
+            WsEvent::Authenticated(crate::protocol::AuthUser {
+                id: 1,
+                username: "leo".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(app.approvals.pending().is_none());
+        assert_eq!(app.approval_mode, "manual");
     }
 
     #[tokio::test]

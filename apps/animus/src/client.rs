@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -20,6 +21,12 @@ const MAX_RECONNECT_DELAY_MS: u64 = 30_000;
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
+
+#[derive(Debug, Error)]
+pub enum ClientConnectError {
+    #[error("authentication failed ({code}): {message}")]
+    Authentication { code: String, message: String },
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct ClientState {
@@ -130,6 +137,13 @@ impl AnimaWsClient {
         let auth_user = match &auth_response {
             ServerFrame::AuthOk { user } => user.clone(),
             ServerFrame::Error { message, code } => {
+                if is_terminal_auth_error_code(code) {
+                    return Err(ClientConnectError::Authentication {
+                        code: code.clone(),
+                        message: message.clone(),
+                    }
+                    .into());
+                }
                 bail!("authentication failed ({code}): {message}");
             }
             other => {
@@ -205,6 +219,12 @@ impl AnimaWsClient {
     }
 }
 
+pub fn is_terminal_authentication_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ClientConnectError>()
+        .is_some_and(|error| matches!(error, ClientConnectError::Authentication { .. }))
+}
+
 pub fn auth_frame(config: &AnimusConfig) -> ClientFrame {
     if config.username.is_some() && config.password.is_some() {
         ClientFrame::Auth {
@@ -230,6 +250,10 @@ pub fn auth_frame(config: &AnimusConfig) -> ClientFrame {
 pub fn reconnect_delay(attempt: u32) -> Duration {
     let delay = 1_000u64.saturating_mul(2u64.saturating_pow(attempt));
     Duration::from_millis(delay.min(MAX_RECONNECT_DELAY_MS))
+}
+
+fn is_terminal_auth_error_code(code: &str) -> bool {
+    matches!(code, "AUTH_FAILED" | "AUTH_REQUIRED")
 }
 
 pub fn agent_ws_url(server_url: &str) -> Result<Url> {
