@@ -77,6 +77,14 @@ export interface DaemonStatusResponse {
   readonly error: string | null;
 }
 
+export interface DaemonHealthResponse {
+  readonly version: string;
+  readonly status: DaemonState;
+  readonly updatedAt?: string;
+  readonly updated_at?: string;
+  readonly controlToken?: string;
+}
+
 export interface DaemonRuntimeNonceResponse {
   readonly runtimeNonce: string;
 }

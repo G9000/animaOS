@@ -3,6 +3,7 @@ import type {
   DaemonControlRequest,
   DaemonControlResponse,
   DaemonErrorResponse,
+  DaemonHealthResponse,
   DaemonLogResponse,
   DaemonStatusResponse,
 } from "@anima/daemon-contracts";
@@ -10,13 +11,15 @@ import type {
 import {
   DAEMON_CONTROL_TOKEN_ENV,
   DAEMON_CONTROL_TOKEN_HEADER,
-  DaemonRuntimeNonceResponse,
   DAEMON_ROUTES,
+  DaemonRuntimeNonceResponse,
 } from "@anima/daemon-contracts";
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
 let daemonRuntimeNonce: string | null = null;
+let controlTokenResolved = false;
+let resolvingControlToken: Promise<string | null> | null = null;
 
 function normalizeNonce(value: string | undefined | null): string | null {
   if (!value) return null;
@@ -48,6 +51,50 @@ function getControlToken(): string | null {
   } catch {
     return null;
   }
+}
+
+function parseJsonBody(text: string): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function bootstrapControlToken(): Promise<string | null> {
+  if (controlTokenResolved) {
+    return getControlToken();
+  }
+
+  const response = await fetch(`${getDaemonOrigin()}/${DAEMON_ROUTES.health}`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    controlTokenResolved = false;
+    return null;
+  }
+
+  const text = await response.text();
+  const payload = parseJsonBody(text);
+  const candidate = (payload as DaemonHealthResponse | null)?.controlToken;
+  const token = normalizeToken(candidate);
+  if (token) {
+    setDaemonControlToken(token);
+    controlTokenResolved = true;
+    return token;
+  }
+
+  controlTokenResolved = true;
+  return null;
+}
+
+function normalizeToken(value: string | undefined | null): string | null {
+  return normalizeNonce(value);
 }
 
 function getHeaders() {
@@ -84,6 +131,15 @@ function parseErrorResponse(payload: unknown): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!getControlToken() && !resolvingControlToken) {
+    resolvingControlToken = bootstrapControlToken();
+  }
+
+  if (!getControlToken() && resolvingControlToken) {
+    await resolvingControlToken.catch(() => null);
+    resolvingControlToken = null;
+  }
+
   const response = await fetch(endpoint(path), {
     ...init,
     headers: {
@@ -108,7 +164,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parsed as T;
 }
 
-export async function getDaemonHealth(): Promise<{ status: string; version: string; updatedAt: string }> {
+export async function getDaemonHealth(): Promise<DaemonHealthResponse> {
   return request(`${DAEMON_ROUTES.health}`);
 }
 

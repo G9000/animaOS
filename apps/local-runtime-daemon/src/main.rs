@@ -102,6 +102,7 @@ struct RuntimeConfig {
     daemon_bind_host: String,
     daemon_bind_port: u16,
     control_token: Option<String>,
+    control_token_is_auto_generated: bool,
     runtime_host: String,
     runtime_port: u16,
     runtime_command: String,
@@ -127,6 +128,8 @@ impl RuntimeConfig {
         let daemon_bind_port = env_parse("ANIMA_DAEMON_BIND_PORT", DEFAULT_DAEMON_PORT);
         let runtime_host = env_or("ANIMA_DAEMON_RUNTIME_HOST", DEFAULT_RUNTIME_HOST);
         let runtime_port = env_parse("ANIMA_DAEMON_RUNTIME_PORT", DEFAULT_RUNTIME_PORT);
+        let control_token = env_opt("ANIMA_DAEMON_CONTROL_TOKEN");
+        let control_token_is_auto_generated = control_token.is_none();
         let runtime_artifact = env_or("ANIMA_DAEMON_RUNTIME_ARTIFACT", "");
         let launch_mode = env_or("ANIMA_DAEMON_RUNTIME_LAUNCH_MODE", "python");
         let runtime_launch_command = env_or("ANIMA_DAEMON_RUNTIME_COMMAND", "");
@@ -151,7 +154,8 @@ impl RuntimeConfig {
         Self {
             daemon_bind_host,
             daemon_bind_port,
-            control_token: env_opt("ANIMA_DAEMON_CONTROL_TOKEN"),
+            control_token: Some(control_token.unwrap_or_else(random_nonce)),
+            control_token_is_auto_generated,
             runtime_host,
             runtime_port,
             runtime_command,
@@ -300,6 +304,8 @@ struct DaemonHealthResponse {
     version: &'static str,
     status: DaemonState,
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    control_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -478,10 +484,21 @@ async fn main() {
 
 async fn health(State(runtime): State<DaemonRuntime>) -> Json<DaemonHealthResponse> {
     let state = runtime.state.inner.lock().await;
+    let control_token = if runtime
+        .state
+        .config
+        .control_token_is_auto_generated
+    {
+        runtime.state.config.control_token.clone()
+    } else {
+        None
+    };
+
     Json(DaemonHealthResponse {
         version: DAEMON_API_VERSION,
         status: state.status.clone(),
         updated_at: Utc::now().to_rfc3339(),
+        control_token,
     })
 }
 
@@ -956,7 +973,11 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
             }
         }
 
-        if process_missing && state.expected_running && state.process.is_none() {
+        if process_missing
+            && state.expected_running
+            && state.process.is_none()
+            && should_restart_in_seconds.is_none()
+        {
             should_restart_in_seconds = state
                 .mark_restart_delay(&config, "runtime not running while expected");
         }
