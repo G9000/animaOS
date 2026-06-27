@@ -62,9 +62,148 @@ pub fn action_tool_schemas() -> Vec<ToolSchema> {
         .map(|name| ToolSchema {
             name: (*name).to_string(),
             description: tool_description(name).to_string(),
-            parameters: json!({"type":"object"}),
+            parameters: tool_parameters(name),
         })
         .collect()
+}
+
+fn tool_parameters(name: &str) -> Value {
+    match name {
+        "bash" | "bg_start" => json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to run from the workspace root."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional timeout in milliseconds."
+                }
+            },
+            "required": ["command"],
+            "additionalProperties": false
+        }),
+        "read_file" => json!({
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Workspace-relative or absolute file path."},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1}
+            },
+            "required": ["file_path"],
+            "additionalProperties": false
+        }),
+        "write_file" => json!({
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Workspace-relative or absolute file path."},
+                "content": {"type": "string", "description": "Complete file contents to write."}
+            },
+            "required": ["file_path", "content"],
+            "additionalProperties": false
+        }),
+        "edit_file" => json!({
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Workspace-relative or absolute file path."},
+                "old_string": {"type": "string", "description": "Exact text to replace."},
+                "new_string": {"type": "string", "description": "Replacement text."}
+            },
+            "required": ["file_path", "old_string", "new_string"],
+            "additionalProperties": false
+        }),
+        "grep" => json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Literal text pattern to search for."},
+                "path": {"type": "string", "description": "Workspace-relative directory or file to search."},
+                "limit": {"type": "integer", "minimum": 1}
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
+        "glob" => json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Simple glob pattern such as *.rs or src/*.ts."},
+                "path": {"type": "string", "description": "Workspace-relative directory to search."},
+                "limit": {"type": "integer", "minimum": 1}
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
+        "list_dir" => json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace-relative or absolute directory path."}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+        "multi_edit" => json!({
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Workspace-relative or absolute file path."},
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": {"type": "string", "description": "Exact text to replace."},
+                            "new_string": {"type": "string", "description": "Replacement text."}
+                        },
+                        "required": ["old_string", "new_string"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["file_path", "edits"],
+            "additionalProperties": false
+        }),
+        "ask_user" => json!({
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Question to present to the user."}
+            },
+            "required": ["question"],
+            "additionalProperties": false
+        }),
+        "todo_write" => json!({
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "description": "Current todo list items.",
+                    "items": {"type": "object"}
+                }
+            },
+            "required": ["todos"],
+            "additionalProperties": false
+        }),
+        "bg_output" | "bg_stop" => json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Background process id returned by bg_start."}
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        }),
+        "todo_read" | "bg_list" => json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }),
+        _ => json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }),
+    }
 }
 
 fn tool_description(name: &str) -> &'static str {
@@ -205,6 +344,40 @@ mod tests {
                 "bg_stop",
                 "bg_list",
             ]
+        );
+    }
+
+    #[test]
+    fn action_tool_schemas_publish_required_parameters() {
+        let schemas = action_tool_schemas();
+        let schema = |name: &str| {
+            schemas
+                .iter()
+                .find(|schema| schema.name == name)
+                .unwrap_or_else(|| panic!("missing schema: {name}"))
+        };
+
+        assert_eq!(schema("bash").parameters["required"], json!(["command"]));
+        assert_eq!(
+            schema("write_file").parameters["required"],
+            json!(["file_path", "content"])
+        );
+        assert_eq!(
+            schema("edit_file").parameters["required"],
+            json!(["file_path", "old_string", "new_string"])
+        );
+        assert_eq!(
+            schema("multi_edit").parameters["properties"]["edits"]["items"]["required"],
+            json!(["old_string", "new_string"])
+        );
+        assert_eq!(
+            schema("bg_start").parameters["required"],
+            json!(["command"])
+        );
+        assert_eq!(schema("bg_stop").parameters["required"], json!(["id"]));
+        assert_eq!(
+            schema("todo_write").parameters["required"],
+            json!(["todos"])
         );
     }
 

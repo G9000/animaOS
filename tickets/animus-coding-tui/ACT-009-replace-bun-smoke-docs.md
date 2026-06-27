@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 12:10 MYT
+- Updated: 2026-06-27 12:18 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -40,6 +40,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 06:31 MYT - Moved to in_progress for final Rust wiring, Bun/Ink removal, docs, and smoke validation.
 - 2026-06-27 11:38 MYT - Completed Rust-only wiring, removed legacy TypeScript package files, refreshed docs/lockfile, fixed validation blockers, and ran final smoke/build/test checks.
 - 2026-06-27 12:10 MYT - Addressed Codex review blockers for workspace containment, live permission policy updates, TUI approval/input layout, input buffer wiring, shell timeout cleanup, and lint import ordering.
+- 2026-06-27 12:18 MYT - Addressed the remaining Codex PR review thread by restoring concrete JSON parameter schemas for Animus action tools.
 
 ## Validation
 
@@ -61,6 +62,11 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run lint` - passed for server and desktop
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after review fixes: 1647 passed, 1 skipped, 235 warnings
   - `bun run build` - passed after review fixes for server, desktop, and `cargo check -p animus`
+  - `cargo test -p animus action_tool_schemas_publish_required_parameters` - failed before schema fix with missing `required`, passed after fix
+  - `cargo test -p animus` - passed after schema fix: 58 passed
+  - `cargo check -p animus` - passed after schema fix
+  - `bun run lint` - passed after schema fix for server and desktop
+  - `bun run build` - passed after schema fix for server, desktop, and `cargo check -p animus`
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
