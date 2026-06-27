@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, Method, StatusCode},
-    response::IntoResponse,
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -15,10 +15,7 @@ use std::{
     io::ErrorKind,
     path::{Path as FsPath, PathBuf},
     str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -26,9 +23,9 @@ use tokio::{
     sync::Mutex,
     time,
 };
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use tower_http::cors::CorsLayer;
 
 const DAEMON_API_VERSION: &str = "v1";
 const DEFAULT_DAEMON_HOST: &str = "127.0.0.1";
@@ -42,6 +39,16 @@ const DEFAULT_BASE_RESTART_SECONDS: u64 = 2;
 const DEFAULT_MAX_RESTART_SECONDS: u64 = 20;
 const DEFAULT_LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
+const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
+const DEFAULT_DAEMON_ALLOWED_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://127.0.0.1:1420",
+    "http://localhost:1420",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+];
 const DAEMON_CONTROL_TOKEN_HEADER: &str = "x-anima-daemon-token";
 
 #[derive(Clone)]
@@ -101,8 +108,7 @@ struct DaemonPolicy {
 struct RuntimeConfig {
     daemon_bind_host: String,
     daemon_bind_port: u16,
-    control_token: Option<String>,
-    control_token_is_auto_generated: bool,
+    control_token: String,
     runtime_host: String,
     runtime_port: u16,
     runtime_command: String,
@@ -128,8 +134,6 @@ impl RuntimeConfig {
         let daemon_bind_port = env_parse("ANIMA_DAEMON_BIND_PORT", DEFAULT_DAEMON_PORT);
         let runtime_host = env_or("ANIMA_DAEMON_RUNTIME_HOST", DEFAULT_RUNTIME_HOST);
         let runtime_port = env_parse("ANIMA_DAEMON_RUNTIME_PORT", DEFAULT_RUNTIME_PORT);
-        let control_token = env_opt("ANIMA_DAEMON_CONTROL_TOKEN");
-        let control_token_is_auto_generated = control_token.is_none();
         let runtime_artifact = env_or("ANIMA_DAEMON_RUNTIME_ARTIFACT", "");
         let launch_mode = env_or("ANIMA_DAEMON_RUNTIME_LAUNCH_MODE", "python");
         let runtime_launch_command = env_or("ANIMA_DAEMON_RUNTIME_COMMAND", "");
@@ -150,12 +154,13 @@ impl RuntimeConfig {
             .map(PathBuf::from)
             .or_else(default_data_dir)
             .unwrap_or_else(default_fallback_data_dir);
+        let control_token_path = data_dir.join(DEFAULT_DAEMON_CONTROL_TOKEN_FILE);
+        let control_token = resolve_control_token(&control_token_path);
 
         Self {
             daemon_bind_host,
             daemon_bind_port,
-            control_token: Some(control_token.unwrap_or_else(random_nonce)),
-            control_token_is_auto_generated,
+            control_token,
             runtime_host,
             runtime_port,
             runtime_command,
@@ -199,7 +204,10 @@ impl RuntimeConfig {
     }
 
     fn runtime_health_url_with_prefix(&self) -> String {
-        format!("http://{}:{}/api/health", self.runtime_host, self.runtime_port)
+        format!(
+            "http://{}:{}/api/health",
+            self.runtime_host, self.runtime_port
+        )
     }
 
     fn runtime_port_file(&self) -> PathBuf {
@@ -304,7 +312,6 @@ struct DaemonHealthResponse {
     version: &'static str,
     status: DaemonState,
     updated_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     control_token: Option<String>,
 }
 
@@ -327,7 +334,11 @@ enum DaemonCommand {
 }
 
 impl RuntimeState {
-    fn default_with_background(background_enabled: bool, lock_on_close: bool, lock_on_idle: bool) -> Self {
+    fn default_with_background(
+        background_enabled: bool,
+        lock_on_close: bool,
+        lock_on_idle: bool,
+    ) -> Self {
         Self {
             policy: DaemonPolicy {
                 locked: false,
@@ -362,13 +373,9 @@ impl RuntimeState {
         } else {
             self.status = DaemonState::Stopped;
         }
-}
+    }
 
-    fn mark_restart_delay(
-        &mut self,
-        config: &RuntimeConfig,
-        reason: &str,
-    ) -> Option<u64> {
+    fn mark_restart_delay(&mut self, config: &RuntimeConfig, reason: &str) -> Option<u64> {
         if !self.expected_running || !self.policy.background_enabled {
             self.status = DaemonState::Stopped;
             self.restart_wait_seconds = None;
@@ -385,9 +392,7 @@ impl RuntimeState {
         let shift = self.restart_attempts.min(10);
         let max = u64::from(u32::MAX);
         let multiplier = 1u64.saturating_shl(shift);
-        let next_delay = (config
-            .base_restart_seconds
-            .saturating_mul(multiplier))
+        let next_delay = (config.base_restart_seconds.saturating_mul(multiplier))
             .min(config.max_restart_seconds.max(1));
         self.restart_attempts = self.restart_attempts.saturating_add(1);
         self.restart_wait_seconds = Some(next_delay);
@@ -395,6 +400,72 @@ impl RuntimeState {
         self.last_error = Some(format!("{reason}; restart in {next_delay}s"));
         Some(next_delay.min(max))
     }
+}
+
+fn resolve_control_token(path: &FsPath) -> String {
+    let explicit = env_opt("ANIMA_DAEMON_CONTROL_TOKEN")
+        .and_then(|token| {
+            let trimmed = token.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+    if let Some(token) = explicit {
+        if let Err(err) = write_state_file(path, &token) {
+            warn!(
+                "Failed to persist explicit daemon control token {}: {err}",
+                path.display()
+            );
+        }
+        return token;
+    }
+
+    if let Some(stored) = read_control_token(path) {
+        return stored;
+    }
+
+    let generated = random_nonce();
+    if let Err(err) = write_state_file(path, &generated) {
+        warn!(
+            "Failed to persist generated daemon control token {}: {err}",
+            path.display()
+        );
+    }
+    generated
+}
+
+fn read_control_token(path: &FsPath) -> Option<String> {
+    let token = fs::read_to_string(path).ok()?;
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn daemon_allowed_origins() -> Vec<HeaderValue> {
+    let configured = env_opt("ANIMA_DAEMON_ALLOWED_ORIGINS")
+        .unwrap_or_else(|| DEFAULT_DAEMON_ALLOWED_ORIGINS.join(","));
+    let mut parsed = Vec::<HeaderValue>::new();
+    for origin in configured.split(',') {
+        let origin = origin.trim();
+        if origin.is_empty() {
+            continue;
+        }
+        if origin == "*" {
+            return Vec::new();
+        }
+        match HeaderValue::from_str(origin) {
+            Ok(value) => parsed.push(value),
+            Err(err) => warn!("Ignoring invalid CORS origin '{origin}': {err}"),
+        }
+    }
+
+    parsed
 }
 
 #[tokio::main]
@@ -435,7 +506,11 @@ async fn main() {
 
     let runtime_status = runtime.clone();
     tokio::spawn(async move {
-        let interval = runtime_status.state.config.health_poll_interval_seconds.max(1);
+        let interval = runtime_status
+            .state
+            .config
+            .health_poll_interval_seconds
+            .max(1);
         let mut ticker = time::interval(Duration::from_secs(interval));
 
         loop {
@@ -452,6 +527,16 @@ async fn main() {
         }
     }
 
+    let allowed_origins = daemon_allowed_origins();
+    let cors_layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(tower_http::cors::Any);
+    let cors_layer = if allowed_origins.is_empty() {
+        cors_layer.allow_origin(tower_http::cors::Any)
+    } else {
+        cors_layer.allow_origin(AllowOrigin::list(allowed_origins))
+    };
+
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
@@ -459,17 +544,11 @@ async fn main() {
         .route("/v1/control/:command", post(control))
         .route("/v1/logs", get(open_logs))
         .with_state(runtime)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(tower_http::cors::Any)
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers(tower_http::cors::Any),
-        );
+        .layer(cors_layer);
 
     let bind = format!(
         "{}:{}",
-        runtime.state.config.daemon_bind_host,
-        runtime.state.config.daemon_bind_port
+        runtime.state.config.daemon_bind_host, runtime.state.config.daemon_bind_port
     );
     info!("Starting local runtime daemon on {bind}");
 
@@ -484,30 +563,17 @@ async fn main() {
 
 async fn health(State(runtime): State<DaemonRuntime>) -> Json<DaemonHealthResponse> {
     let state = runtime.state.inner.lock().await;
-    let control_token = if runtime
-        .state
-        .config
-        .control_token_is_auto_generated
-    {
-        runtime.state.config.control_token.clone()
-    } else {
-        None
-    };
-
     Json(DaemonHealthResponse {
         version: DAEMON_API_VERSION,
         status: state.status.clone(),
         updated_at: Utc::now().to_rfc3339(),
-        control_token,
+        control_token: Some(runtime.state.config.control_token.clone()),
     })
 }
 
-async fn status(
-    State(runtime): State<DaemonRuntime>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn status(State(runtime): State<DaemonRuntime>, headers: HeaderMap) -> Response {
     if let Err(response) = authorize_control(&runtime.state.config, &headers) {
-        return response;
+        return response.into_response();
     }
 
     let state = runtime.state.inner.lock().await;
@@ -515,6 +581,7 @@ async fn status(
         StatusCode::OK,
         Json(build_status_response(&runtime.state.config, &state)),
     )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -526,9 +593,9 @@ async fn open_logs(
     State(runtime): State<DaemonRuntime>,
     headers: HeaderMap,
     Query(params): Query<OpenLogParams>,
-) -> impl IntoResponse {
+) -> Response {
     if let Err(response) = authorize_control(&runtime.state.config, &headers) {
-        return response;
+        return response.into_response();
     }
 
     let limit = params.lines.unwrap_or(120).clamp(10, 500);
@@ -542,7 +609,8 @@ async fn open_logs(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({ "error": message })),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -562,14 +630,12 @@ async fn open_logs(
             truncated,
         }),
     )
+        .into_response()
 }
 
-async fn runtime_nonce(
-    State(runtime): State<DaemonRuntime>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn runtime_nonce(State(runtime): State<DaemonRuntime>, headers: HeaderMap) -> Response {
     if let Err(response) = authorize_control(&runtime.state.config, &headers) {
-        return response;
+        return response.into_response();
     }
 
     (
@@ -578,6 +644,7 @@ async fn runtime_nonce(
             runtime_nonce: runtime.state.config.runtime_nonce.clone(),
         }),
     )
+        .into_response()
 }
 
 async fn control(
@@ -585,19 +652,19 @@ async fn control(
     Path(command): Path<DaemonCommand>,
     headers: HeaderMap,
     body: Option<Json<DaemonControlRequest>>,
-) -> impl IntoResponse {
+) -> Response {
     if let Err(response) = authorize_control(&runtime.state.config, &headers) {
-        return response;
+        return response.into_response();
     }
 
     let payload = body.map(|Json(value)| value).unwrap_or_default();
     let result = match command {
         DaemonCommand::Start => start_runtime(&runtime, false).await,
         DaemonCommand::Stop => stop_runtime(&runtime).await,
-        DaemonCommand::Restart => {
-            stop_runtime(&runtime).await?;
-            start_runtime(&runtime, false).await
-        }
+        DaemonCommand::Restart => match stop_runtime(&runtime).await {
+            Ok(_) => start_runtime(&runtime, false).await,
+            Err(message) => Err(message),
+        },
         DaemonCommand::Lock => set_lock(&runtime, true).await,
         DaemonCommand::Unlock => set_lock(&runtime, false).await,
         DaemonCommand::SetBackground => match payload.background_enabled {
@@ -617,6 +684,7 @@ async fn control(
                     state: state.status.clone(),
                 }),
             )
+                .into_response()
         }
         Err(message) => {
             let state = runtime.state.inner.lock().await;
@@ -628,6 +696,7 @@ async fn control(
                     state: state.status.clone(),
                 }),
             )
+                .into_response()
         }
     }
 }
@@ -636,7 +705,8 @@ fn authorize_control(
     config: &RuntimeConfig,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<DaemonError>)> {
-    let Some(token) = config.control_token.as_deref() else {
+    let token = config.control_token.trim();
+    if token.is_empty() {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(DaemonError {
@@ -647,21 +717,10 @@ fn authorize_control(
         ));
     };
 
-    let token = token.trim();
-    if token.is_empty() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(DaemonError {
-                category: "auth".to_string(),
-                message: "Daemon control token is required".to_string(),
-                detail: None,
-            }),
-        ));
-    }
-
     let provided = headers
         .get(DAEMON_CONTROL_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
 
     if provided == Some(token) {
         return Ok(());
@@ -701,7 +760,7 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
     command.env("ANIMA_RUNTIME_PORT", config.runtime_port.to_string());
     command.env("ANIMA_SIDECAR_NONCE", &config.runtime_nonce);
     command.env("PYTHONUNBUFFERED", "1");
-    command.env("ANIMA_DAEMON_CONTROL_TOKEN", config.control_token.clone().unwrap_or_default());
+    command.env("ANIMA_DAEMON_CONTROL_TOKEN", &config.control_token);
 
     if let Some(workdir) = &config.runtime_working_dir {
         command.current_dir(workdir);
@@ -784,7 +843,10 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
 
     if pid != 0 {
         if let Err(err) = fs::write(config.runtime_pid_file(), pid.to_string()) {
-            warn!("Failed to write pid file {}: {err}", config.runtime_pid_file().display());
+            warn!(
+                "Failed to write pid file {}: {err}",
+                config.runtime_pid_file().display()
+            );
         }
     }
 
@@ -952,10 +1014,7 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
 
                     if state.expected_running {
                         should_restart_in_seconds = state
-                            .mark_restart_delay(
-                                &config,
-                                "runtime process exited unexpectedly",
-                            );
+                            .mark_restart_delay(&config, "runtime process exited unexpectedly");
                     } else {
                         state.status = DaemonState::Stopped;
                         state.consecutive_health_failures = 0;
@@ -978,8 +1037,8 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
             && state.process.is_none()
             && should_restart_in_seconds.is_none()
         {
-            should_restart_in_seconds = state
-                .mark_restart_delay(&config, "runtime not running while expected");
+            should_restart_in_seconds =
+                state.mark_restart_delay(&config, "runtime not running while expected");
         }
 
         if state.policy.locked {
@@ -1026,7 +1085,8 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                     if should_restart_in_seconds.is_some() {
                         process_to_restart = state.process.take();
                     }
-                    if should_restart_in_seconds.is_some() && state.consecutive_health_failures > 1 {
+                    if should_restart_in_seconds.is_some() && state.consecutive_health_failures > 1
+                    {
                         state.status = DaemonState::Degraded;
                     }
                 }
@@ -1036,7 +1096,10 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
 
     if let Some(mut process) = process_to_restart {
         if let Err(err) = process.child.kill().await {
-            warn!("Failed to restart unhealthy runtime process {}: {err}", process.pid);
+            warn!(
+                "Failed to restart unhealthy runtime process {}: {err}",
+                process.pid
+            );
         }
         if let Err(err) = process.child.wait().await {
             warn!(
@@ -1083,7 +1146,10 @@ fn build_status_response(config: &RuntimeConfig, state: &RuntimeState) -> Daemon
         runtime_identity: DaemonRuntimeIdentity {
             command: config.runtime_command.clone(),
             args: config.runtime_args.clone(),
-            working_dir: config.runtime_working_dir.as_deref().map(|path| path.to_string_lossy().to_string()),
+            working_dir: config
+                .runtime_working_dir
+                .as_deref()
+                .map(|path| path.to_string_lossy().to_string()),
         },
         runtime: DaemonRuntimeStatus {
             pid: state.pid,
@@ -1132,7 +1198,10 @@ async fn check_runtime_health(config: &RuntimeConfig) -> Result<(), String> {
         ));
     }
 
-    Err(format!("Runtime health endpoint failed: {}", response.status()))
+    Err(format!(
+        "Runtime health endpoint failed: {}",
+        response.status()
+    ))
 }
 
 fn write_state_file(path: &FsPath, value: &str) -> std::io::Result<()> {
@@ -1196,7 +1265,10 @@ fn resolve_runtime_launcher(
     if !runtime_artifact.is_empty() {
         let artifact = FsPath::new(runtime_artifact);
         if artifact.exists() {
-            let extension = artifact.extension().and_then(|value| value.to_str()).unwrap_or("");
+            let extension = artifact
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             if matches!(extension, "py" | "pyw") {
                 return (
                     env_or("ANIMA_DAEMON_PYTHON", "python"),
@@ -1335,3 +1407,4 @@ fn default_data_dir() -> Option<PathBuf> {
 fn default_fallback_data_dir() -> PathBuf {
     PathBuf::from(".").join(".anima").join("runtime-daemon")
 }
+

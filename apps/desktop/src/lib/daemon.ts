@@ -3,7 +3,6 @@ import type {
   DaemonControlRequest,
   DaemonControlResponse,
   DaemonErrorResponse,
-  DaemonHealthResponse,
   DaemonLogResponse,
   DaemonStatusResponse,
 } from "@anima/daemon-contracts";
@@ -11,14 +10,17 @@ import type {
 import {
   DAEMON_CONTROL_TOKEN_ENV,
   DAEMON_CONTROL_TOKEN_HEADER,
-  DAEMON_ROUTES,
   DaemonRuntimeNonceResponse,
+  DAEMON_ROUTES,
 } from "@anima/daemon-contracts";
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
+type DaemonHealthPayload = {
+  controlToken?: string | null;
+  control_token?: string | null;
+};
 let daemonRuntimeNonce: string | null = null;
-let controlTokenResolved = false;
 let resolvingControlToken: Promise<string | null> | null = null;
 
 function normalizeNonce(value: string | undefined | null): string | null {
@@ -53,48 +55,12 @@ function getControlToken(): string | null {
   }
 }
 
-function parseJsonBody(text: string): unknown {
-  if (!text) return null;
+function clearStoredControlToken(): void {
   try {
-    return JSON.parse(text);
+    localStorage.removeItem(DAEMON_CONTROL_TOKEN_KEY);
   } catch {
-    return null;
+    // Ignore storage failures.
   }
-}
-
-async function bootstrapControlToken(): Promise<string | null> {
-  if (controlTokenResolved) {
-    return getControlToken();
-  }
-
-  const response = await fetch(`${getDaemonOrigin()}/${DAEMON_ROUTES.health}`, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    controlTokenResolved = false;
-    return null;
-  }
-
-  const text = await response.text();
-  const payload = parseJsonBody(text);
-  const candidate = (payload as DaemonHealthResponse | null)?.controlToken;
-  const token = normalizeToken(candidate);
-  if (token) {
-    setDaemonControlToken(token);
-    controlTokenResolved = true;
-    return token;
-  }
-
-  controlTokenResolved = true;
-  return null;
-}
-
-function normalizeToken(value: string | undefined | null): string | null {
-  return normalizeNonce(value);
 }
 
 function getHeaders() {
@@ -130,16 +96,59 @@ function parseErrorResponse(payload: unknown): string {
   return "Daemon control request failed";
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!getControlToken() && !resolvingControlToken) {
-    resolvingControlToken = bootstrapControlToken();
+function parseControlToken(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidate = payload as DaemonHealthPayload;
+  const raw = candidate.controlToken ?? candidate.control_token;
+  if (!raw) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function bootstrapControlToken(): Promise<string | null> {
+  if (resolvingControlToken) {
+    return resolvingControlToken;
   }
 
-  if (!getControlToken() && resolvingControlToken) {
-    await resolvingControlToken.catch(() => null);
+  resolvingControlToken = (async () => {
+    const response = await fetch(`${getDaemonOrigin()}/${DAEMON_ROUTES.health}`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const text = await response.text();
+    let payload: unknown = text;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+
+    const token = parseControlToken(payload);
+    if (token) {
+      setDaemonControlToken(token);
+    }
+    return token;
+  })();
+
+  try {
+    return await resolvingControlToken;
+  } finally {
     resolvingControlToken = null;
   }
+}
 
+async function request<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
   const response = await fetch(endpoint(path), {
     ...init,
     headers: {
@@ -157,6 +166,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      clearStoredControlToken();
+      if (allowRetry) {
+        const token = await bootstrapControlToken();
+        if (token) {
+          return request(path, init, false);
+        }
+      }
+    }
     const message = parseErrorResponse(parsed);
     throw new Error(message);
   }
@@ -164,12 +182,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parsed as T;
 }
 
-export async function getDaemonHealth(): Promise<DaemonHealthResponse> {
+export async function getDaemonHealth(): Promise<{ status: string; version: string; updatedAt: string }> {
   return request(`${DAEMON_ROUTES.health}`);
 }
 
 export async function getDaemonStatus(): Promise<DaemonStatusResponse> {
   return request<DaemonStatusResponse>(`${DAEMON_ROUTES.status}`);
+}
+
+async function refreshRuntimeNonceAfterControl(): Promise<void> {
+  try {
+    await refreshDaemonRuntimeNonce();
+  } catch {
+    // Ignore failures so control actions remain idempotent on older runtimes.
+  }
 }
 
 export async function refreshDaemonRuntimeNonce(): Promise<string | null> {
@@ -202,6 +228,7 @@ export async function controlDaemon(command: DaemonCommand, requestBody?: Daemon
 
 export async function startDaemon(): Promise<void> {
   await controlDaemon("start");
+  await refreshRuntimeNonceAfterControl();
 }
 
 export async function stopDaemon(): Promise<void> {
@@ -211,6 +238,7 @@ export async function stopDaemon(): Promise<void> {
 
 export async function restartDaemon(): Promise<void> {
   await controlDaemon("restart");
+  await refreshRuntimeNonceAfterControl();
 }
 
 export async function setDaemonLock(locked: boolean): Promise<void> {
