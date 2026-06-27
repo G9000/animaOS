@@ -38,12 +38,40 @@ fn daemon_control_token_path() -> PathBuf {
 #[serde(rename_all = "camelCase")]
 struct DaemonReleaseManifest {
     daemon: DaemonReleaseManifestDaemon,
+    runtime: DaemonReleaseManifestRuntime,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DaemonReleaseManifestDaemon {
     artifact_candidates: Vec<String>,
+    config_default: DaemonReleaseManifestConfigDefault,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonReleaseManifestConfigDefault {
+    daemon_bind_host: String,
+    daemon_bind_port: u16,
+    runtime_host: String,
+    runtime_port: u16,
+    runtime_launch_mode: String,
+    runtime_artifact: Option<String>,
+    python_entry: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonReleaseManifestRuntime {
+    source_root: String,
+    runtime_entrypoint: String,
+    python_launcher_hint: String,
+}
+
+struct ResolvedManifestDaemonLaunch {
+    executable: PathBuf,
+    current_dir: Option<PathBuf>,
+    env: Vec<(String, String)>,
 }
 
 #[tauri::command]
@@ -61,25 +89,22 @@ fn read_daemon_control_token() -> Option<String> {
 fn start_local_runtime_daemon(app: tauri::AppHandle) -> Result<(), String> {
     let workspace_root = find_workspace_root();
 
-    if let Some(executable) = resolve_daemon_executable(&app, workspace_root.as_deref()) {
-        let mut command = std::process::Command::new(&executable);
-        if let Some(root) = workspace_root.as_deref() {
-            command.current_dir(root);
-        }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+    if let Some(executable) = resolve_configured_daemon_executable() {
+        spawn_daemon_executable(&executable, workspace_root.as_deref(), &[])?;
+        return Ok(());
+    }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
-        }
+    if let Some(launch) = resolve_manifest_daemon_launch(&app) {
+        spawn_daemon_executable(
+            &launch.executable,
+            launch.current_dir.as_deref(),
+            &launch.env,
+        )?;
+        return Ok(());
+    }
 
-        command
-            .spawn()
-            .map_err(|err| format!("Failed to launch daemon executable {}: {err}", executable.display()))?;
+    if let Some(executable) = resolve_workspace_daemon_executable(workspace_root.as_deref()) {
+        spawn_daemon_executable(&executable, workspace_root.as_deref(), &[])?;
         return Ok(());
     }
 
@@ -117,18 +142,46 @@ fn start_local_runtime_daemon(app: tauri::AppHandle) -> Result<(), String> {
     )
 }
 
-fn resolve_daemon_executable(app: &tauri::AppHandle, workspace_root: Option<&Path>) -> Option<PathBuf> {
+fn spawn_daemon_executable(
+    executable: &Path,
+    current_dir: Option<&Path>,
+    env_pairs: &[(String, String)],
+) -> Result<(), String> {
+    let mut command = std::process::Command::new(executable);
+    if let Some(root) = current_dir {
+        command.current_dir(root);
+    }
+    for (key, value) in env_pairs {
+        command.env(key, value);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+
+    command
+        .spawn()
+        .map_err(|err| format!("Failed to launch daemon executable {}: {err}", executable.display()))?;
+
+    Ok(())
+}
+
+fn resolve_configured_daemon_executable() -> Option<PathBuf> {
     env::var("ANIMA_DAEMON_EXECUTABLE")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_file())
-        .or_else(|| resolve_manifest_daemon_executable(app))
-        .or_else(|| resolve_workspace_daemon_executable(workspace_root))
 }
 
-fn resolve_manifest_daemon_executable(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn load_release_manifest(app: &tauri::AppHandle) -> Option<(PathBuf, DaemonReleaseManifest)> {
     let manifest_path = env::var("ANIMA_DAEMON_RELEASE_MANIFEST")
         .ok()
         .map(|value| value.trim().to_string())
@@ -146,12 +199,85 @@ fn resolve_manifest_daemon_executable(app: &tauri::AppHandle) -> Option<PathBuf>
     let raw = fs::read_to_string(&manifest_path).ok()?;
     let manifest = serde_json::from_str::<DaemonReleaseManifest>(&raw).ok()?;
 
-    manifest
+    Some((manifest_path, manifest))
+}
+
+fn resolve_manifest_daemon_launch(app: &tauri::AppHandle) -> Option<ResolvedManifestDaemonLaunch> {
+    let (manifest_path, manifest) = load_release_manifest(app)?;
+    let runtime_working_dir = resolve_manifest_runtime_working_dir(&manifest_path, &manifest.runtime);
+    let runtime_artifact = manifest
+        .daemon
+        .config_default
+        .runtime_artifact
+        .as_deref()
+        .and_then(|candidate| resolve_manifest_artifact_path(&manifest_path, candidate))
+        .filter(|path| path.is_file());
+
+    let mut env = vec![
+        (
+            "ANIMA_DAEMON_BIND_HOST".to_string(),
+            manifest.daemon.config_default.daemon_bind_host.clone(),
+        ),
+        (
+            "ANIMA_DAEMON_BIND_PORT".to_string(),
+            manifest.daemon.config_default.daemon_bind_port.to_string(),
+        ),
+        (
+            "ANIMA_DAEMON_RUNTIME_HOST".to_string(),
+            manifest.daemon.config_default.runtime_host.clone(),
+        ),
+        (
+            "ANIMA_DAEMON_RUNTIME_PORT".to_string(),
+            manifest.daemon.config_default.runtime_port.to_string(),
+        ),
+        (
+            "ANIMA_DAEMON_RUNTIME_LAUNCH_MODE".to_string(),
+            manifest.daemon.config_default.runtime_launch_mode.clone(),
+        ),
+    ];
+
+    if let Some(runtime_artifact) = runtime_artifact.as_ref() {
+        env.push((
+            "ANIMA_DAEMON_RUNTIME_ARTIFACT".to_string(),
+            runtime_artifact.to_string_lossy().to_string(),
+        ));
+    }
+
+    let runtime_command = manifest.daemon.config_default.python_entry.trim();
+    if !runtime_command.is_empty() {
+        env.push((
+            "ANIMA_DAEMON_RUNTIME_COMMAND".to_string(),
+            runtime_command.to_string(),
+        ));
+    }
+
+    let python_launcher_hint = manifest.runtime.python_launcher_hint.trim();
+    if !python_launcher_hint.is_empty() {
+        env.push((
+            "ANIMA_DAEMON_PYTHON".to_string(),
+            python_launcher_hint.to_string(),
+        ));
+    }
+
+    if let Some(runtime_working_dir) = runtime_working_dir.as_ref() {
+        env.push((
+            "ANIMA_DAEMON_RUNTIME_WORKDIR".to_string(),
+            runtime_working_dir.to_string_lossy().to_string(),
+        ));
+    }
+
+    let executable = manifest
         .daemon
         .artifact_candidates
         .into_iter()
         .filter_map(|candidate| resolve_manifest_artifact_path(&manifest_path, &candidate))
-        .find(|path| path.is_file())
+        .find(|path| path.is_file())?;
+
+    Some(ResolvedManifestDaemonLaunch {
+        executable,
+        current_dir: runtime_working_dir.or_else(|| manifest_path.parent().map(Path::to_path_buf)),
+        env,
+    })
 }
 
 fn resolve_manifest_artifact_path(manifest_path: &Path, artifact_candidate: &str) -> Option<PathBuf> {
@@ -161,6 +287,31 @@ fn resolve_manifest_artifact_path(manifest_path: &Path, artifact_candidate: &str
     }
 
     manifest_path.parent().map(|parent| parent.join(artifact_path))
+}
+
+fn resolve_manifest_runtime_working_dir(
+    manifest_path: &Path,
+    runtime: &DaemonReleaseManifestRuntime,
+) -> Option<PathBuf> {
+    let source_root = runtime.source_root.trim();
+    if !source_root.is_empty() {
+        if let Some(path) = resolve_manifest_artifact_path(manifest_path, source_root) {
+            if path.is_dir() {
+                return Some(path);
+            }
+        }
+    }
+
+    let runtime_entrypoint = runtime.runtime_entrypoint.trim();
+    if !runtime_entrypoint.is_empty() {
+        if let Some(path) = resolve_manifest_artifact_path(manifest_path, runtime_entrypoint) {
+            if path.is_file() {
+                return path.parent().map(Path::to_path_buf);
+            }
+        }
+    }
+
+    None
 }
 
 fn resolve_workspace_daemon_executable(workspace_root: Option<&Path>) -> Option<PathBuf> {

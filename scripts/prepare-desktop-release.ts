@@ -115,7 +115,7 @@ function artifactVariant(path: string): string {
 }
 
 function stageDaemonArtifacts(artifactCandidates: string[], destinationRoot: string): string[] {
-  rmSync(destinationRoot, { recursive: true, force: true });
+  rmSync(join(destinationRoot, "runtime-daemon"), { recursive: true, force: true });
 
   return artifactCandidates.map((artifactPath) => {
     const relativePath = join("runtime-daemon", artifactVariant(artifactPath), basename(artifactPath));

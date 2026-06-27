@@ -64,13 +64,14 @@ function clearStoredControlToken(): void {
   }
 }
 
-function getHeaders() {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+function getHeaders(includeJsonContentType = false) {
+  const headers: Record<string, string> = {};
   const token = getControlToken();
   if (token) {
     headers[DAEMON_CONTROL_TOKEN_HEADER] = token;
+  }
+  if (includeJsonContentType) {
+    headers["Content-Type"] = "application/json";
   }
   return headers;
 }
@@ -134,10 +135,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function request<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
+  const hasJsonBody = init.body !== undefined && init.body !== null;
   const response = await fetch(endpoint(path), {
     ...init,
     headers: {
-      ...getHeaders(),
+      ...getHeaders(hasJsonBody),
       ...(init.headers ?? {}),
     },
   });
