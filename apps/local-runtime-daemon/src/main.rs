@@ -885,6 +885,7 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
             ));
         }
     };
+    tighten_private_file_permissions(&config.runtime_log_file(), "runtime log");
 
     let stdout = match log.try_clone() {
         Ok(stdout) => Stdio::from(stdout),
