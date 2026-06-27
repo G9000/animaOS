@@ -127,6 +127,12 @@ async function bootstrapControlToken(): Promise<string | null> {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 async function request<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
   const response = await fetch(endpoint(path), {
     ...init,
@@ -169,6 +175,42 @@ export async function getDaemonStatus(): Promise<DaemonStatusResponse> {
   return request<DaemonStatusResponse>(`${DAEMON_ROUTES.status}`);
 }
 
+async function canReachDaemonHealth(): Promise<boolean> {
+  try {
+    await getDaemonHealth();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForDaemonHealth(timeoutMs = 15000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (await canReachDaemonHealth()) {
+      return;
+    }
+    await sleep(250);
+  }
+
+  throw new Error("Local runtime daemon did not become reachable after launch");
+}
+
+async function ensureLocalDaemonRunning(): Promise<void> {
+  if (!isTauri()) {
+    throw new Error("Local runtime daemon is not running");
+  }
+
+  if (await canReachDaemonHealth()) {
+    return;
+  }
+
+  await invoke("start_local_runtime_daemon");
+  await waitForDaemonHealth();
+  await bootstrapControlToken();
+}
+
 async function refreshRuntimeNonceAfterControl(): Promise<void> {
   try {
     await refreshDaemonRuntimeNonce();
@@ -206,7 +248,17 @@ export async function controlDaemon(command: DaemonCommand, requestBody?: Daemon
 }
 
 export async function startDaemon(): Promise<void> {
-  await controlDaemon("start");
+  try {
+    await controlDaemon("start");
+  } catch (error) {
+    if (!isTauri() || await canReachDaemonHealth()) {
+      throw error;
+    }
+
+    await ensureLocalDaemonRunning();
+    await controlDaemon("start");
+  }
+
   await refreshRuntimeNonceAfterControl();
 }
 

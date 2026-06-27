@@ -38,6 +38,7 @@ const DEFAULT_HEALTH_TIMEOUT_SECONDS: u64 = 2;
 const DEFAULT_MAX_RESTART_ATTEMPTS: u32 = 3;
 const DEFAULT_BASE_RESTART_SECONDS: u64 = 2;
 const DEFAULT_MAX_RESTART_SECONDS: u64 = 20;
+const DEFAULT_STARTUP_GRACE_SECONDS: u64 = 45;
 const DEFAULT_LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
 const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
@@ -130,6 +131,7 @@ struct RuntimeConfig {
     max_restart_attempts: u32,
     base_restart_seconds: u64,
     max_restart_seconds: u64,
+    startup_grace_seconds: u64,
     runtime_log_rotate_bytes: u64,
     lock_on_close: bool,
     lock_on_idle: bool,
@@ -196,6 +198,10 @@ impl RuntimeConfig {
             max_restart_seconds: env_parse(
                 "ANIMA_DAEMON_MAX_RESTART_SECONDS",
                 DEFAULT_MAX_RESTART_SECONDS,
+            ),
+            startup_grace_seconds: env_parse(
+                "ANIMA_DAEMON_STARTUP_GRACE_SECONDS",
+                DEFAULT_STARTUP_GRACE_SECONDS,
             ),
             runtime_log_rotate_bytes: env_parse(
                 "ANIMA_DAEMON_RUNTIME_LOG_ROTATE_BYTES",
@@ -540,6 +546,10 @@ async fn main() {
             ))),
         }),
     };
+
+    if let Err(err) = shutdown_existing_runtime_from_pid_file(&runtime.state.config).await {
+        warn!("Failed to reconcile existing runtime process on daemon startup: {err}");
+    }
 
     if let Err(err) = write_state_file(&runtime.state.config.lock_file(), "created") {
         warn!(
@@ -1143,19 +1153,25 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
             }
             Err(err) => {
                 let mut state = runtime.state.inner.lock().await;
-                state.consecutive_health_failures =
-                    state.consecutive_health_failures.saturating_add(1);
-                state.last_error = Some(err.clone());
-                state.status = DaemonState::Degraded;
-                if state.consecutive_health_failures >= 2 {
-                    should_restart_in_seconds = state
-                        .mark_restart_delay(&runtime.state.config, "runtime health check failed");
-                    if should_restart_in_seconds.is_some() {
-                        process_to_restart = state.process.take();
-                    }
-                    if should_restart_in_seconds.is_some() && state.consecutive_health_failures > 1
-                    {
-                        state.status = DaemonState::Degraded;
+                if startup_grace_active(&state, &runtime.state.config) {
+                    state.consecutive_health_failures = 0;
+                    state.last_error = None;
+                    state.status = DaemonState::Starting;
+                } else {
+                    state.consecutive_health_failures =
+                        state.consecutive_health_failures.saturating_add(1);
+                    state.last_error = Some(err.clone());
+                    state.status = DaemonState::Degraded;
+                    if state.consecutive_health_failures >= 2 {
+                        should_restart_in_seconds = state
+                            .mark_restart_delay(&runtime.state.config, "runtime health check failed");
+                        if should_restart_in_seconds.is_some() {
+                            process_to_restart = state.process.take();
+                        }
+                        if should_restart_in_seconds.is_some() && state.consecutive_health_failures > 1
+                        {
+                            state.status = DaemonState::Degraded;
+                        }
                     }
                 }
             }
@@ -1175,6 +1191,7 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                 process.pid
             );
         }
+        cleanup_runtime_tracking_files(&config);
     }
 
     if let Some(delay) = should_restart_in_seconds {
@@ -1238,6 +1255,195 @@ async fn shutdown_runtime_process(process: &mut RuntimeProcess) -> Result<ExitSt
         .wait()
         .await
         .map_err(|err| format!("Failed waiting for force-killed runtime process {}: {err}", process.pid))
+}
+
+async fn shutdown_existing_runtime_from_pid_file(config: &RuntimeConfig) -> Result<(), String> {
+    let pid_path = config.runtime_pid_file();
+    let Some(pid) = read_runtime_pid(&pid_path)? else {
+        cleanup_runtime_tracking_files(config);
+        return Ok(());
+    };
+
+    if !runtime_pid_is_running(pid).await {
+        cleanup_runtime_tracking_files(config);
+        return Ok(());
+    }
+
+    info!(
+        "Found existing runtime process pid={} from {}; stopping before daemon startup",
+        pid,
+        pid_path.display()
+    );
+
+    if let Err(err) = request_runtime_process_shutdown(pid).await {
+        warn!("Failed to request shutdown for existing runtime process {pid}: {err}");
+    }
+
+    if wait_for_runtime_pid_exit(
+        pid,
+        Duration::from_secs(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS),
+    )
+    .await
+    .is_err()
+    {
+        warn!(
+            "Existing runtime process {} did not exit after graceful shutdown; forcing kill",
+            pid
+        );
+        force_kill_runtime_process_pid(pid).await?;
+        wait_for_runtime_pid_exit(pid, Duration::from_secs(5)).await?;
+    }
+
+    cleanup_runtime_tracking_files(config);
+    Ok(())
+}
+
+fn read_runtime_pid(path: &FsPath) -> Result<Option<u32>, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(format!("Failed to read runtime pid file {}: {err}", path.display()));
+        }
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let pid = trimmed
+        .parse::<u32>()
+        .map_err(|err| format!("Invalid runtime pid in {}: {err}", path.display()))?;
+
+    if pid == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(pid))
+}
+
+fn cleanup_runtime_tracking_files(config: &RuntimeConfig) {
+    for path in [config.runtime_pid_file(), config.runtime_port_file()] {
+        if let Err(err) = fs::remove_file(&path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!("Failed to remove runtime tracking file {}: {err}", path.display());
+            }
+        }
+    }
+}
+
+fn startup_grace_active(state: &RuntimeState, config: &RuntimeConfig) -> bool {
+    if state.ready_at.is_some() {
+        return false;
+    }
+
+    let Some(started_at) = state.started_at else {
+        return false;
+    };
+
+    let Ok(elapsed) = (Utc::now() - started_at).to_std() else {
+        return false;
+    };
+
+    elapsed < Duration::from_secs(config.startup_grace_seconds.max(1))
+}
+
+async fn wait_for_runtime_pid_exit(pid: u32, timeout: Duration) -> Result<(), String> {
+    let started_at = tokio::time::Instant::now();
+    let poll_interval = Duration::from_millis(250);
+
+    while started_at.elapsed() < timeout {
+        if !runtime_pid_is_running(pid).await {
+            return Ok(());
+        }
+        time::sleep(poll_interval).await;
+    }
+
+    if runtime_pid_is_running(pid).await {
+        Err(format!(
+            "Runtime process {pid} did not exit within {}s",
+            timeout.as_secs()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+async fn runtime_pid_is_running(pid: u32) -> bool {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("tasklist");
+        command.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new("kill");
+        command.arg("-0").arg(pid.to_string());
+        command
+    };
+
+    #[cfg(windows)]
+    {
+        match command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let marker = format!(",\"{pid}\",");
+                stdout.lines().any(|line| line.contains(&marker))
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        matches!(
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await,
+            Ok(status) if status.success()
+        )
+    }
+}
+
+async fn force_kill_runtime_process_pid(pid: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new("kill");
+        command.arg("-KILL").arg(pid.to_string());
+        command
+    };
+
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|err| format!("Failed to force-kill runtime process {pid}: {err}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Force-kill command for runtime process {pid} exited with {status}"
+        ))
+    }
 }
 
 async fn request_runtime_process_shutdown(pid: u32) -> Result<(), String> {
