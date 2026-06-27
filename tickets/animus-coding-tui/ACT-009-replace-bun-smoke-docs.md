@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 13:02 MYT
+- Updated: 2026-06-27 13:24 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -43,6 +43,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 12:18 MYT - Addressed the remaining Codex PR review thread by restoring concrete JSON parameter schemas for Animus action tools.
 - 2026-06-27 12:43 MYT - Addressed the second Codex review round: unique edit targets, path-qualified glob matching, remembered approval reuse, unimplemented `ask_user` schema removal, and non-blocking websocket approval resume.
 - 2026-06-27 13:02 MYT - Addressed the third Codex review round: reconnect-time outbound frame queueing, background process cleanup on registry drop, and bounded background output buffers.
+- 2026-06-27 13:24 MYT - Addressed the fourth Codex review round: delegated shell permission gating, async local tool execution, shell/background output redaction, and bounded grep results.
 
 ## Validation
 
@@ -79,12 +80,18 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run lint` - passed after third review fixes for server and desktop
   - `bun run build` - passed after third review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after third review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `git diff --check` - passed after fourth review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after fourth review fixes: 71 passed
+  - `bun run lint` - passed after fourth review fixes for server and desktop
+  - `bun run build` - passed after fourth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fourth review fixes: 1648 passed, 1 skipped, 235 warnings
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
   - apps/animus/tsconfig.json
   - apps/animus/src/**/*.ts
   - apps/animus/src/**/*.tsx
+  - apps/animus/src/commands.rs
   - apps/animus/src/client.rs
   - apps/animus/src/app.rs
   - apps/animus/src/approvals.rs
@@ -92,6 +99,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - apps/animus/src/tools/files.rs
   - apps/animus/src/tools/mod.rs
   - apps/animus/src/tools/process.rs
+  - apps/animus/src/tools/redaction.rs
   - apps/animus/src/tools/shell.rs
   - apps/animus/src/tui.rs
   - apps/server/src/anima_server/api/routes/ws.py
@@ -117,5 +125,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Review fixes harden permission paths with canonical containment checks and symlink-aware traversal, apply `/permissions` to the active tool executor, keep approval controls visible, and ensure timed-out shell commands are dropped before late side effects.
   - Second review fixes prevent ambiguous string edits, allow directory-qualified glob patterns, honor approve-for-session for future matching approvals, avoid advertising unimplemented `ask_user`, and keep the websocket reader free while approval resumes stream.
   - Third review fixes retain outbound frames submitted during reconnect, stop live background children when Animus exits, and cap retained background stdout/stderr lines before `bg_output` clones them.
+  - Fourth review fixes make delegated shell execution require explicit `workspace-write-shell`, run local tool calls off the TUI loop, redact shell/background output before tool results leave the client, and truncate broad grep output at its cap.
   - No database schema changes; Alembic was not run.
 

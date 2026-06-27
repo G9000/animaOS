@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Stdout};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -15,7 +16,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Terminal;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::app::{AppEvent, AppState, ConnectionState};
 use crate::approvals::ApprovalDecision;
@@ -77,14 +78,14 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
     let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
     let config = app.config.clone();
     let websocket_task = tokio::spawn(websocket_driver(config, ws_tx, outbound_rx));
-    let mut tool_executor = ToolExecutor::new(PermissionPolicy::workspace_write(
-        app.config.workspace.clone(),
-    ));
+    let tool_executor = Arc::new(Mutex::new(ToolExecutor::new(
+        PermissionPolicy::workspace_write(app.config.workspace.clone()),
+    )));
     let mut input = InputBuffer::default();
 
     loop {
         while let Ok(event) = ws_rx.try_recv() {
-            handle_ws_event(&mut app, &mut tool_executor, &outbound_tx, event).await;
+            handle_ws_event(&mut app, tool_executor.clone(), &outbound_tx, event).await;
         }
 
         session.terminal.draw(|frame| draw_app(frame, &app))?;
@@ -92,7 +93,7 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 for outgoing in handle_key(&mut app, &mut input, key) {
-                    handle_outbound_message(&mut app, &mut tool_executor, &outbound_tx, outgoing);
+                    handle_outbound_message(&mut app, &tool_executor, &outbound_tx, outgoing).await;
                 }
             }
         }
@@ -107,9 +108,9 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
     Ok(())
 }
 
-fn handle_outbound_message(
+async fn handle_outbound_message(
     app: &mut AppState,
-    tool_executor: &mut ToolExecutor,
+    tool_executor: &Arc<Mutex<ToolExecutor>>,
     outbound_tx: &mpsc::UnboundedSender<OutboundMessage>,
     outgoing: OutboundMessage,
 ) {
@@ -123,7 +124,7 @@ fn handle_outbound_message(
         OutboundMessage::SetPermissions(mode) => {
             match PermissionPolicy::from_mode(app.config.workspace.clone(), &mode) {
                 Ok(policy) => {
-                    tool_executor.set_policy(policy);
+                    tool_executor.lock().await.set_policy(policy);
                     app.apply(AppEvent::Notice(format!("permission mode: {mode}")));
                 }
                 Err(message) => {
@@ -251,7 +252,7 @@ fn handle_reconnect_outbound(
 
 async fn handle_ws_event(
     app: &mut AppState,
-    tool_executor: &mut ToolExecutor,
+    tool_executor: Arc<Mutex<ToolExecutor>>,
     outbound_tx: &mpsc::UnboundedSender<OutboundMessage>,
     event: WsEvent,
 ) {
@@ -263,11 +264,8 @@ async fn handle_ws_event(
             app.apply(AppEvent::ServerFrame(ServerFrame::AuthOk { user }));
         }
         WsEvent::Frame(frame) => {
-            let tool_result = tool_executor.execute_frame(&frame).await;
+            spawn_tool_execution(tool_executor, outbound_tx.clone(), frame.clone());
             let auto_approval = app.handle_server_frame(frame);
-            if let Some(frame) = tool_result {
-                let _ = outbound_tx.send(OutboundMessage::Frame(frame));
-            }
             if let Some(frame) = auto_approval {
                 let _ = outbound_tx.send(OutboundMessage::Frame(frame));
             }
@@ -277,6 +275,25 @@ async fn handle_ws_event(
             app.apply(AppEvent::Notice(message));
         }
     }
+}
+
+fn spawn_tool_execution(
+    tool_executor: Arc<Mutex<ToolExecutor>>,
+    outbound_tx: mpsc::UnboundedSender<OutboundMessage>,
+    frame: ServerFrame,
+) {
+    if !matches!(frame, ServerFrame::ToolExecute { .. }) {
+        return;
+    }
+    tokio::spawn(async move {
+        let tool_result = {
+            let mut tool_executor = tool_executor.lock().await;
+            tool_executor.execute_frame(&frame).await
+        };
+        if let Some(frame) = tool_result {
+            let _ = outbound_tx.send(OutboundMessage::Frame(frame));
+        }
+    });
 }
 
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
@@ -658,23 +675,29 @@ mod tests {
         let target = workspace.join("blocked.txt");
         let mut app = AppState::for_test();
         app.config.workspace = workspace.clone();
-        let mut executor = ToolExecutor::new(PermissionPolicy::workspace_write(workspace.clone()));
+        let executor = Arc::new(Mutex::new(ToolExecutor::new(
+            PermissionPolicy::workspace_write(workspace.clone()),
+        )));
         let (outbound_tx, _outbound_rx) = mpsc::unbounded_channel();
 
         handle_outbound_message(
             &mut app,
-            &mut executor,
+            &executor,
             &outbound_tx,
             OutboundMessage::SetPermissions("read-only".to_string()),
-        );
+        )
+        .await;
 
-        let result = executor
-            .execute_tool_call(
-                "call-1",
-                "write_file",
-                &serde_json::json!({"file_path": "blocked.txt", "content": "blocked"}),
-            )
-            .await;
+        let result = {
+            let mut executor = executor.lock().await;
+            executor
+                .execute_tool_call(
+                    "call-1",
+                    "write_file",
+                    &serde_json::json!({"file_path": "blocked.txt", "content": "blocked"}),
+                )
+                .await
+        };
 
         assert!(matches!(
             result,
@@ -684,6 +707,53 @@ mod tests {
             }
         ));
         assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn tool_execution_runs_in_background_without_blocking_ui_event() {
+        let workspace = std::env::temp_dir().join(format!("animus-tui-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut app = AppState::for_test();
+        app.config.workspace = workspace.clone();
+        let tool_executor = std::sync::Arc::new(tokio::sync::Mutex::new(ToolExecutor::new(
+            PermissionPolicy::workspace_write(workspace)
+                .with_shell_mode(crate::permissions::ShellPermissionMode::Allow),
+        )));
+        let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+        let command = if cfg!(windows) {
+            "Start-Sleep -Milliseconds 250; Write-Output done"
+        } else {
+            "sleep 0.25; echo done"
+        };
+        let started = std::time::Instant::now();
+
+        handle_ws_event(
+            &mut app,
+            tool_executor,
+            &outbound_tx,
+            WsEvent::Frame(ServerFrame::ToolExecute {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                args: serde_json::json!({"command": command}),
+            }),
+        )
+        .await;
+
+        assert!(started.elapsed() < std::time::Duration::from_millis(150));
+        assert!(outbound_rx.try_recv().is_err());
+
+        let outbound = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            outbound,
+            OutboundMessage::Frame(ClientFrame::ToolResult {
+                status: crate::protocol::ToolStatus::Success,
+                result,
+                ..
+            }) if result.contains("done")
+        ));
     }
 
     #[test]

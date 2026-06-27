@@ -39,12 +39,16 @@ impl PermissionPolicy {
         match mode {
             "read-only" => Ok(Self::read_only(workspace)),
             "workspace-write" => Ok(Self::workspace_write(workspace)),
+            "workspace-write-shell" => Ok(Self::workspace_write_shell(workspace)),
             _ => Err(format!("unsupported permission mode: {mode}")),
         }
     }
 
     pub fn is_supported_mode(mode: &str) -> bool {
-        matches!(mode, "read-only" | "workspace-write")
+        matches!(
+            mode,
+            "read-only" | "workspace-write" | "workspace-write-shell"
+        )
     }
 
     pub fn read_only(workspace: PathBuf) -> Self {
@@ -56,6 +60,14 @@ impl PermissionPolicy {
     }
 
     pub fn workspace_write(workspace: PathBuf) -> Self {
+        Self {
+            workspace: workspace_root(workspace),
+            file_mode: FilePermissionMode::WorkspaceWrite,
+            shell_mode: ShellPermissionMode::Ask,
+        }
+    }
+
+    pub fn workspace_write_shell(workspace: PathBuf) -> Self {
         Self {
             workspace: workspace_root(workspace),
             file_mode: FilePermissionMode::WorkspaceWrite,
@@ -122,7 +134,9 @@ impl PermissionPolicy {
             },
             ShellPermissionMode::Allow => PermissionDecision::Allow,
             ShellPermissionMode::Ask => PermissionDecision::Ask {
-                reason: format!("shell command requires approval: {command}"),
+                reason: format!(
+                    "shell command requires explicit /permissions workspace-write-shell: {command}"
+                ),
             },
         }
     }
@@ -293,6 +307,24 @@ mod tests {
             allow.check_shell("rm -rf /"),
             PermissionDecision::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn workspace_write_requires_shell_approval_by_default() {
+        let workspace = test_workspace();
+        let policy = PermissionPolicy::workspace_write(workspace.clone());
+
+        assert!(matches!(
+            policy.check_shell("git status"),
+            PermissionDecision::Ask { .. }
+        ));
+        assert_eq!(
+            PermissionPolicy::from_mode(workspace.clone(), "workspace-write-shell")
+                .unwrap()
+                .check_shell("git status"),
+            PermissionDecision::Allow
+        );
+        assert!(PermissionPolicy::is_supported_mode("workspace-write-shell"));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 pub mod files;
 pub mod process;
+pub mod redaction;
 pub mod shell;
 
 use serde_json::{json, Value};
@@ -414,6 +415,48 @@ mod tests {
                 stderr: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn delegated_shell_requires_explicit_shell_allow_mode() {
+        let root = test_workspace();
+        let mut executor = ToolExecutor::new(PermissionPolicy::workspace_write(root));
+
+        let result = executor
+            .execute_tool_call(
+                "call-1",
+                "bash",
+                &json!({"command": if cfg!(windows) { "Write-Output blocked" } else { "echo blocked" }}),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            ClientFrame::ToolResult {
+                status: ToolStatus::Error,
+                ..
+            }
+        ));
+        if let ClientFrame::ToolResult { result, .. } = result {
+            assert!(result.contains("requires"));
+        }
+    }
+
+    #[test]
+    fn tool_output_redaction_replaces_secret_values_everywhere() {
+        let output = ToolOutput {
+            content: "token local-secret".to_string(),
+            is_error: false,
+            stdout: vec!["stdout local-secret".to_string()],
+            stderr: vec!["stderr local-secret".to_string()],
+        };
+
+        let redacted =
+            redaction::redact_tool_output_with_values(output, &["local-secret".to_string()]);
+
+        assert_eq!(redacted.content, "token [redacted]");
+        assert_eq!(redacted.stdout, vec!["stdout [redacted]"]);
+        assert_eq!(redacted.stderr, vec!["stderr [redacted]"]);
     }
 
     fn test_workspace() -> std::path::PathBuf {

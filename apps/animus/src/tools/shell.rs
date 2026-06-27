@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::tools::redaction::redact_tool_output;
 use crate::tools::ToolOutput;
 
 pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
@@ -51,12 +52,12 @@ pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         content = format!("exit status: {}", output.status);
     }
 
-    ToolOutput {
+    redact_tool_output(ToolOutput {
         content,
         is_error: !output.status.success(),
         stdout,
         stderr,
-    }
+    })
 }
 
 pub(crate) fn shell_command(command: &str) -> Command {

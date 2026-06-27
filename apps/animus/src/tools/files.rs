@@ -130,13 +130,15 @@ pub fn grep(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     let Some(pattern) = string_arg(args, "pattern") else {
         return ToolOutput::error("grep requires pattern");
     };
+    let limit = number_arg(args, "limit").unwrap_or(200).max(1);
     let path = match resolve_path(args, policy, &["path"], false) {
         Ok(path) => path,
         Err(output) if string_arg(args, "path").is_some() => return output,
         Err(_) => policy.workspace().to_path_buf(),
     };
     let mut matches = Vec::new();
-    for file in walk_files(&path) {
+    let mut truncated = false;
+    'files: for file in walk_files(&path) {
         if !matches!(policy.check_file_read(&file), PermissionDecision::Allow) {
             continue;
         }
@@ -145,6 +147,10 @@ pub fn grep(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         };
         for (index, line) in raw.lines().enumerate() {
             if line.contains(pattern) {
+                if matches.len() >= limit {
+                    truncated = true;
+                    break 'files;
+                }
                 matches.push(format!(
                     "{}:{}:{}",
                     display_workspace_path(policy, &file),
@@ -153,6 +159,9 @@ pub fn grep(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
                 ));
             }
         }
+    }
+    if truncated {
+        matches.push(format!("... truncated after {limit} matches"));
     }
     ToolOutput::success(matches.join("\n"))
 }
@@ -428,6 +437,29 @@ mod tests {
 
         assert!(!result.is_error);
         assert!(result.content.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn grep_honors_limit_and_reports_truncation() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "needle one\nneedle two\nneedle three\n",
+        )
+        .unwrap();
+
+        let result = grep(
+            &json!({"pattern": "needle", "path": "src", "limit": 2}),
+            &policy,
+        );
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("src/lib.rs:1:needle one"));
+        assert!(result.content.contains("src/lib.rs:2:needle two"));
+        assert!(!result.content.contains("src/lib.rs:3:needle three"));
+        assert!(result.content.contains("truncated after 2 matches"));
     }
 
     fn test_workspace() -> std::path::PathBuf {

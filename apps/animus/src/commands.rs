@@ -198,6 +198,11 @@ mod tests {
                 SlashCommand::Permissions,
                 "workspace-write",
             ),
+            (
+                "/permissions workspace-write-shell",
+                SlashCommand::Permissions,
+                "workspace-write-shell",
+            ),
             ("/status", SlashCommand::Status, ""),
             ("/diff", SlashCommand::Diff, ""),
             ("/spawns", SlashCommand::Spawns, ""),

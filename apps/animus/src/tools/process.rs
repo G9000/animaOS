@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 
 use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::tools::redaction::redact_text;
 use crate::tools::shell::shell_command;
 use crate::tools::ToolOutput;
 
@@ -84,7 +85,7 @@ impl ProcessRegistry {
         let mut lines = Vec::new();
         lines.extend(clone_lines(&entry.stdout));
         lines.extend(clone_lines(&entry.stderr));
-        ToolOutput::success(lines.join("\n"))
+        ToolOutput::success(redact_text(&lines.join("\n")))
     }
 
     pub async fn stop(&mut self, args: &Value, _policy: &PermissionPolicy) -> ToolOutput {
