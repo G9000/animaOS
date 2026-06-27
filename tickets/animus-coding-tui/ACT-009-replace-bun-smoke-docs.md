@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 17:20 MYT
+- Updated: 2026-06-27 18:22 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -46,6 +46,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 13:24 MYT - Addressed the fourth Codex review round: delegated shell permission gating, async local tool execution, shell/background output redaction, and bounded grep results.
 - 2026-06-27 16:52 MYT - Addressed the fifth Codex review round: CRLF-normalized edit matching and progressive `multi_edit` validation.
 - 2026-06-27 17:20 MYT - Addressed the sixth Codex review round: bounded shell tool output and tail-rendered transcript rows.
+- 2026-06-27 18:22 MYT - Addressed the seventh Codex review round: committed the root Cargo lockfile and capped `glob` results.
 
 ## Validation
 
@@ -101,6 +102,14 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run lint` - passed after sixth review fixes for server and desktop
   - `bun run build` - passed after sixth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after sixth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus glob_honors_limit_and_reports_truncation` - failed before the glob cap returned `src/file-2.rs`, passed after the fix
+  - `cargo metadata --locked --offline --format-version 1` - passed after committing the root Cargo lockfile
+  - `cargo test -p animus` - passed after seventh review fixes: 77 passed
+  - `git diff --check` - passed after seventh review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after seventh review fixes: 77 passed
+  - `bun run lint` - passed after seventh review fixes for server and desktop
+  - `bun run build` - passed after seventh review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after seventh review fixes: 1648 passed, 1 skipped, 235 warnings
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -111,6 +120,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - apps/animus/src/client.rs
   - apps/animus/src/app.rs
   - apps/animus/src/approvals.rs
+  - Cargo.lock
   - apps/animus/src/permissions.rs
   - apps/animus/src/tools/files.rs
   - apps/animus/src/tools/mod.rs
@@ -144,5 +154,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Fourth review fixes make delegated shell execution require explicit `workspace-write-shell`, run local tool calls off the TUI loop, redact shell/background output before tool results leave the client, and truncate broad grep output at its cap.
   - Fifth review fixes let LF-only edit strings match CRLF files while preserving CRLF output, and validate `multi_edit` against each progressively edited buffer before writing.
   - Sixth review fixes cap immediate shell stdout/stderr before returning `tool_result` frames and render the newest transcript rows when the transcript exceeds the visible pane.
+  - Seventh review fixes commit the root Cargo lockfile despite the broad ignore rule, and make `glob` honor its advertised `limit` argument with a truncation marker.
   - No database schema changes; Alembic was not run.
 

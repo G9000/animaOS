@@ -170,6 +170,7 @@ pub fn glob(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     let Some(pattern) = string_arg(args, "pattern") else {
         return ToolOutput::error("glob requires pattern");
     };
+    let limit = number_arg(args, "limit").unwrap_or(200).max(1);
     let path = match resolve_path(args, policy, &["path"], false) {
         Ok(path) => path,
         Err(output) if string_arg(args, "path").is_some() => return output,
@@ -184,6 +185,11 @@ pub fn glob(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         })
         .collect::<Vec<_>>();
     matches.sort();
+    let truncated = matches.len() > limit;
+    matches.truncate(limit);
+    if truncated {
+        matches.push(format!("... truncated after {limit} matches"));
+    }
     ToolOutput::success(matches.join("\n"))
 }
 
@@ -519,6 +525,26 @@ mod tests {
 
         assert!(!result.is_error);
         assert!(result.content.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn glob_honors_limit_and_reports_truncation() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for index in 0..3 {
+            std::fs::write(root.join("src").join(format!("file-{index}.rs")), "").unwrap();
+        }
+
+        let result = glob(&json!({"pattern": "src/*.rs", "limit": 2}), &policy);
+        let lines = result.content.lines().collect::<Vec<_>>();
+
+        assert!(!result.is_error);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().any(|line| *line == "src/file-0.rs"));
+        assert!(lines.iter().any(|line| *line == "src/file-1.rs"));
+        assert!(!lines.iter().any(|line| *line == "src/file-2.rs"));
+        assert!(result.content.contains("truncated after 2 matches"));
     }
 
     #[test]
