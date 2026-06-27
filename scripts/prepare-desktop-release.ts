@@ -57,6 +57,21 @@ const localArtifacts = [
   join(projectRoot, "target", "debug", "anima-local-runtime-daemon.exe"),
 ];
 
+const excludedRuntimeNames = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".venv",
+  "__pycache__",
+  "build",
+  "dist",
+  "venv",
+]);
+
 function requireFile(path: string, label: string) {
   if (!isFile(path)) {
     throw new Error(`Missing ${label} at ${path}`);
@@ -204,13 +219,21 @@ function stageDaemonArtifacts(artifactCandidates: string[], destinationRoot: str
   });
 }
 
+function shouldStageRuntimePath(sourcePath: string): boolean {
+  const name = basename(sourcePath);
+  if (name === ".env" || name.startsWith(".env.")) {
+    return false;
+  }
+  return !excludedRuntimeNames.has(name);
+}
+
 function stageRuntimeProject(destinationRoot: string): void {
   rmSync(bundledRuntimeDir, { recursive: true, force: true });
   rmSync(bundledAnimaCoreDir, { recursive: true, force: true });
   mkdirSync(dirname(bundledRuntimeDir), { recursive: true });
   mkdirSync(dirname(bundledAnimaCoreDir), { recursive: true });
-  cpSync(runtimeDir, bundledRuntimeDir, { recursive: true });
-  cpSync(animaCoreDir, bundledAnimaCoreDir, { recursive: true });
+  cpSync(runtimeDir, bundledRuntimeDir, { recursive: true, filter: shouldStageRuntimePath });
+  cpSync(animaCoreDir, bundledAnimaCoreDir, { recursive: true, filter: shouldStageRuntimePath });
   copyFileSync(workspacePyprojectPath, bundledWorkspacePyprojectPath);
   if (existsSync(workspaceLockPath)) {
     copyFileSync(workspaceLockPath, bundledWorkspaceLockPath);
