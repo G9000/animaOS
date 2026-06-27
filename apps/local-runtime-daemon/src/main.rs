@@ -1170,7 +1170,11 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                 state.mark_restart_delay(&config, "runtime not running while expected");
         }
 
-        if state.policy.locked {
+        let stop_in_progress = state.status == DaemonState::Stopping && !state.expected_running;
+
+        if stop_in_progress {
+            state.status = DaemonState::Stopping;
+        } else if state.policy.locked {
             if state.process.is_some() {
                 state.status = DaemonState::Locked;
             } else if !state.expected_running && state.status != DaemonState::Failed {

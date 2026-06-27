@@ -31,8 +31,11 @@ const scriptPath = resolve(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptPath, "..", "..");
 const desktopPackage = "apps/desktop";
 const desktopTauriDir = join(projectRoot, desktopPackage, "src-tauri");
+const workspacePyprojectPath = join(projectRoot, "pyproject.toml");
+const workspaceLockPath = join(projectRoot, "uv.lock");
 const runtimeDir = join(projectRoot, "apps/server");
 const runtimeEntrypoint = join(runtimeDir, "src", "anima_server", "main.py");
+const animaCoreDir = join(projectRoot, "packages", "anima-core");
 const daemonDir = join(projectRoot, "apps/local-runtime-daemon");
 const cargoWorkspaceManifestPath = join(projectRoot, "Cargo.toml");
 const manifestPath = join(projectRoot, ".anima", "runtime-daemon-release.json");
@@ -42,6 +45,9 @@ const bundledManifestPath = join(bundledResourcesDir, "runtime-daemon-release.js
 const bundledDaemonDir = bundledResourcesDir;
 const bundledRuntimeDir = join(bundledResourcesDir, "apps", "server");
 const bundledRuntimeEntrypoint = join(bundledRuntimeDir, "src", "anima_server", "main.py");
+const bundledWorkspacePyprojectPath = join(bundledResourcesDir, "pyproject.toml");
+const bundledWorkspaceLockPath = join(bundledResourcesDir, "uv.lock");
+const bundledAnimaCoreDir = join(bundledResourcesDir, "packages", "anima-core");
 const bundledRuntimeArtifactDir = join(bundledResourcesDir, "runtime-artifacts");
 
 const localArtifacts = [
@@ -200,8 +206,17 @@ function stageDaemonArtifacts(artifactCandidates: string[], destinationRoot: str
 
 function stageRuntimeProject(destinationRoot: string): void {
   rmSync(bundledRuntimeDir, { recursive: true, force: true });
+  rmSync(bundledAnimaCoreDir, { recursive: true, force: true });
   mkdirSync(dirname(bundledRuntimeDir), { recursive: true });
+  mkdirSync(dirname(bundledAnimaCoreDir), { recursive: true });
   cpSync(runtimeDir, bundledRuntimeDir, { recursive: true });
+  cpSync(animaCoreDir, bundledAnimaCoreDir, { recursive: true });
+  copyFileSync(workspacePyprojectPath, bundledWorkspacePyprojectPath);
+  if (existsSync(workspaceLockPath)) {
+    copyFileSync(workspaceLockPath, bundledWorkspaceLockPath);
+  } else {
+    rmSync(bundledWorkspaceLockPath, { force: true });
+  }
 }
 
 function stageRuntimeArtifact(sourcePath: string, destinationRoot: string): string {
