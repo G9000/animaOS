@@ -257,6 +257,10 @@ impl RuntimeConfig {
         self.data_dir.join("runtime.log")
     }
 
+    fn control_token_file(&self) -> PathBuf {
+        self.data_dir.join(DEFAULT_DAEMON_CONTROL_TOKEN_FILE)
+    }
+
     fn lock_file(&self) -> PathBuf {
         self.data_dir.join(DEFAULT_DAEMON_STATE_FILE)
     }
@@ -449,12 +453,6 @@ fn resolve_control_token(path: &FsPath) -> String {
         });
 
     if let Some(token) = explicit {
-        if let Err(err) = write_state_file(path, &token) {
-            warn!(
-                "Failed to persist explicit daemon control token {}: {err}",
-                path.display()
-            );
-        }
         return token;
     }
 
@@ -462,14 +460,13 @@ fn resolve_control_token(path: &FsPath) -> String {
         return stored;
     }
 
-    let generated = random_nonce();
-    if let Err(err) = write_state_file(path, &generated) {
-        warn!(
-            "Failed to persist generated daemon control token {}: {err}",
-            path.display()
-        );
-    }
-    generated
+    random_nonce()
+}
+
+fn persist_control_token(path: &FsPath, token: &str) -> std::io::Result<()> {
+    write_state_file(path, token)?;
+    tighten_private_file_permissions(path, "daemon control token");
+    Ok(())
 }
 
 fn read_control_token(path: &FsPath) -> Option<String> {
@@ -577,6 +574,16 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .unwrap_or_else(|err| panic!("Failed to bind daemon control socket at {bind}: {err}"));
+
+    if let Err(err) = persist_control_token(
+        &runtime.state.config.control_token_file(),
+        &runtime.state.config.control_token,
+    ) {
+        warn!(
+            "Failed to persist daemon control token {}: {err}",
+            runtime.state.config.control_token_file().display()
+        );
+    }
 
     if let Err(err) = write_state_file(&runtime.state.config.lock_file(), "created") {
         warn!(
@@ -822,6 +829,9 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
         }
         if state.policy.locked {
             return Err("Runtime is locked; unlock before starting".to_string());
+        }
+        if state.status == DaemonState::Starting {
+            return Err("Runtime start already in progress".to_string());
         }
         if state.process.is_some() && state.expected_running {
             return Err("Runtime already running".to_string());

@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 interface ReleaseManifest {
@@ -42,8 +42,16 @@ const localArtifacts = [
 ];
 
 function requireFile(path: string, label: string) {
-  if (!existsSync(path)) {
+  if (!isFile(path)) {
     throw new Error(`Missing ${label} at ${path}`);
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
   }
 }
 
@@ -62,7 +70,7 @@ function resolvePackageJsonVersion(fallback = "0.1.0"): string {
  }
 }
 
-function buildManifest(): ReleaseManifest {
+function buildManifest(artifactCandidates: string[]): ReleaseManifest {
   const runtimeArtifactHint = process.env.ANIMA_DAEMON_RUNTIME_ARTIFACT || "";
   const pythonEntry = process.env.ANIMA_DAEMON_RUNTIME_COMMAND || "python";
 
@@ -81,7 +89,7 @@ function buildManifest(): ReleaseManifest {
         runtimeArtifact: runtimeArtifactHint || null,
         pythonEntry,
       },
-      artifactCandidates: localArtifacts,
+      artifactCandidates,
     },
     runtime: {
       sourceRoot: runtimeDir,
@@ -107,7 +115,14 @@ function main(): void {
     throw new Error(`Cannot prepare release: ${message}`);
   }
 
-  const manifest = buildManifest();
+  const artifactCandidates = localArtifacts.filter(isFile);
+  if (artifactCandidates.length === 0) {
+    throw new Error(
+      `Cannot prepare release: no local daemon binary found. Build one of ${localArtifacts.join(", ")}`,
+    );
+  }
+
+  const manifest = buildManifest(artifactCandidates);
   writeManifest(manifest);
 
   console.log(
