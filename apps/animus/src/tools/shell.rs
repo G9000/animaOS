@@ -9,6 +9,9 @@ use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::tools::redaction::redact_tool_output;
 use crate::tools::ToolOutput;
 
+const MAX_SHELL_OUTPUT_LINES: usize = 1_000;
+const TRUNCATED_SHELL_OUTPUT_MARKER: &str = "[shell output truncated to last 1000 lines]";
+
 pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return ToolOutput::error("bash requires command");
@@ -36,8 +39,10 @@ pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         }
     };
 
-    let stdout = split_lines(&String::from_utf8_lossy(&output.stdout));
-    let stderr = split_lines(&String::from_utf8_lossy(&output.stderr));
+    let mut stdout = split_lines(&String::from_utf8_lossy(&output.stdout));
+    let mut stderr = split_lines(&String::from_utf8_lossy(&output.stderr));
+    truncate_output_lines(&mut stdout);
+    truncate_output_lines(&mut stderr);
     let mut content = String::new();
     if !stdout.is_empty() {
         content.push_str(&stdout.join("\n"));
@@ -76,6 +81,17 @@ fn split_lines(raw: &str) -> Vec<String> {
     raw.lines().map(ToString::to_string).collect()
 }
 
+fn truncate_output_lines(lines: &mut Vec<String>) {
+    if lines.len() <= MAX_SHELL_OUTPUT_LINES {
+        return;
+    }
+    let overflow = lines.len() - MAX_SHELL_OUTPUT_LINES;
+    lines.drain(0..overflow);
+    if !lines.is_empty() {
+        lines[0] = TRUNCATED_SHELL_OUTPUT_MARKER.to_string();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -93,6 +109,41 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("animus"));
         assert!(result.stdout.iter().any(|line| line.contains("animus")));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_truncates_large_output_before_returning_tool_result() {
+        const EXPECTED_MAX_LINES: usize = 1_000;
+        const EXPECTED_MARKER: &str = "[shell output truncated to last 1000 lines]";
+
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let command = if cfg!(windows) {
+            "1..1005 | ForEach-Object { Write-Output \"out-$_\"; [Console]::Error.WriteLine(\"err-$_\") }"
+        } else {
+            "for i in $(seq 1 1005); do echo out-$i; echo err-$i >&2; done"
+        };
+
+        let result = run_shell(&json!({"command": command}), &policy).await;
+
+        assert!(!result.is_error);
+        assert_eq!(result.stdout.len(), EXPECTED_MAX_LINES);
+        assert_eq!(result.stderr.len(), EXPECTED_MAX_LINES);
+        assert_eq!(
+            result.stdout.first().map(String::as_str),
+            Some(EXPECTED_MARKER)
+        );
+        assert_eq!(
+            result.stderr.first().map(String::as_str),
+            Some(EXPECTED_MARKER)
+        );
+        assert!(result.stdout.iter().any(|line| line == "out-1005"));
+        assert!(result.stderr.iter().any(|line| line == "err-1005"));
+        assert!(!result.stdout.iter().any(|line| line == "out-1"));
+        assert!(!result.stderr.iter().any(|line| line == "err-1"));
+        assert!(result.content.contains(EXPECTED_MARKER));
+        assert!(result.content.contains("out-1005"));
+        assert!(result.content.contains("err-1005"));
     }
 
     #[tokio::test]

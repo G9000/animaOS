@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 16:52 MYT
+- Updated: 2026-06-27 17:20 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -89,6 +89,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 13:02 MYT - Third Codex review round was fixed and revalidated.
 - 2026-06-27 13:24 MYT - Fourth Codex review round was fixed and revalidated.
 - 2026-06-27 16:52 MYT - Fifth Codex review round was fixed and revalidated.
+- 2026-06-27 17:20 MYT - Sixth Codex review round was fixed and revalidated.
 
 ## Validation
 
@@ -135,6 +136,14 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run lint` - passed after fifth review fixes for server and desktop
   - `bun run build` - passed after fifth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fifth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus shell_exec_truncates_large_output_before_returning_tool_result` - failed before the shell cap with 1005 stdout lines, passed after the fix
+  - `cargo test -p animus render_text_keeps_newest_transcript_rows_visible` - failed before tail rendering hid `message-9`, passed after the fix
+  - `cargo test -p animus` - passed after sixth review fixes: 76 passed
+  - `git diff --check` - passed after sixth review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after sixth review fixes: 76 passed
+  - `bun run lint` - passed after sixth review fixes for server and desktop
+  - `bun run build` - passed after sixth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after sixth review fixes: 1648 passed, 1 skipped, 235 warnings
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -161,4 +170,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - third Codex review fixes handled reconnect-time outbound frame queueing, background process cleanup on registry drop, and bounded background output buffering
   - fourth Codex review fixes handled delegated shell permission gating, async local tool execution, shell/background output redaction, and grep result caps
   - fifth Codex review fixes handled CRLF-normalized edit matching and progressive `multi_edit` validation
+  - sixth Codex review fixes handled immediate shell output caps and newest-transcript-row rendering
   - no database schema changes; Alembic was not run

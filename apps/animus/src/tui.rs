@@ -305,10 +305,10 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
         ])
         .split(frame.area());
 
-    let items: Vec<ListItem> = app
-        .transcript
-        .iter()
-        .map(|item| ListItem::new(item.render_plain()))
+    let visible_transcript_rows = usize::from(chunks[0].height.saturating_sub(2));
+    let items: Vec<ListItem> = transcript_tail_rows(app, visible_transcript_rows)
+        .into_iter()
+        .map(ListItem::new)
         .collect();
     let transcript = List::new(items).block(Block::default().title("Animus").borders(Borders::ALL));
     frame.render_widget(transcript, chunks[0]);
@@ -334,19 +334,41 @@ pub fn render_to_text(app: &AppState, width: u16, height: u16) -> Vec<String> {
     let max_rows = usize::from(height.max(1));
     let mut rows = Vec::new();
     rows.push(truncate_line(status_line(app), max_width));
+    if rows.len() >= max_rows {
+        return rows;
+    }
+
+    let approval_rows = approval_prompt_rows(app);
+    let reserved_bottom_rows = approval_rows.len() + 1;
+    let transcript_capacity = (max_rows - rows.len()).saturating_sub(reserved_bottom_rows);
     rows.extend(
-        app.transcript
-            .iter()
-            .map(|item| truncate_line(item.render_plain(), max_width)),
-    );
-    rows.extend(
-        approval_prompt_rows(app)
+        transcript_tail_rows(app, transcript_capacity)
             .into_iter()
             .map(|row| truncate_line(row, max_width)),
     );
-    rows.push(truncate_line(format!("input: {}", app.input), max_width));
-    rows.truncate(max_rows);
+
+    for row in approval_rows {
+        if rows.len() + 1 >= max_rows {
+            break;
+        }
+        rows.push(truncate_line(row, max_width));
+    }
+    if rows.len() < max_rows {
+        rows.push(truncate_line(format!("input: {}", app.input), max_width));
+    }
     rows
+}
+
+fn transcript_tail_rows(app: &AppState, max_rows: usize) -> Vec<String> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    for item in &app.transcript {
+        rows.extend(item.render_plain().lines().map(ToString::to_string));
+    }
+    let skip = rows.len().saturating_sub(max_rows);
+    rows.into_iter().skip(skip).collect()
 }
 
 fn truncate_line(mut line: String, max_width: usize) -> String {
@@ -579,6 +601,21 @@ mod tests {
         assert!(rows
             .iter()
             .any(|row| row.contains("[a] approve [s] session [d] deny")));
+    }
+
+    #[test]
+    fn render_text_keeps_newest_transcript_rows_visible() {
+        let mut app = AppState::for_test();
+        for index in 0..10 {
+            app.apply(AppEvent::Notice(format!("message-{index}")));
+        }
+        app.input = "draft".to_string();
+
+        let rows = render_to_text(&app, 80, 6);
+
+        assert!(rows.iter().any(|row| row.contains("message-9")));
+        assert!(!rows.iter().any(|row| row.contains("message-0")));
+        assert_eq!(rows.last().map(String::as_str), Some("input: draft"));
     }
 
     #[test]
