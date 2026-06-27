@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -15,10 +15,7 @@ use std::{
     io::ErrorKind,
     path::{Path as FsPath, PathBuf},
     str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -26,7 +23,7 @@ use tokio::{
     sync::Mutex,
     time,
 };
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -42,6 +39,16 @@ const DEFAULT_BASE_RESTART_SECONDS: u64 = 2;
 const DEFAULT_MAX_RESTART_SECONDS: u64 = 20;
 const DEFAULT_LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
+const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
+const DEFAULT_DAEMON_ALLOWED_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://127.0.0.1:1420",
+    "http://localhost:1420",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+];
 const DAEMON_CONTROL_TOKEN_HEADER: &str = "x-anima-daemon-token";
 
 #[derive(Clone)]
@@ -147,20 +154,13 @@ impl RuntimeConfig {
             .map(PathBuf::from)
             .or_else(default_data_dir)
             .unwrap_or_else(default_fallback_data_dir);
+        let control_token_path = data_dir.join(DEFAULT_DAEMON_CONTROL_TOKEN_FILE);
+        let control_token = resolve_control_token(&control_token_path);
 
         Self {
             daemon_bind_host,
             daemon_bind_port,
-            control_token: env_opt("ANIMA_DAEMON_CONTROL_TOKEN")
-                .and_then(|token| {
-                    let trimmed = token.trim().to_string();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .unwrap_or_else(random_nonce),
+            control_token,
             runtime_host,
             runtime_port,
             runtime_command,
@@ -401,6 +401,72 @@ impl RuntimeState {
     }
 }
 
+fn resolve_control_token(path: &FsPath) -> String {
+    let explicit = env_opt("ANIMA_DAEMON_CONTROL_TOKEN")
+        .and_then(|token| {
+            let trimmed = token.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+    if let Some(token) = explicit {
+        if let Err(err) = write_state_file(path, &token) {
+            warn!(
+                "Failed to persist explicit daemon control token {}: {err}",
+                path.display()
+            );
+        }
+        return token;
+    }
+
+    if let Some(stored) = read_control_token(path) {
+        return stored;
+    }
+
+    let generated = random_nonce();
+    if let Err(err) = write_state_file(path, &generated) {
+        warn!(
+            "Failed to persist generated daemon control token {}: {err}",
+            path.display()
+        );
+    }
+    generated
+}
+
+fn read_control_token(path: &FsPath) -> Option<String> {
+    let token = fs::read_to_string(path).ok()?;
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn daemon_allowed_origins() -> Vec<HeaderValue> {
+    let configured = env_opt("ANIMA_DAEMON_ALLOWED_ORIGINS")
+        .unwrap_or_else(|| DEFAULT_DAEMON_ALLOWED_ORIGINS.join(","));
+    let mut parsed = Vec::<HeaderValue>::new();
+    for origin in configured.split(',') {
+        let origin = origin.trim();
+        if origin.is_empty() {
+            continue;
+        }
+        if origin == "*" {
+            return Vec::new();
+        }
+        match HeaderValue::from_str(origin) {
+            Ok(value) => parsed.push(value),
+            Err(err) => warn!("Ignoring invalid CORS origin '{origin}': {err}"),
+        }
+    }
+
+    parsed
+}
+
 #[tokio::main]
 async fn main() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -460,6 +526,16 @@ async fn main() {
         }
     }
 
+    let allowed_origins = daemon_allowed_origins();
+    let cors_layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(tower_http::cors::Any);
+    let cors_layer = if allowed_origins.is_empty() {
+        cors_layer.allow_origin(tower_http::cors::Any)
+    } else {
+        cors_layer.allow_origin(AllowOrigin::list(allowed_origins))
+    };
+
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
@@ -467,12 +543,7 @@ async fn main() {
         .route("/v1/control/:command", post(control))
         .route("/v1/logs", get(open_logs))
         .with_state(runtime)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(tower_http::cors::Any)
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers(tower_http::cors::Any),
-        );
+        .layer(cors_layer);
 
     let bind = format!(
         "{}:{}",

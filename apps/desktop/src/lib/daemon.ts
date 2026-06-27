@@ -50,6 +50,14 @@ function getControlToken(): string | null {
   }
 }
 
+function clearStoredControlToken(): void {
+  try {
+    localStorage.removeItem(DAEMON_CONTROL_TOKEN_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function getHeaders() {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -101,6 +109,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      clearStoredControlToken();
+    }
     const message = parseErrorResponse(parsed);
     throw new Error(message);
   }
@@ -114,6 +125,14 @@ export async function getDaemonHealth(): Promise<{ status: string; version: stri
 
 export async function getDaemonStatus(): Promise<DaemonStatusResponse> {
   return request<DaemonStatusResponse>(`${DAEMON_ROUTES.status}`);
+}
+
+async function refreshRuntimeNonceAfterControl(): Promise<void> {
+  try {
+    await refreshDaemonRuntimeNonce();
+  } catch {
+    // Ignore failures so control actions remain idempotent on older runtimes.
+  }
 }
 
 export async function refreshDaemonRuntimeNonce(): Promise<string | null> {
@@ -146,6 +165,7 @@ export async function controlDaemon(command: DaemonCommand, requestBody?: Daemon
 
 export async function startDaemon(): Promise<void> {
   await controlDaemon("start");
+  await refreshRuntimeNonceAfterControl();
 }
 
 export async function stopDaemon(): Promise<void> {
@@ -155,6 +175,7 @@ export async function stopDaemon(): Promise<void> {
 
 export async function restartDaemon(): Promise<void> {
   await controlDaemon("restart");
+  await refreshRuntimeNonceAfterControl();
 }
 
 export async function setDaemonLock(locked: boolean): Promise<void> {
