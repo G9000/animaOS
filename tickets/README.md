@@ -8,6 +8,7 @@ Local ticket backlog for planned work that is not yet in implementation.
 - `animus-coding-tui`: Rust-native ANIMA-first coding terminal rewrite
 - `local-runtime-daemon`: local background supervisor and desktop packaging
 - `repo-workflow`: local ticketing workflow, dashboard, and legacy scratchboard migration
+- `single-user-temporal-memory-v2`: single-user temporal cognitive memory upgrade
 
 ## Conventions
 
