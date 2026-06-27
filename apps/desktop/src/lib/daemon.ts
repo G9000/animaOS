@@ -115,7 +115,7 @@ async function bootstrapControlToken(): Promise<string | null> {
   }
 
   resolvingControlToken = (async () => {
-    const response = await fetch(`${getDaemonOrigin()}/${DAEMON_ROUTES.health}`, {
+    const response = await fetch(endpoint(DAEMON_ROUTES.health), {
       method: "GET",
       headers: {
         "Content-Type": "application/json",

@@ -77,6 +77,12 @@ struct RuntimeState {
     restart_wait_seconds: Option<u64>,
 }
 
+enum DaemonCorsOrigins {
+    Any,
+    List(Vec<HeaderValue>),
+    Deny,
+}
+
 #[derive(Clone)]
 struct RuntimeProcess {
     child: Child,
@@ -447,9 +453,17 @@ fn read_control_token(path: &FsPath) -> Option<String> {
     }
 }
 
-fn daemon_allowed_origins() -> Vec<HeaderValue> {
-    let configured = env_opt("ANIMA_DAEMON_ALLOWED_ORIGINS")
-        .unwrap_or_else(|| DEFAULT_DAEMON_ALLOWED_ORIGINS.join(","));
+fn daemon_allowed_origins() -> DaemonCorsOrigins {
+    match env_opt("ANIMA_DAEMON_ALLOWED_ORIGINS") {
+        Some(configured) => parse_daemon_allowed_origins(&configured, "ANIMA_DAEMON_ALLOWED_ORIGINS"),
+        None => parse_daemon_allowed_origins(
+            &DEFAULT_DAEMON_ALLOWED_ORIGINS.join(","),
+            "DEFAULT_DAEMON_ALLOWED_ORIGINS",
+        ),
+    }
+}
+
+fn parse_daemon_allowed_origins(configured: &str, source: &str) -> DaemonCorsOrigins {
     let mut parsed = Vec::<HeaderValue>::new();
     for origin in configured.split(',') {
         let origin = origin.trim();
@@ -457,7 +471,7 @@ fn daemon_allowed_origins() -> Vec<HeaderValue> {
             continue;
         }
         if origin == "*" {
-            return Vec::new();
+            return DaemonCorsOrigins::Any;
         }
         match HeaderValue::from_str(origin) {
             Ok(value) => parsed.push(value),
@@ -465,7 +479,12 @@ fn daemon_allowed_origins() -> Vec<HeaderValue> {
         }
     }
 
-    parsed
+    if parsed.is_empty() {
+        warn!("No valid daemon CORS origins parsed from {source}; rejecting cross-origin browser access");
+        return DaemonCorsOrigins::Deny;
+    }
+
+    DaemonCorsOrigins::List(parsed)
 }
 
 #[tokio::main]
@@ -527,14 +546,15 @@ async fn main() {
         }
     }
 
-    let allowed_origins = daemon_allowed_origins();
     let cors_layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(tower_http::cors::Any);
-    let cors_layer = if allowed_origins.is_empty() {
-        cors_layer.allow_origin(tower_http::cors::Any)
-    } else {
-        cors_layer.allow_origin(AllowOrigin::list(allowed_origins))
+    let cors_layer = match daemon_allowed_origins() {
+        DaemonCorsOrigins::Any => cors_layer.allow_origin(tower_http::cors::Any),
+        DaemonCorsOrigins::List(allowed_origins) => {
+            cors_layer.allow_origin(AllowOrigin::list(allowed_origins))
+        }
+        DaemonCorsOrigins::Deny => cors_layer,
     };
 
     let app = Router::new()
