@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
+from anima_server.api.deps.unlock import get_request_context, require_unlocked_session, require_unlocked_user
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models import MemoryItem, Task
@@ -37,8 +37,6 @@ from anima_server.services.agent import (
     list_agent_history,
     normalize_document_only_user_message,
     reset_agent_thread,
-    run_agent,
-    stream_agent,
     stream_approve_or_deny,
 )
 from anima_server.services.agent.attachments import (
@@ -58,6 +56,7 @@ from anima_server.services.agent.state import (
 )
 from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
+from anima_server.services.gateway_runtime import RuntimeInvocationError, execute_chat_non_stream, execute_chat_stream
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +71,17 @@ async def send_message(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
     require_unlocked_user(request, payload.userId)
+    context = get_request_context(request)
     message = normalize_document_only_user_message(payload.message, payload.documentIds)
 
     if not payload.stream:
         try:
-            result = await run_agent(
-                message, payload.userId, db, runtime_db,
+            result = await execute_chat_non_stream(
+                context=context,
+                db=db,
+                runtime_db=runtime_db,
+                user_id=payload.userId,
+                message=message,
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
@@ -85,6 +89,8 @@ async def send_message(
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
             )
+        except RuntimeInvocationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         except AttachmentTooLargeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -105,7 +111,7 @@ async def send_message(
             provider=result.provider,
             toolsUsed=result.tools_used,
             retrieval=serialize_agent_retrieval(result.retrieval),
-            usage=_serialize_usage(summarize_usage(result)),
+            usage=_serialize_usage(result.usage),
         )
 
     try:
@@ -127,8 +133,12 @@ async def send_message(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            async for event in stream_agent(
-                message, payload.userId, db, runtime_db,
+            async for event in execute_chat_stream(
+                context=context,
+                db=db,
+                runtime_db=runtime_db,
+                user_id=payload.userId,
+                message=message,
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
@@ -139,15 +149,20 @@ async def send_message(
                 if event.event == "thought":
                     continue  # private reasoning, not forwarded to client
                 yield _format_sse_event(event.event, event.data)
+        except RuntimeInvocationError as exc:
+            yield _format_sse_event("error", {"error": exc.detail, "status": exc.status_code})
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             yield _format_sse_event("error", {"error": str(exc)})
         except ValueError as exc:
             yield _format_sse_event("error", {"error": str(exc), "status": 404})
-        except Exception:
+        except Exception as exc:
             logger.exception("Unexpected error during SSE streaming")
-            yield _format_sse_event(
-                "error", {"error": "An internal error occurred during streaming."}
-            )
+            if isinstance(exc, HTTPException):
+                yield _format_sse_event("error", {"error": exc.detail})
+            else:
+                yield _format_sse_event(
+                    "error", {"error": "An internal error occurred during streaming."}
+                )
 
     return StreamingResponse(
         event_stream(),
@@ -611,9 +626,13 @@ def _format_sse_event(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _serialize_usage(usage: UsageStats | None) -> dict[str, int | None] | None:
+def _serialize_usage(
+    usage: UsageStats | dict[str, int | None] | None,
+) -> dict[str, int | None] | None:
     if usage is None:
         return None
+    if isinstance(usage, dict):
+        return usage
     return {
         "promptTokens": usage.prompt_tokens,
         "completionTokens": usage.completion_tokens,

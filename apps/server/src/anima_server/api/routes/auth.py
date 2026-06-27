@@ -8,6 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from anima_server.auth.extractor import (
+    DEVICE_ID_HEADER,
+    DEVICE_SECRET_HEADER,
+    SESSION_ID_HEADER,
+    read_header_value,
+)
 from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.db import dispose_all_user_engines, get_db
 from anima_server.db.user_store import (
@@ -37,6 +43,19 @@ from anima_server.services.auth import (
     serialize_user,
 )
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
+
+
+def _resolve_optional_session_context(
+    request: Request,
+) -> tuple[str | None, str | None, str | None]:
+    if request is None:
+        return None, None, None
+    return (
+        read_header_value(request.headers, DEVICE_ID_HEADER),
+        read_header_value(request.headers, DEVICE_SECRET_HEADER),
+        read_header_value(request.headers, SESSION_ID_HEADER),
+    )
+
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -108,6 +127,7 @@ async def create_ai_chat(payload: CreateAIChatRequest) -> dict[str, object]:
     status_code=status.HTTP_201_CREATED,
 )
 def register(
+    request: Request,
     payload: RegisterRequest,
 ) -> dict[str, object]:
     username = normalize_username(payload.username)
@@ -138,13 +158,20 @@ def register(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
-    response["unlockToken"] = unlock_session_store.create(int(response["id"]), deks)
+    device_id, _, session_id = _resolve_optional_session_context(request=request)
+    response["unlockToken"] = unlock_session_store.create(
+        int(response["id"]),
+        deks,
+        session_id=session_id,
+        device_id=device_id,
+    )
     response["recoveryPhrase"] = recovery_phrase
     return response
 
 
 @router.post("/login", response_model=LoginResponse)
 def login(
+    request: Request,
     payload: LoginRequest,
 ) -> dict[str, object]:
     username = normalize_username(payload.username)
@@ -166,9 +193,16 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid credentials") from None
 
     _FAILED_LOGIN_ATTEMPTS.pop(username, None)
+    device_id, _, session_id = _resolve_optional_session_context(request=request)
+    unlock_token = unlock_session_store.create(
+        int(response["id"]),
+        deks,
+        session_id=session_id,
+        device_id=device_id,
+    )
     return {
         **response,
-        "unlockToken": unlock_session_store.create(int(response["id"]), deks),
+        "unlockToken": unlock_token,
         "message": "Login successful",
     }
 
@@ -226,7 +260,13 @@ def change_password(
     _rewrap_sqlcipher_key_if_unified(payload.newPassword)
 
     unlock_session_store.revoke_user(user.id)
-    new_unlock_token = unlock_session_store.create(user.id, session.deks)
+    _, _, session_id = _resolve_optional_session_context(request=request)
+    new_unlock_token = unlock_session_store.create(
+        user.id,
+        session.deks,
+        session_id=session_id or session.session_id,
+        device_id=session.device_id,
+    )
     return {"success": True, "unlockToken": new_unlock_token}
 
 

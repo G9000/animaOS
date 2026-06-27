@@ -39,15 +39,14 @@ function getRuntimeNonceSafely(): string | null {
   return getRuntimeNonce();
 }
 
-export function getRuntimeAuthHeaders(): HeadersInit {
-  const headers: HeadersInit = {};
-
+export function getRuntimeRequestHeaders(): HeadersInit {
+  const headers: Record<string, string> = {};
   const unlockToken = getUnlockToken();
+  const runtimeNonce = getRuntimeNonceSafely();
   if (unlockToken) {
     headers["x-anima-unlock"] = unlockToken;
   }
 
-  const runtimeNonce = getRuntimeNonce();
   if (runtimeNonce) {
     headers["x-anima-nonce"] = runtimeNonce;
   }

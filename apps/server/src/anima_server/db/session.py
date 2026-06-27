@@ -13,6 +13,8 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
+from anima_server.services.health.event_logger import emit
+from anima_server.api.deps.unlock import get_request_context, request_failure_data
 from anima_server.db.url import ensure_database_directory
 from anima_server.services.sessions import get_sqlcipher_key, unlock_session_store
 from anima_server.services.storage import get_user_data_dir
@@ -326,13 +328,37 @@ SessionLocal = get_session_factory(settings.database_url)
 
 
 def get_db(request: Request) -> Generator[Session, None, None]:
-    token = request.headers.get("x-anima-unlock")
-    session = unlock_session_store.resolve(token.strip() if token else None)
+    context = get_request_context(request)
+    token = context.auth_token
+
+    session = context.session
+    if session is None and token:
+        session = unlock_session_store.resolve(token.strip())
+
+    if context.auth_token is None:
+        request_failure_data(request, "missing_auth_header")
+        emit(
+            category="http",
+            event="db.session.denied",
+            level="warn",
+            data={"reason": "missing_auth_header"},
+        )
+
     if session is None:
+        request_failure_data(request, "missing_or_invalid_session")
+        emit(
+            category="http",
+            event="db.session.denied",
+            level="warn",
+            data={"reason": "missing_or_invalid_session", "trace_id": context.trace_id},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session locked. Please sign in again.",
         )
+
+    context.user_id = session.user_id
+    context.session = session
 
     db = get_user_session_factory(session.user_id)()
     try:

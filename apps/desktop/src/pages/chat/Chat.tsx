@@ -12,7 +12,7 @@ import type {
   Thread,
   TraceEvent,
 } from "@anima/api-client";
-import { api, getRuntimeAuthHeaders } from "../../lib/api";
+import { api, getRuntimeRequestHeaders } from "../../lib/api";
 import { API_BASE, API_ORIGIN } from "../../lib/runtime";
 import {
   loadTodayContext,
@@ -281,9 +281,8 @@ function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
 
     let revokedUrl: string | null = null;
     let cancelled = false;
-    const headers = getRuntimeAuthHeaders();
     fetch(attachmentFetchUrl(attachment.url), {
-      headers,
+      headers: getRuntimeRequestHeaders(),
     })
       .then(async (response) => {
         if (!response.ok) throw new Error("missing");
@@ -1246,3 +1245,4 @@ export default function Chat() {
     </>
   );
 }
+

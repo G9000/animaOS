@@ -24,8 +24,10 @@ from .api.routes.diary import router as diary_router
 from .api.routes.documents import router as documents_router
 from .api.routes.eval import router as eval_router
 from .api.routes.forgetting import router as forgetting_router
+from .api.routes.devices import router as devices_router
 from .api.routes.graph import router as graph_router
 from .api.routes.health import router as health_router
+from .api.routes.webhook import router as webhook_router
 from .api.routes.memory import router as memory_router
 from .api.routes.presence import router as presence_router
 from .api.routes.soul import router as soul_router
@@ -43,6 +45,7 @@ from .db.runtime import (
     ensure_runtime_tables,
     init_runtime_engine,
 )
+from .auth import GatewayAuthMiddleware
 from .db.user_store import ensure_per_user_databases_ready
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
 from .services.health.event_logger import emit as health_emit
@@ -258,6 +261,24 @@ def create_app() -> FastAPI:
     # Starlette's reverse-add ordering makes CORS the outermost layer,
     # allowing OPTIONS preflights to succeed before the nonce check runs.
     app.add_middleware(SidecarNonceMiddleware)
+    app.add_middleware(
+        GatewayAuthMiddleware,
+        public_paths={
+            "/health",
+            "/api/health",
+            "/api/health/detailed",
+            "/api/health/check",
+            "/api/health/logs",
+            "/api/health/logs/summary",
+            "/api/auth/login",
+            "/api/auth/register",
+            "/api/auth/recover",
+            "/api/auth/create-ai/chat",
+            "/ws/agent",
+            "/docs",
+            "/openapi.json",
+        },
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -327,6 +348,8 @@ def create_app() -> FastAPI:
     app.include_router(forgetting_router)
     app.include_router(graph_router)
     app.include_router(health_router)
+    app.include_router(devices_router)
+    app.include_router(webhook_router)
     app.include_router(memory_router)
     app.include_router(presence_router)
     app.include_router(soul_router)

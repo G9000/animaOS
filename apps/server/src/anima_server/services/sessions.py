@@ -17,6 +17,8 @@ class UnlockSession:
     user_id: int
     deks: dict[str, bytes]
     expires_at: datetime
+    session_id: str | None = None
+    device_id: str | None = None
 
 
 class UnlockSessionStore:
@@ -25,18 +27,32 @@ class UnlockSessionStore:
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
         self._db_viewer_verified_at: dict[str, float] = {}
+        self._tokens_by_user_device: dict[tuple[int, str], set[str]] = {}
 
-    def create(self, user_id: int, deks: dict[str, bytes]) -> str:
+    def create(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        session_id: str | None = None,
+        device_id: str | None = None,
+    ) -> str:
         token = secrets.token_urlsafe(32)
         session = UnlockSession(
             user_id=user_id,
             deks=deks,
             expires_at=self._now() + SESSION_TTL,
+            session_id=session_id,
+            device_id=device_id,
         )
         with self._lock:
             self._purge_expired_locked()
             self._sessions[token] = session
             self._latest_deks_by_user[user_id] = deks
+            if device_id:
+                self._tokens_by_user_device.setdefault((user_id, device_id), set()).add(
+                    token,
+                )
         return token
 
     def resolve(self, token: str | None) -> UnlockSession | None:
@@ -60,6 +76,11 @@ class UnlockSessionStore:
             session = self._sessions.pop(token, None)
             self._db_viewer_verified_at.pop(token, None)
             if session is not None:
+                if session.device_id is not None:
+                    key = (session.user_id, session.device_id)
+                    self._tokens_by_user_device.setdefault(key, set()).discard(token)
+                    if not self._tokens_by_user_device.get(key):
+                        self._tokens_by_user_device.pop(key, None)
                 self._refresh_latest_deks_locked(session.user_id)
                 _zero_deks(session.deks)
 
@@ -72,7 +93,39 @@ class UnlockSessionStore:
                 session = self._sessions.pop(token, None)
                 self._db_viewer_verified_at.pop(token, None)
                 if session is not None:
+                    if session.device_id is not None:
+                        self._tokens_by_user_device.setdefault((session.user_id, session.device_id), set()).discard(token)
                     _zero_deks(session.deks)
+            self._latest_deks_by_user.pop(user_id, None)
+            for key in list(self._tokens_by_user_device):
+                if key[0] == user_id:
+                    self._tokens_by_user_device.pop(key, None)
+
+    def revoke_user_device(self, user_id: int, device_id: str) -> int:
+        key = (user_id, device_id)
+        with self._lock:
+            tokens = self._tokens_by_user_device.pop(key, set())
+            revoked_count = 0
+            for token in list(tokens):
+                session = self._sessions.pop(token, None)
+                if session is not None:
+                    _zero_deks(session.deks)
+                    revoked_count += 1
+            self._refresh_latest_deks_locked(user_id)
+            for token in list(tokens):
+                self._db_viewer_verified_at.pop(token, None)
+            return revoked_count
+
+    def clear_user_devices(self, user_id: int) -> None:
+        with self._lock:
+            device_keys = [key for key in self._tokens_by_user_device if key[0] == user_id]
+            for key in device_keys:
+                tokens = self._tokens_by_user_device.pop(key, set())
+                for token in list(tokens):
+                    session = self._sessions.pop(token, None)
+                    if session is not None:
+                        _zero_deks(session.deks)
+                    self._db_viewer_verified_at.pop(token, None)
             self._latest_deks_by_user.pop(user_id, None)
 
     def clear(self) -> None:
@@ -82,6 +135,7 @@ class UnlockSessionStore:
             self._sessions.clear()
             self._latest_deks_by_user.clear()
             self._db_viewer_verified_at.clear()
+            self._tokens_by_user_device.clear()
 
     def get_active_dek(self, user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
         with self._lock:
@@ -133,6 +187,11 @@ class UnlockSessionStore:
             self._db_viewer_verified_at.pop(token, None)
             if expired is not None:
                 _zero_deks(expired.deks)
+                if expired.device_id:
+                    key = (expired.user_id, expired.device_id)
+                    self._tokens_by_user_device.setdefault(key, set()).discard(token)
+                    if not self._tokens_by_user_device.get(key):
+                        self._tokens_by_user_device.pop(key, None)
         for user_id in affected_users:
             self._refresh_latest_deks_locked(user_id)
 

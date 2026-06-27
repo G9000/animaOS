@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import personaAvatar from "../assets/persona-default.svg";
-import { api, getRuntimeAuthHeaders } from "../lib/api";
+import { api, getRuntimeRequestHeaders } from "../lib/api";
 import { AGENT_PROFILE_CHANGED_EVENT } from "../lib/events";
 import { API_BASE } from "../lib/runtime";
 
@@ -45,8 +45,9 @@ async function loadAgentAvatar(
     };
   }
 
-  const headers = getRuntimeAuthHeaders();
-  const response = await fetch(`${API_BASE}${avatarPath}`, { headers });
+  const response = await fetch(`${API_BASE}${avatarPath}`, {
+    headers: getRuntimeRequestHeaders(),
+  });
 
   if (!response.ok) {
     return {
