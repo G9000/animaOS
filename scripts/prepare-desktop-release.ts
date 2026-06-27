@@ -31,6 +31,7 @@ const scriptPath = resolve(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptPath, "..", "..");
 const desktopPackage = "apps/desktop";
 const desktopTauriDir = join(projectRoot, desktopPackage, "src-tauri");
+const desktopReleaseEnvPath = join(projectRoot, desktopPackage, ".env.production.local");
 const workspacePyprojectPath = join(projectRoot, "pyproject.toml");
 const workspaceLockPath = join(projectRoot, "uv.lock");
 const runtimeDir = join(projectRoot, "apps/server");
@@ -100,6 +101,14 @@ function relativeFrom(basePath: string, targetPath: string): string {
   return toPosixPath(relativePath.length > 0 ? relativePath : ".");
 }
 
+function normalizeDesktopHost(host: string): string {
+  const trimmed = host.trim();
+  if (trimmed === "0.0.0.0" || trimmed === "::" || trimmed === "[::]") {
+    return "127.0.0.1";
+  }
+  return trimmed;
+}
+
 function resolveRuntimeCommand(runtimeHost: string, runtimePort: number): string {
   const configured = process.env.ANIMA_DAEMON_RUNTIME_COMMAND?.trim();
   if (configured) {
@@ -161,6 +170,23 @@ function resolvePackageJsonVersion(fallback = "0.1.0"): string {
  }
 }
 
+function resolveDaemonConfigDefault(runtimeArtifact: string | null): ReleaseManifest["daemon"]["configDefault"] {
+  const daemonBindHost = process.env.ANIMA_DAEMON_BIND_HOST || "127.0.0.1";
+  const daemonBindPort = Number(process.env.ANIMA_DAEMON_BIND_PORT || 3032);
+  const runtimeHost = process.env.ANIMA_DAEMON_RUNTIME_HOST || "127.0.0.1";
+  const runtimePort = Number(process.env.ANIMA_DAEMON_RUNTIME_PORT || 3031);
+
+  return {
+    daemonBindHost,
+    daemonBindPort,
+    runtimeHost,
+    runtimePort,
+    runtimeLaunchMode: process.env.ANIMA_DAEMON_RUNTIME_LAUNCH_MODE || "python",
+    runtimeArtifact,
+    pythonEntry: resolveRuntimeCommand(runtimeHost, runtimePort),
+  };
+}
+
 function buildManifest(options: {
   artifactCandidates: string[];
   manifestDirectory: string;
@@ -168,9 +194,9 @@ function buildManifest(options: {
   runtimeSourceRoot: string;
   runtimeEntrypoint: string;
 }): ReleaseManifest {
-  const runtimeHost = process.env.ANIMA_DAEMON_RUNTIME_HOST || "127.0.0.1";
-  const runtimePort = Number(process.env.ANIMA_DAEMON_RUNTIME_PORT || 3031);
-  const runtimeCommand = resolveRuntimeCommand(runtimeHost, runtimePort);
+  const configDefault = resolveDaemonConfigDefault(
+    options.runtimeArtifact ? relativeFrom(options.manifestDirectory, options.runtimeArtifact) : null,
+  );
 
   return {
     preparedAt: new Date().toISOString(),
@@ -178,15 +204,7 @@ function buildManifest(options: {
     version: resolvePackageJsonVersion(),
     daemon: {
       project: "apps/local-runtime-daemon",
-      configDefault: {
-        daemonBindHost: process.env.ANIMA_DAEMON_BIND_HOST || "127.0.0.1",
-        daemonBindPort: Number(process.env.ANIMA_DAEMON_BIND_PORT || 3032),
-        runtimeHost,
-        runtimePort,
-        runtimeLaunchMode: process.env.ANIMA_DAEMON_RUNTIME_LAUNCH_MODE || "python",
-        runtimeArtifact: options.runtimeArtifact ? relativeFrom(options.manifestDirectory, options.runtimeArtifact) : null,
-        pythonEntry: runtimeCommand,
-      },
+      configDefault,
       artifactCandidates: options.artifactCandidates,
     },
     runtime: {
@@ -249,6 +267,17 @@ function stageRuntimeArtifact(sourcePath: string, destinationRoot: string): stri
   return destinationPath;
 }
 
+function writeDesktopReleaseEnv(configDefault: ReleaseManifest["daemon"]["configDefault"]): void {
+  const daemonOrigin = `http://${normalizeDesktopHost(configDefault.daemonBindHost)}:${configDefault.daemonBindPort}`;
+  const apiBase = `http://${normalizeDesktopHost(configDefault.runtimeHost)}:${configDefault.runtimePort}/api`;
+  const contents = [
+    `VITE_DAEMON_ORIGIN=${daemonOrigin}`,
+    `VITE_API_BASE_URL=${apiBase}`,
+    "",
+  ].join("\n");
+  writeFileSync(desktopReleaseEnvPath, contents, "utf8");
+}
+
 function main(): void {
   if (!existsSync(daemonDir)) {
     throw new Error(`Local daemon crate is missing at ${daemonDir}`);
@@ -300,6 +329,7 @@ function main(): void {
   });
   writeManifest(manifestPath, localManifest);
   writeManifest(bundledManifestPath, bundledManifest);
+  writeDesktopReleaseEnv(bundledManifest.daemon.configDefault);
 
   console.log(
     `[prepare-desktop-release] Runtime daemon release metadata written to ${manifestPath}`,
