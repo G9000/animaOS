@@ -34,10 +34,10 @@ const runtimeDir = join(projectRoot, "apps/server");
 const runtimeEntrypoint = join(runtimeDir, "src", "anima_server", "main.py");
 const daemonDir = join(projectRoot, "apps/local-runtime-daemon");
 const manifestPath = join(projectRoot, ".anima", "runtime-daemon-release.json");
-const stagedDaemonDir = join(projectRoot, ".anima", "runtime-daemon");
+const stagedDaemonDir = join(projectRoot, ".anima");
 const bundledResourcesDir = join(desktopTauriDir, "resources", ".anima");
 const bundledManifestPath = join(bundledResourcesDir, "runtime-daemon-release.json");
-const bundledDaemonDir = join(bundledResourcesDir, "runtime-daemon");
+const bundledDaemonDir = bundledResourcesDir;
 
 const localArtifacts = [
   join(projectRoot, "target", "release", "anima-local-runtime-daemon"),
