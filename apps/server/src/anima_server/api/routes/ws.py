@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
 from anima_server.db.session import get_user_session_factory
 from anima_server.db.user_store import authenticate_account
@@ -159,6 +160,15 @@ async def ws_agent(websocket: WebSocket) -> None:
                         }
                     )
                     continue
+                if _has_awaiting_approval_run(conn.user_id):
+                    await conn.websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Turn already awaiting approval",
+                            "code": "BUSY",
+                        }
+                    )
+                    continue
                 turn_task = asyncio.create_task(
                     _handle_user_message(conn, data),
                 )
@@ -191,6 +201,26 @@ async def ws_agent(websocket: WebSocket) -> None:
         if approval_task is not None and not approval_task.done():
             approval_task.cancel()
         registry.remove(conn)
+
+
+def _has_awaiting_approval_run(user_id: int) -> bool:
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    runtime_db = get_runtime_session_factory()()
+    try:
+        return (
+            runtime_db.scalar(
+                select(RuntimeRun.id)
+                .where(
+                    RuntimeRun.user_id == user_id,
+                    RuntimeRun.status == "awaiting_approval",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+    finally:
+        runtime_db.close()
 
 
 async def _handle_user_message(conn: ClientConnection, data: dict) -> None:

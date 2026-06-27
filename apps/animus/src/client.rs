@@ -11,7 +11,9 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use crate::config::AnimusConfig;
-use crate::protocol::{AuthUser, ClientFrame, ServerFrame, ToolSchema, ToolStatus};
+use crate::protocol::{
+    is_terminal_run_error_code, AuthUser, ClientFrame, ServerFrame, ToolSchema, ToolStatus,
+};
 
 const MAX_RECONNECT_DELAY_MS: u64 = 30_000;
 
@@ -38,6 +40,9 @@ impl ClientState {
                 self.current_run_id = None;
             }
             ServerFrame::TurnComplete { .. } => {
+                self.current_run_id = None;
+            }
+            ServerFrame::Error { code, .. } if is_terminal_run_error_code(code) => {
                 self.current_run_id = None;
             }
             _ => {}
@@ -282,6 +287,23 @@ mod tests {
 
         state.observe_server_frame(&ServerFrame::Cancelled { run_id: 42 });
         assert_eq!(state.current_run_id(), None);
+    }
+
+    #[test]
+    fn clears_current_run_id_after_terminal_agent_error() {
+        let mut state = ClientState::default();
+        state.observe_server_frame(&ServerFrame::RunStarted {
+            run_id: 42,
+            thread_id: Some(9),
+        });
+
+        state.observe_server_frame(&ServerFrame::Error {
+            message: "boom".to_string(),
+            code: "AGENT_ERROR".to_string(),
+        });
+
+        assert_eq!(state.current_run_id(), None);
+        assert!(state.cancel_current_run().is_err());
     }
 
     #[test]

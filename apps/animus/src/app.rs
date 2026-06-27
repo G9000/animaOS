@@ -4,7 +4,7 @@ use crate::approvals::{ApprovalDecision, ApprovalOutcome, ApprovalState, Pending
 use crate::commands::{CommandEffect, CommandInvocation, SlashCommand};
 use crate::config::{AnimusConfig, DEFAULT_SERVER_URL};
 use crate::permissions::PermissionPolicy;
-use crate::protocol::{ClientFrame, ServerFrame};
+use crate::protocol::{is_terminal_run_error_code, ClientFrame, ServerFrame};
 use crate::spawns::SpawnState;
 use crate::transcript::{append_assistant_token, finish_streaming_assistant, TranscriptItem};
 
@@ -238,6 +238,9 @@ impl AppState {
                 None
             }
             ServerFrame::Error { message, code } => {
+                if is_terminal_run_error_code(&code) {
+                    self.run.current_run_id = None;
+                }
                 self.errors.push(format!("{code}: {message}"));
                 self.transcript
                     .push(TranscriptItem::Error { code, message });
@@ -416,6 +419,30 @@ mod tests {
             .transcript
             .iter()
             .any(|item| item.render_plain().contains("run 7 cancelled")));
+    }
+
+    #[test]
+    fn terminal_agent_error_clears_active_run() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::RunStarted {
+            run_id: 7,
+            thread_id: None,
+        }));
+
+        app.apply(AppEvent::ServerFrame(ServerFrame::Error {
+            message: "boom".to_string(),
+            code: "AGENT_ERROR".to_string(),
+        }));
+
+        assert_eq!(app.run.current_run_id, None);
+        assert_eq!(
+            app.handle_command(crate::commands::parse_command("/cancel").unwrap()),
+            crate::commands::CommandEffect::None
+        );
+        assert!(app
+            .transcript
+            .iter()
+            .any(|item| item.render_plain() == "notice: no active run to cancel"));
     }
 
     #[test]

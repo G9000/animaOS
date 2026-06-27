@@ -106,6 +106,10 @@ pub enum ServerFrame {
     Unknown,
 }
 
+pub fn is_terminal_run_error_code(code: &str) -> bool {
+    code == "AGENT_ERROR"
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,

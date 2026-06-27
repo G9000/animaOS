@@ -133,6 +133,12 @@ class _FakeDb:
     def get(self, model: object, row_id: int) -> Any | None:
         return self.run if self.run is not None and self.run.id == row_id else None
 
+    def scalar(self, statement: object) -> int | None:
+        del statement
+        if self.run is not None and self.run.status == "awaiting_approval":
+            return int(self.run.id)
+        return None
+
     def close(self) -> None:
         self.closed = True
 
@@ -266,6 +272,70 @@ class TestWebSocketRunHandlers:
                 task.cancel()
             with suppress(asyncio.CancelledError, WebSocketDisconnect):
                 await task
+
+    @pytest.mark.asyncio
+    async def test_ws_agent_rejects_user_message_while_run_awaits_approval(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_ws = _QueueWebSocket()
+        runtime_db = _FakeDb(_FakeRun(run_id=42, user_id=5, status="running"))
+        handled: list[str] = []
+        first_handled = asyncio.Event()
+        second_handled = asyncio.Event()
+
+        async def fake_authenticate(websocket: Any) -> ActionToolConnection:
+            return ActionToolConnection(websocket=websocket, user_id=5, username="alice")
+
+        async def fake_user_message(
+            conn: ActionToolConnection,
+            data: dict[str, Any],
+        ) -> None:
+            del conn
+            message = str(data["message"])
+            handled.append(message)
+            if message == "first":
+                runtime_db.run.status = "awaiting_approval"
+                first_handled.set()
+            if message == "second":
+                second_handled.set()
+
+        import anima_server.db.runtime as runtime_module
+
+        monkeypatch.setattr(ws_route, "_authenticate", fake_authenticate)
+        monkeypatch.setattr(ws_route, "_handle_user_message", fake_user_message)
+        monkeypatch.setattr(
+            runtime_module,
+            "get_runtime_session_factory",
+            lambda: lambda: runtime_db,
+        )
+
+        task = asyncio.create_task(ws_route.ws_agent(fake_ws))  # type: ignore[arg-type]
+        try:
+            await fake_ws.incoming.put({"type": "user_message", "message": "first"})
+            await asyncio.wait_for(first_handled.wait(), timeout=1)
+
+            await fake_ws.incoming.put({"type": "user_message", "message": "second"})
+            for _ in range(20):
+                if second_handled.is_set() or any(
+                    frame.get("code") == "BUSY" for frame in fake_ws.sent
+                ):
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await fake_ws.incoming.put(None)
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                await task
+
+        assert handled == ["first"]
+        assert fake_ws.sent[-1] == {
+            "type": "error",
+            "message": "Turn already awaiting approval",
+            "code": "BUSY",
+        }
+        assert runtime_db.closed is True
 
     @pytest.mark.asyncio
     async def test_handle_approval_response_streams_translated_resume_events(
