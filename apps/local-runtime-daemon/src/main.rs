@@ -12,13 +12,15 @@ use std::{
     env,
     fmt::Display,
     fs::{self, OpenOptions},
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     path::{Path as FsPath, PathBuf},
     process::{ExitStatus, Stdio},
     str::FromStr,
     sync::Arc,
     time::Duration,
 };
+#[cfg(unix)]
+use std::io::Write;
 use tokio::{
     process::{Child, Command},
     sync::Mutex,
@@ -1492,6 +1494,65 @@ async fn runtime_process_matches_record(record: &RuntimePidRecord) -> Result<boo
     Ok(true)
 }
 
+#[cfg(not(windows))]
+fn parse_process_elapsed_time(raw: &str, pid: u32) -> Result<i64, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("Missing elapsed time for pid {pid}"));
+    }
+
+    if let Ok(seconds) = trimmed.parse::<i64>() {
+        return Ok(seconds);
+    }
+
+    let (days, clock) = match trimmed.rsplit_once('-') {
+        Some((days_raw, rest)) => (
+            days_raw
+                .trim()
+                .parse::<i64>()
+                .map_err(|err| format!("Invalid elapsed day count for pid {pid}: {err}"))?,
+            rest.trim(),
+        ),
+        None => (0, trimmed),
+    };
+
+    let parts = clock.split(':').collect::<Vec<_>>();
+    let (hours, minutes, seconds) = match parts.as_slice() {
+        [minutes, seconds] => (
+            0,
+            minutes
+                .trim()
+                .parse::<i64>()
+                .map_err(|err| format!("Invalid elapsed minute value for pid {pid}: {err}"))?,
+            seconds
+                .trim()
+                .parse::<i64>()
+                .map_err(|err| format!("Invalid elapsed second value for pid {pid}: {err}"))?,
+        ),
+        [hours, minutes, seconds] => (
+            hours
+                .trim()
+                .parse::<i64>()
+                .map_err(|err| format!("Invalid elapsed hour value for pid {pid}: {err}"))?,
+            minutes
+                .trim()
+                .parse::<i64>()
+                .map_err(|err| format!("Invalid elapsed minute value for pid {pid}: {err}"))?,
+            seconds
+                .trim()
+                .parse::<i64>()
+                .map_err(|err| format!("Invalid elapsed second value for pid {pid}: {err}"))?,
+        ),
+        _ => {
+            return Err(format!(
+                "Unexpected elapsed time format for pid {pid}: {trimmed}"
+            ));
+        }
+    };
+
+    Ok(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
+}
+
 async fn read_runtime_process_snapshot(pid: u32) -> Result<Option<RuntimeProcessSnapshot>, String> {
     #[cfg(windows)]
     {
@@ -1525,7 +1586,7 @@ async fn read_runtime_process_snapshot(pid: u32) -> Result<Option<RuntimeProcess
     #[cfg(not(windows))]
     {
         let output = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "etimes=", "-o", "args="])
+            .args(["-p", &pid.to_string(), "-o", "etime=", "-o", "args="])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
@@ -1545,10 +1606,7 @@ async fn read_runtime_process_snapshot(pid: u32) -> Result<Option<RuntimeProcess
         let Some((elapsed_raw, command_line_raw)) = line.split_once(char::is_whitespace) else {
             return Err(format!("Unexpected process snapshot format for pid {pid}: {line}"));
         };
-        let elapsed = elapsed_raw
-            .trim()
-            .parse::<i64>()
-            .map_err(|err| format!("Invalid elapsed time for pid {pid}: {err}"))?;
+        let elapsed = parse_process_elapsed_time(elapsed_raw, pid)?;
         let command_line = command_line_raw.trim().to_string();
         if command_line.is_empty() {
             return Ok(None);

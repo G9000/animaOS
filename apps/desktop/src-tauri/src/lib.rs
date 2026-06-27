@@ -266,6 +266,8 @@ fn resolve_manifest_daemon_launch(app: &tauri::AppHandle) -> Option<ResolvedMani
         ));
     }
 
+    env.extend(resolve_runtime_data_env_overrides(runtime_working_dir.as_deref()));
+
     let executable = manifest
         .daemon
         .artifact_candidates
@@ -312,6 +314,47 @@ fn resolve_manifest_runtime_working_dir(
     }
 
     None
+}
+
+fn resolve_runtime_data_env_overrides(runtime_working_dir: Option<&Path>) -> Vec<(String, String)> {
+    if runtime_working_dir.and_then(find_workspace_root_from).is_some() {
+        return Vec::new();
+    }
+
+    let explicit_data_dir = env_var_nonempty("ANIMA_DATA_DIR").map(PathBuf::from);
+    let runtime_data_dir = explicit_data_dir
+        .clone()
+        .unwrap_or_else(|| daemon_data_dir().join("runtime"));
+    let _ = fs::create_dir_all(&runtime_data_dir);
+
+    let mut env = Vec::new();
+    if explicit_data_dir.is_none() {
+        env.push((
+            "ANIMA_DATA_DIR".to_string(),
+            runtime_data_dir.to_string_lossy().to_string(),
+        ));
+    }
+
+    if env_var_nonempty("ANIMA_DATABASE_URL").is_none() {
+        env.push((
+            "ANIMA_DATABASE_URL".to_string(),
+            sqlite_database_url(&runtime_data_dir.join("anima.db")),
+        ));
+    }
+
+    env
+}
+
+fn env_var_nonempty(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn sqlite_database_url(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    format!("sqlite:///{normalized}")
 }
 
 fn resolve_workspace_daemon_executable(workspace_root: Option<&Path>) -> Option<PathBuf> {
