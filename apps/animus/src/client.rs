@@ -11,7 +11,7 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use crate::config::AnimusConfig;
-use crate::protocol::{ClientFrame, ServerFrame, ToolSchema, ToolStatus};
+use crate::protocol::{AuthUser, ClientFrame, ServerFrame, ToolSchema, ToolStatus};
 
 const MAX_RECONNECT_DELAY_MS: u64 = 30_000;
 
@@ -94,6 +94,7 @@ pub struct AnimaWsClient {
     write: WsWrite,
     read: WsRead,
     state: ClientState,
+    auth_user: AuthUser,
 }
 
 impl AnimaWsClient {
@@ -109,15 +110,15 @@ impl AnimaWsClient {
         let auth_response = read_next_frame(&mut read)
             .await?
             .context("websocket closed before authentication completed")?;
-        match &auth_response {
-            ServerFrame::AuthOk { .. } => {}
+        let auth_user = match &auth_response {
+            ServerFrame::AuthOk { user } => user.clone(),
             ServerFrame::Error { message, code } => {
                 bail!("authentication failed ({code}): {message}");
             }
             other => {
                 bail!("expected auth_ok frame, received {other:?}");
             }
-        }
+        };
 
         send_frame_to(
             &mut write,
@@ -131,7 +132,12 @@ impl AnimaWsClient {
             write,
             read,
             state: ClientState::default(),
+            auth_user,
         })
+    }
+
+    pub fn auth_user(&self) -> &AuthUser {
+        &self.auth_user
     }
 
     pub fn current_run_id(&self) -> Option<i64> {

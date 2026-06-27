@@ -14,14 +14,34 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Terminal;
 
-use crate::app::{AppEvent, AppState};
+use tokio::sync::mpsc;
+
+use crate::app::{AppEvent, AppState, ConnectionState};
 use crate::approvals::ApprovalDecision;
-use crate::commands::parse_command;
+use crate::client::{reconnect_delay, AnimaWsClient};
+use crate::commands::{parse_command, CommandEffect};
+use crate::permissions::{PermissionPolicy, ShellPermissionMode};
+use crate::protocol::{AuthUser, ClientFrame, ServerFrame};
+use crate::tools::{action_tool_schemas, ToolExecutor};
 
 type AnimusTerminal = Terminal<CrosstermBackend<Stdout>>;
 
 pub struct TerminalSession {
     terminal: AnimusTerminal,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutboundMessage {
+    Frame(ClientFrame),
+    Reconnect,
+}
+
+#[derive(Debug)]
+enum WsEvent {
+    ConnectionChanged(ConnectionState),
+    Authenticated(AuthUser),
+    Frame(ServerFrame),
+    Disconnected(String),
 }
 
 impl TerminalSession {
@@ -44,13 +64,27 @@ impl Drop for TerminalSession {
 
 pub async fn run_tui(mut app: AppState) -> Result<()> {
     let mut session = TerminalSession::enter()?;
+    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    let config = app.config.clone();
+    let websocket_task = tokio::spawn(websocket_driver(config, ws_tx, outbound_rx));
+    let mut tool_executor = ToolExecutor::new(
+        PermissionPolicy::workspace_write(app.config.workspace.clone())
+            .with_shell_mode(ShellPermissionMode::Ask),
+    );
 
     loop {
+        while let Ok(event) = ws_rx.try_recv() {
+            handle_ws_event(&mut app, &mut tool_executor, &outbound_tx, event).await;
+        }
+
         session.terminal.draw(|frame| draw_app(frame, &app))?;
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                handle_key(&mut app, key);
+                for outgoing in handle_key(&mut app, key) {
+                    let _ = outbound_tx.send(outgoing);
+                }
             }
         }
 
@@ -59,7 +93,120 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
         }
     }
 
+    drop(outbound_tx);
+    websocket_task.abort();
     Ok(())
+}
+
+async fn websocket_driver(
+    config: crate::config::AnimusConfig,
+    ui_tx: mpsc::UnboundedSender<WsEvent>,
+    mut outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
+) {
+    let mut attempt = 0u32;
+
+    loop {
+        if ui_tx
+            .send(WsEvent::ConnectionChanged(ConnectionState::Connecting))
+            .is_err()
+        {
+            return;
+        }
+
+        match AnimaWsClient::connect(&config, action_tool_schemas()).await {
+            Ok(mut client) => {
+                attempt = 0;
+                if ui_tx
+                    .send(WsEvent::Authenticated(client.auth_user().clone()))
+                    .is_err()
+                {
+                    return;
+                }
+
+                loop {
+                    tokio::select! {
+                        outgoing = outbound_rx.recv() => {
+                            match outgoing {
+                                Some(OutboundMessage::Frame(frame)) => {
+                                    if let Err(err) = client.send_frame(frame).await {
+                                        let _ = ui_tx.send(WsEvent::Disconnected(format!("websocket send failed: {err}")));
+                                        break;
+                                    }
+                                }
+                                Some(OutboundMessage::Reconnect) => {
+                                    let _ = ui_tx.send(WsEvent::Disconnected("reconnecting to ANIMA".to_string()));
+                                    break;
+                                }
+                                None => return,
+                            }
+                        }
+                        frame = client.next_frame() => {
+                            match frame {
+                                Ok(Some(frame)) => {
+                                    if ui_tx.send(WsEvent::Frame(frame)).is_err() {
+                                        return;
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = ui_tx.send(WsEvent::Disconnected("ANIMA websocket closed".to_string()));
+                                    break;
+                                }
+                                Err(err) => {
+                                    let _ = ui_tx.send(WsEvent::Disconnected(format!("websocket receive failed: {err}")));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                let _ = ui_tx.send(WsEvent::Disconnected(format!("connection failed: {err}")));
+            }
+        }
+
+        attempt = attempt.saturating_add(1);
+        let delay = reconnect_delay(attempt);
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            outgoing = outbound_rx.recv() => {
+                match outgoing {
+                    Some(OutboundMessage::Reconnect) => {}
+                    Some(OutboundMessage::Frame(_)) => {
+                        let _ = ui_tx.send(WsEvent::Disconnected("not connected; outbound frame dropped".to_string()));
+                    }
+                    None => return,
+                }
+            }
+        }
+    }
+}
+
+async fn handle_ws_event(
+    app: &mut AppState,
+    tool_executor: &mut ToolExecutor,
+    outbound_tx: &mpsc::UnboundedSender<OutboundMessage>,
+    event: WsEvent,
+) {
+    match event {
+        WsEvent::ConnectionChanged(state) => {
+            app.apply(AppEvent::ConnectionChanged(state));
+        }
+        WsEvent::Authenticated(user) => {
+            app.apply(AppEvent::ServerFrame(ServerFrame::AuthOk { user }));
+        }
+        WsEvent::Frame(frame) => {
+            let tool_result = tool_executor.execute_frame(&frame).await;
+            app.apply(AppEvent::ServerFrame(frame));
+            if let Some(frame) = tool_result {
+                let _ = outbound_tx.send(OutboundMessage::Frame(frame));
+            }
+        }
+        WsEvent::Disconnected(message) => {
+            app.apply(AppEvent::ConnectionChanged(ConnectionState::Disconnected));
+            app.apply(AppEvent::Notice(message));
+        }
+    }
 }
 
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
@@ -148,31 +295,27 @@ fn approval_prompt_rows(app: &AppState) -> Vec<String> {
     ]
 }
 
-fn handle_key(app: &mut AppState, key: KeyEvent) {
+fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<OutboundMessage> {
     if is_quit_key(key) {
         app.apply(AppEvent::Quit);
-        return;
+        return Vec::new();
     }
 
     if app.approvals.pending().is_some() {
         match key.code {
             KeyCode::Char('a') => {
-                app.decide_approval(ApprovalDecision::Approve);
-                return;
+                return approval_outbound(app, ApprovalDecision::Approve);
             }
             KeyCode::Char('s') => {
-                app.decide_approval(ApprovalDecision::ApproveForSession);
-                return;
+                return approval_outbound(app, ApprovalDecision::ApproveForSession);
             }
             KeyCode::Char('d') => {
-                app.decide_approval(ApprovalDecision::Deny {
+                return approval_outbound(app, ApprovalDecision::Deny {
                     reason: "denied by user".to_string(),
                 });
-                return;
             }
             KeyCode::Esc => {
-                app.decide_approval(ApprovalDecision::Cancel);
-                return;
+                return approval_outbound(app, ApprovalDecision::Cancel);
             }
             _ => {}
         }
@@ -190,8 +333,9 @@ fn handle_key(app: &mut AppState, key: KeyEvent) {
             if message.trim_start().starts_with('/') {
                 match parse_command(&message) {
                     Ok(command) => {
-                        app.handle_command(command);
+                        let effect = app.handle_command(command);
                         app.input.clear();
+                        return command_outbound(effect);
                     }
                     Err(err) => {
                         app.apply(AppEvent::Notice(format!("command error: {err:?}")));
@@ -199,10 +343,29 @@ fn handle_key(app: &mut AppState, key: KeyEvent) {
                     }
                 }
             } else {
-                app.apply(AppEvent::UserSubmitted(message));
+                app.apply(AppEvent::UserSubmitted(message.clone()));
+                return vec![OutboundMessage::Frame(ClientFrame::UserMessage { message })];
             }
         }
         _ => {}
+    }
+
+    Vec::new()
+}
+
+fn approval_outbound(app: &mut AppState, decision: ApprovalDecision) -> Vec<OutboundMessage> {
+    app.decide_approval(decision)
+        .map(|outcome| vec![OutboundMessage::Frame(outcome.frame)])
+        .unwrap_or_default()
+}
+
+fn command_outbound(effect: CommandEffect) -> Vec<OutboundMessage> {
+    match effect {
+        CommandEffect::CancelRun { run_id } => {
+            vec![OutboundMessage::Frame(ClientFrame::Cancel { run_id })]
+        }
+        CommandEffect::Reconnect => vec![OutboundMessage::Reconnect],
+        _ => Vec::new(),
     }
 }
 
@@ -275,5 +438,78 @@ mod tests {
         assert!(rows
             .iter()
             .any(|row| row.contains("[a] approve [s] session [d] deny")));
+    }
+
+    #[test]
+    fn enter_on_prompt_sends_user_message_to_anima() {
+        let mut app = AppState::for_test();
+        app.input = "hello anima".to_string();
+
+        let outgoing = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            outgoing,
+            vec![OutboundMessage::Frame(crate::protocol::ClientFrame::UserMessage {
+                message: "hello anima".to_string(),
+            })]
+        );
+    }
+
+    #[test]
+    fn command_input_sends_cancel_and_reconnect_actions() {
+        let mut app = AppState::for_test();
+        app.run.current_run_id = Some(42);
+        app.input = "/cancel".to_string();
+
+        let cancel = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            cancel,
+            vec![OutboundMessage::Frame(crate::protocol::ClientFrame::Cancel {
+                run_id: 42,
+            })]
+        );
+
+        app.input = "/reconnect".to_string();
+        let reconnect = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(reconnect, vec![OutboundMessage::Reconnect]);
+    }
+
+    #[test]
+    fn approval_key_sends_approval_response_to_anima() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+
+        let outgoing = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            outgoing,
+            vec![OutboundMessage::Frame(
+                crate::protocol::ClientFrame::ApprovalResponse {
+                    run_id: 42,
+                    tool_call_id: "call-1".to_string(),
+                    approved: true,
+                    reason: None,
+                }
+            )]
+        );
     }
 }
