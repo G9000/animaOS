@@ -82,7 +82,6 @@ export interface DaemonHealthResponse {
   readonly status: DaemonState;
   readonly updatedAt?: string;
   readonly updated_at?: string;
-  readonly controlToken?: string;
 }
 
 export interface DaemonRuntimeNonceResponse {

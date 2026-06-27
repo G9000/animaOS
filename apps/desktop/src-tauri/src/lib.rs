@@ -1,3 +1,7 @@
+use std::{
+    env, fs,
+    path::PathBuf,
+};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -5,6 +9,37 @@ use tauri::{
     RunEvent,
     WindowEvent,
 };
+
+const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
+
+fn default_daemon_data_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join("anima").join("runtime-daemon"))
+}
+
+fn daemon_data_dir() -> PathBuf {
+    env::var("ANIMA_DAEMON_DATA_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(default_daemon_data_dir)
+        .unwrap_or_else(|| PathBuf::from(".").join(".anima").join("runtime-daemon"))
+}
+
+fn daemon_control_token_path() -> PathBuf {
+    daemon_data_dir().join(DEFAULT_DAEMON_CONTROL_TOKEN_FILE)
+}
+
+#[tauri::command]
+fn read_daemon_control_token() -> Option<String> {
+    let token = fs::read_to_string(daemon_control_token_path()).ok()?;
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -47,7 +82,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![])
+        .invoke_handler(tauri::generate_handler![read_daemon_control_token])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

@@ -14,13 +14,13 @@ use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
     path::{Path as FsPath, PathBuf},
-    process::ExitStatus,
+    process::{ExitStatus, Stdio},
     str::FromStr,
     sync::Arc,
     time::Duration,
 };
 use tokio::{
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     sync::Mutex,
     time,
 };
@@ -64,7 +64,6 @@ struct DaemonRuntimeState {
     inner: Arc<Mutex<RuntimeState>>,
 }
 
-#[derive(Clone)]
 struct RuntimeState {
     policy: DaemonPolicy,
     process: Option<RuntimeProcess>,
@@ -85,14 +84,13 @@ enum DaemonCorsOrigins {
     Deny,
 }
 
-#[derive(Clone)]
 struct RuntimeProcess {
     child: Child,
     pid: u32,
     started_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum DaemonState {
     Stopped,
@@ -320,7 +318,6 @@ struct DaemonHealthResponse {
     version: &'static str,
     status: DaemonState,
     updated_at: String,
-    control_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -399,7 +396,7 @@ impl RuntimeState {
 
         let shift = self.restart_attempts.min(10);
         let max = u64::from(u32::MAX);
-        let multiplier = 1u64.saturating_shl(shift);
+        let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
         let next_delay = (config.base_restart_seconds.saturating_mul(multiplier))
             .min(config.max_restart_seconds.max(1));
         self.restart_attempts = self.restart_attempts.saturating_add(1);
@@ -565,7 +562,7 @@ async fn main() {
         .route("/v1/nonce", get(runtime_nonce))
         .route("/v1/control/:command", post(control))
         .route("/v1/logs", get(open_logs))
-        .with_state(runtime)
+        .with_state(runtime.clone())
         .layer(cors_layer);
 
     let bind = format!(
@@ -589,7 +586,6 @@ async fn health(State(runtime): State<DaemonRuntime>) -> Json<DaemonHealthRespon
         version: DAEMON_API_VERSION,
         status: state.status.clone(),
         updated_at: Utc::now().to_rfc3339(),
-        control_token: Some(runtime.state.config.control_token.clone()),
     })
 }
 
@@ -761,6 +757,9 @@ fn authorize_control(
 async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<String, String> {
     {
         let mut state = runtime.state.inner.lock().await;
+        if state.policy.locked {
+            return Err("Runtime is locked; unlock before starting".to_string());
+        }
         if state.process.is_some() && state.expected_running {
             return Err("Runtime already running".to_string());
         }
@@ -830,7 +829,7 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
         }
     };
     command.stdout(stdout);
-    command.stderr(log.into());
+    command.stderr(Stdio::from(log));
 
     let child = match command.spawn() {
         Ok(child) => child,
@@ -1291,21 +1290,19 @@ async fn check_runtime_health(config: &RuntimeConfig) -> Result<(), String> {
         .await
         .map_err(|err| format!("Health request failed: {err}"))?;
 
-    if response.status().is_success() {
+    let status = response.status();
+    if status.is_success() {
         return Ok(());
     }
 
     if let Ok(body) = response.text().await {
         return Err(format!(
             "Runtime health endpoint responded with HTTP {}: {body}",
-            response.status()
+            status
         ));
     }
 
-    Err(format!(
-        "Runtime health endpoint failed: {}",
-        response.status()
-    ))
+    Err(format!("Runtime health endpoint failed: {}", status))
 }
 
 fn write_state_file(path: &FsPath, value: &str) -> std::io::Result<()> {

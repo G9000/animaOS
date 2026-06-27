@@ -13,13 +13,10 @@ import {
   DaemonRuntimeNonceResponse,
   DAEMON_ROUTES,
 } from "@anima/daemon-contracts";
+import { invoke } from "@tauri-apps/api/core";
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
-type DaemonHealthPayload = {
-  controlToken?: string | null;
-  control_token?: string | null;
-};
 let daemonRuntimeNonce: string | null = null;
 let resolvingControlToken: Promise<string | null> | null = null;
 
@@ -35,6 +32,10 @@ function setRuntimeNonce(nonce: string | null) {
 
 export function getRuntimeNonce(): string | null {
   return daemonRuntimeNonce;
+}
+
+function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 function getDaemonOrigin(): string {
@@ -96,49 +97,27 @@ function parseErrorResponse(payload: unknown): string {
   return "Daemon control request failed";
 }
 
-function parseControlToken(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const candidate = payload as DaemonHealthPayload;
-  const raw = candidate.controlToken ?? candidate.control_token;
-  if (!raw) {
-    return null;
-  }
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 async function bootstrapControlToken(): Promise<string | null> {
   if (resolvingControlToken) {
     return resolvingControlToken;
   }
 
   resolvingControlToken = (async () => {
-    const response = await fetch(endpoint(DAEMON_ROUTES.health), {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
+    if (!isTauri()) {
       return null;
     }
 
-    const text = await response.text();
-    let payload: unknown = text;
     try {
-      payload = text ? JSON.parse(text) : null;
+      const token = normalizeNonce(
+        await invoke<string | null>("read_daemon_control_token"),
+      );
+      if (token) {
+        setDaemonControlToken(token);
+      }
+      return token;
     } catch {
-      payload = null;
+      return null;
     }
-
-    const token = parseControlToken(payload);
-    if (token) {
-      setDaemonControlToken(token);
-    }
-    return token;
   })();
 
   try {
