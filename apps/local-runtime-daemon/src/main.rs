@@ -312,6 +312,7 @@ struct DaemonHealthResponse {
     version: &'static str,
     status: DaemonState,
     updated_at: String,
+    control_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -566,6 +567,7 @@ async fn health(State(runtime): State<DaemonRuntime>) -> Json<DaemonHealthRespon
         version: DAEMON_API_VERSION,
         status: state.status.clone(),
         updated_at: Utc::now().to_rfc3339(),
+        control_token: Some(runtime.state.config.control_token.clone()),
     })
 }
 
@@ -703,7 +705,8 @@ fn authorize_control(
     config: &RuntimeConfig,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<DaemonError>)> {
-    let Some(token) = config.control_token.as_deref() else {
+    let token = config.control_token.trim();
+    if token.is_empty() {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(DaemonError {
@@ -714,24 +717,12 @@ fn authorize_control(
         ));
     };
 
-    let token = token.trim();
-    if token.is_empty() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(DaemonError {
-                category: "auth".to_string(),
-                message: "Daemon control token is required".to_string(),
-                detail: None,
-            }),
-        ));
-    }
-
     let provided = headers
         .get(DAEMON_CONTROL_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim);
 
-    if provided == Some(config.control_token.as_str()) {
+    if provided == Some(token) {
         return Ok(());
     }
 

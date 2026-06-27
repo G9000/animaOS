@@ -16,7 +16,12 @@ import {
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
+type DaemonHealthPayload = {
+  controlToken?: string | null;
+  control_token?: string | null;
+};
 let daemonRuntimeNonce: string | null = null;
+let resolvingControlToken: Promise<string | null> | null = null;
 
 function normalizeNonce(value: string | undefined | null): string | null {
   if (!value) return null;
@@ -91,7 +96,59 @@ function parseErrorResponse(payload: unknown): string {
   return "Daemon control request failed";
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+function parseControlToken(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidate = payload as DaemonHealthPayload;
+  const raw = candidate.controlToken ?? candidate.control_token;
+  if (!raw) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function bootstrapControlToken(): Promise<string | null> {
+  if (resolvingControlToken) {
+    return resolvingControlToken;
+  }
+
+  resolvingControlToken = (async () => {
+    const response = await fetch(`${getDaemonOrigin()}/${DAEMON_ROUTES.health}`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const text = await response.text();
+    let payload: unknown = text;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+
+    const token = parseControlToken(payload);
+    if (token) {
+      setDaemonControlToken(token);
+    }
+    return token;
+  })();
+
+  try {
+    return await resolvingControlToken;
+  } finally {
+    resolvingControlToken = null;
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
   const response = await fetch(endpoint(path), {
     ...init,
     headers: {
@@ -111,6 +168,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       clearStoredControlToken();
+      if (allowRetry) {
+        const token = await bootstrapControlToken();
+        if (token) {
+          return request(path, init, false);
+        }
+      }
     }
     const message = parseErrorResponse(parsed);
     throw new Error(message);
