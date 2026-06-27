@@ -41,6 +41,7 @@ const DEFAULT_MAX_RESTART_SECONDS: u64 = 20;
 const DEFAULT_STARTUP_GRACE_SECONDS: u64 = 45;
 const DEFAULT_LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
+const RUNTIME_PID_MATCH_TOLERANCE_SECONDS: i64 = 5;
 const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
 const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
 const DEFAULT_DAEMON_ALLOWED_ORIGINS: &[&str] = &[
@@ -90,6 +91,27 @@ struct RuntimeProcess {
     child: Child,
     pid: u32,
     started_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePidRecord {
+    pid: u32,
+    started_at_unix: i64,
+    command: String,
+    args: Vec<String>,
+}
+
+enum RuntimePidFileEntry {
+    Legacy(u32),
+    Structured(RuntimePidRecord),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeProcessSnapshot {
+    started_at_unix: i64,
+    command_line: String,
 }
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
@@ -547,15 +569,24 @@ async fn main() {
         }),
     };
 
-    if let Err(err) = shutdown_existing_runtime_from_pid_file(&runtime.state.config).await {
-        warn!("Failed to reconcile existing runtime process on daemon startup: {err}");
-    }
+    let bind = format!(
+        "{}:{}",
+        runtime.state.config.daemon_bind_host, runtime.state.config.daemon_bind_port
+    );
+    info!("Starting local runtime daemon on {bind}");
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .unwrap_or_else(|err| panic!("Failed to bind daemon control socket at {bind}: {err}"));
 
     if let Err(err) = write_state_file(&runtime.state.config.lock_file(), "created") {
         warn!(
             "Failed to write startup state file {}: {err}",
             runtime.state.config.lock_file().display()
         );
+    }
+
+    if let Err(err) = shutdown_existing_runtime_from_pid_file(&runtime.state.config).await {
+        warn!("Failed to reconcile existing runtime process on daemon startup: {err}");
     }
 
     let runtime_status = runtime.clone();
@@ -600,16 +631,6 @@ async fn main() {
         .route("/v1/logs", get(open_logs))
         .with_state(runtime.clone())
         .layer(cors_layer);
-
-    let bind = format!(
-        "{}:{}",
-        runtime.state.config.daemon_bind_host, runtime.state.config.daemon_bind_port
-    );
-    info!("Starting local runtime daemon on {bind}");
-
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .unwrap_or_else(|err| panic!("Failed to bind daemon control socket at {bind}: {err}"));
 
     if let Err(err) = axum::serve(listener, app).await {
         error!("Daemon server error: {err}");
@@ -905,11 +926,27 @@ async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<St
     }
 
     if pid != 0 {
-        if let Err(err) = fs::write(config.runtime_pid_file(), pid.to_string()) {
-            warn!(
-                "Failed to write pid file {}: {err}",
-                config.runtime_pid_file().display()
-            );
+        let record = RuntimePidRecord {
+            pid,
+            started_at_unix: now.timestamp(),
+            command: config.runtime_command.clone(),
+            args: config.runtime_args.clone(),
+        };
+        match serde_json::to_string(&record) {
+            Ok(payload) => {
+                if let Err(err) = write_state_file(&config.runtime_pid_file(), &payload) {
+                    warn!(
+                        "Failed to write pid file {}: {err}",
+                        config.runtime_pid_file().display()
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to serialize pid file {}: {err}",
+                    config.runtime_pid_file().display()
+                );
+            }
         }
     }
 
@@ -1259,46 +1296,77 @@ async fn shutdown_runtime_process(process: &mut RuntimeProcess) -> Result<ExitSt
 
 async fn shutdown_existing_runtime_from_pid_file(config: &RuntimeConfig) -> Result<(), String> {
     let pid_path = config.runtime_pid_file();
-    let Some(pid) = read_runtime_pid(&pid_path)? else {
+    let Some(entry) = read_runtime_pid_file_entry(&pid_path)? else {
         cleanup_runtime_tracking_files(config);
         return Ok(());
     };
 
-    if !runtime_pid_is_running(pid).await {
-        cleanup_runtime_tracking_files(config);
-        return Ok(());
+    match entry {
+        RuntimePidFileEntry::Legacy(pid) => {
+            if !runtime_pid_is_running(pid).await {
+                cleanup_runtime_tracking_files(config);
+                return Ok(());
+            }
+
+            warn!(
+                "Runtime pid file {} uses legacy pid-only format; leaving live process {} untouched and clearing stale tracking files",
+                pid_path.display(),
+                pid
+            );
+            cleanup_runtime_tracking_files(config);
+            Ok(())
+        }
+        RuntimePidFileEntry::Structured(record) => {
+            if !runtime_pid_is_running(record.pid).await {
+                cleanup_runtime_tracking_files(config);
+                return Ok(());
+            }
+
+            if !runtime_process_matches_record(&record).await? {
+                warn!(
+                    "Runtime pid file {} no longer matches a managed runtime process; leaving pid {} untouched and clearing stale tracking files",
+                    pid_path.display(),
+                    record.pid
+                );
+                cleanup_runtime_tracking_files(config);
+                return Ok(());
+            }
+
+            info!(
+                "Found existing runtime process pid={} from {}; stopping before daemon startup",
+                record.pid,
+                pid_path.display()
+            );
+
+            if let Err(err) = request_runtime_process_shutdown(record.pid).await {
+                warn!(
+                    "Failed to request shutdown for existing runtime process {}: {err}",
+                    record.pid
+                );
+            }
+
+            if wait_for_runtime_pid_exit(
+                record.pid,
+                Duration::from_secs(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS),
+            )
+            .await
+            .is_err()
+            {
+                warn!(
+                    "Existing runtime process {} did not exit after graceful shutdown; forcing kill",
+                    record.pid
+                );
+                force_kill_runtime_process_pid(record.pid).await?;
+                wait_for_runtime_pid_exit(record.pid, Duration::from_secs(5)).await?;
+            }
+
+            cleanup_runtime_tracking_files(config);
+            Ok(())
+        }
     }
-
-    info!(
-        "Found existing runtime process pid={} from {}; stopping before daemon startup",
-        pid,
-        pid_path.display()
-    );
-
-    if let Err(err) = request_runtime_process_shutdown(pid).await {
-        warn!("Failed to request shutdown for existing runtime process {pid}: {err}");
-    }
-
-    if wait_for_runtime_pid_exit(
-        pid,
-        Duration::from_secs(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS),
-    )
-    .await
-    .is_err()
-    {
-        warn!(
-            "Existing runtime process {} did not exit after graceful shutdown; forcing kill",
-            pid
-        );
-        force_kill_runtime_process_pid(pid).await?;
-        wait_for_runtime_pid_exit(pid, Duration::from_secs(5)).await?;
-    }
-
-    cleanup_runtime_tracking_files(config);
-    Ok(())
 }
 
-fn read_runtime_pid(path: &FsPath) -> Result<Option<u32>, String> {
+fn read_runtime_pid_file_entry(path: &FsPath) -> Result<Option<RuntimePidFileEntry>, String> {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1312,6 +1380,13 @@ fn read_runtime_pid(path: &FsPath) -> Result<Option<u32>, String> {
         return Ok(None);
     }
 
+    if let Ok(record) = serde_json::from_str::<RuntimePidRecord>(trimmed) {
+        if record.pid == 0 {
+            return Ok(None);
+        }
+        return Ok(Some(RuntimePidFileEntry::Structured(record)));
+    }
+
     let pid = trimmed
         .parse::<u32>()
         .map_err(|err| format!("Invalid runtime pid in {}: {err}", path.display()))?;
@@ -1320,7 +1395,7 @@ fn read_runtime_pid(path: &FsPath) -> Result<Option<u32>, String> {
         return Ok(None);
     }
 
-    Ok(Some(pid))
+    Ok(Some(RuntimePidFileEntry::Legacy(pid)))
 }
 
 fn cleanup_runtime_tracking_files(config: &RuntimeConfig) {
@@ -1367,6 +1442,99 @@ async fn wait_for_runtime_pid_exit(pid: u32, timeout: Duration) -> Result<(), St
         ))
     } else {
         Ok(())
+    }
+}
+
+async fn runtime_process_matches_record(record: &RuntimePidRecord) -> Result<bool, String> {
+    let Some(snapshot) = read_runtime_process_snapshot(record.pid).await? else {
+        return Ok(false);
+    };
+
+    if (snapshot.started_at_unix - record.started_at_unix).abs()
+        > RUNTIME_PID_MATCH_TOLERANCE_SECONDS
+    {
+        return Ok(false);
+    }
+
+    if !snapshot.command_line.contains(&record.command) {
+        return Ok(false);
+    }
+
+    for arg in &record.args {
+        if !arg.is_empty() && !snapshot.command_line.contains(arg) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+async fn read_runtime_process_snapshot(pid: u32) -> Result<Option<RuntimeProcessSnapshot>, String> {
+    #[cfg(windows)]
+    {
+        let command = format!(
+            "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($null -eq $p) {{ exit 1 }}; [pscustomobject]@{{ commandLine = $p.CommandLine; startedAtUnix = ([DateTimeOffset]$p.CreationDate).ToUnixTimeSeconds() }} | ConvertTo-Json -Compress"
+        );
+
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &command])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .map_err(|err| format!("Failed to inspect runtime process {pid}: {err}"))?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let snapshot = serde_json::from_str::<RuntimeProcessSnapshot>(raw.trim())
+            .map_err(|err| format!("Failed to parse runtime process snapshot for pid {pid}: {err}"))?;
+
+        if snapshot.command_line.trim().is_empty() {
+            return Ok(None);
+        }
+
+        return Ok(Some(snapshot));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "etimes=", "-o", "args="])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .map_err(|err| format!("Failed to inspect runtime process {pid}: {err}"))?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let line = raw.trim();
+        if line.is_empty() {
+            return Ok(None);
+        }
+
+        let Some((elapsed_raw, command_line_raw)) = line.split_once(char::is_whitespace) else {
+            return Err(format!("Unexpected process snapshot format for pid {pid}: {line}"));
+        };
+        let elapsed = elapsed_raw
+            .trim()
+            .parse::<i64>()
+            .map_err(|err| format!("Invalid elapsed time for pid {pid}: {err}"))?;
+        let command_line = command_line_raw.trim().to_string();
+        if command_line.is_empty() {
+            return Ok(None);
+        }
+
+        return Ok(Some(RuntimeProcessSnapshot {
+            started_at_unix: (Utc::now() - chrono::Duration::seconds(elapsed)).timestamp(),
+            command_line,
+        }));
     }
 }
 
