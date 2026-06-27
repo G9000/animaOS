@@ -1004,6 +1004,7 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
             state.ready_at = None;
             state.restart_wait_seconds = None;
             state.consecutive_health_failures = 0;
+            cleanup_runtime_tracking_files(&runtime.state.config);
             return Ok("Runtime already stopped".to_string());
         }
 
@@ -1023,6 +1024,7 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
         match shutdown_runtime_process(&mut process).await {
             Ok(status) => {
                 let code = status.code().unwrap_or_default();
+                cleanup_runtime_tracking_files(&runtime.state.config);
                 if let Err(err) = write_state_file(
                     &runtime.state.config.lock_file(),
                     &format!("stopped:{code}"),
@@ -1114,6 +1116,7 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
     let mut should_restart_in_seconds: Option<u64> = None;
     let mut should_check_health = false;
     let mut process_to_restart: Option<RuntimeProcess> = None;
+    let mut should_cleanup_tracking_files = false;
     let config = runtime.state.config.clone();
 
     {
@@ -1135,6 +1138,7 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                     state.consecutive_health_failures =
                         state.consecutive_health_failures.saturating_add(1);
                     process_missing = true;
+                    should_cleanup_tracking_files = true;
                     state.last_error = Some(format!("Runtime exited with code {code}"));
 
                     if state.expected_running {
@@ -1181,6 +1185,10 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                 state.status = DaemonState::Stopped;
             }
         }
+    }
+
+    if should_cleanup_tracking_files {
+        cleanup_runtime_tracking_files(&config);
     }
 
     if should_check_health {

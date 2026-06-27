@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 interface ReleaseManifest {
   preparedAt: string;
@@ -29,10 +29,15 @@ interface ReleaseManifest {
 const scriptPath = resolve(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptPath, "..", "..");
 const desktopPackage = "apps/desktop";
+const desktopTauriDir = join(projectRoot, desktopPackage, "src-tauri");
 const runtimeDir = join(projectRoot, "apps/server");
 const runtimeEntrypoint = join(runtimeDir, "src", "anima_server", "main.py");
 const daemonDir = join(projectRoot, "apps/local-runtime-daemon");
 const manifestPath = join(projectRoot, ".anima", "runtime-daemon-release.json");
+const stagedDaemonDir = join(projectRoot, ".anima", "runtime-daemon");
+const bundledResourcesDir = join(desktopTauriDir, "resources", ".anima");
+const bundledManifestPath = join(bundledResourcesDir, "runtime-daemon-release.json");
+const bundledDaemonDir = join(bundledResourcesDir, "runtime-daemon");
 
 const localArtifacts = [
   join(projectRoot, "target", "release", "anima-local-runtime-daemon"),
@@ -55,9 +60,9 @@ function isFile(path: string): boolean {
   }
 }
 
-function writeManifest(manifest: ReleaseManifest): void {
-  mkdirSync(join(projectRoot, ".anima"), { recursive: true });
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+function writeManifest(path: string, manifest: ReleaseManifest): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(manifest, null, 2), "utf8");
 }
 
 function resolvePackageJsonVersion(fallback = "0.1.0"): string {
@@ -79,7 +84,7 @@ function buildManifest(artifactCandidates: string[]): ReleaseManifest {
     platform: process.platform,
     version: resolvePackageJsonVersion(),
     daemon: {
-      project: daemonDir,
+      project: "apps/local-runtime-daemon",
       configDefault: {
         daemonBindHost: process.env.ANIMA_DAEMON_BIND_HOST || "127.0.0.1",
         daemonBindPort: Number(process.env.ANIMA_DAEMON_BIND_PORT || 3032),
@@ -92,11 +97,33 @@ function buildManifest(artifactCandidates: string[]): ReleaseManifest {
       artifactCandidates,
     },
     runtime: {
-      sourceRoot: runtimeDir,
-      runtimeEntrypoint,
+      sourceRoot: "apps/server",
+      runtimeEntrypoint: "apps/server/src/anima_server/main.py",
       pythonLauncherHint: process.env.ANIMA_DAEMON_PYTHON || "python",
     },
   };
+}
+
+function artifactVariant(path: string): string {
+  if (path.includes(`${process.platform === "win32" ? "\\" : "/"}release${process.platform === "win32" ? "\\" : "/"}`)) {
+    return "release";
+  }
+  if (path.includes(`${process.platform === "win32" ? "\\" : "/"}debug${process.platform === "win32" ? "\\" : "/"}`)) {
+    return "debug";
+  }
+  return "bin";
+}
+
+function stageDaemonArtifacts(artifactCandidates: string[], destinationRoot: string): string[] {
+  rmSync(destinationRoot, { recursive: true, force: true });
+
+  return artifactCandidates.map((artifactPath) => {
+    const relativePath = join("runtime-daemon", artifactVariant(artifactPath), basename(artifactPath));
+    const destinationPath = join(destinationRoot, relativePath);
+    mkdirSync(dirname(destinationPath), { recursive: true });
+    copyFileSync(artifactPath, destinationPath);
+    return relativePath.replace(/\\/g, "/");
+  });
 }
 
 function main(): void {
@@ -122,11 +149,18 @@ function main(): void {
     );
   }
 
-  const manifest = buildManifest(artifactCandidates);
-  writeManifest(manifest);
+  const manifestCandidates = stageDaemonArtifacts(artifactCandidates, stagedDaemonDir);
+  stageDaemonArtifacts(artifactCandidates, bundledDaemonDir);
+
+  const manifest = buildManifest(manifestCandidates);
+  writeManifest(manifestPath, manifest);
+  writeManifest(bundledManifestPath, manifest);
 
   console.log(
     `[prepare-desktop-release] Runtime daemon release metadata written to ${manifestPath}`,
+  );
+  console.log(
+    `[prepare-desktop-release] Bundled daemon resources staged under ${bundledResourcesDir}`,
   );
   console.log(`[prepare-desktop-release] Runtime launch mode: ${manifest.daemon.configDefault.runtimeLaunchMode}`);
   console.log("[prepare-desktop-release] Note: build the release artifacts and install scripts before packaging.");

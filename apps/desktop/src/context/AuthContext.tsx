@@ -7,7 +7,7 @@ import {
 } from "react";
 import type { User } from "@anima/api-client";
 import { api, clearUnlockToken, getUnlockToken } from "../lib/api";
-import { refreshDaemonRuntimeNonce } from "../lib/daemon";
+import { refreshDaemonRuntimeNonce, startDaemon } from "../lib/daemon";
 
 interface AuthContextType {
   user: User | null;
@@ -55,7 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (async () => {
       let healthAvailable = false;
       try {
-        await refreshDaemonRuntimeNonce().catch(() => {});
+        await startDaemon().catch(async () => {
+          await refreshDaemonRuntimeNonce().catch(() => {});
+        });
         for (let attempt = 0; attempt < HEALTH_BOOT_RETRIES; attempt += 1) {
           try {
             const health = await api.system.health();

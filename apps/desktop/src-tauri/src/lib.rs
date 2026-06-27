@@ -5,6 +5,7 @@ use std::{
 };
 use serde::Deserialize;
 use tauri::{
+    path::BaseDirectory,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Manager,
@@ -57,10 +58,10 @@ fn read_daemon_control_token() -> Option<String> {
 }
 
 #[tauri::command]
-fn start_local_runtime_daemon() -> Result<(), String> {
+fn start_local_runtime_daemon(app: tauri::AppHandle) -> Result<(), String> {
     let workspace_root = find_workspace_root();
 
-    if let Some(executable) = resolve_daemon_executable(workspace_root.as_deref()) {
+    if let Some(executable) = resolve_daemon_executable(&app, workspace_root.as_deref()) {
         let mut command = std::process::Command::new(&executable);
         if let Some(root) = workspace_root.as_deref() {
             command.current_dir(root);
@@ -116,35 +117,50 @@ fn start_local_runtime_daemon() -> Result<(), String> {
     )
 }
 
-fn resolve_daemon_executable(workspace_root: Option<&Path>) -> Option<PathBuf> {
+fn resolve_daemon_executable(app: &tauri::AppHandle, workspace_root: Option<&Path>) -> Option<PathBuf> {
     env::var("ANIMA_DAEMON_EXECUTABLE")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_file())
-        .or_else(resolve_manifest_daemon_executable)
+        .or_else(|| resolve_manifest_daemon_executable(app))
         .or_else(|| resolve_workspace_daemon_executable(workspace_root))
 }
 
-fn resolve_manifest_daemon_executable() -> Option<PathBuf> {
+fn resolve_manifest_daemon_executable(app: &tauri::AppHandle) -> Option<PathBuf> {
     let manifest_path = env::var("ANIMA_DAEMON_RELEASE_MANIFEST")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_file())
+        .or_else(|| {
+            app.path()
+                .resolve(DEFAULT_DAEMON_RELEASE_MANIFEST, BaseDirectory::Resource)
+                .ok()
+                .filter(|path| path.is_file())
+        })
         .or_else(find_release_manifest)?;
 
-    let raw = fs::read_to_string(manifest_path).ok()?;
+    let raw = fs::read_to_string(&manifest_path).ok()?;
     let manifest = serde_json::from_str::<DaemonReleaseManifest>(&raw).ok()?;
 
     manifest
         .daemon
         .artifact_candidates
         .into_iter()
-        .map(PathBuf::from)
+        .filter_map(|candidate| resolve_manifest_artifact_path(&manifest_path, &candidate))
         .find(|path| path.is_file())
+}
+
+fn resolve_manifest_artifact_path(manifest_path: &Path, artifact_candidate: &str) -> Option<PathBuf> {
+    let artifact_path = PathBuf::from(artifact_candidate);
+    if artifact_path.is_absolute() {
+        return Some(artifact_path);
+    }
+
+    manifest_path.parent().map(|parent| parent.join(artifact_path))
 }
 
 fn resolve_workspace_daemon_executable(workspace_root: Option<&Path>) -> Option<PathBuf> {
