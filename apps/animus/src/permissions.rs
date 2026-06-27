@@ -269,12 +269,14 @@ enum ShellQuote {
 fn is_dangerous_shell_segment(segment: &str) -> bool {
     let segment = segment.trim_start();
     let tokens = segment.split_whitespace().collect::<Vec<_>>();
-    let Some(command) = tokens.first().copied() else {
+    let Some((base_command, rest)) = resolve_command_token(&tokens) else {
         return false;
     };
 
+    let command = base_command;
+    let command = normalize_command_token(command);
     matches!(command, "rm" | "rmdir" | "sudo" | "chmod" | "chown")
-        || is_dangerous_git_command(&tokens)
+        || is_dangerous_git_command(rest)
         || (command == "remove-item" && tokens.iter().any(|token| *token == "-recurse"))
 }
 
@@ -307,6 +309,60 @@ fn is_dangerous_git_command(tokens: &[&str]) -> bool {
     tokens
         .get(index)
         .is_some_and(|token| matches!(*token, "reset" | "push" | "rebase"))
+}
+
+fn resolve_command_token(tokens: &[&str]) -> Option<(&str, &[&str])> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if is_env_assignment_token(token) {
+            index += 1;
+            continue;
+        }
+
+        if token != "env" {
+            return Some((token, &tokens[index..]));
+        }
+
+        index += 1;
+        while index < tokens.len() {
+            let token = tokens[index];
+            if token.starts_with('-') || is_env_assignment_token(token) {
+                index += 1;
+                continue;
+            }
+
+            return Some((token, &tokens[index..]));
+        }
+
+        break;
+    }
+
+    None
+}
+
+fn is_env_assignment_token(token: &str) -> bool {
+    let mut parts = token.splitn(2, '=');
+    let key = parts.next().unwrap_or_default();
+    let value = parts.next();
+
+    if key.is_empty() || value.is_none() {
+        return false;
+    }
+
+    key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn normalize_command_token(command: &str) -> &str {
+    let command = command.trim();
+    command
+        .rsplit_once(['/', '\\'])
+        .map(|(_, command)| command)
+        .unwrap_or(command)
 }
 
 #[cfg(test)]
@@ -397,6 +453,20 @@ mod tests {
         ));
         assert!(matches!(
             allow.check_shell("Write-Output ok; Remove-Item -Recurse src"),
+            PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn shell_policy_denies_dangerous_commands_with_normalization() {
+        let workspace = test_workspace();
+        let policy = PermissionPolicy::workspace_write(workspace)
+            .with_shell_mode(ShellPermissionMode::Allow);
+
+        assert!(matches!(policy.check_shell("FOO=1 rm -rf src"), PermissionDecision::Deny { .. }));
+        assert!(matches!(policy.check_shell("/bin/rm -rf src"), PermissionDecision::Deny { .. }));
+        assert!(matches!(
+            policy.check_shell("env git push origin main"),
             PermissionDecision::Deny { .. }
         ));
     }
