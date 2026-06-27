@@ -326,6 +326,7 @@ fn resolve_runtime_data_env_overrides(runtime_working_dir: Option<&Path>) -> Vec
         .clone()
         .unwrap_or_else(|| daemon_data_dir().join("runtime"));
     let _ = fs::create_dir_all(&runtime_data_dir);
+    let uv_project_environment = runtime_data_dir.join(".venv");
 
     let mut env = Vec::new();
     if explicit_data_dir.is_none() {
@@ -341,6 +342,15 @@ fn resolve_runtime_data_env_overrides(runtime_working_dir: Option<&Path>) -> Vec
             sqlite_database_url(&runtime_data_dir.join("anima.db")),
         ));
     }
+
+    env.push((
+        "UV_PROJECT_ENVIRONMENT".to_string(),
+        uv_project_environment.to_string_lossy().to_string(),
+    ));
+    env.push((
+        "VIRTUAL_ENV".to_string(),
+        uv_project_environment.to_string_lossy().to_string(),
+    ));
 
     env
 }
