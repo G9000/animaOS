@@ -292,6 +292,7 @@ struct DaemonRuntimeNonceResponse {
 }
 
 #[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DaemonControlRequest {
     #[serde(default)]
     background_enabled: Option<bool>,
@@ -585,7 +586,7 @@ async fn main() {
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
         .route("/v1/nonce", get(runtime_nonce))
-        .route("/v1/control/:command", post(control))
+        .route("/v1/control/{command}", post(control))
         .route("/v1/logs", get(open_logs))
         .with_state(runtime.clone())
         .layer(cors_layer);
