@@ -91,7 +91,7 @@ impl PermissionPolicy {
         } else {
             self.workspace.join(path)
         };
-        let resolved = resolve_for_containment(joined);
+        let resolved = resolve_for_containment(joined)?;
         if resolved.starts_with(&self.workspace) {
             Ok(resolved)
         } else {
@@ -155,19 +155,25 @@ fn workspace_root(workspace: PathBuf) -> PathBuf {
         .unwrap_or_else(|_| normalize_path(absolute))
 }
 
-fn resolve_for_containment(path: PathBuf) -> PathBuf {
+fn resolve_for_containment(path: PathBuf) -> Result<PathBuf, String> {
     let normalized = normalize_path(path);
     if normalized.exists() {
-        return fs::canonicalize(&normalized)
+        return Ok(fs::canonicalize(&normalized)
             .map(normalize_path)
-            .unwrap_or(normalized);
+            .unwrap_or(normalized));
     }
 
     let mut existing = normalized.as_path();
     let mut missing = Vec::new();
     while !existing.exists() {
+        if fs::symlink_metadata(existing)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(format!("path {} is a dangling symlink", existing.display()));
+        }
         let Some(parent) = existing.parent() else {
-            return normalized;
+            return Ok(normalized);
         };
         if let Some(name) = existing.file_name() {
             missing.push(name.to_owned());
@@ -181,7 +187,7 @@ fn resolve_for_containment(path: PathBuf) -> PathBuf {
     for part in missing.iter().rev() {
         resolved.push(part);
     }
-    normalize_path(resolved)
+    Ok(normalize_path(resolved))
 }
 
 fn normalize_path(path: PathBuf) -> PathBuf {
@@ -354,5 +360,71 @@ mod tests {
             policy.check_file_write(outside),
             PermissionDecision::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn workspace_write_denies_dangling_symlink_to_outside_target() {
+        let workspace = test_workspace();
+        let outside = workspace
+            .parent()
+            .unwrap()
+            .join(format!("outside-{}.txt", uuid::Uuid::new_v4()));
+        let link = workspace.join("link.txt");
+        if let Err(err) = create_file_symlink(&outside, &link) {
+            eprintln!("skipping symlink test because symlink creation failed: {err}");
+            return;
+        }
+        let policy = PermissionPolicy::workspace_write(workspace.clone());
+
+        assert!(!outside.exists());
+        assert!(matches!(
+            policy.check_file_write(link),
+            PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        if std::os::windows::fs::symlink_file(target, link).is_ok() {
+            return Ok(());
+        }
+        create_wsl_file_symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_wsl_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        use std::process::Command;
+
+        fn wsl_path(path: &Path) -> std::io::Result<String> {
+            let output = Command::new("wsl.exe")
+                .arg("wslpath")
+                .arg("-a")
+                .arg(path.to_string_lossy().replace('\\', "/"))
+                .output()?;
+            if !output.status.success() {
+                return Err(std::io::Error::other("wslpath failed"));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+
+        let target = wsl_path(target)?;
+        let link = wsl_path(link)?;
+        let output = Command::new("wsl.exe")
+            .arg("-e")
+            .arg("ln")
+            .arg("-s")
+            .arg(target)
+            .arg(link)
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("wsl ln failed"))
+        }
     }
 }
