@@ -34,6 +34,7 @@ const desktopTauriDir = join(projectRoot, desktopPackage, "src-tauri");
 const desktopReleaseEnvPath = join(projectRoot, desktopPackage, ".env.production.local");
 const workspacePyprojectPath = join(projectRoot, "pyproject.toml");
 const workspaceLockPath = join(projectRoot, "uv.lock");
+const workspaceCargoLockPath = join(projectRoot, "Cargo.lock");
 const runtimeDir = join(projectRoot, "apps/server");
 const runtimeEntrypoint = join(runtimeDir, "src", "anima_server", "main.py");
 const animaCoreDir = join(projectRoot, "packages", "anima-core");
@@ -48,6 +49,8 @@ const bundledRuntimeDir = join(bundledResourcesDir, "apps", "server");
 const bundledRuntimeEntrypoint = join(bundledRuntimeDir, "src", "anima_server", "main.py");
 const bundledWorkspacePyprojectPath = join(bundledResourcesDir, "pyproject.toml");
 const bundledWorkspaceLockPath = join(bundledResourcesDir, "uv.lock");
+const bundledWorkspaceCargoManifestPath = join(bundledResourcesDir, "Cargo.toml");
+const bundledWorkspaceCargoLockPath = join(bundledResourcesDir, "Cargo.lock");
 const bundledAnimaCoreDir = join(bundledResourcesDir, "packages", "anima-core");
 const bundledRuntimeArtifactDir = join(bundledResourcesDir, "runtime-artifacts");
 
@@ -257,6 +260,12 @@ function stageRuntimeProject(destinationRoot: string): void {
     copyFileSync(workspaceLockPath, bundledWorkspaceLockPath);
   } else {
     rmSync(bundledWorkspaceLockPath, { force: true });
+  }
+  copyFileSync(cargoWorkspaceManifestPath, bundledWorkspaceCargoManifestPath);
+  if (existsSync(workspaceCargoLockPath)) {
+    copyFileSync(workspaceCargoLockPath, bundledWorkspaceCargoLockPath);
+  } else {
+    rmSync(bundledWorkspaceCargoLockPath, { force: true });
   }
 }
 
