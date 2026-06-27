@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from anima_server.db.session import get_user_session_factory
 from anima_server.db.user_store import authenticate_account
-from anima_server.models.runtime import RuntimeRun
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun
 from anima_server.models.user import User
 from anima_server.services.agent.client_actions import (
     ActionToolConnection as ClientConnection,
@@ -126,6 +126,8 @@ async def ws_agent(websocket: WebSocket) -> None:
             "user": {"id": conn.user_id, "username": conn.username},
         }
     )
+    for frame in _pending_approval_frames(conn.user_id):
+        await websocket.send_json(frame)
 
     logger.info("WebSocket client connected: user_id=%d", conn.user_id)
 
@@ -221,6 +223,60 @@ def _has_awaiting_approval_run(user_id: int) -> bool:
         )
     finally:
         runtime_db.close()
+
+
+def _pending_approval_frames(user_id: int) -> list[dict[str, Any]]:
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.services.agent.persistence import cancel_run
+
+    runtime_db = get_runtime_session_factory()()
+    cleared_unresumable = False
+    try:
+        runs = runtime_db.scalars(
+            select(RuntimeRun)
+            .where(
+                RuntimeRun.user_id == user_id,
+                RuntimeRun.status == "awaiting_approval",
+            )
+            .order_by(RuntimeRun.started_at, RuntimeRun.id)
+        ).all()
+
+        frames: list[dict[str, Any]] = []
+        for run in runs:
+            approval_msg = None
+            if run.pending_approval_message_id is not None:
+                approval_msg = runtime_db.get(
+                    RuntimeMessage,
+                    run.pending_approval_message_id,
+                )
+
+            if approval_msg is None:
+                cancel_run(runtime_db, run.id)
+                cleared_unresumable = True
+                continue
+
+            frames.append(_approval_required_frame(run, approval_msg))
+
+        if cleared_unresumable:
+            runtime_db.commit()
+
+        return frames
+    finally:
+        runtime_db.close()
+
+
+def _approval_required_frame(
+    run: RuntimeRun,
+    approval_msg: RuntimeMessage,
+) -> dict[str, Any]:
+    tool_args = approval_msg.tool_args_json
+    return {
+        "type": "approval_required",
+        "run_id": run.id,
+        "tool_call_id": approval_msg.tool_call_id or "",
+        "tool_name": approval_msg.tool_name or "",
+        "args": tool_args if isinstance(tool_args, dict) else {},
+    }
 
 
 async def _handle_user_message(conn: ClientConnection, data: dict) -> None:

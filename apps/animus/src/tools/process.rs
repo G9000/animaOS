@@ -10,6 +10,7 @@ use tokio::process::Child;
 
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::tools::redaction::redact_text;
+use crate::tools::secrets::substitute_saved_secrets;
 use crate::tools::shell::shell_command;
 use crate::tools::ToolOutput;
 
@@ -46,14 +47,15 @@ impl ProcessRegistry {
         let Some(command) = args.get("command").and_then(Value::as_str) else {
             return ToolOutput::error("bg_start requires command");
         };
-        match policy.check_shell(command) {
+        let command = substitute_saved_secrets(command);
+        match policy.check_shell(&command) {
             PermissionDecision::Allow => {}
             PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
                 return ToolOutput::error(reason);
             }
         }
 
-        let mut child_command = shell_command(command);
+        let mut child_command = shell_command(&command);
         child_command
             .current_dir(policy.workspace())
             .stdout(Stdio::piped())
@@ -225,6 +227,12 @@ mod tests {
     use super::*;
     use crate::permissions::{PermissionPolicy, ShellPermissionMode};
 
+    fn install_saved_secret_placeholders() {
+        let path = std::env::temp_dir().join("animus-saved-secret-substitution.json");
+        std::fs::write(&path, r#"{"ANIMUS_TEST_TOKEN":"saved-secret-value"}"#).unwrap();
+        std::env::set_var("ANIMUS_SECRETS_PATH", path);
+    }
+
     #[tokio::test]
     async fn background_process_registry_starts_lists_outputs_and_stops() {
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
@@ -253,6 +261,39 @@ mod tests {
 
         assert!(registry.list().content.contains(&id));
         assert!(output.contains("bg-ready"));
+        assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn background_process_substitutes_saved_secrets_before_spawning() {
+        install_saved_secret_placeholders();
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let mut registry = ProcessRegistry::default();
+        let command = if cfg!(windows) {
+            "Write-Output '$ANIMUS_TEST_TOKEN'"
+        } else {
+            "printf '%s\\n' '$ANIMUS_TEST_TOKEN'"
+        };
+
+        let start = registry.start(&json!({"command": command}), &policy).await;
+        assert!(!start.is_error);
+        let id = start.content.trim().to_string();
+
+        let mut output = String::new();
+        for _ in 0..20 {
+            output = registry
+                .output(&json!({"id": id.clone(), "all": true}))
+                .content;
+            if output.contains("[redacted]") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert!(output.contains("[redacted]"));
+        assert!(!output.contains("$ANIMUS_TEST_TOKEN"));
+        assert!(!output.contains("saved-secret-value"));
         assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
     }
 

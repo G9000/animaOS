@@ -3,6 +3,7 @@
 pub mod files;
 pub mod process;
 pub mod redaction;
+pub mod secrets;
 pub mod shell;
 
 use serde_json::{json, Value};

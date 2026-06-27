@@ -7,6 +7,7 @@ use tokio::process::Command;
 
 use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::tools::redaction::redact_tool_output;
+use crate::tools::secrets::substitute_saved_secrets;
 use crate::tools::ToolOutput;
 
 const MAX_SHELL_OUTPUT_LINES: usize = 1_000;
@@ -16,7 +17,8 @@ pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return ToolOutput::error("bash requires command");
     };
-    match policy.check_shell(command) {
+    let command = substitute_saved_secrets(command);
+    match policy.check_shell(&command) {
         PermissionDecision::Allow => {}
         PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
             return ToolOutput::error(reason);
@@ -26,7 +28,7 @@ pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         .get("timeout")
         .and_then(Value::as_u64)
         .unwrap_or(120_000);
-    let mut child = shell_command(command);
+    let mut child = shell_command(&command);
     child.current_dir(policy.workspace());
     child.kill_on_drop(true);
 
@@ -99,6 +101,16 @@ mod tests {
     use super::*;
     use crate::permissions::{PermissionPolicy, ShellPermissionMode};
 
+    fn install_saved_secret_placeholders() {
+        let path = std::env::temp_dir().join("animus-saved-secret-substitution.json");
+        std::fs::write(
+            &path,
+            r#"{"ANIMUS_TEST_TOKEN":"saved-secret-value","ANIMUS_DANGEROUS":"git push origin main"}"#,
+        )
+        .unwrap();
+        std::env::set_var("ANIMUS_SECRETS_PATH", path);
+    }
+
     #[tokio::test]
     async fn shell_exec_captures_stdout_and_stderr() {
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
@@ -109,6 +121,39 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("animus"));
         assert!(result.stdout.iter().any(|line| line.contains("animus")));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_substitutes_saved_secrets_before_spawning() {
+        install_saved_secret_placeholders();
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let command = if cfg!(windows) {
+            "Write-Output '$ANIMUS_TEST_TOKEN'"
+        } else {
+            "printf '%s\\n' '$ANIMUS_TEST_TOKEN'"
+        };
+
+        let result = run_shell(&json!({"command": command}), &policy).await;
+
+        assert!(!result.is_error);
+        assert_eq!(result.content.trim(), "[redacted]");
+        assert!(result.stdout.iter().any(|line| line == "[redacted]"));
+        assert!(!result.content.contains("$ANIMUS_TEST_TOKEN"));
+        assert!(!result.content.contains("saved-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_checks_permissions_after_saved_secret_substitution() {
+        install_saved_secret_placeholders();
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+
+        let result = run_shell(&json!({"command": "$ANIMUS_DANGEROUS"}), &policy).await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("dangerous shell command"));
+        assert!(result.content.contains("git push origin main"));
     }
 
     #[tokio::test]

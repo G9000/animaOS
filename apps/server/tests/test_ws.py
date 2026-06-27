@@ -125,6 +125,14 @@ class _QueueWebSocket(_FakeWebSocket):
         return message
 
 
+class _FakeScalarResult:
+    def __init__(self, values: list[Any]) -> None:
+        self._values = values
+
+    def all(self) -> list[Any]:
+        return self._values
+
+
 class _FakeDb:
     def __init__(self, run: Any | None = None) -> None:
         self.run = run
@@ -139,6 +147,12 @@ class _FakeDb:
             return int(self.run.id)
         return None
 
+    def scalars(self, statement: object) -> _FakeScalarResult:
+        del statement
+        if self.run is not None and self.run.status == "awaiting_approval":
+            return _FakeScalarResult([self.run])
+        return _FakeScalarResult([])
+
     def close(self) -> None:
         self.closed = True
 
@@ -150,10 +164,12 @@ class _FakeRun:
         run_id: int,
         user_id: int,
         status: str = "awaiting_approval",
+        pending_approval_message_id: int | None = None,
     ) -> None:
         self.id = run_id
         self.user_id = user_id
         self.status = status
+        self.pending_approval_message_id = pending_approval_message_id
 
 
 class TestWebSocketFrameTranslation:
@@ -227,6 +243,51 @@ class TestWebSocketFrameTranslation:
 
 
 class TestWebSocketRunHandlers:
+    @pytest.mark.asyncio
+    async def test_ws_agent_replays_pending_approval_after_auth(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_ws = _QueueWebSocket()
+        pending_frame = {
+            "type": "approval_required",
+            "run_id": 42,
+            "tool_call_id": "call-1",
+            "tool_name": "bash",
+            "args": {"command": "git status"},
+        }
+
+        async def fake_authenticate(websocket: Any) -> ActionToolConnection:
+            return ActionToolConnection(websocket=websocket, user_id=5, username="alice")
+
+        monkeypatch.setattr(ws_route, "_authenticate", fake_authenticate)
+        monkeypatch.setattr(
+            ws_route,
+            "_pending_approval_frames",
+            lambda user_id: [pending_frame] if user_id == 5 else [],
+        )
+
+        task = asyncio.create_task(ws_route.ws_agent(fake_ws))  # type: ignore[arg-type]
+        try:
+            for _ in range(20):
+                if len(fake_ws.sent) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await fake_ws.incoming.put(None)
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                await task
+
+        assert fake_ws.sent[:2] == [
+            {
+                "type": "auth_ok",
+                "user": {"id": 5, "username": "alice"},
+            },
+            pending_frame,
+        ]
+
     @pytest.mark.asyncio
     async def test_ws_agent_processes_cancel_while_approval_resume_streams(
         self,

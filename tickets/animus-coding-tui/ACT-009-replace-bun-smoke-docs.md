@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 22:14 MYT
+- Updated: 2026-06-27 22:42 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -51,6 +51,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 21:09 MYT - Addressed the ninth Codex review round: websocket user messages are blocked while a run awaits approval, and terminal agent errors clear active Animus run state.
 - 2026-06-27 21:44 MYT - Addressed the tenth Codex review round: approval-pause `turn_complete` frames preserve the active run id, and `bg_output` now returns unread output by default with explicit `all` support.
 - 2026-06-27 22:14 MYT - Addressed the eleventh Codex review round: explicit username/password auth now overrides stale unlock tokens, and background processes report `exited(code)` from `bg_output` and `bg_list`.
+- 2026-06-27 22:42 MYT - Addressed the twelfth Codex review round: websocket reconnects now replay pending approval frames and clear unresumable approval rows, and delegated `bash`/`bg_start` commands substitute saved Animus secrets before permission checks and spawn.
 
 ## Validation
 
@@ -159,6 +160,20 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run build` - passed after eleventh review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after eleventh review fixes: 1649 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":true}`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_ws.py::TestWebSocketRunHandlers::test_ws_agent_replays_pending_approval_after_auth` - failed before the websocket replay hook with missing `_pending_approval_frames`, passed after the fix
+  - `cargo test -p animus shell_exec_substitutes_saved_secrets_before_spawning` - failed before saved-secret substitution by returning literal `$ANIMUS_TEST_TOKEN`, passed after the fix
+  - `cargo test -p animus shell_exec_checks_permissions_after_saved_secret_substitution` - failed before saved-secret substitution by allowing the placeholder, passed after the fix
+  - `cargo test -p animus background_process_substitutes_saved_secrets_before_spawning` - failed before `bg_start` substitution by returning literal placeholder output, passed after the fix
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_ws.py` - passed after twelfth review fixes: 12 passed
+  - `cargo fmt -p animus` - completed after twelfth review fixes
+  - `cargo test -p animus` - passed after twelfth review fixes: 88 passed
+  - `git diff --check` - passed after twelfth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after twelfth review fixes
+  - `bun run test:animus` - passed after twelfth review fixes: 88 passed
+  - `bun run lint` - failed once on a test double forward-reference style issue, then passed after fixing it
+  - `bun run build` - passed after twelfth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after twelfth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3131/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; port 3031 was already in use
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -176,6 +191,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - apps/animus/src/tools/mod.rs
   - apps/animus/src/tools/process.rs
   - apps/animus/src/tools/redaction.rs
+  - apps/animus/src/tools/secrets.rs
   - apps/animus/src/tools/shell.rs
   - apps/animus/src/tui.rs
   - apps/server/src/anima_server/api/routes/ws.py
@@ -209,5 +225,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Ninth review fixes prevent overlapping turns while a run remains `awaiting_approval`, and clear active Animus run ids when an `AGENT_ERROR` frame terminates a run.
   - Tenth review fixes preserve cancellation during approval resume streams and make repeated `bg_output` polling incremental unless `all` is explicitly requested.
   - Eleventh review fixes keep stale unlock-session tokens from shadowing explicit password login, and surface background process exit codes after output has already been consumed.
+  - Twelfth review fixes replay persisted approval prompts to reconnecting websocket clients, clean up malformed awaiting-approval rows, and restore saved-secret substitution for delegated shell-like tools before permission checks and execution.
   - No database schema changes; Alembic was not run.
 

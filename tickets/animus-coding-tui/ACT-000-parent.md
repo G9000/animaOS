@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 22:14 MYT
+- Updated: 2026-06-27 22:42 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -95,6 +95,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 21:09 MYT - Ninth Codex review round was fixed and revalidated.
 - 2026-06-27 21:44 MYT - Tenth Codex review round was fixed and revalidated.
 - 2026-06-27 22:14 MYT - Eleventh Codex review round was fixed and revalidated.
+- 2026-06-27 22:42 MYT - Twelfth Codex review round was fixed and revalidated.
 
 ## Validation
 
@@ -200,6 +201,19 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run build` - passed after eleventh review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after eleventh review fixes: 1649 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_ws.py::TestWebSocketRunHandlers::test_ws_agent_replays_pending_approval_after_auth` - failed before the websocket replay hook, passed after the fix
+  - `cargo test -p animus shell_exec_substitutes_saved_secrets_before_spawning` - failed before saved-secret substitution, passed after the fix
+  - `cargo test -p animus shell_exec_checks_permissions_after_saved_secret_substitution` - failed before permission checks saw substituted commands, passed after the fix
+  - `cargo test -p animus background_process_substitutes_saved_secrets_before_spawning` - failed before background shell substitution, passed after the fix
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_ws.py` - passed after twelfth review fixes: 12 passed
+  - `cargo test -p animus` - passed after twelfth review fixes: 88 passed
+  - `git diff --check` - passed after twelfth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after twelfth review fixes
+  - `bun run test:animus` - passed after twelfth review fixes: 88 passed
+  - `bun run lint` - passed after twelfth review fixes for server and desktop
+  - `bun run build` - passed after twelfth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after twelfth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3131/health` - HTTP 200; port 3031 was already in use
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
