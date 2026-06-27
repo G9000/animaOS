@@ -12,7 +12,7 @@ use std::{
     env,
     fmt::Display,
     fs::{self, OpenOptions},
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     path::{Path as FsPath, PathBuf},
     process::{ExitStatus, Stdio},
     str::FromStr,
@@ -757,6 +757,9 @@ fn authorize_control(
 async fn start_runtime(runtime: &DaemonRuntime, from_restart: bool) -> Result<String, String> {
     {
         let mut state = runtime.state.inner.lock().await;
+        if state.status == DaemonState::Stopping {
+            return Err("Runtime is stopping; wait for shutdown before starting".to_string());
+        }
         if state.policy.locked {
             return Err("Runtime is locked; unlock before starting".to_string());
         }
@@ -1310,7 +1313,23 @@ fn write_state_file(path: &FsPath, value: &str) -> std::io::Result<()> {
         let _ = fs::create_dir_all(parent);
     }
 
-    fs::write(path, value)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(value.as_bytes())
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(path, value)
+    }
 }
 
 fn rotate_log_if_needed(path: &FsPath, max_bytes: u64) {

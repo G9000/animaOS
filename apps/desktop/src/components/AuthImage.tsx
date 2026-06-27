@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getRuntimeAuthHeaders } from "../lib/api";
+import { fetchRuntimeWithNonceRefresh, getRuntimeAuthHeaders } from "../lib/api";
 import { API_ORIGIN } from "../lib/runtime";
 
 interface AuthImageProps {
@@ -23,7 +23,7 @@ export function AuthImage({ src, alt, className }: AuthImageProps) {
     const fullUrl = src.startsWith("http") ? src : `${API_ORIGIN}${src}`;
     const headers = getRuntimeAuthHeaders();
 
-    fetch(fullUrl, { headers })
+    fetchRuntimeWithNonceRefresh(fullUrl, { headers })
       .then((r) => (r.ok ? r.blob() : null))
       .then((blob) => {
         if (cancelled || !blob) return;

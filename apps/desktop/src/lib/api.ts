@@ -1,6 +1,6 @@
 import { createApiClient, type ApiClient } from "@anima/api-client";
 import { API_BASE } from "./runtime";
-import { getRuntimeNonce } from "./daemon";
+import { getRuntimeNonce, refreshDaemonRuntimeNonce } from "./daemon";
 
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
 let unlockTokenCache: string | null = null;
@@ -39,6 +39,72 @@ function getRuntimeNonceSafely(): string | null {
   return getRuntimeNonce();
 }
 
+function extractRuntimeErrorMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return typeof payload === "string" ? payload : null;
+  }
+
+  const candidate = payload as {
+    error?: unknown;
+    message?: unknown;
+    detail?: unknown;
+  };
+  for (const value of [candidate.error, candidate.message, candidate.detail]) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function isInvalidSidecarNonceResponse(payload: unknown): boolean {
+  const message = extractRuntimeErrorMessage(payload)?.toLowerCase() ?? "";
+  return message.includes("sidecar nonce");
+}
+
+function setRuntimeNonceHeader(headers: Headers, nonce: string | null): void {
+  if (nonce) {
+    headers.set("x-anima-nonce", nonce);
+  } else {
+    headers.delete("x-anima-nonce");
+  }
+}
+
+export async function fetchRuntimeWithNonceRefresh(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  allowRetry = true,
+): Promise<Response> {
+  const response = await fetch(input, init);
+  if (!allowRetry || response.status !== 403) {
+    return response;
+  }
+
+  let payload: unknown = null;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    try {
+      payload = await response.clone().text();
+    } catch {
+      payload = null;
+    }
+  }
+
+  if (!isInvalidSidecarNonceResponse(payload)) {
+    return response;
+  }
+
+  const refreshedNonce = await refreshDaemonRuntimeNonce().catch(() => null);
+  if (!refreshedNonce) {
+    return response;
+  }
+
+  const headers = new Headers(init.headers ?? {});
+  setRuntimeNonceHeader(headers, refreshedNonce);
+  return fetchRuntimeWithNonceRefresh(input, { ...init, headers }, false);
+}
+
 export function getRuntimeAuthHeaders(): HeadersInit {
   const headers: HeadersInit = {};
 
@@ -59,6 +125,7 @@ const baseApi = createApiClient({
   baseUrl: API_BASE,
   getUnlockToken,
   getNonce: getRuntimeNonceSafely,
+  fetchImpl: fetchRuntimeWithNonceRefresh,
 });
 
 export const api: ApiClient & {
