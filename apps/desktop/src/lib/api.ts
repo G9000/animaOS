@@ -39,6 +39,22 @@ function getRuntimeNonceSafely(): string | null {
   return getRuntimeNonce();
 }
 
+export function getRuntimeAuthHeaders(): HeadersInit {
+  const headers: HeadersInit = {};
+
+  const unlockToken = getUnlockToken();
+  if (unlockToken) {
+    headers["x-anima-unlock"] = unlockToken;
+  }
+
+  const runtimeNonce = getRuntimeNonce();
+  if (runtimeNonce) {
+    headers["x-anima-nonce"] = runtimeNonce;
+  }
+
+  return headers;
+}
+
 const baseApi = createApiClient({
   baseUrl: API_BASE,
   getUnlockToken,

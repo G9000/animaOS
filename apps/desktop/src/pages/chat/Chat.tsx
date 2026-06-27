@@ -12,9 +12,8 @@ import type {
   Thread,
   TraceEvent,
 } from "@anima/api-client";
-import { api } from "../../lib/api";
+import { api, getRuntimeAuthHeaders } from "../../lib/api";
 import { API_BASE, API_ORIGIN } from "../../lib/runtime";
-import { getUnlockToken } from "../../lib/api";
 import {
   loadTodayContext,
   saveTodayContext,
@@ -282,9 +281,9 @@ function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
 
     let revokedUrl: string | null = null;
     let cancelled = false;
-    const token = getUnlockToken();
+    const headers = getRuntimeAuthHeaders();
     fetch(attachmentFetchUrl(attachment.url), {
-      headers: token ? { "x-anima-unlock": token } : {},
+      headers,
     })
       .then(async (response) => {
         if (!response.ok) throw new Error("missing");

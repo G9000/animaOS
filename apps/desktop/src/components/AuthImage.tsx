@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getUnlockToken } from "../lib/api";
+import { getRuntimeAuthHeaders } from "../lib/api";
 import { API_ORIGIN } from "../lib/runtime";
 
 interface AuthImageProps {
@@ -21,8 +21,7 @@ export function AuthImage({ src, alt, className }: AuthImageProps) {
 
     let cancelled = false;
     const fullUrl = src.startsWith("http") ? src : `${API_ORIGIN}${src}`;
-    const token = getUnlockToken();
-    const headers: HeadersInit = token ? { "x-anima-unlock": token } : {};
+    const headers = getRuntimeAuthHeaders();
 
     fetch(fullUrl, { headers })
       .then((r) => (r.ok ? r.blob() : null))
