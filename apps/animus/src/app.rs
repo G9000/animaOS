@@ -3,6 +3,7 @@
 use crate::approvals::{ApprovalDecision, ApprovalOutcome, ApprovalState, PendingApproval};
 use crate::commands::{CommandEffect, CommandInvocation, SlashCommand};
 use crate::config::{AnimusConfig, DEFAULT_SERVER_URL};
+use crate::permissions::PermissionPolicy;
 use crate::protocol::ServerFrame;
 use crate::spawns::SpawnState;
 use crate::transcript::{append_assistant_token, finish_streaming_assistant, TranscriptItem};
@@ -260,6 +261,12 @@ impl AppState {
             SlashCommand::Reconnect => CommandEffect::Reconnect,
             SlashCommand::Permissions => {
                 if !invocation.args.is_empty() {
+                    if !PermissionPolicy::is_supported_mode(&invocation.args) {
+                        self.transcript.push(TranscriptItem::Notice {
+                            message: format!("unsupported permission mode: {}", invocation.args),
+                        });
+                        return CommandEffect::None;
+                    }
                     self.permission_mode = invocation.args.clone();
                 }
                 CommandEffect::SetPermissions(self.permission_mode.clone())

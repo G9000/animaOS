@@ -134,6 +134,9 @@ pub fn grep(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     };
     let mut matches = Vec::new();
     for file in walk_files(&path) {
+        if !matches!(policy.check_file_read(&file), PermissionDecision::Allow) {
+            continue;
+        }
         let Ok(raw) = fs::read_to_string(&file) else {
             continue;
         };
@@ -162,6 +165,7 @@ pub fn glob(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     };
     let mut matches = walk_files(&path)
         .into_iter()
+        .filter(|file| matches!(policy.check_file_read(file), PermissionDecision::Allow))
         .filter(|file| matches_simple_glob(file, pattern))
         .map(|file| display_workspace_path(policy, &file))
         .collect::<Vec<_>>();
@@ -208,6 +212,12 @@ fn number_arg(args: &Value, key: &str) -> Option<usize> {
 
 fn walk_files(path: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
+    if fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return files;
+    }
     if path.is_file() {
         files.push(path.to_path_buf());
         return files;

@@ -24,6 +24,7 @@ pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         .unwrap_or(120_000);
     let mut child = shell_command(command);
     child.current_dir(policy.workspace());
+    child.kill_on_drop(true);
 
     let run = child.output();
     let output = match tokio::time::timeout(Duration::from_millis(timeout_ms), run).await {
@@ -107,5 +108,28 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn shell_timeout_kills_process_before_late_side_effects() {
+        let root = std::env::temp_dir().join(format!("animus-shell-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("late-marker.txt");
+        let policy = PermissionPolicy::workspace_write(root.clone())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let command = if cfg!(windows) {
+            format!(
+                "Start-Sleep -Milliseconds 250; Set-Content -LiteralPath '{}' -Value done",
+                marker.display()
+            )
+        } else {
+            format!("sleep 0.25; touch '{}'", marker.display())
+        };
+
+        let result = run_shell(&json!({"command": command, "timeout": 10}), &policy).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert!(result.is_error);
+        assert!(!marker.exists());
     }
 }

@@ -103,6 +103,10 @@ impl ToolExecutor {
         }
     }
 
+    pub fn set_policy(&mut self, policy: PermissionPolicy) {
+        self.policy = policy;
+    }
+
     pub async fn execute_frame(&mut self, frame: &ServerFrame) -> Option<ClientFrame> {
         match frame {
             ServerFrame::ToolExecute {

@@ -4,9 +4,6 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
-from conftest import managed_test_client
-from fastapi.testclient import TestClient
-
 from anima_server.api.routes import ws as ws_route
 from anima_server.services.agent.client_actions import ActionToolConnection
 from anima_server.services.agent.runtime_types import ToolExecutionResult
@@ -20,6 +17,8 @@ from anima_server.services.agent.streaming import (
     build_run_started_event,
     build_tool_return_event,
 )
+from conftest import managed_test_client
+from fastapi.testclient import TestClient
 
 
 def _register_user(

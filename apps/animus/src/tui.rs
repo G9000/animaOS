@@ -20,7 +20,8 @@ use crate::app::{AppEvent, AppState, ConnectionState};
 use crate::approvals::ApprovalDecision;
 use crate::client::{reconnect_delay, AnimaWsClient};
 use crate::commands::{parse_command, CommandEffect};
-use crate::permissions::{PermissionPolicy, ShellPermissionMode};
+use crate::input::InputBuffer;
+use crate::permissions::PermissionPolicy;
 use crate::protocol::{AuthUser, ClientFrame, ServerFrame};
 use crate::tools::{action_tool_schemas, ToolExecutor};
 
@@ -34,6 +35,7 @@ pub struct TerminalSession {
 pub enum OutboundMessage {
     Frame(ClientFrame),
     Reconnect,
+    SetPermissions(String),
 }
 
 #[derive(Debug)]
@@ -68,10 +70,10 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
     let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
     let config = app.config.clone();
     let websocket_task = tokio::spawn(websocket_driver(config, ws_tx, outbound_rx));
-    let mut tool_executor = ToolExecutor::new(
-        PermissionPolicy::workspace_write(app.config.workspace.clone())
-            .with_shell_mode(ShellPermissionMode::Ask),
-    );
+    let mut tool_executor = ToolExecutor::new(PermissionPolicy::workspace_write(
+        app.config.workspace.clone(),
+    ));
+    let mut input = InputBuffer::default();
 
     loop {
         while let Ok(event) = ws_rx.try_recv() {
@@ -82,8 +84,8 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                for outgoing in handle_key(&mut app, key) {
-                    let _ = outbound_tx.send(outgoing);
+                for outgoing in handle_key(&mut app, &mut input, key) {
+                    handle_outbound_message(&mut app, &mut tool_executor, &outbound_tx, outgoing);
                 }
             }
         }
@@ -96,6 +98,33 @@ pub async fn run_tui(mut app: AppState) -> Result<()> {
     drop(outbound_tx);
     websocket_task.abort();
     Ok(())
+}
+
+fn handle_outbound_message(
+    app: &mut AppState,
+    tool_executor: &mut ToolExecutor,
+    outbound_tx: &mpsc::UnboundedSender<OutboundMessage>,
+    outgoing: OutboundMessage,
+) {
+    match outgoing {
+        OutboundMessage::Frame(frame) => {
+            let _ = outbound_tx.send(OutboundMessage::Frame(frame));
+        }
+        OutboundMessage::Reconnect => {
+            let _ = outbound_tx.send(OutboundMessage::Reconnect);
+        }
+        OutboundMessage::SetPermissions(mode) => {
+            match PermissionPolicy::from_mode(app.config.workspace.clone(), &mode) {
+                Ok(policy) => {
+                    tool_executor.set_policy(policy);
+                    app.apply(AppEvent::Notice(format!("permission mode: {mode}")));
+                }
+                Err(message) => {
+                    app.apply(AppEvent::Notice(message));
+                }
+            }
+        }
+    }
 }
 
 async fn websocket_driver(
@@ -137,6 +166,7 @@ async fn websocket_driver(
                                     let _ = ui_tx.send(WsEvent::Disconnected("reconnecting to ANIMA".to_string()));
                                     break;
                                 }
+                                Some(OutboundMessage::SetPermissions(_)) => {}
                                 None => return,
                             }
                         }
@@ -175,6 +205,7 @@ async fn websocket_driver(
                     Some(OutboundMessage::Frame(_)) => {
                         let _ = ui_tx.send(WsEvent::Disconnected("not connected; outbound frame dropped".to_string()));
                     }
+                    Some(OutboundMessage::SetPermissions(_)) => {}
                     None => return,
                 }
             }
@@ -212,7 +243,10 @@ async fn handle_ws_event(
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(bottom_pane_height(app)),
+        ])
         .split(frame.area());
 
     let items: Vec<ListItem> = app
@@ -232,6 +266,11 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &AppState) {
     };
     let input = Paragraph::new(body).block(Block::default().borders(Borders::ALL));
     frame.render_widget(input, chunks[1]);
+}
+
+fn bottom_pane_height(app: &AppState) -> u16 {
+    let content_rows = 2 + u16::try_from(approval_prompt_rows(app).len()).unwrap_or(0);
+    content_rows + 2
 }
 
 pub fn render_to_text(app: &AppState, width: u16, height: u16) -> Vec<String> {
@@ -295,7 +334,7 @@ fn approval_prompt_rows(app: &AppState) -> Vec<String> {
     ]
 }
 
-fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<OutboundMessage> {
+fn handle_key(app: &mut AppState, input: &mut InputBuffer, key: KeyEvent) -> Vec<OutboundMessage> {
     if is_quit_key(key) {
         app.apply(AppEvent::Quit);
         return Vec::new();
@@ -310,9 +349,12 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<OutboundMessage> {
                 return approval_outbound(app, ApprovalDecision::ApproveForSession);
             }
             KeyCode::Char('d') => {
-                return approval_outbound(app, ApprovalDecision::Deny {
-                    reason: "denied by user".to_string(),
-                });
+                return approval_outbound(
+                    app,
+                    ApprovalDecision::Deny {
+                        reason: "denied by user".to_string(),
+                    },
+                );
             }
             KeyCode::Esc => {
                 return approval_outbound(app, ApprovalDecision::Cancel);
@@ -323,27 +365,65 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<OutboundMessage> {
 
     match key.code {
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push(ch);
+            input.insert_char(ch);
+            sync_input(app, input);
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            input.backspace();
+            sync_input(app, input);
         }
-        KeyCode::Enter if !app.input.trim().is_empty() => {
-            let message = app.input.clone();
+        KeyCode::Delete => {
+            input.delete();
+            sync_input(app, input);
+        }
+        KeyCode::Left => {
+            input.move_left();
+            sync_input(app, input);
+        }
+        KeyCode::Right => {
+            input.move_right();
+            sync_input(app, input);
+        }
+        KeyCode::Home => {
+            input.move_home();
+            sync_input(app, input);
+        }
+        KeyCode::End => {
+            input.move_end();
+            sync_input(app, input);
+        }
+        KeyCode::Up => {
+            input.history_previous();
+            sync_input(app, input);
+        }
+        KeyCode::Down => {
+            input.history_next();
+            sync_input(app, input);
+        }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            input.insert_newline();
+            sync_input(app, input);
+        }
+        KeyCode::Enter => {
+            let Some(message) = input.submit() else {
+                sync_input(app, input);
+                return Vec::new();
+            };
             if message.trim_start().starts_with('/') {
                 match parse_command(&message) {
                     Ok(command) => {
                         let effect = app.handle_command(command);
-                        app.input.clear();
+                        sync_input(app, input);
                         return command_outbound(effect);
                     }
                     Err(err) => {
                         app.apply(AppEvent::Notice(format!("command error: {err:?}")));
-                        app.input.clear();
+                        sync_input(app, input);
                     }
                 }
             } else {
                 app.apply(AppEvent::UserSubmitted(message.clone()));
+                sync_input(app, input);
                 return vec![OutboundMessage::Frame(ClientFrame::UserMessage { message })];
             }
         }
@@ -351,6 +431,10 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> Vec<OutboundMessage> {
     }
 
     Vec::new()
+}
+
+fn sync_input(app: &mut AppState, input: &InputBuffer) {
+    app.apply(AppEvent::InputChanged(input.text().to_string()));
 }
 
 fn approval_outbound(app: &mut AppState, decision: ApprovalDecision) -> Vec<OutboundMessage> {
@@ -365,6 +449,7 @@ fn command_outbound(effect: CommandEffect) -> Vec<OutboundMessage> {
             vec![OutboundMessage::Frame(ClientFrame::Cancel { run_id })]
         }
         CommandEffect::Reconnect => vec![OutboundMessage::Reconnect],
+        CommandEffect::SetPermissions(mode) => vec![OutboundMessage::SetPermissions(mode)],
         _ => Vec::new(),
     }
 }
@@ -441,20 +526,40 @@ mod tests {
     }
 
     #[test]
+    fn bottom_pane_reserves_visible_rows_for_input_and_approval_controls() {
+        let idle = AppState::for_test();
+        assert_eq!(bottom_pane_height(&idle), 4);
+
+        let mut pending = AppState::for_test();
+        pending.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+
+        assert_eq!(bottom_pane_height(&pending), 6);
+    }
+
+    #[test]
     fn enter_on_prompt_sends_user_message_to_anima() {
         let mut app = AppState::for_test();
-        app.input = "hello anima".to_string();
+        let mut input = crate::input::InputBuffer::default();
+        input.insert_str("hello anima");
 
         let outgoing = handle_key(
             &mut app,
+            &mut input,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         );
 
         assert_eq!(
             outgoing,
-            vec![OutboundMessage::Frame(crate::protocol::ClientFrame::UserMessage {
-                message: "hello anima".to_string(),
-            })]
+            vec![OutboundMessage::Frame(
+                crate::protocol::ClientFrame::UserMessage {
+                    message: "hello anima".to_string(),
+                }
+            )]
         );
     }
 
@@ -462,23 +567,26 @@ mod tests {
     fn command_input_sends_cancel_and_reconnect_actions() {
         let mut app = AppState::for_test();
         app.run.current_run_id = Some(42);
-        app.input = "/cancel".to_string();
+        let mut input = crate::input::InputBuffer::default();
+        input.insert_str("/cancel");
 
         let cancel = handle_key(
             &mut app,
+            &mut input,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         );
 
         assert_eq!(
             cancel,
-            vec![OutboundMessage::Frame(crate::protocol::ClientFrame::Cancel {
-                run_id: 42,
-            })]
+            vec![OutboundMessage::Frame(
+                crate::protocol::ClientFrame::Cancel { run_id: 42 }
+            )]
         );
 
-        app.input = "/reconnect".to_string();
+        input.insert_str("/reconnect");
         let reconnect = handle_key(
             &mut app,
+            &mut input,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         );
 
@@ -486,8 +594,91 @@ mod tests {
     }
 
     #[test]
+    fn permission_command_requests_executor_policy_update() {
+        let mut app = AppState::for_test();
+        let mut input = crate::input::InputBuffer::default();
+        input.insert_str("/permissions read-only");
+
+        let outgoing = handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            outgoing,
+            vec![OutboundMessage::SetPermissions("read-only".to_string())]
+        );
+        assert_eq!(app.permission_mode, "read-only");
+    }
+
+    #[tokio::test]
+    async fn permission_update_changes_live_tool_executor_policy() {
+        let workspace = std::env::temp_dir().join(format!("animus-tui-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("blocked.txt");
+        let mut app = AppState::for_test();
+        app.config.workspace = workspace.clone();
+        let mut executor = ToolExecutor::new(PermissionPolicy::workspace_write(workspace.clone()));
+        let (outbound_tx, _outbound_rx) = mpsc::unbounded_channel();
+
+        handle_outbound_message(
+            &mut app,
+            &mut executor,
+            &outbound_tx,
+            OutboundMessage::SetPermissions("read-only".to_string()),
+        );
+
+        let result = executor
+            .execute_tool_call(
+                "call-1",
+                "write_file",
+                &serde_json::json!({"file_path": "blocked.txt", "content": "blocked"}),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            crate::protocol::ClientFrame::ToolResult {
+                status: crate::protocol::ToolStatus::Error,
+                ..
+            }
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn input_key_handling_uses_cursor_and_history_buffer() {
+        let mut app = AppState::for_test();
+        let mut input = crate::input::InputBuffer::default();
+        input.push_history("previous".to_string());
+        input.insert_str("ab");
+
+        handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(app.input, "aXb");
+
+        handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        );
+        assert_eq!(app.input, "previous");
+    }
+
+    #[test]
     fn approval_key_sends_approval_response_to_anima() {
         let mut app = AppState::for_test();
+        let mut input = crate::input::InputBuffer::default();
         app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
             run_id: 42,
             tool_call_id: "call-1".to_string(),
@@ -497,6 +688,7 @@ mod tests {
 
         let outgoing = handle_key(
             &mut app,
+            &mut input,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
         );
 

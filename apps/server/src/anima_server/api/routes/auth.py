@@ -9,13 +9,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import read_unlock_token
-from anima_server.db import dispose_all_user_engines, get_db
-from anima_server.db.user_store import (
-    InvalidCredentialsError,
-    authenticate_account,
-    recover_account_with_phrase,
-    register_account,
-)
 from anima_server.contracts.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
@@ -29,6 +22,13 @@ from anima_server.contracts.auth import (
     RegisterRequest,
     RegisterResponse,
     UserResponse,
+)
+from anima_server.db import dispose_all_user_engines, get_db
+from anima_server.db.user_store import (
+    InvalidCredentialsError,
+    authenticate_account,
+    recover_account_with_phrase,
+    register_account,
 )
 from anima_server.services.auth import (
     change_user_password,

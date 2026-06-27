@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 
 from anima_server.db.base import Base
 from anima_server.models import AgentProfile, AgentThread, User
-from anima_server.models.runtime_consciousness import ActiveIntention, CurrentEmotion, WorkingContext
+from anima_server.models.runtime_consciousness import (
+    ActiveIntention,
+    CurrentEmotion,
+    WorkingContext,
+)
 from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
