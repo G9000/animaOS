@@ -44,6 +44,7 @@ const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
 const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
 const DEFAULT_DAEMON_ALLOWED_ORIGINS: &[&str] = &[
     "tauri://localhost",
+    "https://tauri.localhost",
     "http://127.0.0.1:1420",
     "http://localhost:1420",
     "http://127.0.0.1:3000",
@@ -448,9 +449,33 @@ fn read_control_token(path: &FsPath) -> Option<String> {
     if trimmed.is_empty() {
         None
     } else {
+        tighten_private_file_permissions(path, "daemon control token");
         Some(trimmed.to_string())
     }
 }
+
+#[cfg(unix)]
+fn tighten_private_file_permissions(path: &FsPath, label: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode == 0o600 {
+        return;
+    }
+
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(0o600);
+    if let Err(err) = fs::set_permissions(path, permissions) {
+        warn!("Failed to tighten permissions for {label} {}: {err}", path.display());
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_private_file_permissions(_path: &FsPath, _label: &str) {}
 
 fn daemon_allowed_origins() -> DaemonCorsOrigins {
     match env_opt("ANIMA_DAEMON_ALLOWED_ORIGINS") {
@@ -680,6 +705,9 @@ async fn control(
         DaemonCommand::Start => start_runtime(&runtime, false).await,
         DaemonCommand::Stop => stop_runtime(&runtime).await,
         DaemonCommand::Restart => match stop_runtime(&runtime).await {
+            Ok(message) if message == "Runtime stop already in progress" => {
+                Err("Runtime is stopping; wait for shutdown before restarting".to_string())
+            }
             Ok(_) => start_runtime(&runtime, false).await,
             Err(message) => Err(message),
         },
@@ -901,6 +929,9 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
     let process = {
         let mut state = runtime.state.inner.lock().await;
         if state.process.is_none() {
+            if state.status == DaemonState::Stopping {
+                return Ok("Runtime stop already in progress".to_string());
+            }
             if state.expected_running {
                 state.expected_running = false;
             }

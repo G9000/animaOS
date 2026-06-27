@@ -53,6 +53,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@anima/api-client": "workspace:*",
+        "@anima/daemon-contracts": "workspace:*",
         "@anima/standard-templates": "workspace:*",
         "@fontsource/playfair-display": "^5.2.8",
         "@fontsource/space-grotesk": "^5.2.10",
@@ -112,6 +113,10 @@
       "name": "@anima/auth-contracts",
       "version": "0.1.0",
     },
+    "packages/anima-runtime-daemon-contracts": {
+      "name": "@anima/daemon-contracts",
+      "version": "0.1.0",
+    },
     "packages/api-client": {
       "name": "@anima/api-client",
       "version": "0.1.0",
@@ -143,6 +148,8 @@
     "@anima/api-client": ["@anima/api-client@workspace:packages/api-client"],
 
     "@anima/auth-contracts": ["@anima/auth-contracts@workspace:packages/anima-auth-contracts"],
+
+    "@anima/daemon-contracts": ["@anima/daemon-contracts@workspace:packages/anima-runtime-daemon-contracts"],
 
     "@anima/standard-templates": ["@anima/standard-templates@workspace:packages/standard-templates"],
 
