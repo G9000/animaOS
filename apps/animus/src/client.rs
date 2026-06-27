@@ -206,7 +206,13 @@ impl AnimaWsClient {
 }
 
 pub fn auth_frame(config: &AnimusConfig) -> ClientFrame {
-    if config.unlock_token.is_some() {
+    if config.username.is_some() && config.password.is_some() {
+        ClientFrame::Auth {
+            unlock_token: None,
+            username: config.username.clone(),
+            password: config.password.clone(),
+        }
+    } else if config.unlock_token.is_some() {
         ClientFrame::Auth {
             unlock_token: config.unlock_token.clone(),
             username: config.username.clone(),
@@ -402,13 +408,13 @@ mod tests {
     }
 
     #[test]
-    fn auth_frame_uses_config_credentials_without_password_when_token_exists() {
+    fn auth_frame_uses_token_when_password_credentials_are_absent() {
         let config = AnimusConfig {
             server_url: "http://127.0.0.1:3031".to_string(),
             workspace: ".".into(),
             unlock_token: Some("token".to_string()),
             username: Some("alice".to_string()),
-            password: Some("password".to_string()),
+            password: None,
         };
 
         assert_eq!(
@@ -417,6 +423,26 @@ mod tests {
                 unlock_token: Some("token".to_string()),
                 username: Some("alice".to_string()),
                 password: None,
+            }
+        );
+    }
+
+    #[test]
+    fn auth_frame_prefers_password_credentials_over_stale_token() {
+        let config = AnimusConfig {
+            server_url: "http://127.0.0.1:3031".to_string(),
+            workspace: ".".into(),
+            unlock_token: Some("stale-token".to_string()),
+            username: Some("alice".to_string()),
+            password: Some("password".to_string()),
+        };
+
+        assert_eq!(
+            auth_frame(&config),
+            ClientFrame::Auth {
+                unlock_token: None,
+                username: Some("alice".to_string()),
+                password: Some("password".to_string()),
             }
         );
     }

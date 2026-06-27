@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 21:44 MYT
+- Updated: 2026-06-27 22:14 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -94,6 +94,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 20:35 MYT - Eighth Codex review round was fixed and revalidated.
 - 2026-06-27 21:09 MYT - Ninth Codex review round was fixed and revalidated.
 - 2026-06-27 21:44 MYT - Tenth Codex review round was fixed and revalidated.
+- 2026-06-27 22:14 MYT - Eleventh Codex review round was fixed and revalidated.
 
 ## Validation
 
@@ -189,6 +190,16 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run build` - passed after tenth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after tenth review fixes: 1649 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200
+  - `cargo test -p animus auth_frame_prefers_password_credentials_over_stale_token -- --nocapture` - failed before the auth precedence fix, passed after the fix
+  - `cargo test -p animus background_process_reports_exit_after_output_is_consumed -- --nocapture` - failed before exit-state tracking, passed after the fix
+  - `cargo test -p animus` - passed after eleventh review fixes: 85 passed
+  - `git diff --check` - passed after eleventh review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after eleventh review fixes
+  - `bun run test:animus` - passed after eleventh review fixes: 85 passed
+  - `bun run lint` - passed after eleventh review fixes for server and desktop
+  - `bun run build` - passed after eleventh review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after eleventh review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -220,4 +231,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - eighth Codex review fixes handled dangling symlink rejection before workspace-write approval
   - ninth Codex review fixes handled awaiting-approval turn blocking and terminal error run cleanup
   - tenth Codex review fixes handled approval-resume run-id retention and incremental background output polling
+  - eleventh Codex review fixes handled password-auth precedence over stale unlock tokens and exited background-process reporting
   - no database schema changes; Alembic was not run

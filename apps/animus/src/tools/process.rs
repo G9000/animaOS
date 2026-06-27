@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -37,6 +37,8 @@ struct ProcessEntry {
     stderr: SharedOutputBuffer,
     stdout_cursor: usize,
     stderr_cursor: usize,
+    exit_status: Option<String>,
+    exit_reported: bool,
 }
 
 impl ProcessRegistry {
@@ -82,6 +84,8 @@ impl ProcessRegistry {
                 stderr: stderr_lines,
                 stdout_cursor: 0,
                 stderr_cursor: 0,
+                exit_status: None,
+                exit_reported: false,
             },
         );
         ToolOutput::success(id)
@@ -100,6 +104,12 @@ impl ProcessRegistry {
         let mut lines = Vec::new();
         lines.extend(read_buffered_lines(&stdout, &mut entry.stdout_cursor, all));
         lines.extend(read_buffered_lines(&stderr, &mut entry.stderr_cursor, all));
+        if let Some(exit_status) = refresh_exit_status(entry) {
+            if !entry.exit_reported {
+                lines.push(exit_status);
+                entry.exit_reported = true;
+            }
+        }
         ToolOutput::success(redact_text(&lines.join("\n")))
     }
 
@@ -120,11 +130,14 @@ impl ProcessRegistry {
         }
     }
 
-    pub fn list(&self) -> ToolOutput {
+    pub fn list(&mut self) -> ToolOutput {
         let mut rows = self
             .entries
-            .iter()
-            .map(|(id, entry)| format!("{id}: {}", entry.command))
+            .iter_mut()
+            .map(|(id, entry)| {
+                let status = refresh_exit_status(entry).unwrap_or_else(|| "running".to_string());
+                format!("{id} [{status}]: {}", entry.command)
+            })
             .collect::<Vec<_>>();
         rows.sort();
         ToolOutput::success(rows.join("\n"))
@@ -180,6 +193,22 @@ fn read_buffered_lines(lines: &SharedOutputBuffer, cursor: &mut usize, all: bool
     };
     *cursor = locked.dropped + locked.lines.len();
     output
+}
+
+fn refresh_exit_status(entry: &mut ProcessEntry) -> Option<String> {
+    if entry.exit_status.is_none() {
+        if let Ok(Some(status)) = entry.child.try_wait() {
+            entry.exit_status = Some(format_exit_status(status));
+        }
+    }
+    entry.exit_status.clone()
+}
+
+fn format_exit_status(status: ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exited({code})"),
+        None => "exited(signal)".to_string(),
+    }
 }
 
 fn clone_lines(lines: &SharedOutputBuffer) -> Vec<String> {
@@ -259,6 +288,46 @@ mod tests {
         assert!(first.contains("bg-ready"));
         assert_eq!(second, "");
         assert!(all.contains("bg-ready"));
+        assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn background_process_reports_exit_after_output_is_consumed() {
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let mut registry = ProcessRegistry::default();
+        let command = if cfg!(windows) {
+            "Write-Output bg-ready; Start-Sleep -Milliseconds 250; exit 7"
+        } else {
+            "printf 'bg-ready\\n'; sleep 0.25; exit 7"
+        };
+
+        let start = registry.start(&json!({"command": command}), &policy).await;
+        assert!(!start.is_error);
+        let id = start.content.trim().to_string();
+
+        let mut first = String::new();
+        for _ in 0..20 {
+            first = registry.output(&json!({"id": id.clone()})).content;
+            if first.contains("bg-ready") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let mut exit_output = String::new();
+        for _ in 0..20 {
+            exit_output = registry.output(&json!({"id": id.clone()})).content;
+            if exit_output.contains("exited(7)") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let list = registry.list().content;
+
+        assert!(first.contains("bg-ready"));
+        assert!(exit_output.contains("exited(7)"));
+        assert!(list.contains("exited(7)"));
         assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
     }
 

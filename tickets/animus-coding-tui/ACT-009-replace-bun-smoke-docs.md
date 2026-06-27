@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 21:44 MYT
+- Updated: 2026-06-27 22:14 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -50,6 +50,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 20:35 MYT - Addressed the eighth Codex review round: dangling symlinks are now rejected before workspace write approval can follow them outside the workspace.
 - 2026-06-27 21:09 MYT - Addressed the ninth Codex review round: websocket user messages are blocked while a run awaits approval, and terminal agent errors clear active Animus run state.
 - 2026-06-27 21:44 MYT - Addressed the tenth Codex review round: approval-pause `turn_complete` frames preserve the active run id, and `bg_output` now returns unread output by default with explicit `all` support.
+- 2026-06-27 22:14 MYT - Addressed the eleventh Codex review round: explicit username/password auth now overrides stale unlock tokens, and background processes report `exited(code)` from `bg_output` and `bg_list`.
 
 ## Validation
 
@@ -147,6 +148,17 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run build` - passed after tenth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after tenth review fixes: 1649 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":true}`
+  - `cargo test -p animus auth_frame_prefers_password_credentials_over_stale_token -- --nocapture` - failed before the auth precedence fix by sending the stale token, passed after the fix
+  - `cargo test -p animus background_process_reports_exit_after_output_is_consumed -- --nocapture` - failed before exit-state tracking by returning empty output, passed after the fix
+  - `cargo fmt -p animus` - completed after eleventh review fixes
+  - `cargo test -p animus` - passed after eleventh review fixes: 85 passed
+  - `git diff --check` - passed after eleventh review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after eleventh review fixes
+  - `bun run test:animus` - passed after eleventh review fixes: 85 passed
+  - `bun run lint` - passed after eleventh review fixes for server and desktop
+  - `bun run build` - passed after eleventh review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after eleventh review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":true}`
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -196,5 +208,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Eighth review fixes reject dangling symlink path components before canonicalizing the nearest existing parent, blocking workspace-write creates through links that point outside the workspace.
   - Ninth review fixes prevent overlapping turns while a run remains `awaiting_approval`, and clear active Animus run ids when an `AGENT_ERROR` frame terminates a run.
   - Tenth review fixes preserve cancellation during approval resume streams and make repeated `bg_output` polling incremental unless `all` is explicitly requested.
+  - Eleventh review fixes keep stale unlock-session tokens from shadowing explicit password login, and surface background process exit codes after output has already been consumed.
   - No database schema changes; Alembic was not run.
 
