@@ -63,10 +63,12 @@ pub fn edit_file(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         Ok(raw) => raw,
         Err(err) => return ToolOutput::error(format!("failed to read {}: {err}", path.display())),
     };
-    if let Err(output) = require_unique_match(&raw, old_string) {
+    let old_string = normalize_edit_string_for_file(old_string, &raw);
+    let new_string = normalize_edit_string_for_file(new_string, &raw);
+    if let Err(output) = require_unique_match(&raw, &old_string) {
         return output;
     }
-    let edited = raw.replacen(old_string, new_string, 1);
+    let edited = raw.replacen(&old_string, &new_string, 1);
     match fs::write(&path, edited) {
         Ok(()) => ToolOutput::success(format!("edited {}", display_workspace_path(policy, &path))),
         Err(err) => ToolOutput::error(format!("failed to write {}: {err}", path.display())),
@@ -85,22 +87,20 @@ pub fn multi_edit(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
         Ok(raw) => raw,
         Err(err) => return ToolOutput::error(format!("failed to read {}: {err}", path.display())),
     };
+    let mut edited = raw;
     for edit in edits {
         let Some(old_string) = string_arg(edit, "old_string") else {
             return ToolOutput::error("each edit requires old_string");
         };
-        if string_arg(edit, "new_string").is_none() {
+        let Some(new_string) = string_arg(edit, "new_string") else {
             return ToolOutput::error("each edit requires new_string");
-        }
-        if let Err(output) = require_unique_match(&raw, old_string) {
+        };
+        let old_string = normalize_edit_string_for_file(old_string, &edited);
+        let new_string = normalize_edit_string_for_file(new_string, &edited);
+        if let Err(output) = require_unique_match(&edited, &old_string) {
             return output;
         }
-    }
-    let mut edited = raw;
-    for edit in edits {
-        let old_string = string_arg(edit, "old_string").unwrap_or_default();
-        let new_string = string_arg(edit, "new_string").unwrap_or_default();
-        edited = edited.replacen(old_string, new_string, 1);
+        edited = edited.replacen(&old_string, &new_string, 1);
     }
     match fs::write(&path, edited) {
         Ok(()) => ToolOutput::success(format!("edited {}", display_workspace_path(policy, &path))),
@@ -266,6 +266,15 @@ fn require_unique_match(raw: &str, old_string: &str) -> Result<(), ToolOutput> {
     }
 }
 
+fn normalize_edit_string_for_file(value: &str, file_contents: &str) -> String {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    if file_contents.contains("\r\n") {
+        normalized.replace('\n', "\r\n")
+    } else {
+        normalized
+    }
+}
+
 fn matches_simple_glob(path: &str, pattern: &str) -> bool {
     let candidate = path.replace('\\', "/");
     let pattern = pattern.replace('\\', "/");
@@ -423,6 +432,79 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
             "alpha beta alpha"
+        );
+    }
+
+    #[test]
+    fn edit_file_matches_lf_old_string_against_crlf_file() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "alpha\r\nbeta\r\ngamma\r\n").unwrap();
+
+        let result = edit_file(
+            &json!({
+                "file_path": "src/lib.rs",
+                "old_string": "alpha\nbeta",
+                "new_string": "one\ntwo"
+            }),
+            &policy,
+        );
+
+        assert!(!result.is_error);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "one\r\ntwo\r\ngamma\r\n"
+        );
+    }
+
+    #[test]
+    fn multi_edit_validates_against_progressively_edited_buffer() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "alpha").unwrap();
+
+        let result = multi_edit(
+            &json!({
+                "file_path": "src/lib.rs",
+                "edits": [
+                    {"old_string": "alpha", "new_string": "beta"},
+                    {"old_string": "beta", "new_string": "gamma"}
+                ]
+            }),
+            &policy,
+        );
+
+        assert!(!result.is_error);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "gamma"
+        );
+    }
+
+    #[test]
+    fn multi_edit_rejects_later_edits_that_no_longer_match() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "alpha").unwrap();
+
+        let result = multi_edit(
+            &json!({
+                "file_path": "src/lib.rs",
+                "edits": [
+                    {"old_string": "alpha", "new_string": "beta"},
+                    {"old_string": "alpha", "new_string": "gamma"}
+                ]
+            }),
+            &policy,
+        );
+
+        assert!(result.is_error);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "alpha"
         );
     }
 

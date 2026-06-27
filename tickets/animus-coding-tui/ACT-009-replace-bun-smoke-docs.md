@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 13:24 MYT
+- Updated: 2026-06-27 16:52 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -44,6 +44,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 12:43 MYT - Addressed the second Codex review round: unique edit targets, path-qualified glob matching, remembered approval reuse, unimplemented `ask_user` schema removal, and non-blocking websocket approval resume.
 - 2026-06-27 13:02 MYT - Addressed the third Codex review round: reconnect-time outbound frame queueing, background process cleanup on registry drop, and bounded background output buffers.
 - 2026-06-27 13:24 MYT - Addressed the fourth Codex review round: delegated shell permission gating, async local tool execution, shell/background output redaction, and bounded grep results.
+- 2026-06-27 16:52 MYT - Addressed the fifth Codex review round: CRLF-normalized edit matching and progressive `multi_edit` validation.
 
 ## Validation
 
@@ -85,6 +86,12 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run lint` - passed after fourth review fixes for server and desktop
   - `bun run build` - passed after fourth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fourth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus` - passed after fifth review fixes: 74 passed
+  - `git diff --check` - passed after fifth review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after fifth review fixes: 74 passed
+  - `bun run lint` - passed after fifth review fixes for server and desktop
+  - `bun run build` - passed after fifth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fifth review fixes: 1648 passed, 1 skipped, 235 warnings
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -126,5 +133,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Second review fixes prevent ambiguous string edits, allow directory-qualified glob patterns, honor approve-for-session for future matching approvals, avoid advertising unimplemented `ask_user`, and keep the websocket reader free while approval resumes stream.
   - Third review fixes retain outbound frames submitted during reconnect, stop live background children when Animus exits, and cap retained background stdout/stderr lines before `bg_output` clones them.
   - Fourth review fixes make delegated shell execution require explicit `workspace-write-shell`, run local tool calls off the TUI loop, redact shell/background output before tool results leave the client, and truncate broad grep output at its cap.
+  - Fifth review fixes let LF-only edit strings match CRLF files while preserving CRLF output, and validate `multi_edit` against each progressively edited buffer before writing.
   - No database schema changes; Alembic was not run.
 
