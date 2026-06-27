@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::io::{self, Stdout};
 use std::time::Duration;
 
@@ -44,6 +45,12 @@ enum WsEvent {
     Authenticated(AuthUser),
     Frame(ServerFrame),
     Disconnected(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconnectOutboundAction {
+    RetryNow,
+    Shutdown,
 }
 
 impl TerminalSession {
@@ -133,6 +140,7 @@ async fn websocket_driver(
     mut outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
 ) {
     let mut attempt = 0u32;
+    let mut pending_frames: VecDeque<ClientFrame> = VecDeque::new();
 
     loop {
         if ui_tx
@@ -152,38 +160,53 @@ async fn websocket_driver(
                     return;
                 }
 
-                loop {
-                    tokio::select! {
-                        outgoing = outbound_rx.recv() => {
-                            match outgoing {
-                                Some(OutboundMessage::Frame(frame)) => {
-                                    if let Err(err) = client.send_frame(frame).await {
-                                        let _ = ui_tx.send(WsEvent::Disconnected(format!("websocket send failed: {err}")));
+                let mut flush_failed = false;
+                while let Some(frame) = pending_frames.pop_front() {
+                    if let Err(err) = client.send_frame(frame.clone()).await {
+                        pending_frames.push_front(frame);
+                        let _ = ui_tx.send(WsEvent::Disconnected(format!(
+                            "websocket send failed: {err}"
+                        )));
+                        flush_failed = true;
+                        break;
+                    }
+                }
+
+                if !flush_failed {
+                    loop {
+                        tokio::select! {
+                            outgoing = outbound_rx.recv() => {
+                                match outgoing {
+                                    Some(OutboundMessage::Frame(frame)) => {
+                                        if let Err(err) = client.send_frame(frame.clone()).await {
+                                            pending_frames.push_front(frame);
+                                            let _ = ui_tx.send(WsEvent::Disconnected(format!("websocket send failed: {err}")));
+                                            break;
+                                        }
+                                    }
+                                    Some(OutboundMessage::Reconnect) => {
+                                        let _ = ui_tx.send(WsEvent::Disconnected("reconnecting to ANIMA".to_string()));
                                         break;
                                     }
+                                    Some(OutboundMessage::SetPermissions(_)) => {}
+                                    None => return,
                                 }
-                                Some(OutboundMessage::Reconnect) => {
-                                    let _ = ui_tx.send(WsEvent::Disconnected("reconnecting to ANIMA".to_string()));
-                                    break;
-                                }
-                                Some(OutboundMessage::SetPermissions(_)) => {}
-                                None => return,
                             }
-                        }
-                        frame = client.next_frame() => {
-                            match frame {
-                                Ok(Some(frame)) => {
-                                    if ui_tx.send(WsEvent::Frame(frame)).is_err() {
-                                        return;
+                            frame = client.next_frame() => {
+                                match frame {
+                                    Ok(Some(frame)) => {
+                                        if ui_tx.send(WsEvent::Frame(frame)).is_err() {
+                                            return;
+                                        }
                                     }
-                                }
-                                Ok(None) => {
-                                    let _ = ui_tx.send(WsEvent::Disconnected("ANIMA websocket closed".to_string()));
-                                    break;
-                                }
-                                Err(err) => {
-                                    let _ = ui_tx.send(WsEvent::Disconnected(format!("websocket receive failed: {err}")));
-                                    break;
+                                    Ok(None) => {
+                                        let _ = ui_tx.send(WsEvent::Disconnected("ANIMA websocket closed".to_string()));
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        let _ = ui_tx.send(WsEvent::Disconnected(format!("websocket receive failed: {err}")));
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -200,16 +223,29 @@ async fn websocket_driver(
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             outgoing = outbound_rx.recv() => {
-                match outgoing {
-                    Some(OutboundMessage::Reconnect) => {}
-                    Some(OutboundMessage::Frame(_)) => {
-                        let _ = ui_tx.send(WsEvent::Disconnected("not connected; outbound frame dropped".to_string()));
-                    }
-                    Some(OutboundMessage::SetPermissions(_)) => {}
-                    None => return,
+                if handle_reconnect_outbound(outgoing, &mut pending_frames)
+                    == ReconnectOutboundAction::Shutdown
+                {
+                    return;
                 }
             }
         }
+    }
+}
+
+fn handle_reconnect_outbound(
+    outgoing: Option<OutboundMessage>,
+    pending_frames: &mut VecDeque<ClientFrame>,
+) -> ReconnectOutboundAction {
+    match outgoing {
+        Some(OutboundMessage::Frame(frame)) => {
+            pending_frames.push_back(frame);
+            ReconnectOutboundAction::RetryNow
+        }
+        Some(OutboundMessage::Reconnect) | Some(OutboundMessage::SetPermissions(_)) => {
+            ReconnectOutboundAction::RetryNow
+        }
+        None => ReconnectOutboundAction::Shutdown,
     }
 }
 
@@ -706,5 +742,21 @@ mod tests {
                 }
             )]
         );
+    }
+
+    #[test]
+    fn reconnect_wait_queues_outbound_frames_for_next_connection() {
+        let frame = ClientFrame::UserMessage {
+            message: "queued while reconnecting".to_string(),
+        };
+        let mut pending_frames = VecDeque::new();
+
+        let action = handle_reconnect_outbound(
+            Some(OutboundMessage::Frame(frame.clone())),
+            &mut pending_frames,
+        );
+
+        assert_eq!(action, ReconnectOutboundAction::RetryNow);
+        assert_eq!(pending_frames.pop_front(), Some(frame));
     }
 }

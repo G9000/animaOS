@@ -12,6 +12,9 @@ use crate::permissions::{PermissionDecision, PermissionPolicy};
 use crate::tools::shell::shell_command;
 use crate::tools::ToolOutput;
 
+const MAX_BUFFERED_OUTPUT_LINES: usize = 1_000;
+const TRUNCATED_OUTPUT_MARKER: &str = "[older background output truncated]";
+
 #[derive(Default)]
 pub struct ProcessRegistry {
     next_id: u64,
@@ -41,7 +44,8 @@ impl ProcessRegistry {
         child_command
             .current_dir(policy.workspace())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         let mut child = match child_command.spawn() {
             Ok(child) => child,
             Err(err) => return ToolOutput::error(format!("failed to start process: {err}")),
@@ -111,6 +115,14 @@ impl ProcessRegistry {
     }
 }
 
+impl Drop for ProcessRegistry {
+    fn drop(&mut self) {
+        for entry in self.entries.values_mut() {
+            let _ = entry.child.start_kill();
+        }
+    }
+}
+
 fn spawn_reader<R>(lines: Arc<Mutex<Vec<String>>>, reader: R)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -118,11 +130,23 @@ where
     tokio::spawn(async move {
         let mut reader = BufReader::new(reader).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(mut locked) = lines.lock() {
-                locked.push(line);
-            }
+            push_buffered_line(lines.clone(), line);
         }
     });
+}
+
+fn push_buffered_line(lines: Arc<Mutex<Vec<String>>>, line: String) {
+    let Ok(mut locked) = lines.lock() else {
+        return;
+    };
+    locked.push(line);
+    if locked.len() > MAX_BUFFERED_OUTPUT_LINES {
+        let overflow = locked.len() - MAX_BUFFERED_OUTPUT_LINES;
+        locked.drain(0..overflow);
+        if !locked.is_empty() {
+            locked[0] = TRUNCATED_OUTPUT_MARKER.to_string();
+        }
+    }
 }
 
 fn clone_lines(lines: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
@@ -165,5 +189,52 @@ mod tests {
         assert!(registry.list().content.contains(&id));
         assert!(output.contains("bg-ready"));
         assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn dropping_registry_stops_background_children() {
+        let root = std::env::temp_dir().join(format!("animus-bg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("late-bg-marker.txt");
+        let policy = PermissionPolicy::workspace_write(root.clone())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let command = if cfg!(windows) {
+            format!(
+                "Start-Sleep -Milliseconds 300; Set-Content -LiteralPath '{}' -Value done",
+                marker.display()
+            )
+        } else {
+            format!("sleep 0.3; touch '{}'", marker.display())
+        };
+        let mut registry = ProcessRegistry::default();
+
+        let start = registry.start(&json!({"command": command}), &policy).await;
+        assert!(!start.is_error);
+        drop(registry);
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn buffered_background_output_keeps_bounded_recent_window() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+
+        for index in 0..(MAX_BUFFERED_OUTPUT_LINES + 5) {
+            push_buffered_line(lines.clone(), format!("line-{index}"));
+        }
+
+        let output = clone_lines(&lines);
+        let expected_last = format!("line-{}", MAX_BUFFERED_OUTPUT_LINES + 4);
+
+        assert_eq!(output.len(), MAX_BUFFERED_OUTPUT_LINES);
+        assert_eq!(
+            output.first().map(String::as_str),
+            Some(TRUNCATED_OUTPUT_MARKER)
+        );
+        assert_eq!(
+            output.last().map(String::as_str),
+            Some(expected_last.as_str())
+        );
     }
 }

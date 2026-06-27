@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 12:43 MYT
+- Updated: 2026-06-27 13:02 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -86,6 +86,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 11:38 MYT - ACT-009 completed; all child tickets are done and the parent tracker is complete.
 - 2026-06-27 12:10 MYT - Codex review blockers were fixed and final lint/build/test validation was rerun for the PR branch.
 - 2026-06-27 12:43 MYT - Second Codex review round was fixed and revalidated.
+- 2026-06-27 13:02 MYT - Third Codex review round was fixed and revalidated.
 
 ## Validation
 
@@ -116,6 +117,11 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run lint` - passed after second review fixes for server and desktop
   - `bun run build` - passed after second review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after second review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `git diff --check` - passed after third review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after third review fixes: 66 passed
+  - `bun run lint` - passed after third review fixes for server and desktop
+  - `bun run build` - passed after third review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after third review fixes: 1648 passed, 1 skipped, 235 warnings
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -139,4 +145,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - final full-suite validation passed after fixing the duplicate `TodayContext` class and thinking-monologue HTTP fallback
   - Codex review fixes applied stricter workspace path containment, live permission policy updates, visible approval controls, active input-buffer wiring, and shell timeout cleanup
   - second Codex review fixes handled unique edit matching, path-qualified globs, approve-for-session reuse, ask_user schema exposure, and websocket approval resume concurrency
+  - third Codex review fixes handled reconnect-time outbound frame queueing, background process cleanup on registry drop, and bounded background output buffering
   - no database schema changes; Alembic was not run
