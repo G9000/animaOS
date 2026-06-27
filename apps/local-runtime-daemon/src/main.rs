@@ -620,11 +620,26 @@ fn authorize_control(
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<DaemonError>)> {
     let Some(token) = config.control_token.as_deref() else {
-        return Ok(());
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(DaemonError {
+                category: "auth".to_string(),
+                message: "Daemon control token is required".to_string(),
+                detail: None,
+            }),
+        ));
     };
 
-    if token.trim().is_empty() {
-        return Ok(());
+    let token = token.trim();
+    if token.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(DaemonError {
+                category: "auth".to_string(),
+                message: "Daemon control token is required".to_string(),
+                detail: None,
+            }),
+        ));
     }
 
     let provided = headers
