@@ -14,6 +14,7 @@ use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
     path::{Path as FsPath, PathBuf},
+    process::ExitStatus,
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -38,6 +39,7 @@ const DEFAULT_MAX_RESTART_ATTEMPTS: u32 = 3;
 const DEFAULT_BASE_RESTART_SECONDS: u64 = 2;
 const DEFAULT_MAX_RESTART_SECONDS: u64 = 20;
 const DEFAULT_LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
 const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
 const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
 const DEFAULT_DAEMON_ALLOWED_ORIGINS: &[&str] = &[
@@ -927,10 +929,7 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
     };
 
     if let Some(mut process) = process {
-        if let Err(err) = process.child.kill().await {
-            warn!("Failed to stop runtime process {}: {err}", process.pid);
-        }
-        match process.child.wait().await {
+        match shutdown_runtime_process(&mut process).await {
             Ok(status) => {
                 let code = status.code().unwrap_or_default();
                 if let Err(err) = write_state_file(
@@ -944,7 +943,10 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
                 }
             }
             Err(err) => {
-                warn!("Failed to wait on runtime process {}: {err}", process.pid);
+                return Err(format!(
+                    "Failed to stop runtime process {}: {err}",
+                    process.pid
+                ));
             }
         }
     }
@@ -964,10 +966,17 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
 }
 
 async fn set_lock(runtime: &DaemonRuntime, locked: bool) -> Result<String, String> {
-    let mut state = runtime.state.inner.lock().await;
-    state.policy.locked = locked;
-    state.apply_lock_state();
-    drop(state);
+    if locked {
+        {
+            let mut state = runtime.state.inner.lock().await;
+            state.policy.locked = true;
+        }
+        let _ = stop_runtime(runtime).await?;
+    } else {
+        let mut state = runtime.state.inner.lock().await;
+        state.policy.locked = false;
+        state.apply_lock_state();
+    }
 
     if let Err(err) = write_state_file(
         &runtime.state.config.lock_file(),
@@ -993,8 +1002,13 @@ async fn set_background_enabled(
     {
         let mut state = runtime.state.inner.lock().await;
         state.policy.background_enabled = background_enabled;
-        if !background_enabled && state.status == DaemonState::Degraded {
-            state.status = DaemonState::Stopped;
+        if !background_enabled {
+            state.restart_wait_seconds = None;
+            if state.process.is_none() {
+                state.expected_running = false;
+                state.consecutive_health_failures = 0;
+                state.status = DaemonState::Stopped;
+            }
         }
     }
 
@@ -1136,7 +1150,8 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
 
         {
             let state = runtime.state.inner.lock().await;
-            if !state.expected_running || state.process.is_some() {
+            if !state.expected_running || state.process.is_some() || !state.policy.background_enabled
+            {
                 return Ok(());
             }
         }
@@ -1151,6 +1166,75 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+async fn shutdown_runtime_process(process: &mut RuntimeProcess) -> Result<ExitStatus, String> {
+    if let Err(err) = request_runtime_process_shutdown(process.pid).await {
+        warn!(
+            "Failed to request graceful shutdown for runtime process {}: {err}",
+            process.pid
+        );
+    }
+
+    let graceful_timeout = Duration::from_secs(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS);
+    match time::timeout(graceful_timeout, process.child.wait()).await {
+        Ok(Ok(status)) => return Ok(status),
+        Ok(Err(err)) => {
+            return Err(format!(
+                "Failed waiting for runtime process {} to exit: {err}",
+                process.pid
+            ));
+        }
+        Err(_) => {
+            warn!(
+                "Runtime process {} did not exit after graceful shutdown request; forcing kill",
+                process.pid
+            );
+        }
+    }
+
+    process
+        .child
+        .kill()
+        .await
+        .map_err(|err| format!("Failed to force-kill runtime process {}: {err}", process.pid))?;
+
+    process
+        .child
+        .wait()
+        .await
+        .map_err(|err| format!("Failed waiting for force-killed runtime process {}: {err}", process.pid))
+}
+
+async fn request_runtime_process_shutdown(pid: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T"]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new("kill");
+        command.arg("-TERM").arg(pid.to_string());
+        command
+    };
+
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|err| format!("Failed to request graceful shutdown for runtime process {pid}: {err}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Graceful shutdown command for runtime process {pid} exited with {status}"
+        ))
+    }
 }
 
 fn build_status_response(config: &RuntimeConfig, state: &RuntimeState) -> DaemonStatusResponse {
