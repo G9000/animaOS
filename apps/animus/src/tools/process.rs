@@ -16,6 +16,14 @@ use crate::tools::ToolOutput;
 const MAX_BUFFERED_OUTPUT_LINES: usize = 1_000;
 const TRUNCATED_OUTPUT_MARKER: &str = "[older background output truncated]";
 
+type SharedOutputBuffer = Arc<Mutex<OutputBuffer>>;
+
+#[derive(Default)]
+struct OutputBuffer {
+    lines: Vec<String>,
+    dropped: usize,
+}
+
 #[derive(Default)]
 pub struct ProcessRegistry {
     next_id: u64,
@@ -25,8 +33,10 @@ pub struct ProcessRegistry {
 struct ProcessEntry {
     command: String,
     child: Child,
-    stdout: Arc<Mutex<Vec<String>>>,
-    stderr: Arc<Mutex<Vec<String>>>,
+    stdout: SharedOutputBuffer,
+    stderr: SharedOutputBuffer,
+    stdout_cursor: usize,
+    stderr_cursor: usize,
 }
 
 impl ProcessRegistry {
@@ -52,8 +62,8 @@ impl ProcessRegistry {
             Err(err) => return ToolOutput::error(format!("failed to start process: {err}")),
         };
 
-        let stdout_lines = Arc::new(Mutex::new(Vec::new()));
-        let stderr_lines = Arc::new(Mutex::new(Vec::new()));
+        let stdout_lines = Arc::new(Mutex::new(OutputBuffer::default()));
+        let stderr_lines = Arc::new(Mutex::new(OutputBuffer::default()));
         if let Some(stdout) = child.stdout.take() {
             spawn_reader(stdout_lines.clone(), stdout);
         }
@@ -70,21 +80,26 @@ impl ProcessRegistry {
                 child,
                 stdout: stdout_lines,
                 stderr: stderr_lines,
+                stdout_cursor: 0,
+                stderr_cursor: 0,
             },
         );
         ToolOutput::success(id)
     }
 
-    pub fn output(&self, args: &Value) -> ToolOutput {
+    pub fn output(&mut self, args: &Value) -> ToolOutput {
         let Some(id) = args.get("id").and_then(Value::as_str) else {
             return ToolOutput::error("bg_output requires id");
         };
-        let Some(entry) = self.entries.get(id) else {
+        let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+        let Some(entry) = self.entries.get_mut(id) else {
             return ToolOutput::error(format!("unknown background process: {id}"));
         };
+        let stdout = entry.stdout.clone();
+        let stderr = entry.stderr.clone();
         let mut lines = Vec::new();
-        lines.extend(clone_lines(&entry.stdout));
-        lines.extend(clone_lines(&entry.stderr));
+        lines.extend(read_buffered_lines(&stdout, &mut entry.stdout_cursor, all));
+        lines.extend(read_buffered_lines(&stderr, &mut entry.stderr_cursor, all));
         ToolOutput::success(redact_text(&lines.join("\n")))
     }
 
@@ -124,7 +139,7 @@ impl Drop for ProcessRegistry {
     }
 }
 
-fn spawn_reader<R>(lines: Arc<Mutex<Vec<String>>>, reader: R)
+fn spawn_reader<R>(lines: SharedOutputBuffer, reader: R)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -136,22 +151,42 @@ where
     });
 }
 
-fn push_buffered_line(lines: Arc<Mutex<Vec<String>>>, line: String) {
+fn push_buffered_line(lines: SharedOutputBuffer, line: String) {
     let Ok(mut locked) = lines.lock() else {
         return;
     };
-    locked.push(line);
-    if locked.len() > MAX_BUFFERED_OUTPUT_LINES {
-        let overflow = locked.len() - MAX_BUFFERED_OUTPUT_LINES;
-        locked.drain(0..overflow);
-        if !locked.is_empty() {
-            locked[0] = TRUNCATED_OUTPUT_MARKER.to_string();
+    locked.lines.push(line);
+    if locked.lines.len() > MAX_BUFFERED_OUTPUT_LINES {
+        let overflow = locked.lines.len() - MAX_BUFFERED_OUTPUT_LINES;
+        locked.lines.drain(0..overflow);
+        locked.dropped += overflow;
+        if !locked.lines.is_empty() {
+            locked.lines[0] = TRUNCATED_OUTPUT_MARKER.to_string();
         }
     }
 }
 
-fn clone_lines(lines: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-    lines.lock().map(|lines| lines.clone()).unwrap_or_default()
+fn read_buffered_lines(lines: &SharedOutputBuffer, cursor: &mut usize, all: bool) -> Vec<String> {
+    let Ok(locked) = lines.lock() else {
+        return Vec::new();
+    };
+    let output = if all {
+        locked.lines.clone()
+    } else {
+        let start = cursor
+            .saturating_sub(locked.dropped)
+            .min(locked.lines.len());
+        locked.lines[start..].to_vec()
+    };
+    *cursor = locked.dropped + locked.lines.len();
+    output
+}
+
+fn clone_lines(lines: &SharedOutputBuffer) -> Vec<String> {
+    lines
+        .lock()
+        .map(|buffer| buffer.lines.clone())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -193,6 +228,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_process_output_defaults_to_unread_lines() {
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let mut registry = ProcessRegistry::default();
+        let command = if cfg!(windows) {
+            "Write-Output bg-ready"
+        } else {
+            "printf 'bg-ready\\n'"
+        };
+
+        let start = registry.start(&json!({"command": command}), &policy).await;
+        assert!(!start.is_error);
+        let id = start.content.trim().to_string();
+
+        let mut first = String::new();
+        for _ in 0..20 {
+            first = registry.output(&json!({"id": id.clone()})).content;
+            if first.contains("bg-ready") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let second = registry.output(&json!({"id": id.clone()})).content;
+        let all = registry
+            .output(&json!({"id": id.clone(), "all": true}))
+            .content;
+
+        assert!(first.contains("bg-ready"));
+        assert_eq!(second, "");
+        assert!(all.contains("bg-ready"));
+        assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
+    }
+
+    #[tokio::test]
     async fn dropping_registry_stops_background_children() {
         let root = std::env::temp_dir().join(format!("animus-bg-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -219,7 +289,7 @@ mod tests {
 
     #[test]
     fn buffered_background_output_keeps_bounded_recent_window() {
-        let lines = Arc::new(Mutex::new(Vec::new()));
+        let lines = Arc::new(Mutex::new(OutputBuffer::default()));
 
         for index in 0..(MAX_BUFFERED_OUTPUT_LINES + 5) {
             push_buffered_line(lines.clone(), format!("line-{index}"));

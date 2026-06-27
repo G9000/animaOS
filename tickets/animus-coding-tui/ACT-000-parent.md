@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 21:09 MYT
+- Updated: 2026-06-27 21:44 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -93,6 +93,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 18:22 MYT - Seventh Codex review round was fixed and revalidated.
 - 2026-06-27 20:35 MYT - Eighth Codex review round was fixed and revalidated.
 - 2026-06-27 21:09 MYT - Ninth Codex review round was fixed and revalidated.
+- 2026-06-27 21:44 MYT - Tenth Codex review round was fixed and revalidated.
 
 ## Validation
 
@@ -176,6 +177,18 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run lint` - passed after ninth review fixes for server and desktop
   - `bun run build` - passed after ninth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after ninth review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus approval_pause_turn_complete_preserves_run_until_resume_finishes -- --nocapture` - failed before the approval-pause run-id fix, passed after the fix
+  - `cargo test -p animus preserves_current_run_id_after_approval_pause_turn_complete -- --nocapture` - failed before the client approval-pause run-id fix, passed after the fix
+  - `cargo test -p animus background_process_output_defaults_to_unread_lines -- --nocapture` - failed before cursor tracking, passed after the fix
+  - `cargo test -p animus action_tool_schemas_publish_required_parameters -- --nocapture` - failed before publishing `bg_output.all`, passed after the schema fix
+  - `cargo test -p animus` - passed after tenth review fixes: 83 passed
+  - `git diff --check` - passed after tenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after tenth review fixes
+  - `bun run test:animus` - passed after tenth review fixes: 83 passed
+  - `bun run lint` - passed after tenth review fixes for server and desktop
+  - `bun run build` - passed after tenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after tenth review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -206,4 +219,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - seventh Codex review fixes handled root Cargo lockfile reproducibility and `glob` result limits
   - eighth Codex review fixes handled dangling symlink rejection before workspace-write approval
   - ninth Codex review fixes handled awaiting-approval turn blocking and terminal error run cleanup
+  - tenth Codex review fixes handled approval-resume run-id retention and incremental background output polling
   - no database schema changes; Alembic was not run

@@ -183,7 +183,19 @@ fn tool_parameters(name: &str) -> Value {
             "required": ["todos"],
             "additionalProperties": false
         }),
-        "bg_output" | "bg_stop" => json!({
+        "bg_output" => json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Background process id returned by bg_start."},
+                "all": {
+                    "type": "boolean",
+                    "description": "Return all retained output instead of only unread output."
+                }
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        }),
+        "bg_stop" => json!({
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "Background process id returned by bg_start."}
@@ -372,6 +384,10 @@ mod tests {
         assert_eq!(
             schema("bg_start").parameters["required"],
             json!(["command"])
+        );
+        assert_eq!(
+            schema("bg_output").parameters["properties"]["all"]["type"],
+            json!("boolean")
         );
         assert_eq!(schema("bg_stop").parameters["required"], json!(["id"]));
         assert_eq!(

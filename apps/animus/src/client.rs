@@ -24,6 +24,7 @@ type WsRead = SplitStream<WsStream>;
 #[derive(Debug, Default, Clone)]
 pub struct ClientState {
     current_run_id: Option<i64>,
+    approval_pause_pending: bool,
 }
 
 impl ClientState {
@@ -35,15 +36,26 @@ impl ClientState {
         match frame {
             ServerFrame::RunStarted { run_id, .. } => {
                 self.current_run_id = Some(*run_id);
+                self.approval_pause_pending = false;
+            }
+            ServerFrame::ApprovalRequired { run_id, .. } => {
+                self.current_run_id = Some(*run_id);
+                self.approval_pause_pending = true;
             }
             ServerFrame::Cancelled { run_id } if self.current_run_id == Some(*run_id) => {
                 self.current_run_id = None;
+                self.approval_pause_pending = false;
             }
             ServerFrame::TurnComplete { .. } => {
-                self.current_run_id = None;
+                if self.approval_pause_pending {
+                    self.approval_pause_pending = false;
+                } else {
+                    self.current_run_id = None;
+                }
             }
             ServerFrame::Error { code, .. } if is_terminal_run_error_code(code) => {
                 self.current_run_id = None;
+                self.approval_pause_pending = false;
             }
             _ => {}
         }
@@ -304,6 +316,43 @@ mod tests {
 
         assert_eq!(state.current_run_id(), None);
         assert!(state.cancel_current_run().is_err());
+    }
+
+    #[test]
+    fn preserves_current_run_id_after_approval_pause_turn_complete() {
+        let mut state = ClientState::default();
+        state.observe_server_frame(&ServerFrame::RunStarted {
+            run_id: 42,
+            thread_id: Some(9),
+        });
+        state.observe_server_frame(&ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        });
+
+        state.observe_server_frame(&ServerFrame::TurnComplete {
+            response: String::new(),
+            model: "model-a".to_string(),
+            provider: "provider-a".to_string(),
+            tools_used: vec![],
+        });
+
+        assert_eq!(state.current_run_id(), Some(42));
+        assert_eq!(
+            state.cancel_current_run().unwrap(),
+            ClientFrame::Cancel { run_id: 42 }
+        );
+
+        state.observe_server_frame(&ServerFrame::TurnComplete {
+            response: String::new(),
+            model: "model-a".to_string(),
+            provider: "provider-a".to_string(),
+            tools_used: vec![],
+        });
+
+        assert_eq!(state.current_run_id(), None);
     }
 
     #[test]

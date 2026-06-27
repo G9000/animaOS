@@ -20,6 +20,7 @@ pub enum ConnectionState {
 pub struct RunState {
     pub current_run_id: Option<i64>,
     pub thread_id: Option<i64>,
+    approval_pause_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +115,7 @@ impl AppState {
             ServerFrame::RunStarted { run_id, thread_id } => {
                 self.run.current_run_id = Some(run_id);
                 self.run.thread_id = thread_id;
+                self.run.approval_pause_pending = false;
                 self.transcript.push(TranscriptItem::Session {
                     message: format!("run {run_id} started"),
                 });
@@ -164,6 +166,8 @@ impl AppState {
                 tool_name,
                 args,
             } => {
+                self.run.current_run_id = Some(run_id);
+                self.run.approval_pause_pending = true;
                 let pending = PendingApproval::new(
                     run_id,
                     tool_call_id.clone(),
@@ -196,6 +200,7 @@ impl AppState {
             ServerFrame::Cancelled { run_id } => {
                 if self.run.current_run_id == Some(run_id) {
                     self.run.current_run_id = None;
+                    self.run.approval_pause_pending = false;
                 }
                 self.transcript.push(TranscriptItem::Session {
                     message: format!("run {run_id} cancelled"),
@@ -216,7 +221,11 @@ impl AppState {
                 } else {
                     finish_streaming_assistant(&mut self.transcript);
                 }
-                self.run.current_run_id = None;
+                if self.run.approval_pause_pending {
+                    self.run.approval_pause_pending = false;
+                } else {
+                    self.run.current_run_id = None;
+                }
                 self.transcript.push(TranscriptItem::Session {
                     message: format!(
                         "turn complete via {provider}/{model}; tools: {}",
@@ -240,6 +249,7 @@ impl AppState {
             ServerFrame::Error { message, code } => {
                 if is_terminal_run_error_code(&code) {
                     self.run.current_run_id = None;
+                    self.run.approval_pause_pending = false;
                 }
                 self.errors.push(format!("{code}: {message}"));
                 self.transcript
@@ -537,6 +547,45 @@ mod tests {
             }
         );
         assert_eq!(app.approval_mode, "manual");
+    }
+
+    #[test]
+    fn approval_pause_turn_complete_preserves_run_until_resume_finishes() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::RunStarted {
+            run_id: 42,
+            thread_id: None,
+        }));
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+
+        app.apply(AppEvent::ServerFrame(ServerFrame::TurnComplete {
+            response: String::new(),
+            model: "model-a".to_string(),
+            provider: "provider-a".to_string(),
+            tools_used: vec![],
+        }));
+
+        assert_eq!(app.run.current_run_id, Some(42));
+        assert_eq!(
+            app.handle_command(crate::commands::parse_command("/cancel").unwrap()),
+            crate::commands::CommandEffect::CancelRun { run_id: 42 }
+        );
+
+        app.decide_approval(crate::approvals::ApprovalDecision::Approve)
+            .unwrap();
+        app.apply(AppEvent::ServerFrame(ServerFrame::TurnComplete {
+            response: String::new(),
+            model: "model-a".to_string(),
+            provider: "provider-a".to_string(),
+            tools_used: vec![],
+        }));
+
+        assert_eq!(app.run.current_run_id, None);
     }
 
     #[test]

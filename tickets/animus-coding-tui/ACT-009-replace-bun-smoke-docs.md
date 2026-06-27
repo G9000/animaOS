@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 21:09 MYT
+- Updated: 2026-06-27 21:44 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -49,6 +49,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 18:22 MYT - Addressed the seventh Codex review round: committed the root Cargo lockfile and capped `glob` results.
 - 2026-06-27 20:35 MYT - Addressed the eighth Codex review round: dangling symlinks are now rejected before workspace write approval can follow them outside the workspace.
 - 2026-06-27 21:09 MYT - Addressed the ninth Codex review round: websocket user messages are blocked while a run awaits approval, and terminal agent errors clear active Animus run state.
+- 2026-06-27 21:44 MYT - Addressed the tenth Codex review round: approval-pause `turn_complete` frames preserve the active run id, and `bg_output` now returns unread output by default with explicit `all` support.
 
 ## Validation
 
@@ -133,6 +134,19 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run lint` - passed after ninth review fixes for server and desktop
   - `bun run build` - passed after ninth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after ninth review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus approval_pause_turn_complete_preserves_run_until_resume_finishes -- --nocapture` - failed before the approval-pause run-id fix with `None`, passed after the fix
+  - `cargo test -p animus preserves_current_run_id_after_approval_pause_turn_complete -- --nocapture` - failed before the client approval-pause run-id fix with `None`, passed after the fix
+  - `cargo test -p animus background_process_output_defaults_to_unread_lines -- --nocapture` - failed before cursor tracking by returning `bg-ready` twice, passed after the fix
+  - `cargo test -p animus action_tool_schemas_publish_required_parameters -- --nocapture` - failed before publishing `bg_output.all`, passed after the schema fix
+  - `cargo fmt -p animus` - completed after tenth review fixes
+  - `cargo test -p animus` - passed after tenth review fixes: 83 passed
+  - `git diff --check` - passed after tenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after tenth review fixes
+  - `bun run test:animus` - passed after tenth review fixes: 83 passed
+  - `bun run lint` - passed after tenth review fixes for server and desktop
+  - `bun run build` - passed after tenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after tenth review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":true}`
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -181,5 +195,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Seventh review fixes commit the root Cargo lockfile despite the broad ignore rule, and make `glob` honor its advertised `limit` argument with a truncation marker.
   - Eighth review fixes reject dangling symlink path components before canonicalizing the nearest existing parent, blocking workspace-write creates through links that point outside the workspace.
   - Ninth review fixes prevent overlapping turns while a run remains `awaiting_approval`, and clear active Animus run ids when an `AGENT_ERROR` frame terminates a run.
+  - Tenth review fixes preserve cancellation during approval resume streams and make repeated `bg_output` polling incremental unless `all` is explicitly requested.
   - No database schema changes; Alembic was not run.
 
