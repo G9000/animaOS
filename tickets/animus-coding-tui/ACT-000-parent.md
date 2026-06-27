@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 22:42 MYT
+- Updated: 2026-06-27 23:19 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -96,6 +96,8 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 21:44 MYT - Tenth Codex review round was fixed and revalidated.
 - 2026-06-27 22:14 MYT - Eleventh Codex review round was fixed and revalidated.
 - 2026-06-27 22:42 MYT - Twelfth Codex review round was fixed and revalidated.
+- 2026-06-27 23:08 MYT - Thirteenth Codex review round was fixed and revalidated.
+- 2026-06-27 23:19 MYT - Final thirteenth-round validation was rerun, including full server tests and a health smoke on a temporary free port.
 
 ## Validation
 
@@ -214,6 +216,16 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run build` - passed after twelfth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after twelfth review fixes: 1650 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:3131/health` - HTTP 200; port 3031 was already in use
+  - `cargo test -p animus approval_prompt_blocks_normal_composer_submission -- --nocapture` - failed before approval prompt input blocking, passed after the fix
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_after_separators -- --nocapture` - failed before separator-aware dangerous command detection, passed after the fix
+  - `cargo test -p animus` - passed after thirteenth review fixes: 90 passed
+  - `git diff --check` - passed after thirteenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after thirteenth review fixes
+  - `bun run test:animus` - passed after thirteenth review fixes: 90 passed
+  - `bun run lint` - passed after thirteenth review fixes for server and desktop
+  - `bun run build` - passed after thirteenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after thirteenth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:64124/health` - HTTP 200; temporary server was stopped after the smoke check
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -246,4 +258,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - ninth Codex review fixes handled awaiting-approval turn blocking and terminal error run cleanup
   - tenth Codex review fixes handled approval-resume run-id retention and incremental background output polling
   - eleventh Codex review fixes handled password-auth precedence over stale unlock tokens and exited background-process reporting
+  - thirteenth Codex review fixes handled pending-approval input blocking and separator-aware dangerous shell command detection
   - no database schema changes; Alembic was not run

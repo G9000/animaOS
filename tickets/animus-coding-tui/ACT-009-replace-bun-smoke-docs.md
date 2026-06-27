@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 22:42 MYT
+- Updated: 2026-06-27 23:19 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -52,6 +52,8 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 21:44 MYT - Addressed the tenth Codex review round: approval-pause `turn_complete` frames preserve the active run id, and `bg_output` now returns unread output by default with explicit `all` support.
 - 2026-06-27 22:14 MYT - Addressed the eleventh Codex review round: explicit username/password auth now overrides stale unlock tokens, and background processes report `exited(code)` from `bg_output` and `bg_list`.
 - 2026-06-27 22:42 MYT - Addressed the twelfth Codex review round: websocket reconnects now replay pending approval frames and clear unresumable approval rows, and delegated `bash`/`bg_start` commands substitute saved Animus secrets before permission checks and spawn.
+- 2026-06-27 23:08 MYT - Addressed the thirteenth Codex review round: pending approval prompts now block normal composer submission, and dangerous shell commands chained after separators are denied before shell execution.
+- 2026-06-27 23:19 MYT - Reran final thirteenth-round validation, including full server tests and a health smoke on a temporary free port.
 
 ## Validation
 
@@ -174,6 +176,17 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `bun run build` - passed after twelfth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after twelfth review fixes: 1650 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:3131/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; port 3031 was already in use
+  - `cargo test -p animus approval_prompt_blocks_normal_composer_submission -- --nocapture` - failed before approval prompt input blocking by emitting a `user_message`, passed after the fix
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_after_separators -- --nocapture` - failed before separator-aware dangerous command detection by allowing `true; rm -rf src`, passed after the fix
+  - `cargo fmt -p animus` - completed after thirteenth review fixes
+  - `cargo test -p animus` - passed after thirteenth review fixes: 90 passed
+  - `git diff --check` - passed after thirteenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after thirteenth review fixes
+  - `bun run test:animus` - passed after thirteenth review fixes: 90 passed
+  - `bun run lint` - passed after thirteenth review fixes for server and desktop
+  - `bun run build` - passed after thirteenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after thirteenth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:64124/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; temporary server was stopped after the smoke check
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -226,5 +239,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Tenth review fixes preserve cancellation during approval resume streams and make repeated `bg_output` polling incremental unless `all` is explicitly requested.
   - Eleventh review fixes keep stale unlock-session tokens from shadowing explicit password login, and surface background process exit codes after output has already been consumed.
   - Twelfth review fixes replay persisted approval prompts to reconnecting websocket clients, clean up malformed awaiting-approval rows, and restore saved-secret substitution for delegated shell-like tools before permission checks and execution.
+  - Thirteenth review fixes prevent pending approval prompts from sending optimistic user messages, and make shell permission checks inspect quote-aware command segments after `;`, `&&`, `||`, pipes, newlines, and PowerShell separators.
   - No database schema changes; Alembic was not run.
 

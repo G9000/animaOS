@@ -230,17 +230,83 @@ fn push_normalized_prefix(normalized: &mut PathBuf, prefix: std::path::PrefixCom
 
 fn is_dangerous_shell(command: &str) -> bool {
     let command = command.trim().to_ascii_lowercase();
-    command.starts_with("rm ")
-        || command.starts_with("rmdir ")
-        || command.starts_with("sudo ")
-        || command.starts_with("git reset")
-        || command.starts_with("git push")
-        || command.starts_with("git rebase")
-        || command.starts_with("chmod ")
-        || command.starts_with("chown ")
+    shell_segments(&command)
+        .into_iter()
+        .any(is_dangerous_shell_segment)
         || command.contains("| sh")
         || command.contains("| bash")
-        || (command.starts_with("remove-item") && command.contains("-recurse"))
+}
+
+fn shell_segments(command: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote = ShellQuote::None;
+
+    for (index, ch) in command.char_indices() {
+        match (quote, ch) {
+            (ShellQuote::None, '\'') => quote = ShellQuote::Single,
+            (ShellQuote::None, '"') => quote = ShellQuote::Double,
+            (ShellQuote::Single, '\'') => quote = ShellQuote::None,
+            (ShellQuote::Double, '"') => quote = ShellQuote::None,
+            (ShellQuote::None, ';' | '&' | '|' | '\n' | '\r') => {
+                segments.push(&command[start..index]);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(&command[start..]);
+    segments
+}
+
+#[derive(Clone, Copy)]
+enum ShellQuote {
+    None,
+    Single,
+    Double,
+}
+
+fn is_dangerous_shell_segment(segment: &str) -> bool {
+    let segment = segment.trim_start();
+    let tokens = segment.split_whitespace().collect::<Vec<_>>();
+    let Some(command) = tokens.first().copied() else {
+        return false;
+    };
+
+    matches!(command, "rm" | "rmdir" | "sudo" | "chmod" | "chown")
+        || is_dangerous_git_command(&tokens)
+        || (command == "remove-item" && tokens.iter().any(|token| *token == "-recurse"))
+}
+
+fn is_dangerous_git_command(tokens: &[&str]) -> bool {
+    if tokens.first() != Some(&"git") {
+        return false;
+    }
+
+    let mut index = 1;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if token == "--" {
+            index += 1;
+            break;
+        }
+        if token.starts_with('-') {
+            index += if matches!(
+                token,
+                "-c" | "-C" | "--git-dir" | "--work-tree" | "--namespace"
+            ) {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        return matches!(token, "reset" | "push" | "rebase");
+    }
+
+    tokens
+        .get(index)
+        .is_some_and(|token| matches!(*token, "reset" | "push" | "rebase"))
 }
 
 #[cfg(test)]
@@ -311,6 +377,26 @@ mod tests {
         ));
         assert!(matches!(
             allow.check_shell("rm -rf /"),
+            PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn shell_policy_denies_dangerous_commands_after_separators() {
+        let workspace = test_workspace();
+        let allow = PermissionPolicy::workspace_write(workspace)
+            .with_shell_mode(ShellPermissionMode::Allow);
+
+        assert!(matches!(
+            allow.check_shell("true; rm -rf src"),
+            PermissionDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            allow.check_shell("cd repo && git reset --hard"),
+            PermissionDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            allow.check_shell("Write-Output ok; Remove-Item -Recurse src"),
             PermissionDecision::Deny { .. }
         ));
     }

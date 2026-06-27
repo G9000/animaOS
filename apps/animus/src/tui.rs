@@ -437,7 +437,7 @@ fn handle_key(app: &mut AppState, input: &mut InputBuffer, key: KeyEvent) -> Vec
             KeyCode::Esc => {
                 return approval_outbound(app, ApprovalDecision::Cancel);
             }
-            _ => {}
+            _ => return Vec::new(),
         }
     }
 
@@ -654,6 +654,33 @@ mod tests {
                 }
             )]
         );
+    }
+
+    #[test]
+    fn approval_prompt_blocks_normal_composer_submission() {
+        let mut app = AppState::for_test();
+        let mut input = crate::input::InputBuffer::default();
+        input.insert_str("keep this draft");
+        sync_input(&mut app, &input);
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+
+        let outgoing = handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert!(outgoing.is_empty());
+        assert_eq!(input.text(), "keep this draft");
+        assert_eq!(app.input, "keep this draft");
+        assert!(!render_to_text(&app, 120, 12)
+            .iter()
+            .any(|row| row.contains("you: keep this draft")));
     }
 
     #[test]
