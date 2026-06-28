@@ -320,7 +320,7 @@ function main(): void {
   const localRuntimeArtifact = runtimeArtifactSource;
   const bundledRuntimeArtifact = runtimeArtifactSource
     ? stageRuntimeArtifact(runtimeArtifactSource, bundledResourcesDir)
-    : bundledRuntimeEntrypoint;
+    : null;
 
   const localManifest = buildManifest({
     artifactCandidates: manifestCandidates,
