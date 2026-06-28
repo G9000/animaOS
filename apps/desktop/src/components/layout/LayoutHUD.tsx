@@ -271,10 +271,7 @@ export function LayoutHUD() {
           style={{ clipPath: "polygon(12px 0, 100% 0, 100% 100%, 0 100%, 0 12px)" }}
           className="fixed bottom-0 right-0 z-30 bg-accent px-4 py-1.5 pointer-events-none flex flex-col items-end gap-0.5"
         >
-          <span className="font-mono text-[11px] tracking-[0.18em] text-accent-foreground/60 leading-none">
-            {time}
-          </span>
-          <span className="font-mono text-[9px] tracking-[0.28em] uppercase text-accent-foreground/90 leading-none">
+          <span className="font-mono text-ui uppercase text-accent-foreground leading-none">
             {activeNavItem.description}
           </span>
         </div>
