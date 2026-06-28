@@ -1,4 +1,4 @@
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { cn, Button, StandardInput, InfoIcon } from "@anima/standard-templates";
 import { PersonaTemplateCards } from "../../components/PersonaTemplateCards";
@@ -227,6 +227,12 @@ export default function Init() {
           : undefined
       }
     >
+      <Link
+        className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+        to="/daemon"
+      >
+        daemon recovery
+      </Link>
 
       <div
         className="absolute inset-0 pointer-events-none z-[1]"

@@ -7,6 +7,7 @@ import {
 } from "react";
 import type { User } from "@anima/api-client";
 import { api, clearUnlockToken, getUnlockToken } from "../lib/api";
+import { getDaemonStatus, refreshDaemonRuntimeNonce, startDaemon } from "../lib/daemon";
 
 interface AuthContextType {
   user: User | null;
@@ -22,6 +23,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 const STORAGE_KEY = "anima_user";
 const HEALTH_BOOT_RETRIES = 20;
 const HEALTH_BOOT_RETRY_MS = 500;
+const DAEMON_STARTUP_RETRIES = 90;
 
 function purgeLegacyStoredUser(): void {
   try {
@@ -41,6 +43,21 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+async function waitForRuntimeStartup(): Promise<void> {
+  for (let attempt = 0; attempt < DAEMON_STARTUP_RETRIES; attempt += 1) {
+    try {
+      const status = await getDaemonStatus();
+      if (status.state !== "starting") {
+        return;
+      }
+    } catch {
+      // If daemon status is unavailable, fall back to direct runtime health probing.
+      return;
+    }
+    await delay(HEALTH_BOOT_RETRY_MS);
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isProvisioned, setIsProvisioned] = useState(false);
@@ -54,6 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (async () => {
       let healthAvailable = false;
       try {
+        await startDaemon().catch(async () => {
+          await refreshDaemonRuntimeNonce().catch(() => {});
+        });
+        await waitForRuntimeStartup();
         for (let attempt = 0; attempt < HEALTH_BOOT_RETRIES; attempt += 1) {
           try {
             const health = await api.system.health();

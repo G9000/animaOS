@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { Button, StandardInput } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
@@ -147,6 +147,13 @@ export default function Login() {
 
   return (
     <div className="h-screen w-screen text-foreground overflow-hidden relative">
+      <Link
+        className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+        to="/daemon"
+      >
+        daemon recovery
+      </Link>
+
       {/* Bottom gradient */}
       <div
         className="absolute inset-0 pointer-events-none z-[1]"

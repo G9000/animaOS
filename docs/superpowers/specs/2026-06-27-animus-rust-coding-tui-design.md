@@ -2,13 +2,13 @@
 
 ## Summary
 
-Animus should be rewritten as a Rust-native ANIMA-first coding terminal. The current Bun/Ink implementation is early enough to replace outright instead of preserving as a fallback.
+Animus is a Rust-native ANIMA-first coding terminal. The earlier Bun/Ink implementation was replaced outright because the app was still early enough for a clean rewrite.
 
 The rewrite should use proven Rust coding-agent TUI architecture patterns while keeping ANIMA's server, memory, identity, and runtime boundaries as the source of truth.
 
 ## Goals
 
-- Replace the current Bun/Ink `apps/animus` implementation with a Rust CLI/TUI.
+- Keep `apps/animus` as a Rust CLI/TUI replacement for the earlier Bun/Ink implementation.
 - Keep ANIMA server-driven: Animus connects to `/ws/agent`; ANIMA owns the agent loop, memory, model calls, and runtime state.
 - Provide a serious coding terminal: responsive input, readable transcript, rich tool output, inline approvals, status line, slash commands, reliable cancel/reconnect, and spawn visibility.
 - Use Rust for performance, single-binary distribution, better terminal control, and stronger protocol/state modeling.
@@ -16,7 +16,7 @@ The rewrite should use proven Rust coding-agent TUI architecture patterns while 
 
 ## Non-Goals
 
-- Do not keep the Bun/Ink CLI as a supported fallback in v1.
+- Do not retain the legacy Bun/Ink CLI in v1.
 - Do not port the reference backend, cloud API model, auth system, provider stack, memory model, or full multi-agent process manager wholesale.
 - Do not add standalone non-ANIMA provider mode in this version.
 - Do not redesign ANIMA's memory or identity architecture.
@@ -24,7 +24,7 @@ The rewrite should use proven Rust coding-agent TUI architecture patterns while 
 
 ## Current State
 
-`apps/animus` already has a Bun/Ink TUI, WebSocket client, local action tools, permission checks, and headless mode. The current implementation proves the flow but is thin:
+Before this rewrite, `apps/animus` had a Bun/Ink TUI, WebSocket client, local action tools, permission checks, and headless mode. That implementation proved the flow but was thin:
 
 - `run_started` and `cancelled` are emitted server-side but are missing from the current Animus protocol types.
 - Cancel messages need a current `run_id`.
@@ -46,7 +46,7 @@ Rust Animus TUI
   -> streamed events back to Animus
 ```
 
-`apps/animus` should become a Rust package with focused modules:
+`apps/animus` is a Rust package with focused modules:
 
 - `main`: CLI args and app startup.
 - `config`: local config, server URL, workspace path, token lookup.
@@ -83,6 +83,18 @@ Rewrite around ANIMA where the code is product-specific:
 - Model/provider settings.
 - Cloud/web/desktop links.
 - Upstream brand text, names, logos, and ASCII art.
+
+## Concrete Codex Reference Boundary
+
+Use the local Codex checkout at `C:\Users\leoca\OneDrive\Desktop\anima\codex` as a reference implementation for Rust TUI structure, not as a product template. The implementation plan maps specific Codex files to Animus tasks; the key boundaries are:
+
+- Terminal lifecycle/event-loop patterns may be adapted from `codex-rs/tui/src/tui.rs`, `codex-rs/tui/src/tui/event_stream.rs`, and `codex-rs/tui/src/tui/frame_requester.rs`.
+- Transcript/history-cell patterns may be adapted from `codex-rs/tui/src/history_cell/*.rs`, but Animus cells must be ANIMA event cells.
+- Slash-command and status-line patterns may be adapted from `codex-rs/tui/src/slash_command.rs`, `codex-rs/tui/src/bottom_pane/slash_commands.rs`, `codex-rs/tui/src/bottom_pane/footer.rs`, and `codex-rs/tui/src/status/*`.
+- Approval display and decision modeling may be adapted from `codex-rs/tui/src/approval_events.rs`, `codex-rs/tui/src/bottom_pane/approval_overlay.rs`, and `codex-rs/tui/src/history_cell/approvals.rs`.
+- Background thread navigation concepts may be adapted from `codex-rs/tui/src/multi_agents.rs` and `codex-rs/tui/src/app/agent_navigation.rs`, but labels and behavior must remain ANIMA single-identity spawn semantics.
+
+Do not copy provider login, ChatGPT/OpenAI account state, cloud task APIs, remote thread stores, app-server session assumptions, product names, logos, ASCII art, marketing copy, or model-provider defaults. Any adapted source file must be listed in `apps/animus/NOTICE.md` before merge.
 
 ## Reference Architecture Alignment
 

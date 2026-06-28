@@ -1,12 +1,17 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { cn, AiIcon, SecurityIcon, VaultIcon, LanguageIcon, AppearanceIcon, AdvancedIcon } from "@anima/standard-templates";
 
+function DaemonIcon() {
+  return <span className="w-4 h-4 inline-flex items-center justify-center text-xs opacity-80">D</span>;
+}
+
 const SETTINGS_SECTIONS = [
   { to: "/settings/ai",         label: "AI",         description: "Provider, model, keys, directive.", Icon: AiIcon },
   { to: "/settings/security",   label: "Security",   description: "Master password & session.",        Icon: SecurityIcon },
   { to: "/settings/vault",      label: "Vault",      description: "Encrypted backup.",                 Icon: VaultIcon },
   { to: "/settings/language",   label: "Language",   description: "Translation preferences.",          Icon: LanguageIcon },
   { to: "/settings/appearance", label: "Appearance", description: "Theme & background.",               Icon: AppearanceIcon },
+  { to: "/settings/daemon",     label: "Daemon",     description: "Runtime status and controls.",      Icon: DaemonIcon },
   { to: "/settings/advanced",   label: "Advanced",   description: "Debug tools.",                      Icon: AdvancedIcon },
 ];
 
@@ -73,3 +78,4 @@ export default function Settings() {
     </div>
   );
 }
+

@@ -1,17 +1,17 @@
 # ACT-009 - Replace Bun wiring, smoke tests, and docs
 
-- Status: backlog
+- Status: done
 - Priority: P1
-- Scope: `apps/animus`, `docs`, `tickets`
+- Scope: `apps/animus`, `apps/server`, `docs`, `tickets`
 - Parent: `ACT-000`
 - Depends on: `ACT-005`, `ACT-006`, `ACT-007`, `ACT-008`
-- Owner: unassigned
+- Owner: codex
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-27 03:00 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-28 20:09 MYT
+- Started: 2026-06-27 06:31 MYT
+- Completed: 2026-06-27 11:38 MYT
 
 ## Goal
 
@@ -37,13 +37,270 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 ## Activity Log
 
 - 2026-06-27 03:00 MYT - Ticket created for Rust replacement closure.
+- 2026-06-27 06:31 MYT - Moved to in_progress for final Rust wiring, Bun/Ink removal, docs, and smoke validation.
+- 2026-06-27 11:38 MYT - Completed Rust-only wiring, removed legacy TypeScript package files, refreshed docs/lockfile, fixed validation blockers, and ran final smoke/build/test checks.
+- 2026-06-27 12:10 MYT - Addressed Codex review blockers for workspace containment, live permission policy updates, TUI approval/input layout, input buffer wiring, shell timeout cleanup, and lint import ordering.
+- 2026-06-27 12:18 MYT - Addressed the remaining Codex PR review thread by restoring concrete JSON parameter schemas for Animus action tools.
+- 2026-06-27 12:43 MYT - Addressed the second Codex review round: unique edit targets, path-qualified glob matching, remembered approval reuse, unimplemented `ask_user` schema removal, and non-blocking websocket approval resume.
+- 2026-06-27 13:02 MYT - Addressed the third Codex review round: reconnect-time outbound frame queueing, background process cleanup on registry drop, and bounded background output buffers.
+- 2026-06-27 13:24 MYT - Addressed the fourth Codex review round: delegated shell permission gating, async local tool execution, shell/background output redaction, and bounded grep results.
+- 2026-06-27 16:52 MYT - Addressed the fifth Codex review round: CRLF-normalized edit matching and progressive `multi_edit` validation.
+- 2026-06-27 17:20 MYT - Addressed the sixth Codex review round: bounded shell tool output and tail-rendered transcript rows.
+- 2026-06-27 18:22 MYT - Addressed the seventh Codex review round: committed the root Cargo lockfile and capped `glob` results.
+- 2026-06-27 20:35 MYT - Addressed the eighth Codex review round: dangling symlinks are now rejected before workspace write approval can follow them outside the workspace.
+- 2026-06-27 21:09 MYT - Addressed the ninth Codex review round: websocket user messages are blocked while a run awaits approval, and terminal agent errors clear active Animus run state.
+- 2026-06-27 21:44 MYT - Addressed the tenth Codex review round: approval-pause `turn_complete` frames preserve the active run id, and `bg_output` now returns unread output by default with explicit `all` support.
+- 2026-06-27 22:14 MYT - Addressed the eleventh Codex review round: explicit username/password auth now overrides stale unlock tokens, and background processes report `exited(code)` from `bg_output` and `bg_list`.
+- 2026-06-27 22:42 MYT - Addressed the twelfth Codex review round: websocket reconnects now replay pending approval frames and clear unresumable approval rows, and delegated `bash`/`bg_start` commands substitute saved Animus secrets before permission checks and spawn.
+- 2026-06-27 23:08 MYT - Addressed the thirteenth Codex review round: pending approval prompts now block normal composer submission, and dangerous shell commands chained after separators are denied before shell execution.
+- 2026-06-27 23:19 MYT - Reran final thirteenth-round validation, including full server tests and a health smoke on a temporary free port.
+- 2026-06-27 23:42 MYT - Addressed the fourteenth Codex review round: auth failures now stop reconnect loops, reconnect auth clears stale local approval prompts before replay, and turn completion finishes interrupted streaming assistant rows.
+- 2026-06-28 17:34 MYT - Addressed the latest Codex security review rounds: shell command checks normalize env/path wrappers, and saved secrets are redacted from permission denials and background process listings.
+- 2026-06-28 17:59 MYT - Addressed the latest Codex reconnect/run-state review round: replayed approval completions clear the active run, and active runs block normal composer submission.
+- 2026-06-28 18:12 MYT - Addressed the latest Codex replayed-approval review round: multiple replayed approvals now remain queued and actionable in order.
+- 2026-06-28 18:33 MYT - Addressed the latest Codex shell-substitution and stale-approval replay review round: dangerous commands inside substitutions are denied, and already answered approvals are not requeued from stale replay.
+- 2026-06-28 19:02 MYT - Addressed the latest Codex path-qualified git review round: quoted and path-qualified git executables now hit the dangerous-command deny-list.
+- 2026-06-28 19:19 MYT - Addressed the latest Codex approval-conflict review round: approval `RUN_CONFLICT` and `RUN_NOT_FOUND` errors now clear stale active run state.
+- 2026-06-28 20:09 MYT - Addressed the latest Codex reconnect review round: reconnect auth now clears stale active run state before replayed frames can re-establish it.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `bun install --frozen-lockfile` - passed
+  - `git diff --check` - passed with Windows line-ending warnings only
+  - `cargo test -p animus` - passed: 51 passed
+  - `cargo check -p animus` - passed
+  - `bun run test:animus` - passed: 51 passed
+  - `cargo run -p animus -- --headless` - passed; printed Rust startup summary
+  - `bun run build` - passed for server, desktop, and `cargo check -p animus`
+  - `bun run test` - blocked before collection without a Core encryption passphrase
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed: 1647 passed, 1 skipped, 235 warnings
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_creation_flow.py::test_agent_can_generate_thinking_monologue_draft -q` - passed
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_today_context.py -q` - passed: 8 passed
+  - `GET /health` against `bun run dev:server` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`
+  - `cargo test -p animus` - passed after review fixes: 57 passed
+  - `cargo check -p animus` - passed after review fixes
+  - `bun run lint` - passed for server and desktop
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after review fixes: 1647 passed, 1 skipped, 235 warnings
+  - `bun run build` - passed after review fixes for server, desktop, and `cargo check -p animus`
+  - `cargo test -p animus action_tool_schemas_publish_required_parameters` - failed before schema fix with missing `required`, passed after fix
+  - `cargo test -p animus` - passed after schema fix: 58 passed
+  - `cargo check -p animus` - passed after schema fix
+  - `bun run lint` - passed after schema fix for server and desktop
+  - `bun run build` - passed after schema fix for server, desktop, and `cargo check -p animus`
+  - `cargo test -p animus` - passed after second review fixes: 63 passed
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_ws.py -q` - passed after second review fixes: 10 passed
+  - `bun run lint` - passed after second review fixes for server and desktop
+  - `bun run build` - passed after second review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after second review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `git diff --check` - passed after third review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after third review fixes: 66 passed
+  - `bun run lint` - passed after third review fixes for server and desktop
+  - `bun run build` - passed after third review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after third review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `git diff --check` - passed after fourth review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after fourth review fixes: 71 passed
+  - `bun run lint` - passed after fourth review fixes for server and desktop
+  - `bun run build` - passed after fourth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fourth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus` - passed after fifth review fixes: 74 passed
+  - `git diff --check` - passed after fifth review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after fifth review fixes: 74 passed
+  - `bun run lint` - passed after fifth review fixes for server and desktop
+  - `bun run build` - passed after fifth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fifth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus shell_exec_truncates_large_output_before_returning_tool_result` - failed before the shell cap with 1005 stdout lines, passed after the fix
+  - `cargo test -p animus render_text_keeps_newest_transcript_rows_visible` - failed before tail rendering hid `message-9`, passed after the fix
+  - `cargo test -p animus` - passed after sixth review fixes: 76 passed
+  - `git diff --check` - passed after sixth review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after sixth review fixes: 76 passed
+  - `bun run lint` - passed after sixth review fixes for server and desktop
+  - `bun run build` - passed after sixth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after sixth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus glob_honors_limit_and_reports_truncation` - failed before the glob cap returned `src/file-2.rs`, passed after the fix
+  - `cargo metadata --locked --offline --format-version 1` - passed after committing the root Cargo lockfile
+  - `cargo test -p animus` - passed after seventh review fixes: 77 passed
+  - `git diff --check` - passed after seventh review fixes with Windows line-ending warnings only
+  - `bun run test:animus` - passed after seventh review fixes: 77 passed
+  - `bun run lint` - passed after seventh review fixes for server and desktop
+  - `bun run build` - passed after seventh review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after seventh review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus workspace_write_denies_dangling_symlink_to_outside_target -- --nocapture` - failed before the dangling-symlink resolver fix, passed after the fix
+  - `cargo fmt -p animus --check` - passed after eighth review fixes
+  - `cargo test -p animus` - passed after eighth review fixes: 78 passed
+  - `git diff --check` - passed after eighth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after eighth review fixes
+  - `bun run test:animus` - passed after eighth review fixes: 78 passed
+  - `bun run lint` - passed after eighth review fixes for server and desktop
+  - `bun run build` - passed after eighth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after eighth review fixes: 1648 passed, 1 skipped, 235 warnings
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_ws.py::TestWebSocketRunHandlers::test_ws_agent_rejects_user_message_while_run_awaits_approval -q` - failed before the awaiting-approval busy guard by accepting a second turn, passed after the fix
+  - `cargo test -p animus terminal_agent_error_clears_active_run -- --nocapture` - failed before terminal error run clearing, passed after the fix
+  - `cargo test -p animus clears_current_run_id_after_terminal_agent_error -- --nocapture` - failed before terminal error run clearing, passed after the fix
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_ws.py -q` - passed after ninth review fixes: 11 passed
+  - `cargo fmt -p animus --check` - passed after ninth review fixes
+  - `cargo test -p animus` - passed after ninth review fixes: 80 passed
+  - `git diff --check` - passed after ninth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after ninth review fixes
+  - `bun run test:animus` - passed after ninth review fixes: 80 passed
+  - `bun run lint` - passed after ninth review fixes for server and desktop
+  - `bun run build` - passed after ninth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after ninth review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `cargo test -p animus approval_pause_turn_complete_preserves_run_until_resume_finishes -- --nocapture` - failed before the approval-pause run-id fix with `None`, passed after the fix
+  - `cargo test -p animus preserves_current_run_id_after_approval_pause_turn_complete -- --nocapture` - failed before the client approval-pause run-id fix with `None`, passed after the fix
+  - `cargo test -p animus background_process_output_defaults_to_unread_lines -- --nocapture` - failed before cursor tracking by returning `bg-ready` twice, passed after the fix
+  - `cargo test -p animus action_tool_schemas_publish_required_parameters -- --nocapture` - failed before publishing `bg_output.all`, passed after the schema fix
+  - `cargo fmt -p animus` - completed after tenth review fixes
+  - `cargo test -p animus` - passed after tenth review fixes: 83 passed
+  - `git diff --check` - passed after tenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after tenth review fixes
+  - `bun run test:animus` - passed after tenth review fixes: 83 passed
+  - `bun run lint` - passed after tenth review fixes for server and desktop
+  - `bun run build` - passed after tenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after tenth review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":true}`
+  - `cargo test -p animus auth_frame_prefers_password_credentials_over_stale_token -- --nocapture` - failed before the auth precedence fix by sending the stale token, passed after the fix
+  - `cargo test -p animus background_process_reports_exit_after_output_is_consumed -- --nocapture` - failed before exit-state tracking by returning empty output, passed after the fix
+  - `cargo fmt -p animus` - completed after eleventh review fixes
+  - `cargo test -p animus` - passed after eleventh review fixes: 85 passed
+  - `git diff --check` - passed after eleventh review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after eleventh review fixes
+  - `bun run test:animus` - passed after eleventh review fixes: 85 passed
+  - `bun run lint` - passed after eleventh review fixes for server and desktop
+  - `bun run build` - passed after eleventh review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after eleventh review fixes: 1649 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3031/health` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":true}`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_ws.py::TestWebSocketRunHandlers::test_ws_agent_replays_pending_approval_after_auth` - failed before the websocket replay hook with missing `_pending_approval_frames`, passed after the fix
+  - `cargo test -p animus shell_exec_substitutes_saved_secrets_before_spawning` - failed before saved-secret substitution by returning literal `$ANIMUS_TEST_TOKEN`, passed after the fix
+  - `cargo test -p animus shell_exec_checks_permissions_after_saved_secret_substitution` - failed before saved-secret substitution by allowing the placeholder, passed after the fix
+  - `cargo test -p animus background_process_substitutes_saved_secrets_before_spawning` - failed before `bg_start` substitution by returning literal placeholder output, passed after the fix
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_ws.py` - passed after twelfth review fixes: 12 passed
+  - `cargo fmt -p animus` - completed after twelfth review fixes
+  - `cargo test -p animus` - passed after twelfth review fixes: 88 passed
+  - `git diff --check` - passed after twelfth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after twelfth review fixes
+  - `bun run test:animus` - passed after twelfth review fixes: 88 passed
+  - `bun run lint` - failed once on a test double forward-reference style issue, then passed after fixing it
+  - `bun run build` - passed after twelfth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after twelfth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:3131/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; port 3031 was already in use
+  - `cargo test -p animus approval_prompt_blocks_normal_composer_submission -- --nocapture` - failed before approval prompt input blocking by emitting a `user_message`, passed after the fix
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_after_separators -- --nocapture` - failed before separator-aware dangerous command detection by allowing `true; rm -rf src`, passed after the fix
+  - `cargo fmt -p animus` - completed after thirteenth review fixes
+  - `cargo test -p animus` - passed after thirteenth review fixes: 90 passed
+  - `git diff --check` - passed after thirteenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after thirteenth review fixes
+  - `bun run test:animus` - passed after thirteenth review fixes: 90 passed
+  - `bun run lint` - passed after thirteenth review fixes for server and desktop
+  - `bun run build` - passed after thirteenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after thirteenth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:64124/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; temporary server was stopped after the smoke check
+  - `cargo test -p animus finish_streaming_assistant_finishes_latest_assistant_before_tool_rows -- --nocapture` - failed before finishing the latest streaming assistant before tool rows, passed after the fix
+  - `cargo test -p animus reconnect_auth_clears_stale_pending_approval_before_replay -- --nocapture` - failed before reconnect auth cleared stale local approvals, passed after the fix
+  - `cargo test -p animus websocket_driver_stops_after_authentication_failure -- --nocapture` - failed before terminal auth errors stopped reconnect retries, passed after the fix
+  - `cargo test -p animus background_process_substitutes_saved_secrets_before_spawning -- --nocapture` - passed while isolating the full-suite timing failure
+  - `cargo fmt -p animus` - completed after fourteenth review fixes
+  - `cargo test -p animus` - passed after fourteenth review fixes: 93 passed
+  - `git diff --check` - passed after fourteenth review fixes with Windows line-ending warnings only
+  - `cargo metadata --locked --offline --format-version 1` - passed after fourteenth review fixes
+  - `bun run test:animus` - failed before lengthening the Windows background-process polling window, then passed after fourteenth review fixes: 93 passed
+  - `bun run lint` - passed after fourteenth review fixes for server and desktop
+  - `bun run build` - passed after fourteenth review fixes for server, desktop, and `cargo check -p animus`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fourteenth review fixes: 1650 passed, 1 skipped, 235 warnings
+  - `GET /health` at `http://127.0.0.1:53780/health` from this worktree with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` - HTTP 200, `{"status":"ok","service":"server","environment":"development","provisioned":false}`; temporary server was stopped after the smoke check
+  - `cargo test -p animus saved_secrets -- --nocapture` - passed after saved-secret denial and background-list redaction fixes: 4 passed
+  - `cargo fmt -p animus` - completed after latest security review fixes
+  - `cargo test -p animus` - passed after latest security review fixes: 97 passed
+  - `cargo test -p animus replayed_approval_completion_clears_current_run -- --nocapture` - failed before replayed approvals cleared active runs on final completion, passed after the fix
+  - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - failed before active runs blocked normal prompt submission, passed after the fix
+  - `cargo fmt -p animus` - completed after latest reconnect/run-state review fixes
+  - `cargo test -p animus` - passed after latest reconnect/run-state review fixes: 99 passed
+  - `cargo test -p animus decisions_advance_through_queued_approvals -- --nocapture` - failed before queued approvals advanced in FIFO order, passed after the fix
+  - `cargo test -p animus replayed_approvals_remain_actionable_in_order -- --nocapture` - failed before multiple replayed approvals remained actionable, passed after the fix
+  - `cargo fmt -p animus` - completed after latest replayed-approval review fix
+  - `cargo test -p animus` - passed after latest replayed-approval review fix: 101 passed
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_in_substitutions -- --nocapture` - failed before command substitutions were inspected, passed after the fix
+  - `cargo test -p animus decided_approvals_are_not_requeued_after_replay -- --nocapture` - failed before answered approvals ignored stale replay, passed after the fix
+  - `cargo test -p animus websocket_driver_delivers_replayed_approval_before_queued_response -- --nocapture` - passed after replay-order regression coverage was added
+  - `cargo fmt -p animus` - completed after latest shell-substitution and stale-approval replay fixes
+  - `cargo test -p animus` - passed after latest shell-substitution and stale-approval replay fixes: 104 passed
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_with_normalization -- --nocapture` - failed before path-qualified git commands hit the dangerous-git deny-list, passed after the fix
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_after_separators -- --nocapture` - passed after quote-aware shell tokenization
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_in_substitutions -- --nocapture` - passed after quote-aware shell tokenization
+  - `cargo fmt -p animus` - completed after latest path-qualified git review fix
+  - `cargo test -p animus` - passed after latest path-qualified git review fix: 104 passed
+  - `cargo test -p animus approval_conflict_error_clears_stale_active_run -- --nocapture` - failed before approval conflict errors cleared stale run state, passed after the fix
+  - `cargo test -p animus clears_current_run_id_after_terminal_agent_error -- --nocapture` - passed after extending terminal run error classification
+  - `cargo test -p animus terminal_agent_error_clears_active_run -- --nocapture` - passed after extending terminal run error classification
+  - `cargo fmt -p animus` - completed after latest approval-conflict review fix
+  - `cargo test -p animus` - passed after latest approval-conflict review fix: 105 passed
+  - `cargo test -p animus reconnect_auth_clears_stale_pending_approval_before_replay -- --nocapture` - failed before reconnect auth cleared stale active run state, passed after the fix
+  - `cargo test -p animus websocket_driver_delivers_replayed_approval_before_queued_response -- --nocapture` - passed after reconnect active-run cleanup
+  - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - passed after reconnect active-run cleanup
+  - `cargo fmt -p animus` - completed after latest reconnect active-run review fix
+  - `cargo test -p animus` - passed after latest reconnect active-run review fix: 105 passed
 - Changed paths:
-  - none
+  - apps/animus/Cargo.toml
+  - apps/animus/package.json
+  - apps/animus/tsconfig.json
+  - apps/animus/src/**/*.ts
+  - apps/animus/src/**/*.tsx
+  - apps/animus/src/commands.rs
+  - apps/animus/src/client.rs
+  - apps/animus/src/app.rs
+  - apps/animus/src/protocol.rs
+  - apps/animus/src/approvals.rs
+  - Cargo.lock
+  - apps/animus/src/permissions.rs
+  - apps/animus/src/tools/files.rs
+  - apps/animus/src/tools/mod.rs
+  - apps/animus/src/tools/process.rs
+  - apps/animus/src/tools/redaction.rs
+  - apps/animus/src/tools/secrets.rs
+  - apps/animus/src/tools/shell.rs
+  - apps/animus/src/permissions.rs
+  - apps/animus/src/transcript.rs
+  - apps/animus/src/tui.rs
+  - apps/server/src/anima_server/api/routes/ws.py
+  - apps/server/src/anima_server/api/routes/auth.py
+  - apps/server/src/anima_server/api/routes/users.py
+  - apps/server/src/anima_server/schemas/chat.py
+  - apps/server/src/anima_server/services/agent/thinking_monologue.py
+  - apps/server/tests/test_agent_biography_preview.py
+  - apps/server/tests/test_agent_service.py
+  - apps/server/tests/test_ws.py
+  - bun.lock
+  - package.json
+  - docs/prds/animus/rust-coding-tui-v1.md
+  - docs/superpowers/specs/2026-06-27-animus-rust-coding-tui-design.md
+  - tickets/animus-coding-tui/ACT-000-parent.md
+  - tickets/animus-coding-tui/ACT-009-replace-bun-smoke-docs.md
 - Notes:
-  - backlog ticket only
+  - Removed 61 legacy Animus TypeScript/package files and two empty legacy directories.
+  - Root `dev:animus`, `test:animus`, and `build:animus` now route through Cargo; root `build` includes the Animus Rust check.
+  - Rust smoke coverage includes prompt outbound, cancel/reconnect outbound, approval response outbound, delegated tool-result execution, spawn rendering, and `/spawns` command tests.
+  - Server websocket smoke coverage is included in the passing full suite via `apps/server/tests/test_ws.py`.
+  - Fixed two validation blockers discovered by the final suite: duplicate `TodayContext` schema definition and raw HTTP provider errors escaping thinking-monologue fallback.
+  - Review fixes harden permission paths with canonical containment checks and symlink-aware traversal, apply `/permissions` to the active tool executor, keep approval controls visible, and ensure timed-out shell commands are dropped before late side effects.
+  - Second review fixes prevent ambiguous string edits, allow directory-qualified glob patterns, honor approve-for-session for future matching approvals, avoid advertising unimplemented `ask_user`, and keep the websocket reader free while approval resumes stream.
+  - Third review fixes retain outbound frames submitted during reconnect, stop live background children when Animus exits, and cap retained background stdout/stderr lines before `bg_output` clones them.
+  - Fourth review fixes make delegated shell execution require explicit `workspace-write-shell`, run local tool calls off the TUI loop, redact shell/background output before tool results leave the client, and truncate broad grep output at its cap.
+  - Fifth review fixes let LF-only edit strings match CRLF files while preserving CRLF output, and validate `multi_edit` against each progressively edited buffer before writing.
+  - Sixth review fixes cap immediate shell stdout/stderr before returning `tool_result` frames and render the newest transcript rows when the transcript exceeds the visible pane.
+  - Seventh review fixes commit the root Cargo lockfile despite the broad ignore rule, and make `glob` honor its advertised `limit` argument with a truncation marker.
+  - Eighth review fixes reject dangling symlink path components before canonicalizing the nearest existing parent, blocking workspace-write creates through links that point outside the workspace.
+  - Ninth review fixes prevent overlapping turns while a run remains `awaiting_approval`, and clear active Animus run ids when an `AGENT_ERROR` frame terminates a run.
+  - Tenth review fixes preserve cancellation during approval resume streams and make repeated `bg_output` polling incremental unless `all` is explicitly requested.
+  - Eleventh review fixes keep stale unlock-session tokens from shadowing explicit password login, and surface background process exit codes after output has already been consumed.
+  - Twelfth review fixes replay persisted approval prompts to reconnecting websocket clients, clean up malformed awaiting-approval rows, and restore saved-secret substitution for delegated shell-like tools before permission checks and execution.
+  - Thirteenth review fixes prevent pending approval prompts from sending optimistic user messages, and make shell permission checks inspect quote-aware command segments after `;`, `&&`, `||`, pipes, newlines, and PowerShell separators.
+  - Fourteenth review fixes treat `AUTH_FAILED`/`AUTH_REQUIRED` connection errors as terminal, clear stale pending approvals on reconnect auth before replayed approval frames arrive, finish the most recent streaming assistant transcript even after tool rows, and make the background secret substitution test wait robustly under parallel Windows load.
+  - Latest security review fixes normalize env/path-wrapped shell commands before dangerous-command checks, redact substituted saved secrets from permission-denial text, and store only redacted background commands for `bg_list`.
+  - Latest reconnect/run-state review fixes distinguish replayed approval frames from in-flight approval pauses, and keep normal prompts queued in the composer while a run is active.
+  - Latest replayed-approval review fix makes pending approvals a FIFO queue so reconnect replay cannot drop earlier awaiting runs.
+  - Latest shell-substitution and stale-approval replay fixes reject dangerous commands inside `$()`/backtick substitutions and prevent already answered approvals from being requeued by stale reconnect replay.
+  - Latest path-qualified git review fix uses quote-aware shell tokenization and normalized executable names for the dangerous git deny-list.
+  - Latest approval-conflict review fix treats `RUN_CONFLICT` and `RUN_NOT_FOUND` as terminal run errors so stale approval responses cannot leave the composer blocked.
+  - Latest reconnect review fix clears stale active run bookkeeping when websocket auth succeeds after a dropped connection, while replayed frames can still establish active approval state.
+  - No database schema changes; Alembic was not run.
 

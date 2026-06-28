@@ -28,9 +28,9 @@ from anima_server.services.agent.prompt_budget import (
     PromptBudgetBlockDecision,
     PromptBudgetTrace,
 )
-from anima_server.services.documents.rag import DocumentRagResult
 from anima_server.services.agent.runtime_types import StepTrace
 from anima_server.services.agent.state import AgentResult
+from anima_server.services.documents.rag import DocumentRagResult
 from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
