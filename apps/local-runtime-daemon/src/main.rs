@@ -1039,10 +1039,34 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
                 }
             }
             Err(err) => {
-                return Err(format!(
+                let message = format!(
                     "Failed to stop runtime process {}: {err}",
                     process.pid
-                ));
+                );
+                cleanup_runtime_tracking_files(&runtime.state.config);
+                {
+                    let mut state = runtime.state.inner.lock().await;
+                    state.expected_running = false;
+                    state.status = if state.policy.locked {
+                        DaemonState::Locked
+                    } else {
+                        DaemonState::Stopped
+                    };
+                    state.pid = None;
+                    state.process = None;
+                    state.started_at = None;
+                    state.ready_at = None;
+                    state.restart_wait_seconds = None;
+                    state.consecutive_health_failures = 0;
+                    state.last_error = Some(message.clone());
+                }
+                if let Err(err) = write_state_file(&runtime.state.config.lock_file(), "stopped") {
+                    warn!(
+                        "Failed to write state file {}: {err}",
+                        runtime.state.config.lock_file().display()
+                    );
+                }
+                return Err(message);
             }
         }
     }
