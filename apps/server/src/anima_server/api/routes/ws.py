@@ -5,10 +5,11 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
 from anima_server.db.session import get_user_session_factory
 from anima_server.db.user_store import authenticate_account
-from anima_server.models.runtime import RuntimeRun
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun
 from anima_server.models.user import User
 from anima_server.services.agent.client_actions import (
     ActionToolConnection as ClientConnection,
@@ -125,10 +126,13 @@ async def ws_agent(websocket: WebSocket) -> None:
             "user": {"id": conn.user_id, "username": conn.username},
         }
     )
+    for frame in _pending_approval_frames(conn.user_id):
+        await websocket.send_json(frame)
 
     logger.info("WebSocket client connected: user_id=%d", conn.user_id)
 
     turn_task: asyncio.Task[None] | None = None
+    approval_task: asyncio.Task[None] | None = None
 
     try:
         while True:
@@ -147,11 +151,22 @@ async def ws_agent(websocket: WebSocket) -> None:
             elif msg_type == "user_message":
                 # Reject if a turn is already in progress — the reader
                 # loop must stay free to receive tool_result messages.
-                if turn_task is not None and not turn_task.done():
+                if (turn_task is not None and not turn_task.done()) or (
+                    approval_task is not None and not approval_task.done()
+                ):
                     await conn.websocket.send_json(
                         {
                             "type": "error",
                             "message": "Turn already in progress",
+                            "code": "BUSY",
+                        }
+                    )
+                    continue
+                if _has_awaiting_approval_run(conn.user_id):
+                    await conn.websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Turn already awaiting approval",
                             "code": "BUSY",
                         }
                     )
@@ -164,7 +179,18 @@ async def ws_agent(websocket: WebSocket) -> None:
                 _handle_tool_result(conn, data)
 
             elif msg_type == "approval_response":
-                await _handle_approval_response(conn, data)
+                if approval_task is not None and not approval_task.done():
+                    await conn.websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Approval resume already in progress",
+                            "code": "BUSY",
+                        }
+                    )
+                    continue
+                approval_task = asyncio.create_task(
+                    _handle_approval_response(conn, data),
+                )
 
             elif msg_type == "cancel":
                 await _handle_cancel(conn, data)
@@ -174,7 +200,83 @@ async def ws_agent(websocket: WebSocket) -> None:
     finally:
         if turn_task is not None and not turn_task.done():
             turn_task.cancel()
+        if approval_task is not None and not approval_task.done():
+            approval_task.cancel()
         registry.remove(conn)
+
+
+def _has_awaiting_approval_run(user_id: int) -> bool:
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    runtime_db = get_runtime_session_factory()()
+    try:
+        return (
+            runtime_db.scalar(
+                select(RuntimeRun.id)
+                .where(
+                    RuntimeRun.user_id == user_id,
+                    RuntimeRun.status == "awaiting_approval",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+    finally:
+        runtime_db.close()
+
+
+def _pending_approval_frames(user_id: int) -> list[dict[str, Any]]:
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.services.agent.persistence import cancel_run
+
+    runtime_db = get_runtime_session_factory()()
+    cleared_unresumable = False
+    try:
+        runs = runtime_db.scalars(
+            select(RuntimeRun)
+            .where(
+                RuntimeRun.user_id == user_id,
+                RuntimeRun.status == "awaiting_approval",
+            )
+            .order_by(RuntimeRun.started_at, RuntimeRun.id)
+        ).all()
+
+        frames: list[dict[str, Any]] = []
+        for run in runs:
+            approval_msg = None
+            if run.pending_approval_message_id is not None:
+                approval_msg = runtime_db.get(
+                    RuntimeMessage,
+                    run.pending_approval_message_id,
+                )
+
+            if approval_msg is None:
+                cancel_run(runtime_db, run.id)
+                cleared_unresumable = True
+                continue
+
+            frames.append(_approval_required_frame(run, approval_msg))
+
+        if cleared_unresumable:
+            runtime_db.commit()
+
+        return frames
+    finally:
+        runtime_db.close()
+
+
+def _approval_required_frame(
+    run: RuntimeRun,
+    approval_msg: RuntimeMessage,
+) -> dict[str, Any]:
+    tool_args = approval_msg.tool_args_json
+    return {
+        "type": "approval_required",
+        "run_id": run.id,
+        "tool_call_id": approval_msg.tool_call_id or "",
+        "tool_name": approval_msg.tool_name or "",
+        "args": tool_args if isinstance(tool_args, dict) else {},
+    }
 
 
 async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
@@ -224,7 +326,111 @@ def _handle_tool_result(conn: ClientConnection, data: dict) -> None:
 
 
 async def _handle_approval_response(conn: ClientConnection, data: dict) -> None:
-    pass
+    """Resume an awaiting-approval run from the websocket client."""
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.services.agent.service import (
+        client_error_message,
+        stream_approve_or_deny,
+    )
+
+    raw_run_id = data.get("run_id", data.get("runId"))
+    try:
+        run_id = int(raw_run_id)
+    except (TypeError, ValueError):
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": "approval_response requires a numeric run_id",
+                "code": "BAD_REQUEST",
+            }
+        )
+        return
+
+    approved = data.get("approved")
+    if not isinstance(approved, bool):
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": "approval_response requires boolean approved",
+                "code": "BAD_REQUEST",
+            }
+        )
+        return
+
+    reason = data.get("reason")
+    denial_reason = reason if isinstance(reason, str) else None
+
+    db = get_user_session_factory(conn.user_id)()
+    runtime_db = get_runtime_session_factory()()
+    try:
+        run = runtime_db.get(RuntimeRun, run_id)
+        if run is None:
+            await conn.websocket.send_json(
+                {
+                    "type": "error",
+                    "message": f"Run {run_id} not found",
+                    "code": "RUN_NOT_FOUND",
+                }
+            )
+            return
+        if run.user_id != conn.user_id:
+            await conn.websocket.send_json(
+                {
+                    "type": "error",
+                    "message": f"Not authorized for run {run_id}",
+                    "code": "FORBIDDEN",
+                }
+            )
+            return
+        if run.status != "awaiting_approval":
+            await conn.websocket.send_json(
+                {
+                    "type": "error",
+                    "message": f"Run {run_id} is not awaiting approval",
+                    "code": "RUN_CONFLICT",
+                }
+            )
+            return
+
+        async for event in stream_approve_or_deny(
+            run_id,
+            conn.user_id,
+            approved,
+            db,
+            runtime_db,
+            denial_reason=denial_reason,
+        ):
+            ws_msg = _translate_event(event)
+            if ws_msg is not None:
+                await conn.websocket.send_json(ws_msg)
+    except PermissionError as exc:
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": str(exc),
+                "code": "FORBIDDEN",
+            }
+        )
+    except ValueError as exc:
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": str(exc),
+                "code": "RUN_CONFLICT",
+            }
+        )
+    except Exception as exc:
+        logger.exception("Approval response failed for run %s (user %s)", run_id, conn.user_id)
+        await conn.websocket.send_json(
+            {
+                "type": "error",
+                "message": client_error_message(exc),
+                "code": "APPROVAL_ERROR",
+            }
+        )
+    finally:
+        runtime_db.close()
+        db.close()
 
 
 async def _handle_cancel(conn: ClientConnection, data: dict) -> None:
@@ -257,10 +463,16 @@ async def _handle_cancel(conn: ClientConnection, data: dict) -> None:
                 }
             )
             return
-        await cancel_agent_run(run_id, conn.user_id, runtime_db)
+        cancelled = await cancel_agent_run(run_id, conn.user_id, runtime_db)
+        if cancelled is not None:
+            await conn.websocket.send_json(
+                {
+                    "type": "cancelled",
+                    "run_id": cancelled.id,
+                }
+            )
     except Exception:
-        logger.exception("Cancel failed for run %s (user %s)",
-                         run_id, conn.user_id)
+        logger.exception("Cancel failed for run %s (user %s)", run_id, conn.user_id)
     finally:
         runtime_db.close()
 
@@ -291,6 +503,15 @@ def _translate_event(event: Any) -> dict[str, Any] | None:
         return {
             "type": "cancelled",
             "run_id": data.get("runId"),
+        }
+
+    if etype == "approval_pending":
+        return {
+            "type": "approval_required",
+            "run_id": data.get("runId"),
+            "tool_call_id": data.get("toolCallId", ""),
+            "tool_name": data.get("toolName", ""),
+            "args": data.get("arguments", {}),
         }
 
     if etype == "done":
@@ -329,6 +550,7 @@ def _translate_event(event: Any) -> dict[str, Any] | None:
             "tool_call_id": data.get("callId", ""),
             "tool_name": data.get("name", ""),
             "result": data.get("output", ""),
+            "is_error": data.get("isError"),
         }
 
     # thought, timing, step_state, usage, warning — skip

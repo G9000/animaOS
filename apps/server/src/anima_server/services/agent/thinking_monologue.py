@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
 
 DEFAULT_THINKING_MONOLOGUE: list[str] = [
@@ -105,7 +106,7 @@ async def generate_thinking_monologue(db: Session, *, user_id: int) -> list[str]
 
     try:
         parsed = await call_llm_for_json(system, prompt, expect="array")
-    except (LLMConfigError, LLMInvocationError):
+    except (LLMConfigError, LLMInvocationError, httpx.HTTPError):
         return list(GENERATED_FALLBACK_THINKING_MONOLOGUE)
 
     sanitized = sanitize_thinking_monologue(parsed)
