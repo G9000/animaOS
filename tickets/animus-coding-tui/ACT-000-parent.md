@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-28 17:34 MYT
+- Updated: 2026-06-28 17:59 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -100,6 +100,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 23:19 MYT - Final thirteenth-round validation was rerun, including full server tests and a health smoke on a temporary free port.
 - 2026-06-27 23:42 MYT - Fourteenth Codex review round was fixed and revalidated.
 - 2026-06-28 17:34 MYT - Latest Codex security review rounds were fixed and revalidated.
+- 2026-06-28 17:59 MYT - Latest Codex reconnect/run-state review round was fixed and revalidated.
 
 ## Validation
 
@@ -244,6 +245,10 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `cargo test -p animus saved_secrets -- --nocapture` - passed after saved-secret denial and background-list redaction fixes: 4 passed
   - `cargo fmt -p animus` - completed after latest security review fixes
   - `cargo test -p animus` - passed after latest security review fixes: 97 passed
+  - `cargo test -p animus replayed_approval_completion_clears_current_run -- --nocapture` - failed before replayed approvals cleared active runs on final completion, passed after the fix
+  - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - failed before active runs blocked normal prompt submission, passed after the fix
+  - `cargo fmt -p animus` - completed after latest reconnect/run-state review fixes
+  - `cargo test -p animus` - passed after latest reconnect/run-state review fixes: 99 passed
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -279,4 +284,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - thirteenth Codex review fixes handled pending-approval input blocking and separator-aware dangerous shell command detection
   - fourteenth Codex review fixes handled terminal auth failures, reconnect-time stale approval cleanup, and completion of interrupted streaming assistant transcript rows
   - latest Codex security review fixes normalize shell command permission checks and prevent substituted saved secrets from leaking through denial messages or `bg_list`
+  - latest Codex reconnect/run-state review fixes clear replayed approval runs on final completion and block normal prompt submission while a run is active
   - no database schema changes; Alembic was not run

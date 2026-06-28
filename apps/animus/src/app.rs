@@ -166,8 +166,9 @@ impl AppState {
                 tool_name,
                 args,
             } => {
+                let resumes_known_run = self.run.current_run_id == Some(run_id);
                 self.run.current_run_id = Some(run_id);
-                self.run.approval_pause_pending = true;
+                self.run.approval_pause_pending = resumes_known_run;
                 let pending = PendingApproval::new(
                     run_id,
                     tool_call_id.clone(),
@@ -586,6 +587,32 @@ mod tests {
         }));
 
         assert_eq!(app.run.current_run_id, None);
+    }
+
+    #[test]
+    fn replayed_approval_completion_clears_current_run() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+        app.decide_approval(crate::approvals::ApprovalDecision::Approve)
+            .unwrap();
+
+        app.apply(AppEvent::ServerFrame(ServerFrame::TurnComplete {
+            response: String::new(),
+            model: "model-a".to_string(),
+            provider: "provider-a".to_string(),
+            tools_used: vec![],
+        }));
+
+        assert_eq!(app.run.current_run_id, None);
+        assert_eq!(
+            app.handle_command(crate::commands::parse_command("/cancel").unwrap()),
+            crate::commands::CommandEffect::None
+        );
     }
 
     #[test]

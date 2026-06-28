@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-28 17:34 MYT
+- Updated: 2026-06-28 17:59 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -56,6 +56,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 23:19 MYT - Reran final thirteenth-round validation, including full server tests and a health smoke on a temporary free port.
 - 2026-06-27 23:42 MYT - Addressed the fourteenth Codex review round: auth failures now stop reconnect loops, reconnect auth clears stale local approval prompts before replay, and turn completion finishes interrupted streaming assistant rows.
 - 2026-06-28 17:34 MYT - Addressed the latest Codex security review rounds: shell command checks normalize env/path wrappers, and saved secrets are redacted from permission denials and background process listings.
+- 2026-06-28 17:59 MYT - Addressed the latest Codex reconnect/run-state review round: replayed approval completions clear the active run, and active runs block normal composer submission.
 
 ## Validation
 
@@ -205,6 +206,10 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `cargo test -p animus saved_secrets -- --nocapture` - passed after saved-secret denial and background-list redaction fixes: 4 passed
   - `cargo fmt -p animus` - completed after latest security review fixes
   - `cargo test -p animus` - passed after latest security review fixes: 97 passed
+  - `cargo test -p animus replayed_approval_completion_clears_current_run -- --nocapture` - failed before replayed approvals cleared active runs on final completion, passed after the fix
+  - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - failed before active runs blocked normal prompt submission, passed after the fix
+  - `cargo fmt -p animus` - completed after latest reconnect/run-state review fixes
+  - `cargo test -p animus` - passed after latest reconnect/run-state review fixes: 99 passed
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -262,5 +267,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Thirteenth review fixes prevent pending approval prompts from sending optimistic user messages, and make shell permission checks inspect quote-aware command segments after `;`, `&&`, `||`, pipes, newlines, and PowerShell separators.
   - Fourteenth review fixes treat `AUTH_FAILED`/`AUTH_REQUIRED` connection errors as terminal, clear stale pending approvals on reconnect auth before replayed approval frames arrive, finish the most recent streaming assistant transcript even after tool rows, and make the background secret substitution test wait robustly under parallel Windows load.
   - Latest security review fixes normalize env/path-wrapped shell commands before dangerous-command checks, redact substituted saved secrets from permission-denial text, and store only redacted background commands for `bg_list`.
+  - Latest reconnect/run-state review fixes distinguish replayed approval frames from in-flight approval pauses, and keep normal prompts queued in the composer while a run is active.
   - No database schema changes; Alembic was not run.
 

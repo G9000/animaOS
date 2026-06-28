@@ -490,6 +490,11 @@ fn handle_key(app: &mut AppState, input: &mut InputBuffer, key: KeyEvent) -> Vec
             sync_input(app, input);
         }
         KeyCode::Enter => {
+            let draft = input.text().trim_end().to_string();
+            if !draft.trim_start().starts_with('/') && app.run.current_run_id.is_some() {
+                sync_input(app, input);
+                return Vec::new();
+            }
             let Some(message) = input.submit() else {
                 sync_input(app, input);
                 return Vec::new();
@@ -688,6 +693,31 @@ mod tests {
         assert!(!render_to_text(&app, 120, 12)
             .iter()
             .any(|row| row.contains("you: keep this draft")));
+    }
+
+    #[test]
+    fn active_run_blocks_normal_composer_submission() {
+        let mut app = AppState::for_test();
+        let mut input = crate::input::InputBuffer::default();
+        app.apply(AppEvent::ServerFrame(ServerFrame::RunStarted {
+            run_id: 42,
+            thread_id: None,
+        }));
+        input.insert_str("do another thing");
+        sync_input(&mut app, &input);
+
+        let outgoing = handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert!(outgoing.is_empty());
+        assert_eq!(input.text(), "do another thing");
+        assert_eq!(app.input, "do another thing");
+        assert!(!render_to_text(&app, 120, 12)
+            .iter()
+            .any(|row| row.contains("you: do another thing")));
     }
 
     #[test]
