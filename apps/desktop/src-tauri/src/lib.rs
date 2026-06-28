@@ -1,16 +1,14 @@
+use serde::Deserialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Stdio,
 };
-use serde::Deserialize;
 use tauri::{
-    path::BaseDirectory,
     menu::{Menu, MenuItem},
+    path::BaseDirectory,
     tray::TrayIconBuilder,
-    Manager,
-    RunEvent,
-    WindowEvent,
+    Manager, RunEvent, WindowEvent,
 };
 
 const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
@@ -130,9 +128,12 @@ fn start_local_runtime_daemon(app: tauri::AppHandle) -> Result<(), String> {
             command.creation_flags(0x08000000);
         }
 
-        command
-            .spawn()
-            .map_err(|err| format!("Failed to launch daemon with cargo from {}: {err}", root.display()))?;
+        command.spawn().map_err(|err| {
+            format!(
+                "Failed to launch daemon with cargo from {}: {err}",
+                root.display()
+            )
+        })?;
         return Ok(());
     }
 
@@ -165,9 +166,12 @@ fn spawn_daemon_executable(
         command.creation_flags(0x08000000);
     }
 
-    command
-        .spawn()
-        .map_err(|err| format!("Failed to launch daemon executable {}: {err}", executable.display()))?;
+    command.spawn().map_err(|err| {
+        format!(
+            "Failed to launch daemon executable {}: {err}",
+            executable.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -204,7 +208,8 @@ fn load_release_manifest(app: &tauri::AppHandle) -> Option<(PathBuf, DaemonRelea
 
 fn resolve_manifest_daemon_launch(app: &tauri::AppHandle) -> Option<ResolvedManifestDaemonLaunch> {
     let (manifest_path, manifest) = load_release_manifest(app)?;
-    let runtime_working_dir = resolve_manifest_runtime_working_dir(&manifest_path, &manifest.runtime);
+    let runtime_working_dir =
+        resolve_manifest_runtime_working_dir(&manifest_path, &manifest.runtime);
     let runtime_artifact = manifest
         .daemon
         .config_default
@@ -251,6 +256,14 @@ fn resolve_manifest_daemon_launch(app: &tauri::AppHandle) -> Option<ResolvedMani
         ));
     }
 
+    if let Some(runtime_tools_dir) = manifest_path
+        .parent()
+        .map(|parent| parent.join("runtime-tools"))
+        .filter(|path| path.is_dir())
+    {
+        env.push(("PATH".to_string(), prepend_path_env(&runtime_tools_dir)));
+    }
+
     let python_launcher_hint = manifest.runtime.python_launcher_hint.trim();
     if !python_launcher_hint.is_empty() {
         env.push((
@@ -266,7 +279,9 @@ fn resolve_manifest_daemon_launch(app: &tauri::AppHandle) -> Option<ResolvedMani
         ));
     }
 
-    env.extend(resolve_runtime_data_env_overrides(runtime_working_dir.as_deref()));
+    env.extend(resolve_runtime_data_env_overrides(
+        runtime_working_dir.as_deref(),
+    ));
 
     let executable = manifest
         .daemon
@@ -282,13 +297,29 @@ fn resolve_manifest_daemon_launch(app: &tauri::AppHandle) -> Option<ResolvedMani
     })
 }
 
-fn resolve_manifest_artifact_path(manifest_path: &Path, artifact_candidate: &str) -> Option<PathBuf> {
+fn prepend_path_env(path: &Path) -> String {
+    let mut paths = vec![path.to_path_buf()];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+
+    env::join_paths(paths)
+        .map(|joined| joined.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+fn resolve_manifest_artifact_path(
+    manifest_path: &Path,
+    artifact_candidate: &str,
+) -> Option<PathBuf> {
     let artifact_path = PathBuf::from(artifact_candidate);
     if artifact_path.is_absolute() {
         return Some(artifact_path);
     }
 
-    manifest_path.parent().map(|parent| parent.join(artifact_path))
+    manifest_path
+        .parent()
+        .map(|parent| parent.join(artifact_path))
 }
 
 fn resolve_manifest_runtime_working_dir(
@@ -317,7 +348,10 @@ fn resolve_manifest_runtime_working_dir(
 }
 
 fn resolve_runtime_data_env_overrides(runtime_working_dir: Option<&Path>) -> Vec<(String, String)> {
-    if runtime_working_dir.and_then(find_workspace_root_from).is_some() {
+    if runtime_working_dir
+        .and_then(find_workspace_root_from)
+        .is_some()
+    {
         return Vec::new();
     }
 
@@ -370,7 +404,9 @@ fn sqlite_database_url(path: &Path) -> String {
 fn resolve_workspace_daemon_executable(workspace_root: Option<&Path>) -> Option<PathBuf> {
     let root = workspace_root?;
     [
-        root.join("target").join("release").join(daemon_binary_name()),
+        root.join("target")
+            .join("release")
+            .join(daemon_binary_name()),
         root.join("target").join("debug").join(daemon_binary_name()),
         root.join(daemon_binary_name()),
     ]
@@ -420,8 +456,18 @@ fn find_workspace_root_from(start: &Path) -> Option<PathBuf> {
     let mut cursor = Some(start);
 
     while let Some(path) = cursor {
-        if path.join("apps").join("local-runtime-daemon").join("Cargo.toml").is_file()
-            && path.join("apps").join("server").join("src").join("anima_server").join("main.py").is_file()
+        if path
+            .join("apps")
+            .join("local-runtime-daemon")
+            .join("Cargo.toml")
+            .is_file()
+            && path
+                .join("apps")
+                .join("server")
+                .join("src")
+                .join("anima_server")
+                .join("main.py")
+                .is_file()
         {
             return Some(path.to_path_buf());
         }

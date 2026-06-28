@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 interface ReleaseManifest {
@@ -276,6 +276,50 @@ function stageRuntimeArtifact(sourcePath: string, destinationRoot: string): stri
   return destinationPath;
 }
 
+function resolvePathExecutable(name: string): string | null {
+  try {
+    const lookupCommand = process.platform === "win32" ? "where.exe" : "which";
+    const output = execFileSync(lookupCommand, [name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output
+      .split(/\r?\n/)
+      .map((candidate) => candidate.trim())
+      .find((candidate) => candidate.length > 0) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveUvExecutableSource(): string {
+  const configured = process.env.ANIMA_DAEMON_UV_EXECUTABLE?.trim();
+  const candidate = configured
+    ? (isAbsolute(configured) ? configured : resolve(projectRoot, configured))
+    : (resolvePathExecutable(process.platform === "win32" ? "uv.exe" : "uv") ?? resolvePathExecutable("uv"));
+
+  if (!candidate) {
+    throw new Error(
+      "Cannot prepare release: default packaged runtime launch needs a bundled uv executable. Install uv on the build machine, set ANIMA_DAEMON_UV_EXECUTABLE, or provide ANIMA_DAEMON_RUNTIME_ARTIFACT/ANIMA_DAEMON_RUNTIME_COMMAND.",
+    );
+  }
+
+  requireFile(candidate, "uv runtime launcher");
+  return candidate;
+}
+
+function stageBundledRuntimeTools(destinationRoot: string): string {
+  rmSync(join(destinationRoot, "runtime-tools"), { recursive: true, force: true });
+  const uvSource = resolveUvExecutableSource();
+  const uvDestination = join(destinationRoot, "runtime-tools", process.platform === "win32" ? "uv.exe" : "uv");
+  mkdirSync(dirname(uvDestination), { recursive: true });
+  copyFileSync(uvSource, uvDestination);
+  if (process.platform !== "win32") {
+    chmodSync(uvDestination, statSync(uvDestination).mode | 0o755);
+  }
+  return relativeFrom(destinationRoot, uvDestination);
+}
+
 function writeDesktopReleaseEnv(configDefault: ReleaseManifest["daemon"]["configDefault"]): void {
   const daemonOrigin = `http://${normalizeDesktopHost(configDefault.daemonBindHost)}:${configDefault.daemonBindPort}`;
   const apiBase = `http://${normalizeDesktopHost(configDefault.runtimeHost)}:${configDefault.runtimePort}/api`;
@@ -321,6 +365,10 @@ function main(): void {
   const bundledRuntimeArtifact = runtimeArtifactSource
     ? stageRuntimeArtifact(runtimeArtifactSource, bundledResourcesDir)
     : null;
+  const shouldBundleUvLauncher = !runtimeArtifactSource && !process.env.ANIMA_DAEMON_RUNTIME_COMMAND?.trim();
+  const bundledUvLauncher = shouldBundleUvLauncher
+    ? stageBundledRuntimeTools(bundledResourcesDir)
+    : null;
 
   const localManifest = buildManifest({
     artifactCandidates: manifestCandidates,
@@ -346,6 +394,9 @@ function main(): void {
   console.log(
     `[prepare-desktop-release] Bundled daemon resources staged under ${bundledResourcesDir}`,
   );
+  if (bundledUvLauncher) {
+    console.log(`[prepare-desktop-release] Bundled runtime launcher staged at ${bundledUvLauncher}`);
+  }
   console.log(`[prepare-desktop-release] Runtime launch mode: ${bundledManifest.daemon.configDefault.runtimeLaunchMode}`);
 }
 
