@@ -53,6 +53,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@anima/api-client": "workspace:*",
+        "@anima/ascii-motion": "workspace:*",
         "@anima/standard-templates": "workspace:*",
         "@fontsource/playfair-display": "^5.2.8",
         "@fontsource/space-grotesk": "^5.2.10",
@@ -119,6 +120,17 @@
         "@anima/auth-contracts": "workspace:*",
       },
     },
+    "packages/ascii-motion": {
+      "name": "@anima/ascii-motion",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/react": "^19.0.0",
+        "typescript": "^6.0.2",
+      },
+      "peerDependencies": {
+        "react": "^19.0.0",
+      },
+    },
     "packages/standard-templates": {
       "name": "@anima/standard-templates",
       "version": "0.1.0",
@@ -141,6 +153,8 @@
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.1.3", "", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^4.0.0" } }, "sha512-3yWxPTq3UQ/FY9p1ErPxIyfT64elWaMvM9lIHnaqpyft63tkxodF5aUElYHrdisWve5cETkh1+KBw1yJuW0aRw=="],
 
     "@anima/api-client": ["@anima/api-client@workspace:packages/api-client"],
+
+    "@anima/ascii-motion": ["@anima/ascii-motion@workspace:packages/ascii-motion"],
 
     "@anima/auth-contracts": ["@anima/auth-contracts@workspace:packages/anima-auth-contracts"],
 
@@ -1651,6 +1665,8 @@
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
 
     "@alcalzone/ansi-tokenize/is-fullwidth-code-point": ["is-fullwidth-code-point@4.0.0", "", {}, "sha512-O4L094N2/dZ7xqVdrXhh9r1KODPJpFms8B5sGdJLPy664AgvXsreZUyCQQNItZRDlYug4xStLjNp/sz3HvBowQ=="],
+
+    "@anima/ascii-motion/typescript": ["typescript@6.0.2", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-bGdAIrZ0wiGDo5l8c++HWtbaNCWTS4UTv7RaTH/ThVIgjkveJt83m74bBHMJkuCbslY8ixgLBVZJIOiQlQTjfQ=="],
 
     "@anima/standard-templates/typescript": ["typescript@6.0.2", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-bGdAIrZ0wiGDo5l8c++HWtbaNCWTS4UTv7RaTH/ThVIgjkveJt83m74bBHMJkuCbslY8ixgLBVZJIOiQlQTjfQ=="],
 

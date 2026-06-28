@@ -25,12 +25,17 @@ export const buttonVariants = cva(
           "border-destructive bg-destructive text-destructive-foreground hover:hover:bg-destructive/90 active:",
         accent:
           "border-accent bg-accent text-accent-foreground hover:hover:bg-accent/90 active:",
+        main:
+          "border-accent bg-background text-accent border-x-4 hover:text-accent-foreground before:absolute before:inset-0 before:bg-accent before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-300 before:ease-out",
+        slide:
+          "border-transparent bg-transparent text-foreground hover:text-accent-foreground before:absolute before:inset-0 before:bg-accent before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-300 before:ease-out",
       },
       size: {
         xs: "text-[9px] px-3 py-1.5 gap-1",
         sm: "text-[10px] px-4 py-2",
         md: "text-[11px] px-5 py-2.5",
         lg: "text-xs px-6 py-3",
+        xl: "text-sm px-7 py-3.5",
       },
       iconOnly: {
         true:  "px-0",
@@ -38,10 +43,11 @@ export const buttonVariants = cva(
       },
     },
     compoundVariants: [
-      { size: "xs", iconOnly: true, class: "w-7 h-7" },
-      { size: "sm", iconOnly: true, class: "w-8 h-8" },
-      { size: "md", iconOnly: true, class: "w-9 h-9" },
-      { size: "lg", iconOnly: true, class: "w-11 h-11" },
+      { size: "xs", iconOnly: true, class: "size-7" },
+      { size: "sm", iconOnly: true, class: "size-8" },
+      { size: "md", iconOnly: true, class: "size-9" },
+      { size: "lg", iconOnly: true, class: "size-11" },
+      { size: "xl", iconOnly: true, class: "size-12" },
     ],
     defaultVariants: {
       variant: "fill",

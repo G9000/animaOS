@@ -13,15 +13,15 @@
   --secondary-foreground: oklch(0.3012 0 0);
   --muted: oklch(0.8340 0.0232 87.1630);
   --muted-foreground: oklch(0.4688 0.0136 84.5932);
-  --accent: oklch(0.6863 0.1743 34.2614);
-  --accent-dark: oklch(0.46 0.1743 34.2614);
+  --accent: oklch(0.6594 0.2086 17.0300);
+  --accent-dark: oklch(0.44 0.2086 17.0300);
   --accent-foreground: oklch(1.0000 0 0);
   --destructive: oklch(0.5771 0.2152 27.3250);
   --destructive-foreground: oklch(1.0000 0 0);
   --border: oklch(0.8434 0.0231 87.1621);
   --input: oklch(0.8434 0.0231 87.1621);
-  --ring: oklch(0.6863 0.1743 34.2614);
-  --chart-1: oklch(0.6863 0.1743 34.2614);
+  --ring: oklch(0.6594 0.2086 17.0300);
+  --chart-1: oklch(0.6594 0.2086 17.0300);
   --chart-2: oklch(0.2350 0 0);
   --chart-3: oklch(0.4688 0.0136 84.5932);
   --chart-4: oklch(0.7057 0.0250 82.0932);
@@ -33,7 +33,7 @@
   --sidebar-accent: oklch(0.8647 0.0201 87.5232);
   --sidebar-accent-foreground: oklch(0.3012 0 0);
   --sidebar-border: oklch(0.8434 0.0231 87.1621);
-  --sidebar-ring: oklch(0.6863 0.1743 34.2614);
+  --sidebar-ring: oklch(0.6594 0.2086 17.0300);
 
   --font-sans: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-serif: "Space Grotesk", Georgia, serif;
@@ -67,15 +67,15 @@
   --secondary-foreground: oklch(0.8520 0.0205 100.6306);
   --muted: oklch(0.2850 0 0);
   --muted-foreground: oklch(0.6348 0.0113 81.7875);
-  --accent: oklch(0.6863 0.1743 34.2614);
-  --accent-dark: oklch(0.46 0.1743 34.2614);
+  --accent: oklch(0.6594 0.2086 17.0300);
+  --accent-dark: oklch(0.44 0.2086 17.0300);
   --accent-foreground: oklch(1.0000 0 0);
   --destructive: oklch(0.6368 0.2078 25.3313);
   --destructive-foreground: oklch(1.0000 0 0);
   --border: oklch(0.2931 0 0);
   --input: oklch(0.2931 0 0);
-  --ring: oklch(0.6863 0.1743 34.2614);
-  --chart-1: oklch(0.6863 0.1743 34.2614);
+  --ring: oklch(0.6594 0.2086 17.0300);
+  --chart-1: oklch(0.6594 0.2086 17.0300);
   --chart-2: oklch(0.8590 0.0209 74.6369);
   --chart-3: oklch(0.6348 0.0113 81.7875);
   --chart-4: oklch(0.4681 0.0069 84.5829);
@@ -87,7 +87,7 @@
   --sidebar-accent: oklch(0.2520 0 0);
   --sidebar-accent-foreground: oklch(0.8520 0.0205 100.6306);
   --sidebar-border: oklch(0.2931 0 0);
-  --sidebar-ring: oklch(0.6863 0.1743 34.2614);
+  --sidebar-ring: oklch(0.6594 0.2086 17.0300);
 
   --font-sans: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-serif: "Space Grotesk", Georgia, serif;
@@ -174,7 +174,104 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased leading-relaxed;
     letter-spacing: var(--tracking-normal);
   }
 }
+
+/* ── Type scale ── */
+.text-micro   { font-size: 0.5rem; }
+.text-label   { font-size: 0.5625rem; }
+.text-caption { font-size: 0.625rem; }
+.text-detail  { font-size: 0.6875rem; }
+.text-body    { font-size: 0.75rem; }
+.text-ui      { font-size: 0.875rem; }
+.text-title   { font-size: 1rem; }
+
+/* ── Selection ── */
+::selection {
+  background: color-mix(in oklch, var(--accent) 20%, transparent);
+}
+
+/* ── Scrollbar — thin, minimal ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+
+/* ── Global transition easing ── */
+input, textarea, button, a {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ── Utility classes ── */
+.hw-btn {
+  @apply inline-flex items-center justify-center font-mono uppercase tracking-[0.22em] border border-border bg-card rounded-none transition-all;
+}
+.hw-btn:hover { @apply border-muted-foreground/30 bg-secondary; }
+.hw-btn:active { @apply translate-y-[1px]; }
+
+.hw-inset { @apply bg-input border border-border rounded-none; }
+.dark .hw-inset { box-shadow: inset 1px 1px 2px rgba(0,0,0,0.15); }
+
+.hw-module { @apply bg-card border border-border rounded-none; }
+
+.hw-label { @apply font-mono text-[9px] uppercase tracking-[0.25em] text-muted-foreground; }
+
+/* ── Animations ── */
+@keyframes thinking-dot {
+  0%, 70%, 100% { opacity: 0.2; transform: translateY(0px); }
+  35%           { opacity: 0.85; transform: translateY(-4px); }
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.animate-cursor { animation: cursor-blink 1s step-end infinite; }
+
+@keyframes text-glow {
+  0%, 100% { text-shadow: 0 0 2px currentColor; }
+  50%       { text-shadow: 0 0 8px currentColor; }
+}
+.animate-text-glow { animation: text-glow 2s ease-in-out infinite; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 0.3s ease-out forwards; }
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+@keyframes border-pulse {
+  0%, 100% { border-color: var(--border); }
+  50%       { border-color: var(--primary); }
+}
+.animate-border-pulse { animation: border-pulse 2s ease-in-out infinite; }
+
+@keyframes handle-pulse {
+  0%   { box-shadow: 0 0 0 0   color-mix(in oklch, var(--accent) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 9px color-mix(in oklch, var(--accent) 0%,  transparent); }
+  100% { box-shadow: 0 0 0 0   color-mix(in oklch, var(--accent) 0%,  transparent); }
+}
+
+@keyframes handle-pulse-muted {
+  0%   { box-shadow: 0 0 0 0   color-mix(in oklch, var(--muted-foreground) 40%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in oklch, var(--muted-foreground) 0%,  transparent); }
+  100% { box-shadow: 0 0 0 0   color-mix(in oklch, var(--muted-foreground) 0%,  transparent); }
+}
+
+@keyframes slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.animate-slide-in { animation: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Force the main/slide button hover fill — used to mirror hover via keyboard */
+.btn-force-hover::before { translate: 0 !important; }
+.btn-force-hover { color: var(--color-accent-foreground) !important; }

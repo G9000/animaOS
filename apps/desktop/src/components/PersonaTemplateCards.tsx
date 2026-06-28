@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { cn, Button } from "@anima/standard-templates";
 
 export interface PersonaCardData {
@@ -17,6 +16,8 @@ interface PersonaTemplateCardsProps {
   disabled?: boolean;
 }
 
+const glass = "bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]";
+
 export function PersonaTemplateCards({
   templates,
   onSelect,
@@ -24,98 +25,52 @@ export function PersonaTemplateCards({
   onHoverChange,
   disabled,
 }: PersonaTemplateCardsProps) {
-  const [, setHovered] = useState<string | null>(null);
-
-  const setHover = (id: string | null) => {
-    setHovered(id);
-    onHoverChange?.(id !== null);
-  };
-
   return (
-    <div>
-      {/* Mobile: stacked rows */}
-      <div className="sm:hidden flex flex-col gap-px bg-border">
-        {templates.map((t, i) => (
-          <button
-            key={t.id}
-            onClick={() => onSelect(t)}
-            disabled={disabled}
-            className="group relative overflow-hidden w-full text-left flex items-start gap-4 px-4 py-4 bg-card transition-colors duration-75 animate-fade-in disabled:opacity-30 before:absolute before:inset-0 before:-translate-x-full before:bg-foreground before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)] active:before:translate-x-0"
-            style={{ animationDelay: `${i * 80}ms`, animationFillMode: "backwards" }}
-          >
-            <span className="relative z-10 shrink-0 font-mono text-caption text-subtle-foreground group-active:text-background pt-px transition-colors">
-              {i + 1} /
-            </span>
-            <div className="relative z-10 flex flex-col gap-1 min-w-0 flex-1">
-              <span className="text-caption font-mono tracking-widest uppercase text-muted-foreground group-active:text-background transition-colors">
-                {t.label}
-              </span>
-              <span className="text-detail font-mono text-subtle-foreground group-active:text-background/80 transition-colors leading-relaxed">
-                {t.desc}
-              </span>
-            </div>
-            <span className="relative z-10 shrink-0 font-mono text-detail text-subtle-foreground group-active:text-background pt-px transition-colors">
-              ›
-            </span>
-          </button>
-        ))}
-      </div>
+    <div className="flex flex-col items-center gap-3">
 
-      {/* Desktop: 2-column cards with fill animation */}
-      <div className="hidden sm:grid grid-cols-2 gap-px bg-border">
+      <div className="grid grid-cols-2 gap-3">
         {templates.map((t, i) => (
           <button
             key={t.id}
             onClick={() => onSelect(t)}
-            onMouseEnter={() => setHover(t.id)}
-            onMouseLeave={() => setHover(null)}
+            onMouseEnter={() => onHoverChange?.(true)}
+            onMouseLeave={() => onHoverChange?.(false)}
             disabled={disabled}
             className={cn(
-              "group relative overflow-hidden text-left flex flex-col bg-card",
-              "transition-[border-color] duration-300",
-              "before:absolute before:inset-0 before:-translate-x-full before:bg-foreground",
-              "before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]",
-              "hover:before:translate-x-0",
-              "animate-fade-in disabled:opacity-30",
+              glass,
+              "group relative overflow-hidden text-left flex flex-col w-56 animate-fade-in disabled:opacity-30",
+              "before:absolute before:inset-0 before:-translate-y-full before:bg-accent/20",
+              "before:transition-transform before:duration-400 before:ease-[cubic-bezier(0.16,1,0.3,1)]",
+              "hover:before:translate-y-0 hover:border-accent/60 transition-[border-color] duration-200",
             )}
             style={{ animationDelay: `${i * 80}ms`, animationFillMode: "backwards" }}
           >
-            {/* Header */}
-            <div className="relative z-10 flex items-start justify-between p-3 pb-2">
-              <div className="flex flex-col gap-1">
-                <span className="text-label font-mono text-subtle-foreground group-hover:text-background/50 transition-colors">
-                  {String(i + 1).padStart(2, "0")} /
-                </span>
-                <span className="text-caption font-mono tracking-widest uppercase text-muted-foreground group-hover:text-background transition-colors">
-                  {t.label}
-                </span>
-              </div>
-              {/* Keyboard hint */}
-              <span className="text-label font-mono text-subtle-foreground/50 group-hover:text-background/40 transition-colors border border-border group-hover:border-background/20 px-1.5 py-0.5">
+            {/* Accent label */}
+            <div className="relative z-10 bg-accent/0 group-hover:bg-accent/20 transition-colors px-3 py-1.5 border-b border-foreground/[0.08] group-hover:border-accent/30 flex items-center justify-between">
+              <span className="font-mono text-ui font-semibold tracking-[0.22em] text-foreground uppercase">
+                {t.label}
+              </span>
+              <span className="font-mono text-detail text-muted-foreground/40 group-hover:text-accent/60 border border-foreground/[0.08] group-hover:border-accent/40 px-1.5 py-0.5 transition-colors tabular-nums">
                 {i + 1}
               </span>
             </div>
 
-            {/* Divider */}
-            <div className="relative z-10 border-t border-border group-hover:border-foreground/10 mx-3 transition-colors" />
-
             {/* Description */}
-            <div className="relative z-10 p-3 pt-2">
-              <span className="text-detail font-mono text-subtle-foreground group-hover:text-background/70 transition-colors leading-snug">
+            <div className="relative z-10 px-3 py-3 flex-1">
+              <p className="font-mono text-detail text-muted-foreground/60 group-hover:text-foreground/80 leading-relaxed transition-colors">
                 {t.desc}
-              </span>
+              </p>
             </div>
           </button>
         ))}
       </div>
 
       {onBack && (
-        <div className="flex justify-start mt-2">
-          <Button size="xs" variant="ghost" onClick={onBack}>
-            ← back
-          </Button>
+        <div className={glass}>
+          <Button size="xs" variant="main" onClick={onBack}>← back</Button>
         </div>
       )}
+
     </div>
   );
 }

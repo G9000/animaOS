@@ -8,7 +8,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     <div className="relative h-screen text-foreground overflow-hidden">
       <BackgroundLayer />
       {/* Nav floats above everything */}
-      <div className="absolute top-4 left-4 right-4 z-30">
+      <div className="absolute z-30 w-full">
         <LayoutTopNav />
       </div>
       {/* Content fills full height */}

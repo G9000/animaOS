@@ -37,6 +37,7 @@ export { SunriseIcon } from "./SunriseIcon";
 export { SunsetIcon } from "./SunsetIcon";
 
 // Agent / content
+export { InfoIcon } from "./InfoIcon";
 export { UserIcon } from "./UserIcon";
 export { LinkIcon } from "./LinkIcon";
 export { SparkleIcon } from "./SparkleIcon";
@@ -45,3 +46,7 @@ export { GearIcon } from "./GearIcon";
 export { TrendIcon } from "./TrendIcon";
 export { InboxIcon } from "./InboxIcon";
 export { TargetIcon } from "./TargetIcon";
+
+// Audio
+export { SpeakerOnIcon } from "./SpeakerOnIcon";
+export { SpeakerOffIcon } from "./SpeakerOffIcon";

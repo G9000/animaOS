@@ -72,7 +72,7 @@ function moodColor(emotion: string) {
 // ── Shared glass style ────────────────────────────────────────────────────────
 
 const glass =
-  "relative flex items-center z-20 h-16 " +
+  "relative flex items-center z-20 h-10 " +
   "bg-background/20 backdrop-blur-[44px] " +
   "border border-foreground/[0.08] " +
   "shadow-[0_8px_32px_rgba(0,0,0,0.20)]";
@@ -211,7 +211,7 @@ export function LayoutTopNav() {
             end={to === "/"}
             className={({ isActive }) =>
               cn(
-                "group/nav relative h-full w-16 flex flex-col items-center justify-center gap-[6px] transition-colors duration-150",
+                "group/nav relative size-10 grid items-center justify-center gap-2 transition-colors duration-150",
                 isActive
                   ? "bg-accent text-accent-foreground"
                   : "text-foreground/30 hover:text-foreground/80 hover:bg-foreground/[0.06]",
@@ -220,15 +220,15 @@ export function LayoutTopNav() {
           >
             {({ isActive }) => (
               <>
-                <Icon size="lg" />
-                <span className={cn(
+                <Icon size="sm" />
+                {/* <span className={cn(
                   "font-mono text-[7.5px] tracking-[0.14em] uppercase leading-none transition-colors",
                   isActive
                     ? "text-accent-foreground/60"
                     : "text-foreground/20 group-hover/nav:text-foreground/50",
                 )}>
                   {description}
-                </span>
+                </span> */}
                 {/* Tooltip */}
                 <span className={cn(
                   "pointer-events-none absolute top-full left-1/2 z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap",
@@ -242,6 +242,7 @@ export function LayoutTopNav() {
             )}
           </NavLink>
         ))}
+
       </div>}
 
     </header>
