@@ -261,7 +261,7 @@ function stageRuntimeProject(destinationRoot: string): void {
   } else {
     rmSync(bundledWorkspaceLockPath, { force: true });
   }
-  copyFileSync(cargoWorkspaceManifestPath, bundledWorkspaceCargoManifestPath);
+  writeFileSync(bundledWorkspaceCargoManifestPath, bundledCargoWorkspaceManifest(), "utf8");
   if (existsSync(workspaceCargoLockPath)) {
     copyFileSync(workspaceCargoLockPath, bundledWorkspaceCargoLockPath);
   } else {
@@ -274,6 +274,20 @@ function stageRuntimeArtifact(sourcePath: string, destinationRoot: string): stri
   mkdirSync(dirname(destinationPath), { recursive: true });
   copyFileSync(sourcePath, destinationPath);
   return destinationPath;
+}
+
+function bundledCargoWorkspaceManifest(): string {
+  const rootManifest = readFileSync(cargoWorkspaceManifestPath, "utf8");
+  const bundledMembers = [
+    "members = [",
+    '    "packages/anima-core",',
+    "]",
+  ].join("\n");
+  const rewritten = rootManifest.replace(/members\s*=\s*\[[\s\S]*?\]/, bundledMembers);
+  if (rewritten === rootManifest) {
+    throw new Error("Cannot prepare release: failed to rewrite bundled Cargo workspace members");
+  }
+  return rewritten;
 }
 
 function resolvePathExecutable(name: string): string | null {
