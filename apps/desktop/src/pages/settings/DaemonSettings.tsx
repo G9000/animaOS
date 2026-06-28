@@ -87,7 +87,7 @@ export default function DaemonSettings({ recoveryMode = false }: DaemonSettingsP
     setIsLoadingLogs(true);
     try {
       const logs = await getDaemonLogs(LOG_LINES);
-      setLogLines(logs.lines);
+      setLogLines([...logs.lines]);
       setActionMessage(`Loaded ${logs.lines.length} log lines from ${logs.logFile}.`);
     } catch (error) {
       setActionMessage(error instanceof Error ? `Load logs failed: ${error.message}` : "Load logs failed.");

@@ -18,6 +18,8 @@ __pycache__/
 .local-docs/
 .claude/settings.local.json
 .claude/worktrees/
+!apps/desktop/src-tauri/resources/.anima/
+!apps/desktop/src-tauri/resources/.anima/.gitkeep
 .anima-cli-session
 .worktrees/
 .tmp-eval-*

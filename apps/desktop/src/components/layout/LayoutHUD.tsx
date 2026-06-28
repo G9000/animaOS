@@ -112,9 +112,6 @@ export function LayoutHUD() {
       : location.pathname.startsWith(item.to),
   );
   const [agentState, setAgentState] = useState<AgentStateData | null>(null);
-  const [time, setTime] = useState(() =>
-    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).toUpperCase()
-  );
   const [collapsed] = useState(() => {
     try {
       return localStorage.getItem("anima_nav_collapsed") === "true";
@@ -123,14 +120,6 @@ export function LayoutHUD() {
     }
   });
   const navRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const id = setInterval(() =>
-      setTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).toUpperCase()),
-      30_000
-    );
-    return () => clearInterval(id);
-  }, []);
 
   useEffect(() => {
     if (user?.id == null) {
