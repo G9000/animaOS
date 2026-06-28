@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
-import { LayoutTopNav } from "./layout/LayoutTopNav";
-import { BottomRightNav } from "./layout/BottomRightNav";
+import { LayoutHUD } from "./layout/LayoutHUD";
 import BackgroundLayer from "./BackgroundLayer";
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -9,12 +8,10 @@ export default function Layout({ children }: { children: ReactNode }) {
       <BackgroundLayer />
       {/* Nav floats above everything */}
       <div className="absolute z-30 w-full">
-        <LayoutTopNav />
+        <LayoutHUD />
       </div>
       {/* Content fills full height */}
       <main className="h-full overflow-hidden min-w-0">{children}</main>
-      {/* Bottom-right quick-action nav */}
-      <BottomRightNav />
     </div>
   );
 }
