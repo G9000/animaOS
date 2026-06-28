@@ -68,6 +68,7 @@ pub struct ApprovalOutcome {
 pub struct ApprovalState {
     pending: VecDeque<PendingApproval>,
     session_approvals: HashSet<SessionApproval>,
+    decided_approvals: HashSet<(i64, String)>,
 }
 
 impl ApprovalState {
@@ -76,11 +77,19 @@ impl ApprovalState {
     }
 
     pub fn set_pending(&mut self, pending: PendingApproval) {
+        if self
+            .decided_approvals
+            .contains(&(pending.run_id, pending.tool_call_id.clone()))
+        {
+            return;
+        }
         self.pending.push_back(pending);
     }
 
     pub fn decide(&mut self, decision: ApprovalDecision) -> Option<ApprovalOutcome> {
         let pending = self.pending.pop_front()?;
+        self.decided_approvals
+            .insert((pending.run_id, pending.tool_call_id.clone()));
         let (approved, reason, remembered) = match decision {
             ApprovalDecision::Approve => (true, None, None),
             ApprovalDecision::ApproveForSession => {
@@ -293,5 +302,16 @@ mod tests {
             }
         );
         assert_eq!(approvals.pending().map(|pending| pending.run_id), Some(43));
+    }
+
+    #[test]
+    fn decided_approvals_are_not_requeued_after_replay() {
+        let mut approvals = ApprovalState::default();
+        approvals.set_pending(shell_pending());
+        let _ = approvals.decide(ApprovalDecision::Approve).unwrap();
+
+        approvals.set_pending(shell_pending());
+
+        assert!(approvals.pending().is_none());
     }
 }

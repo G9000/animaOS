@@ -858,6 +858,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_driver_delivers_replayed_approval_before_queued_response() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (server_tx, mut server_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = websocket.next().await;
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "auth_ok",
+                        "user": {"id": 1, "username": "leo"}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "approval_required",
+                        "run_id": 42,
+                        "tool_call_id": "call-1",
+                        "tool_name": "bash",
+                        "args": {"command": "git status"}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+            while let Some(Ok(Message::Text(raw))) = websocket.next().await {
+                if matches!(
+                    serde_json::from_str::<ClientFrame>(&raw),
+                    Ok(ClientFrame::ApprovalResponse { .. })
+                ) {
+                    let _ = server_tx.send(raw);
+                    break;
+                }
+            }
+        });
+        let mut config = AppState::for_test().config;
+        config.server_url = format!("http://127.0.0.1:{port}");
+        let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+        outbound_tx
+            .send(OutboundMessage::Frame(ClientFrame::ApprovalResponse {
+                run_id: 42,
+                tool_call_id: "call-1".to_string(),
+                approved: true,
+                reason: None,
+            }))
+            .unwrap();
+
+        let driver = tokio::spawn(websocket_driver(config, ui_tx, outbound_rx));
+
+        assert!(matches!(
+            ui_rx.recv().await,
+            Some(WsEvent::ConnectionChanged(ConnectionState::Connecting))
+        ));
+        assert!(matches!(
+            ui_rx.recv().await,
+            Some(WsEvent::Authenticated(_))
+        ));
+        tokio::select! {
+            event = ui_rx.recv() => {
+                assert!(matches!(
+                    event,
+                    Some(WsEvent::Frame(ServerFrame::ApprovalRequired { run_id: 42, .. }))
+                ));
+            }
+            approval = server_rx.recv() => {
+                panic!("queued approval response flushed before replay was processed: {approval:?}");
+            }
+        }
+
+        let raw = tokio::time::timeout(std::time::Duration::from_secs(1), server_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let sent = serde_json::from_str::<ClientFrame>(&raw).unwrap();
+        assert!(matches!(
+            sent,
+            ClientFrame::ApprovalResponse {
+                run_id: 42,
+                tool_call_id,
+                approved: true,
+                ..
+            } if tool_call_id == "call-1"
+        ));
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn reconnect_auth_clears_stale_pending_approval_before_replay() {
         let mut app = AppState::for_test();
         app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {

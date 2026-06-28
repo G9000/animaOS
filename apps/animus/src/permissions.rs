@@ -233,6 +233,7 @@ fn is_dangerous_shell(command: &str) -> bool {
     shell_segments(&command)
         .into_iter()
         .any(is_dangerous_shell_segment)
+        || contains_dangerous_substitution(&command)
         || command.contains("| sh")
         || command.contains("| bash")
 }
@@ -366,6 +367,57 @@ fn normalize_command_token(command: &str) -> &str {
         .unwrap_or(command)
 }
 
+fn contains_dangerous_substitution(command: &str) -> bool {
+    command_substitutions(command)
+        .into_iter()
+        .any(|subcommand| is_dangerous_shell(&subcommand))
+}
+
+fn command_substitutions(command: &str) -> Vec<String> {
+    let mut substitutions = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = command[index..].find("$(") {
+        let start = index + offset + 2;
+        if let Some((content, end)) = balanced_substitution(command, start) {
+            substitutions.push(content.to_string());
+            index = end;
+        } else {
+            break;
+        }
+    }
+
+    let mut tick_start = None;
+    for (index, ch) in command.char_indices() {
+        if ch != '`' {
+            continue;
+        }
+        if let Some(start) = tick_start.take() {
+            substitutions.push(command[start..index].to_string());
+        } else {
+            tick_start = Some(index + ch.len_utf8());
+        }
+    }
+    substitutions
+}
+
+fn balanced_substitution(command: &str, start: usize) -> Option<(&str, usize)> {
+    let mut depth = 1usize;
+    for (offset, ch) in command[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let end = start + offset;
+                    return Some((&command[start..end], end + ch.len_utf8()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -474,6 +526,22 @@ mod tests {
         ));
         assert!(matches!(
             policy.check_shell("env git push origin main"),
+            PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn shell_policy_denies_dangerous_commands_in_substitutions() {
+        let workspace = test_workspace();
+        let policy = PermissionPolicy::workspace_write(workspace)
+            .with_shell_mode(ShellPermissionMode::Allow);
+
+        assert!(matches!(
+            policy.check_shell("echo $(rm -rf target)"),
+            PermissionDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            policy.check_shell("echo `git reset --hard`"),
             PermissionDecision::Deny { .. }
         ));
     }

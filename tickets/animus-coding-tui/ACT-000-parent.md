@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-28 18:12 MYT
+- Updated: 2026-06-28 18:33 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -102,6 +102,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-28 17:34 MYT - Latest Codex security review rounds were fixed and revalidated.
 - 2026-06-28 17:59 MYT - Latest Codex reconnect/run-state review round was fixed and revalidated.
 - 2026-06-28 18:12 MYT - Latest Codex replayed-approval review round was fixed and revalidated.
+- 2026-06-28 18:33 MYT - Latest Codex shell-substitution and stale-approval replay review round was fixed and revalidated.
 
 ## Validation
 
@@ -254,6 +255,11 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `cargo test -p animus replayed_approvals_remain_actionable_in_order -- --nocapture` - failed before multiple replayed approvals remained actionable, passed after the fix
   - `cargo fmt -p animus` - completed after latest replayed-approval review fix
   - `cargo test -p animus` - passed after latest replayed-approval review fix: 101 passed
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_in_substitutions -- --nocapture` - failed before command substitutions were inspected, passed after the fix
+  - `cargo test -p animus decided_approvals_are_not_requeued_after_replay -- --nocapture` - failed before answered approvals ignored stale replay, passed after the fix
+  - `cargo test -p animus websocket_driver_delivers_replayed_approval_before_queued_response -- --nocapture` - passed after replay-order regression coverage was added
+  - `cargo fmt -p animus` - completed after latest shell-substitution and stale-approval replay fixes
+  - `cargo test -p animus` - passed after latest shell-substitution and stale-approval replay fixes: 104 passed
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -291,4 +297,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - latest Codex security review fixes normalize shell command permission checks and prevent substituted saved secrets from leaking through denial messages or `bg_list`
   - latest Codex reconnect/run-state review fixes clear replayed approval runs on final completion and block normal prompt submission while a run is active
   - latest Codex replayed-approval review fix queues pending approvals so multiple replayed runs remain actionable in order
+  - latest Codex shell-substitution and stale-approval replay fixes reject dangerous commands inside shell substitutions and ignore replayed approvals after they have already been answered
   - no database schema changes; Alembic was not run

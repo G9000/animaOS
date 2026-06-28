@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-28 18:12 MYT
+- Updated: 2026-06-28 18:33 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -58,6 +58,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-28 17:34 MYT - Addressed the latest Codex security review rounds: shell command checks normalize env/path wrappers, and saved secrets are redacted from permission denials and background process listings.
 - 2026-06-28 17:59 MYT - Addressed the latest Codex reconnect/run-state review round: replayed approval completions clear the active run, and active runs block normal composer submission.
 - 2026-06-28 18:12 MYT - Addressed the latest Codex replayed-approval review round: multiple replayed approvals now remain queued and actionable in order.
+- 2026-06-28 18:33 MYT - Addressed the latest Codex shell-substitution and stale-approval replay review round: dangerous commands inside substitutions are denied, and already answered approvals are not requeued from stale replay.
 
 ## Validation
 
@@ -215,6 +216,11 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `cargo test -p animus replayed_approvals_remain_actionable_in_order -- --nocapture` - failed before multiple replayed approvals remained actionable, passed after the fix
   - `cargo fmt -p animus` - completed after latest replayed-approval review fix
   - `cargo test -p animus` - passed after latest replayed-approval review fix: 101 passed
+  - `cargo test -p animus shell_policy_denies_dangerous_commands_in_substitutions -- --nocapture` - failed before command substitutions were inspected, passed after the fix
+  - `cargo test -p animus decided_approvals_are_not_requeued_after_replay -- --nocapture` - failed before answered approvals ignored stale replay, passed after the fix
+  - `cargo test -p animus websocket_driver_delivers_replayed_approval_before_queued_response -- --nocapture` - passed after replay-order regression coverage was added
+  - `cargo fmt -p animus` - completed after latest shell-substitution and stale-approval replay fixes
+  - `cargo test -p animus` - passed after latest shell-substitution and stale-approval replay fixes: 104 passed
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -274,5 +280,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Latest security review fixes normalize env/path-wrapped shell commands before dangerous-command checks, redact substituted saved secrets from permission-denial text, and store only redacted background commands for `bg_list`.
   - Latest reconnect/run-state review fixes distinguish replayed approval frames from in-flight approval pauses, and keep normal prompts queued in the composer while a run is active.
   - Latest replayed-approval review fix makes pending approvals a FIFO queue so reconnect replay cannot drop earlier awaiting runs.
+  - Latest shell-substitution and stale-approval replay fixes reject dangerous commands inside `$()`/backtick substitutions and prevent already answered approvals from being requeued by stale reconnect replay.
   - No database schema changes; Alembic was not run.
 
