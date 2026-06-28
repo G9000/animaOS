@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import {
   useAnimaSymbol,
@@ -221,6 +221,13 @@ export default function Init() {
           : undefined
       }
     >
+      <Link
+        className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+        to="/daemon"
+      >
+        daemon recovery
+      </Link>
+
       <div className="absolute inset-0 pointer-events-none" />
 
       <div className="flex-1 flex items-center justify-center pointer-events-none min-h-0 relative z-10">

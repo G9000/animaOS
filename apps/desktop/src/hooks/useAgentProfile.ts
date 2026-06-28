@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import personaAvatar from "../assets/persona-default.svg";
-import { api, getUnlockToken } from "../lib/api";
+import { api, fetchRuntimeWithNonceRefresh, getRuntimeAuthHeaders } from "../lib/api";
 import { AGENT_PROFILE_CHANGED_EVENT } from "../lib/events";
 import { API_BASE } from "../lib/runtime";
 
@@ -45,9 +45,10 @@ async function loadAgentAvatar(
     };
   }
 
-  const token = getUnlockToken();
-  const headers: HeadersInit = token ? { "x-anima-unlock": token } : {};
-  const response = await fetch(`${API_BASE}${avatarPath}`, { headers });
+  const headers = getRuntimeAuthHeaders();
+  const response = await fetchRuntimeWithNonceRefresh(`${API_BASE}${avatarPath}`, {
+    headers,
+  });
 
   if (!response.ok) {
     return {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAnimaSymbol, useGlowLine, Button } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
@@ -110,6 +110,13 @@ export default function Login() {
 
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden">
+      <Link
+        className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+        to="/daemon"
+      >
+        daemon recovery
+      </Link>
+
       {/* Anima symbol — centered */}
       <div className="flex-1 flex items-center justify-center pointer-events-none min-h-0">
         <div className="scale-[0.5] sm:scale-[0.7] origin-center">

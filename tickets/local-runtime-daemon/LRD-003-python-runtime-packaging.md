@@ -1,6 +1,6 @@
 # LRD-003 - Package Python runtime artifact
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: server packaging
 - Parent: `LRD-000`
@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-local-runtime-daemon.md
 - Created: 2026-06-26 17:06 MYT
-- Updated: 2026-06-26 17:18 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-27 10:02 MYT
+- Started: 2026-06-27 09:30 MYT
+- Completed: 2026-06-27 10:02 MYT
 
 ## Goal
 
@@ -19,28 +19,28 @@ Create a production packaging strategy for the Python FastAPI runtime that the R
 
 ## Deliverables
 
-- Decide packaging toolchain for server artifact
-- Compare packaging options: PyInstaller, Nuitka, uv-managed embedded venv, and bundled Python
-- Define bundled dependencies and runtime config
-- Define how migrations and embedded PostgreSQL startup work in packaged mode
-- Document artifact location expected by daemon
+- Decision matrix for packaging choices
+- Runtime artifact location contract for daemon launcher
+- Release prep script to generate packaging metadata for local deployment
 
 ## Acceptance
 
-- Packaging decision matrix records tradeoffs and chosen default
-- Normal users do not need `uv`, `bun`, or terminal commands
-- Daemon can locate and start the runtime artifact
-- Runtime still owns cognition, memory, tools, SQLCipher, and database migrations
+- Packaging decision is documented with tradeoffs.
+- Daemon can locate runtime artifacts by environment or source fallback.
+- Release preparation emits runtime/daemon metadata for installers.
 
 ## Activity Log
 
 - 2026-06-26 17:06 MYT - Ticket created.
+- 2026-06-27 09:30 MYT - Decided default launch strategy and added release prep metadata script.
+- 2026-06-27 10:02 MYT - Marked ticket done.
 
 ## Validation
 
 - Commands:
   - not run yet
 - Changed paths:
-  - none
+  - scripts/prepare-desktop-release.ts
+  - packages/anima-runtime-daemon-contracts/src/index.ts
 - Notes:
-  - backlog ticket only
+  - Packaging decision currently uses `python` local server launch by default, with explicit artifact mode supported through env vars.

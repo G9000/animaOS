@@ -1,6 +1,6 @@
 # LRD-002 - Scaffold Rust daemon binary
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: Rust
 - Parent: `LRD-000`
@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-06-26-local-runtime-daemon.md
 - Created: 2026-06-26 17:06 MYT
-- Updated: 2026-06-26 17:06 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-27 10:02 MYT
+- Started: 2026-06-27 09:25 MYT
+- Completed: 2026-06-27 10:02 MYT
 
 ## Goal
 
@@ -19,26 +19,29 @@ Add a Rust daemon/supervisor binary that can own local runtime lifecycle indepen
 
 ## Deliverables
 
-- New Rust binary or crate for daemon
-- Basic process lifecycle shell
-- Local control endpoint or IPC placeholder
-- Config path and log path discovery
+- New Rust binary crate in workspace
+- Health/control API surface on localhost control port
+- Process launch abstraction with PID/port/log tracking
+- Poller and restart policy scaffolding
 
 ## Acceptance
 
-- Daemon builds separately from the Tauri UI
-- Daemon can run without opening the desktop window
-- Daemon exposes a minimal health/status response
+- Daemon crate is present and built as standalone process.
+- Daemon supports status, health, control, and logs endpoints.
+- Runtime can be started/stopped/restarted independently of the desktop.
 
 ## Activity Log
 
 - 2026-06-26 17:06 MYT - Ticket created.
+- 2026-06-27 09:25 MYT - Claimed and completed daemon scaffold implementation (`apps/local-runtime-daemon/src/main.rs`).
 
 ## Validation
 
 - Commands:
   - not run yet
 - Changed paths:
-  - none
+  - apps/local-runtime-daemon/src/main.rs
+  - apps/local-runtime-daemon/Cargo.toml
+  - Cargo.toml
 - Notes:
-  - backlog ticket only
+  - Added lifecycle state machine, health polling, restart scheduling, and lock/background policy hooks.

@@ -1,0 +1,507 @@
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+
+interface ReleaseManifest {
+  preparedAt: string;
+  platform: NodeJS.Platform;
+  version: string;
+  daemon: {
+    project: string;
+    configDefault: {
+      daemonBindHost: string;
+      daemonBindPort: number;
+      runtimeHost: string;
+      runtimePort: number;
+      runtimeLaunchMode: string;
+      runtimeArtifact: string | null;
+      pythonEntry: string;
+    };
+    artifactCandidates: string[];
+  };
+  runtime: {
+    sourceRoot: string;
+    runtimeEntrypoint: string;
+    pythonLauncherHint: string;
+  };
+}
+
+const scriptPath = resolve(fileURLToPath(import.meta.url));
+const projectRoot = resolve(scriptPath, "..", "..");
+const desktopPackage = "apps/desktop";
+const desktopTauriDir = join(projectRoot, desktopPackage, "src-tauri");
+const desktopReleaseEnvPath = join(projectRoot, desktopPackage, ".env.production.local");
+const workspacePyprojectPath = join(projectRoot, "pyproject.toml");
+const workspaceLockPath = join(projectRoot, "uv.lock");
+const workspaceCargoLockPath = join(projectRoot, "Cargo.lock");
+const runtimeDir = join(projectRoot, "apps/server");
+const runtimeEntrypoint = join(runtimeDir, "src", "anima_server", "main.py");
+const animaCoreDir = join(projectRoot, "packages", "anima-core");
+const daemonDir = join(projectRoot, "apps/local-runtime-daemon");
+const cargoWorkspaceManifestPath = join(projectRoot, "Cargo.toml");
+const manifestPath = join(projectRoot, ".anima", "runtime-daemon-release.json");
+const stagedDaemonDir = join(projectRoot, ".anima");
+const bundledResourcesDir = join(desktopTauriDir, "resources", ".anima");
+const bundledManifestPath = join(bundledResourcesDir, "runtime-daemon-release.json");
+const bundledDaemonDir = bundledResourcesDir;
+const bundledRuntimeDir = join(bundledResourcesDir, "apps", "server");
+const bundledRuntimeEntrypoint = join(bundledRuntimeDir, "src", "anima_server", "main.py");
+const bundledRuntimePyprojectPath = join(bundledRuntimeDir, "pyproject.toml");
+const bundledWorkspacePyprojectPath = join(bundledResourcesDir, "pyproject.toml");
+const bundledWorkspaceLockPath = join(bundledResourcesDir, "uv.lock");
+const bundledWorkspaceCargoManifestPath = join(bundledResourcesDir, "Cargo.toml");
+const bundledWorkspaceCargoLockPath = join(bundledResourcesDir, "Cargo.lock");
+const bundledAnimaCoreDir = join(bundledResourcesDir, "packages", "anima-core");
+const bundledRuntimeArtifactDir = join(bundledResourcesDir, "runtime-artifacts");
+
+const localArtifacts = [
+  join(projectRoot, "target", "release", "anima-local-runtime-daemon"),
+  join(projectRoot, "target", "release", "anima-local-runtime-daemon.exe"),
+  join(projectRoot, "target", "debug", "anima-local-runtime-daemon"),
+  join(projectRoot, "target", "debug", "anima-local-runtime-daemon.exe"),
+];
+
+const excludedRuntimeNames = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".venv",
+  "__pycache__",
+  "build",
+  "dist",
+  "venv",
+]);
+
+function requireFile(path: string, label: string) {
+  if (!isFile(path)) {
+    throw new Error(`Missing ${label} at ${path}`);
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function writeManifest(path: string, manifest: ReleaseManifest): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(manifest, null, 2), "utf8");
+}
+
+function toPosixPath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+function relativeFrom(basePath: string, targetPath: string): string {
+  const relativePath = relative(basePath, targetPath);
+  return toPosixPath(relativePath.length > 0 ? relativePath : ".");
+}
+
+function normalizeDesktopHost(host: string): string {
+  const trimmed = host.trim();
+  if (trimmed === "0.0.0.0" || trimmed === "::" || trimmed === "[::]") {
+    return "127.0.0.1";
+  }
+  return trimmed;
+}
+
+function resolveRuntimeCommand(runtimeHost: string, runtimePort: number): string {
+  const configured = process.env.ANIMA_DAEMON_RUNTIME_COMMAND?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  return [
+    "uv",
+    "run",
+    "--project",
+    "apps/server",
+    "uvicorn",
+    "anima_server.main:app",
+    "--app-dir",
+    "apps/server/src",
+    "--host",
+    runtimeHost,
+    "--port",
+    String(runtimePort),
+  ].join(" ");
+}
+
+function buildDaemonReleaseArtifact(): void {
+  execFileSync(
+    "cargo",
+    [
+      "build",
+      "--manifest-path",
+      cargoWorkspaceManifestPath,
+      "-p",
+      "anima-local-runtime-daemon",
+      "--release",
+    ],
+    {
+      cwd: projectRoot,
+      stdio: "inherit",
+    },
+  );
+}
+
+function resolveRuntimeArtifactSource(): string | null {
+  const hint = process.env.ANIMA_DAEMON_RUNTIME_ARTIFACT?.trim();
+  if (!hint) {
+    return null;
+  }
+
+  const artifactPath = isAbsolute(hint) ? hint : resolve(projectRoot, hint);
+  requireFile(artifactPath, "runtime artifact");
+  return artifactPath;
+}
+
+function resolvePackageJsonVersion(fallback = "0.1.0"): string {
+  try {
+    const raw = readFileSync(resolve(projectRoot, desktopPackage, "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? fallback;
+  } catch {
+    return fallback;
+ }
+}
+
+function resolveDaemonConfigDefault(runtimeArtifact: string | null): ReleaseManifest["daemon"]["configDefault"] {
+  const daemonBindHost = process.env.ANIMA_DAEMON_BIND_HOST || "127.0.0.1";
+  const daemonBindPort = Number(process.env.ANIMA_DAEMON_BIND_PORT || 3032);
+  const runtimeHost = process.env.ANIMA_DAEMON_RUNTIME_HOST || "127.0.0.1";
+  const runtimePort = Number(process.env.ANIMA_DAEMON_RUNTIME_PORT || 3031);
+
+  return {
+    daemonBindHost,
+    daemonBindPort,
+    runtimeHost,
+    runtimePort,
+    runtimeLaunchMode: process.env.ANIMA_DAEMON_RUNTIME_LAUNCH_MODE || "python",
+    runtimeArtifact,
+    pythonEntry: resolveRuntimeCommand(runtimeHost, runtimePort),
+  };
+}
+
+function buildManifest(options: {
+  artifactCandidates: string[];
+  manifestDirectory: string;
+  runtimeArtifact: string | null;
+  runtimeSourceRoot: string;
+  runtimeEntrypoint: string;
+}): ReleaseManifest {
+  const configDefault = resolveDaemonConfigDefault(
+    options.runtimeArtifact ? relativeFrom(options.manifestDirectory, options.runtimeArtifact) : null,
+  );
+
+  return {
+    preparedAt: new Date().toISOString(),
+    platform: process.platform,
+    version: resolvePackageJsonVersion(),
+    daemon: {
+      project: "apps/local-runtime-daemon",
+      configDefault,
+      artifactCandidates: options.artifactCandidates,
+    },
+    runtime: {
+      sourceRoot: relativeFrom(options.manifestDirectory, options.runtimeSourceRoot),
+      runtimeEntrypoint: relativeFrom(options.manifestDirectory, options.runtimeEntrypoint),
+      pythonLauncherHint: process.env.ANIMA_DAEMON_PYTHON || "python",
+    },
+  };
+}
+
+function artifactVariant(path: string): string {
+  if (path.includes(`${process.platform === "win32" ? "\\" : "/"}release${process.platform === "win32" ? "\\" : "/"}`)) {
+    return "release";
+  }
+  if (path.includes(`${process.platform === "win32" ? "\\" : "/"}debug${process.platform === "win32" ? "\\" : "/"}`)) {
+    return "debug";
+  }
+  return "bin";
+}
+
+function stageDaemonArtifacts(artifactCandidates: string[], destinationRoot: string): string[] {
+  rmSync(join(destinationRoot, "runtime-daemon"), { recursive: true, force: true });
+
+  return artifactCandidates.map((artifactPath) => {
+    const relativePath = join("runtime-daemon", artifactVariant(artifactPath), basename(artifactPath));
+    const destinationPath = join(destinationRoot, relativePath);
+    mkdirSync(dirname(destinationPath), { recursive: true });
+    copyFileSync(artifactPath, destinationPath);
+    return relativePath.replace(/\\/g, "/");
+  });
+}
+
+function shouldStageRuntimePath(sourcePath: string): boolean {
+  const name = basename(sourcePath);
+  if (name === ".env" || name.startsWith(".env.")) {
+    return false;
+  }
+  return !excludedRuntimeNames.has(name);
+}
+
+function stageRuntimeProject(destinationRoot: string, options: { animaCoreWheel: string | null }): void {
+  rmSync(bundledRuntimeDir, { recursive: true, force: true });
+  rmSync(bundledAnimaCoreDir, { recursive: true, force: true });
+  mkdirSync(dirname(bundledRuntimeDir), { recursive: true });
+  cpSync(runtimeDir, bundledRuntimeDir, { recursive: true, filter: shouldStageRuntimePath });
+
+  if (options.animaCoreWheel) {
+    writeFileSync(bundledWorkspacePyprojectPath, bundledPythonWorkspaceManifest(), "utf8");
+    writeFileSync(
+      bundledRuntimePyprojectPath,
+      bundledServerPyprojectWithWheel(options.animaCoreWheel),
+      "utf8",
+    );
+    rmSync(bundledWorkspaceLockPath, { force: true });
+    rmSync(bundledWorkspaceCargoManifestPath, { force: true });
+    rmSync(bundledWorkspaceCargoLockPath, { force: true });
+  } else {
+    rmSync(join(destinationRoot, "runtime-wheels"), { recursive: true, force: true });
+    mkdirSync(dirname(bundledAnimaCoreDir), { recursive: true });
+    cpSync(animaCoreDir, bundledAnimaCoreDir, { recursive: true, filter: shouldStageRuntimePath });
+    copyFileSync(workspacePyprojectPath, bundledWorkspacePyprojectPath);
+    if (existsSync(workspaceLockPath)) {
+      copyFileSync(workspaceLockPath, bundledWorkspaceLockPath);
+    } else {
+      rmSync(bundledWorkspaceLockPath, { force: true });
+    }
+    writeFileSync(bundledWorkspaceCargoManifestPath, bundledCargoWorkspaceManifest(), "utf8");
+    if (existsSync(workspaceCargoLockPath)) {
+      copyFileSync(workspaceCargoLockPath, bundledWorkspaceCargoLockPath);
+    } else {
+      rmSync(bundledWorkspaceCargoLockPath, { force: true });
+    }
+  }
+}
+
+function stageRuntimeArtifact(sourcePath: string, destinationRoot: string): string {
+  const destinationPath = join(destinationRoot, "runtime-artifacts", basename(sourcePath));
+  mkdirSync(dirname(destinationPath), { recursive: true });
+  copyFileSync(sourcePath, destinationPath);
+  return destinationPath;
+}
+
+function bundledCargoWorkspaceManifest(): string {
+  const rootManifest = readFileSync(cargoWorkspaceManifestPath, "utf8");
+  const bundledMembers = [
+    "members = [",
+    '    "packages/anima-core",',
+    "]",
+  ].join("\n");
+  const rewritten = rootManifest.replace(/members\s*=\s*\[[\s\S]*?\]/, bundledMembers);
+  if (rewritten === rootManifest) {
+    throw new Error("Cannot prepare release: failed to rewrite bundled Cargo workspace members");
+  }
+  return rewritten;
+}
+
+function bundledPythonWorkspaceManifest(): string {
+  const rootManifest = readFileSync(workspacePyprojectPath, "utf8");
+  const rewritten = rootManifest.replace(/members\s*=\s*\[[\s\S]*?\]/, 'members = ["apps/server"]');
+  if (rewritten === rootManifest) {
+    throw new Error("Cannot prepare release: failed to rewrite bundled Python workspace members");
+  }
+  return rewritten;
+}
+
+function bundledServerPyprojectWithWheel(wheelFilename: string): string {
+  const serverManifest = readFileSync(join(runtimeDir, "pyproject.toml"), "utf8");
+  const wheelPath = `../../runtime-wheels/${wheelFilename}`;
+  const rewritten = serverManifest.replace(
+    /anima-core\s*=\s*\{\s*workspace\s*=\s*true\s*\}/,
+    `anima-core = { path = "${wheelPath}" }`,
+  );
+  if (rewritten === serverManifest) {
+    throw new Error("Cannot prepare release: failed to rewrite bundled anima-core source");
+  }
+  return rewritten;
+}
+
+function buildAnimaCoreWheel(destinationRoot: string, uvExecutable: string): string {
+  const wheelDir = join(destinationRoot, "runtime-wheels");
+  rmSync(wheelDir, { recursive: true, force: true });
+  mkdirSync(wheelDir, { recursive: true });
+  execFileSync(
+    uvExecutable,
+    ["build", "--wheel", "--out-dir", wheelDir, animaCoreDir],
+    {
+      cwd: projectRoot,
+      stdio: "inherit",
+    },
+  );
+
+  const wheels = readdirSync(wheelDir).filter((file) => /^anima_core-.*\.whl$/.test(file));
+  if (wheels.length !== 1) {
+    throw new Error(`Cannot prepare release: expected one anima-core wheel in ${wheelDir}, found ${wheels.length}`);
+  }
+  return wheels[0];
+}
+
+function lockBundledRuntimeProject(uvExecutable: string): void {
+  execFileSync(
+    uvExecutable,
+    [
+      "lock",
+      "--project",
+      bundledRuntimeDir,
+      "--no-build-package",
+      "anima-core",
+    ],
+    {
+      cwd: bundledResourcesDir,
+      stdio: "inherit",
+    },
+  );
+}
+
+function resolvePathExecutable(name: string): string | null {
+  try {
+    const lookupCommand = process.platform === "win32" ? "where.exe" : "which";
+    const output = execFileSync(lookupCommand, [name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output
+      .split(/\r?\n/)
+      .map((candidate) => candidate.trim())
+      .find((candidate) => candidate.length > 0) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveUvExecutableSource(): string {
+  const configured = process.env.ANIMA_DAEMON_UV_EXECUTABLE?.trim();
+  const candidate = configured
+    ? (isAbsolute(configured) ? configured : resolve(projectRoot, configured))
+    : (resolvePathExecutable(process.platform === "win32" ? "uv.exe" : "uv") ?? resolvePathExecutable("uv"));
+
+  if (!candidate) {
+    throw new Error(
+      "Cannot prepare release: default packaged runtime launch needs a bundled uv executable. Install uv on the build machine, set ANIMA_DAEMON_UV_EXECUTABLE, or provide ANIMA_DAEMON_RUNTIME_ARTIFACT/ANIMA_DAEMON_RUNTIME_COMMAND.",
+    );
+  }
+
+  requireFile(candidate, "uv runtime launcher");
+  return candidate;
+}
+
+function stageBundledRuntimeTools(destinationRoot: string, uvSource: string): string {
+  rmSync(join(destinationRoot, "runtime-tools"), { recursive: true, force: true });
+  const uvDestination = join(destinationRoot, "runtime-tools", process.platform === "win32" ? "uv.exe" : "uv");
+  mkdirSync(dirname(uvDestination), { recursive: true });
+  copyFileSync(uvSource, uvDestination);
+  if (process.platform !== "win32") {
+    chmodSync(uvDestination, statSync(uvDestination).mode | 0o755);
+  }
+  return relativeFrom(destinationRoot, uvDestination);
+}
+
+function removeBundledRuntimeTools(destinationRoot: string): void {
+  rmSync(join(destinationRoot, "runtime-tools"), { recursive: true, force: true });
+}
+
+function writeDesktopReleaseEnv(configDefault: ReleaseManifest["daemon"]["configDefault"]): void {
+  const daemonOrigin = `http://${normalizeDesktopHost(configDefault.daemonBindHost)}:${configDefault.daemonBindPort}`;
+  const apiBase = `http://${normalizeDesktopHost(configDefault.runtimeHost)}:${configDefault.runtimePort}/api`;
+  const contents = [
+    `VITE_DAEMON_ORIGIN=${daemonOrigin}`,
+    `VITE_API_BASE_URL=${apiBase}`,
+    "",
+  ].join("\n");
+  writeFileSync(desktopReleaseEnvPath, contents, "utf8");
+}
+
+function main(): void {
+  if (!existsSync(daemonDir)) {
+    throw new Error(`Local daemon crate is missing at ${daemonDir}`);
+  }
+
+  if (!existsSync(runtimeDir)) {
+    throw new Error(`Runtime project is missing at ${runtimeDir}`);
+  }
+
+  try {
+    requireFile(runtimeEntrypoint, "Python runtime entrypoint");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Runtime entrypoint check failed";
+    throw new Error(`Cannot prepare release: ${message}`);
+  }
+
+  buildDaemonReleaseArtifact();
+
+  const artifactCandidates = localArtifacts.filter(isFile);
+  if (artifactCandidates.length === 0) {
+    throw new Error(
+      `Cannot prepare release: no local daemon binary found. Build one of ${localArtifacts.join(", ")}`,
+    );
+  }
+
+  const runtimeArtifactSource = resolveRuntimeArtifactSource();
+  const manifestCandidates = stageDaemonArtifacts(artifactCandidates, stagedDaemonDir);
+  const bundledManifestCandidates = stageDaemonArtifacts(artifactCandidates, bundledDaemonDir);
+  const shouldBundleUvLauncher = !runtimeArtifactSource && !process.env.ANIMA_DAEMON_RUNTIME_COMMAND?.trim();
+  const uvLauncherSource = shouldBundleUvLauncher ? resolveUvExecutableSource() : null;
+  const bundledAnimaCoreWheel = uvLauncherSource
+    ? buildAnimaCoreWheel(bundledResourcesDir, uvLauncherSource)
+    : null;
+  stageRuntimeProject(bundledResourcesDir, { animaCoreWheel: bundledAnimaCoreWheel });
+  if (uvLauncherSource) {
+    lockBundledRuntimeProject(uvLauncherSource);
+  }
+
+  const localRuntimeArtifact = runtimeArtifactSource;
+  const bundledRuntimeArtifact = runtimeArtifactSource
+    ? stageRuntimeArtifact(runtimeArtifactSource, bundledResourcesDir)
+    : null;
+  let bundledUvLauncher: string | null = null;
+  if (uvLauncherSource) {
+    bundledUvLauncher = stageBundledRuntimeTools(bundledResourcesDir, uvLauncherSource);
+  } else {
+    removeBundledRuntimeTools(bundledResourcesDir);
+  }
+
+  const localManifest = buildManifest({
+    artifactCandidates: manifestCandidates,
+    manifestDirectory: dirname(manifestPath),
+    runtimeArtifact: localRuntimeArtifact,
+    runtimeSourceRoot: projectRoot,
+    runtimeEntrypoint,
+  });
+  const bundledManifest = buildManifest({
+    artifactCandidates: bundledManifestCandidates,
+    manifestDirectory: dirname(bundledManifestPath),
+    runtimeArtifact: bundledRuntimeArtifact,
+    runtimeSourceRoot: bundledResourcesDir,
+    runtimeEntrypoint: bundledRuntimeEntrypoint,
+  });
+  writeManifest(manifestPath, localManifest);
+  writeManifest(bundledManifestPath, bundledManifest);
+  writeDesktopReleaseEnv(bundledManifest.daemon.configDefault);
+
+  console.log(
+    `[prepare-desktop-release] Runtime daemon release metadata written to ${manifestPath}`,
+  );
+  console.log(
+    `[prepare-desktop-release] Bundled daemon resources staged under ${bundledResourcesDir}`,
+  );
+  if (bundledUvLauncher) {
+    console.log(`[prepare-desktop-release] Bundled runtime launcher staged at ${bundledUvLauncher}`);
+  }
+  if (bundledAnimaCoreWheel) {
+    console.log(`[prepare-desktop-release] Bundled anima-core wheel staged at runtime-wheels/${bundledAnimaCoreWheel}`);
+  }
+  console.log(`[prepare-desktop-release] Runtime launch mode: ${bundledManifest.daemon.configDefault.runtimeLaunchMode}`);
+}
+
+main();
