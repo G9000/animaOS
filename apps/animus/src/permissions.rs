@@ -269,7 +269,7 @@ enum ShellQuote {
 
 fn is_dangerous_shell_segment(segment: &str) -> bool {
     let segment = segment.trim_start();
-    let tokens = segment.split_whitespace().collect::<Vec<_>>();
+    let tokens = shell_tokens(segment);
     let Some((base_command, rest)) = resolve_command_token(&tokens) else {
         return false;
     };
@@ -277,18 +277,42 @@ fn is_dangerous_shell_segment(segment: &str) -> bool {
     let command = base_command;
     let command = normalize_command_token(command);
     matches!(command, "rm" | "rmdir" | "sudo" | "chmod" | "chown")
-        || is_dangerous_git_command(rest)
-        || (command == "remove-item" && tokens.iter().any(|token| *token == "-recurse"))
+        || is_dangerous_git_command(command, rest)
+        || (command == "remove-item" && tokens.iter().any(|token| token == "-recurse"))
 }
 
-fn is_dangerous_git_command(tokens: &[&str]) -> bool {
-    if tokens.first() != Some(&"git") {
+fn shell_tokens(segment: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = ShellQuote::None;
+
+    for ch in segment.chars() {
+        match (quote, ch) {
+            (ShellQuote::None, '\'') => quote = ShellQuote::Single,
+            (ShellQuote::None, '"') => quote = ShellQuote::Double,
+            (ShellQuote::Single, '\'') | (ShellQuote::Double, '"') => quote = ShellQuote::None,
+            (ShellQuote::None, ch) if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn is_dangerous_git_command(command: &str, tokens: &[String]) -> bool {
+    if !matches!(command, "git" | "git.exe") {
         return false;
     }
 
     let mut index = 1;
     while index < tokens.len() {
-        let token = tokens[index];
+        let token = tokens[index].as_str();
         if token == "--" {
             index += 1;
             break;
@@ -309,17 +333,17 @@ fn is_dangerous_git_command(tokens: &[&str]) -> bool {
 
     tokens
         .get(index)
-        .is_some_and(|token| matches!(*token, "reset" | "push" | "rebase"))
+        .is_some_and(|token| matches!(token.as_str(), "reset" | "push" | "rebase"))
 }
 
-fn resolve_command_token<'a>(tokens: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
+fn resolve_command_token(tokens: &[String]) -> Option<(&str, &[String])> {
     if tokens.is_empty() {
         return None;
     }
 
     let mut index = 0;
     while index < tokens.len() {
-        let token = tokens[index];
+        let token = tokens[index].as_str();
         if is_env_assignment_token(token) {
             index += 1;
             continue;
@@ -331,13 +355,13 @@ fn resolve_command_token<'a>(tokens: &'a [&'a str]) -> Option<(&'a str, &'a [&'a
 
         index += 1;
         while index < tokens.len() {
-            let token = tokens[index];
+            let token = tokens[index].as_str();
             if token.starts_with('-') || is_env_assignment_token(token) {
                 index += 1;
                 continue;
             }
 
-            return Some((token, &tokens[index..]));
+            return Some((tokens[index].as_str(), &tokens[index..]));
         }
 
         break;
@@ -526,6 +550,14 @@ mod tests {
         ));
         assert!(matches!(
             policy.check_shell("env git push origin main"),
+            PermissionDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            policy.check_shell("/usr/bin/git reset --hard"),
+            PermissionDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            policy.check_shell(r#""C:\Program Files\Git\cmd\git.exe" push origin main"#),
             PermissionDecision::Deny { .. }
         ));
     }
