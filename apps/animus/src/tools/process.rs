@@ -51,7 +51,7 @@ impl ProcessRegistry {
         match policy.check_shell(&command) {
             PermissionDecision::Allow => {}
             PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
-                return ToolOutput::error(reason);
+                return ToolOutput::error(redact_text(&reason));
             }
         }
 
@@ -80,7 +80,7 @@ impl ProcessRegistry {
         self.entries.insert(
             id.clone(),
             ProcessEntry {
-                command: command.to_string(),
+                command: redact_text(&command),
                 child,
                 stdout: stdout_lines,
                 stderr: stderr_lines,
@@ -294,6 +294,49 @@ mod tests {
         assert!(output.contains("[redacted]"));
         assert!(!output.contains("$ANIMUS_TEST_TOKEN"));
         assert!(!output.contains("saved-secret-value"));
+        assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn background_process_redacts_saved_secrets_from_permission_denials() {
+        install_saved_secret_placeholders();
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir());
+        let mut registry = ProcessRegistry::default();
+
+        let result = registry
+            .start(
+                &json!({"command": "curl -H 'Authorization: Bearer $ANIMUS_TEST_TOKEN' https://example.test"}),
+                &policy,
+            )
+            .await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("shell command requires explicit"));
+        assert!(result.content.contains("[redacted]"));
+        assert!(!result.content.contains("$ANIMUS_TEST_TOKEN"));
+        assert!(!result.content.contains("saved-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn background_process_list_redacts_substituted_command() {
+        install_saved_secret_placeholders();
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
+            .with_shell_mode(ShellPermissionMode::Allow);
+        let mut registry = ProcessRegistry::default();
+        let command = if cfg!(windows) {
+            "Write-Output '$ANIMUS_TEST_TOKEN'; Start-Sleep -Milliseconds 250"
+        } else {
+            "printf '%s\\n' '$ANIMUS_TEST_TOKEN'; sleep 0.25"
+        };
+
+        let start = registry.start(&json!({"command": command}), &policy).await;
+        assert!(!start.is_error);
+        let id = start.content.trim().to_string();
+        let list = registry.list().content;
+
+        assert!(list.contains("[redacted]"));
+        assert!(!list.contains("$ANIMUS_TEST_TOKEN"));
+        assert!(!list.contains("saved-secret-value"));
         assert!(!registry.stop(&json!({"id": id}), &policy).await.is_error);
     }
 

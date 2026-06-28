@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::permissions::{PermissionDecision, PermissionPolicy};
-use crate::tools::redaction::redact_tool_output;
+use crate::tools::redaction::{redact_text, redact_tool_output};
 use crate::tools::secrets::substitute_saved_secrets;
 use crate::tools::ToolOutput;
 
@@ -21,7 +21,7 @@ pub async fn run_shell(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
     match policy.check_shell(&command) {
         PermissionDecision::Allow => {}
         PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
-            return ToolOutput::error(reason);
+            return ToolOutput::error(redact_text(&reason));
         }
     }
     let timeout_ms = args
@@ -153,7 +153,26 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("dangerous shell command"));
-        assert!(result.content.contains("git push origin main"));
+        assert!(!result.content.contains("git push origin main"));
+        assert!(result.content.contains("[redacted]"));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_redacts_saved_secrets_from_permission_denials() {
+        install_saved_secret_placeholders();
+        let policy = PermissionPolicy::workspace_write(std::env::temp_dir());
+
+        let result = run_shell(
+            &json!({"command": "curl -H 'Authorization: Bearer $ANIMUS_TEST_TOKEN' https://example.test"}),
+            &policy,
+        )
+        .await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("shell command requires explicit"));
+        assert!(result.content.contains("[redacted]"));
+        assert!(!result.content.contains("$ANIMUS_TEST_TOKEN"));
+        assert!(!result.content.contains("saved-secret-value"));
     }
 
     #[tokio::test]

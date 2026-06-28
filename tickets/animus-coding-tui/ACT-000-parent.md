@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-27 23:42 MYT
+- Updated: 2026-06-28 17:34 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -99,6 +99,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 23:08 MYT - Thirteenth Codex review round was fixed and revalidated.
 - 2026-06-27 23:19 MYT - Final thirteenth-round validation was rerun, including full server tests and a health smoke on a temporary free port.
 - 2026-06-27 23:42 MYT - Fourteenth Codex review round was fixed and revalidated.
+- 2026-06-28 17:34 MYT - Latest Codex security review rounds were fixed and revalidated.
 
 ## Validation
 
@@ -240,6 +241,9 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `bun run build` - passed after fourteenth review fixes for server, desktop, and `cargo check -p animus`
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - passed after fourteenth review fixes: 1650 passed, 1 skipped, 235 warnings
   - `GET /health` at `http://127.0.0.1:53780/health` - HTTP 200; temporary server was stopped after the smoke check
+  - `cargo test -p animus saved_secrets -- --nocapture` - passed after saved-secret denial and background-list redaction fixes: 4 passed
+  - `cargo fmt -p animus` - completed after latest security review fixes
+  - `cargo test -p animus` - passed after latest security review fixes: 97 passed
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -274,4 +278,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - eleventh Codex review fixes handled password-auth precedence over stale unlock tokens and exited background-process reporting
   - thirteenth Codex review fixes handled pending-approval input blocking and separator-aware dangerous shell command detection
   - fourteenth Codex review fixes handled terminal auth failures, reconnect-time stale approval cleanup, and completion of interrupted streaming assistant transcript rows
+  - latest Codex security review fixes normalize shell command permission checks and prevent substituted saved secrets from leaking through denial messages or `bg_list`
   - no database schema changes; Alembic was not run

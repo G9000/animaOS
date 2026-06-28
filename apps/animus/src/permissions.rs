@@ -311,7 +311,7 @@ fn is_dangerous_git_command(tokens: &[&str]) -> bool {
         .is_some_and(|token| matches!(*token, "reset" | "push" | "rebase"))
 }
 
-fn resolve_command_token(tokens: &[&str]) -> Option<(&str, &[&str])> {
+fn resolve_command_token<'a>(tokens: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
     if tokens.is_empty() {
         return None;
     }
@@ -354,7 +354,8 @@ fn is_env_assignment_token(token: &str) -> bool {
         return false;
     }
 
-    key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    key.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn normalize_command_token(command: &str) -> &str {
@@ -463,8 +464,14 @@ mod tests {
         let policy = PermissionPolicy::workspace_write(workspace)
             .with_shell_mode(ShellPermissionMode::Allow);
 
-        assert!(matches!(policy.check_shell("FOO=1 rm -rf src"), PermissionDecision::Deny { .. }));
-        assert!(matches!(policy.check_shell("/bin/rm -rf src"), PermissionDecision::Deny { .. }));
+        assert!(matches!(
+            policy.check_shell("FOO=1 rm -rf src"),
+            PermissionDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            policy.check_shell("/bin/rm -rf src"),
+            PermissionDecision::Deny { .. }
+        ));
         assert!(matches!(
             policy.check_shell("env git push origin main"),
             PermissionDecision::Deny { .. }
