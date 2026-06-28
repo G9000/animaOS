@@ -107,7 +107,7 @@ pub enum ServerFrame {
 }
 
 pub fn is_terminal_run_error_code(code: &str) -> bool {
-    code == "AGENT_ERROR"
+    matches!(code, "AGENT_ERROR" | "RUN_CONFLICT" | "RUN_NOT_FOUND")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -457,6 +457,32 @@ mod tests {
     }
 
     #[test]
+    fn approval_conflict_error_clears_stale_active_run() {
+        for code in ["RUN_CONFLICT", "RUN_NOT_FOUND"] {
+            let mut app = AppState::for_test();
+            app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+                run_id: 42,
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                args: serde_json::json!({"command":"git status"}),
+            }));
+            app.decide_approval(crate::approvals::ApprovalDecision::Approve)
+                .unwrap();
+
+            app.apply(AppEvent::ServerFrame(ServerFrame::Error {
+                message: "approval was already resolved".to_string(),
+                code: code.to_string(),
+            }));
+
+            assert_eq!(app.run.current_run_id, None, "{code} should clear run");
+            assert_eq!(
+                app.handle_command(crate::commands::parse_command("/cancel").unwrap()),
+                crate::commands::CommandEffect::None
+            );
+        }
+    }
+
+    #[test]
     fn user_submission_adds_user_transcript_and_busy_guard() {
         let mut app = AppState::for_test();
 

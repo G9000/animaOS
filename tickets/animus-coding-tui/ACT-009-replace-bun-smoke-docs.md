@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-28 19:02 MYT
+- Updated: 2026-06-28 19:19 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -60,6 +60,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-28 18:12 MYT - Addressed the latest Codex replayed-approval review round: multiple replayed approvals now remain queued and actionable in order.
 - 2026-06-28 18:33 MYT - Addressed the latest Codex shell-substitution and stale-approval replay review round: dangerous commands inside substitutions are denied, and already answered approvals are not requeued from stale replay.
 - 2026-06-28 19:02 MYT - Addressed the latest Codex path-qualified git review round: quoted and path-qualified git executables now hit the dangerous-command deny-list.
+- 2026-06-28 19:19 MYT - Addressed the latest Codex approval-conflict review round: approval `RUN_CONFLICT` and `RUN_NOT_FOUND` errors now clear stale active run state.
 
 ## Validation
 
@@ -227,6 +228,11 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `cargo test -p animus shell_policy_denies_dangerous_commands_in_substitutions -- --nocapture` - passed after quote-aware shell tokenization
   - `cargo fmt -p animus` - completed after latest path-qualified git review fix
   - `cargo test -p animus` - passed after latest path-qualified git review fix: 104 passed
+  - `cargo test -p animus approval_conflict_error_clears_stale_active_run -- --nocapture` - failed before approval conflict errors cleared stale run state, passed after the fix
+  - `cargo test -p animus clears_current_run_id_after_terminal_agent_error -- --nocapture` - passed after extending terminal run error classification
+  - `cargo test -p animus terminal_agent_error_clears_active_run -- --nocapture` - passed after extending terminal run error classification
+  - `cargo fmt -p animus` - completed after latest approval-conflict review fix
+  - `cargo test -p animus` - passed after latest approval-conflict review fix: 105 passed
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -288,5 +294,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Latest replayed-approval review fix makes pending approvals a FIFO queue so reconnect replay cannot drop earlier awaiting runs.
   - Latest shell-substitution and stale-approval replay fixes reject dangerous commands inside `$()`/backtick substitutions and prevent already answered approvals from being requeued by stale reconnect replay.
   - Latest path-qualified git review fix uses quote-aware shell tokenization and normalized executable names for the dangerous git deny-list.
+  - Latest approval-conflict review fix treats `RUN_CONFLICT` and `RUN_NOT_FOUND` as terminal run errors so stale approval responses cannot leave the composer blocked.
   - No database schema changes; Alembic was not run.
 
