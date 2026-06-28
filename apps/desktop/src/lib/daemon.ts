@@ -14,11 +14,13 @@ import {
   DAEMON_ROUTES,
 } from "@anima/daemon-contracts";
 import { invoke } from "@tauri-apps/api/core";
+import { API_ORIGIN } from "./runtime";
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
 let daemonRuntimeNonce: string | null = null;
 let resolvingControlToken: Promise<string | null> | null = null;
+let startingDaemon: Promise<void> | null = null;
 
 function normalizeNonce(value: string | undefined | null): string | null {
   if (!value) return null;
@@ -203,6 +205,19 @@ async function canReachDaemonHealth(): Promise<boolean> {
   }
 }
 
+async function canReachRuntimeHealth(): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_ORIGIN}/health`, {
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function waitForDaemonHealth(timeoutMs = 15000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
@@ -267,18 +282,35 @@ export async function controlDaemon(command: DaemonCommand, requestBody?: Daemon
 }
 
 export async function startDaemon(): Promise<void> {
-  try {
-    await controlDaemon("start");
-  } catch (error) {
-    if (!isTauri() || await canReachDaemonHealth()) {
-      throw error;
-    }
-
-    await ensureLocalDaemonRunning();
-    await controlDaemon("start");
+  if (startingDaemon) {
+    return startingDaemon;
   }
 
-  await refreshRuntimeNonceAfterControl();
+  startingDaemon = (async () => {
+    if (await canReachRuntimeHealth()) {
+      await refreshRuntimeNonceAfterControl();
+      return;
+    }
+
+    try {
+      await controlDaemon("start");
+    } catch (error) {
+      if (!isTauri() || await canReachDaemonHealth()) {
+        throw error;
+      }
+
+      await ensureLocalDaemonRunning();
+      await controlDaemon("start");
+    }
+
+    await refreshRuntimeNonceAfterControl();
+  })();
+
+  try {
+    await startingDaemon;
+  } finally {
+    startingDaemon = null;
+  }
 }
 
 export async function stopDaemon(): Promise<void> {
