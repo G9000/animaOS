@@ -20,7 +20,11 @@ const STATE_CLASS: Record<DaemonStatusResponse["state"], string> = {
 const glass =
   "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
 
-export default function DaemonSettings() {
+interface DaemonSettingsProps {
+  recoveryMode?: boolean;
+}
+
+export default function DaemonSettings({ recoveryMode = false }: DaemonSettingsProps) {
   const [status, setStatus] = useState<DaemonStatusResponse | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -107,8 +111,11 @@ export default function DaemonSettings() {
         </h2>
 
         <p className="font-mono text-[11px] text-foreground/50 max-w-4xl leading-relaxed">
-          The daemon runs outside the desktop window, supervises the Python runtime, and exposes a local
-          control surface on port <span className="text-foreground">3032</span>.
+          {recoveryMode
+            ? "Use this unauthenticated recovery surface to check daemon state and unlock or start the runtime when normal sign-in is unavailable."
+            : "The daemon runs outside the desktop window, supervises the Python runtime, and exposes a local control surface on port "}
+          {!recoveryMode ? <span className="text-foreground">3032</span> : null}
+          {!recoveryMode ? "." : null}
         </p>
 
         <div className="h-px bg-foreground/[0.06]" />
@@ -158,7 +165,7 @@ export default function DaemonSettings() {
           Control
         </h3>
 
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className={`grid gap-2 ${recoveryMode ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
           <button
             className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
             onClick={() => runAction("start", () => startDaemon(), "Runtime start requested.", "Start failed")}
@@ -167,55 +174,63 @@ export default function DaemonSettings() {
           >
             Start
           </button>
-          <button
-            className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
-            onClick={() => runAction("restart", () => restartDaemon(), "Runtime restart requested.", "Restart failed")}
-            disabled={isBusy || !status}
-            type="button"
-          >
-            Restart
-          </button>
-          <button
-            className="border border-destructive/30 px-4 py-2 rounded-sm text-sm hover:bg-destructive/10 disabled:opacity-50"
-            onClick={() => runAction("stop", () => stopDaemon(), "Runtime stop requested.", "Stop failed")}
-            disabled={isBusy}
-            type="button"
-          >
-            Stop
-          </button>
+          {recoveryMode ? null : (
+            <>
+              <button
+                className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
+                onClick={() => runAction("restart", () => restartDaemon(), "Runtime restart requested.", "Restart failed")}
+                disabled={isBusy || !status}
+                type="button"
+              >
+                Restart
+              </button>
+              <button
+                className="border border-destructive/30 px-4 py-2 rounded-sm text-sm hover:bg-destructive/10 disabled:opacity-50"
+                onClick={() => runAction("stop", () => stopDaemon(), "Runtime stop requested.", "Stop failed")}
+                disabled={isBusy}
+                type="button"
+              >
+                Stop
+              </button>
+            </>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2 items-center">
           <button
             className="border border-cyan-300/30 px-4 py-2 rounded-sm text-sm hover:bg-cyan-300/8 disabled:opacity-50"
             onClick={() => runAction(
-              lockAction,
-              () => setDaemonLock(!status?.lock.enabled),
-              status?.lock.enabled ? "Runtime unlocked." : "Runtime locked.",
-              status?.lock.enabled ? "Unlock failed" : "Lock failed",
+              recoveryMode ? "unlock" : lockAction,
+              () => setDaemonLock(recoveryMode ? false : !status?.lock.enabled),
+              recoveryMode || status?.lock.enabled ? "Runtime unlocked." : "Runtime locked.",
+              recoveryMode || status?.lock.enabled ? "Unlock failed" : "Lock failed",
             )}
-            disabled={isBusy || !status}
+            disabled={isBusy || !status || (recoveryMode && !status.lock.enabled)}
             type="button"
           >
-            {lockButtonLabel}
+            {recoveryMode ? "Unlock runtime" : lockButtonLabel}
           </button>
-          <button
-            className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
-            onClick={() => runAction("background", () => setDaemonBackground(!backgroundEnabled), "Background mode updated.", "Background update failed")}
-            disabled={isBusy || !status}
-            type="button"
-          >
-            {backgroundEnabled ? "Disable background" : "Enable background"}
-          </button>
+          {recoveryMode ? null : (
+            <button
+              className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
+              onClick={() => runAction("background", () => setDaemonBackground(!backgroundEnabled), "Background mode updated.", "Background update failed")}
+              disabled={isBusy || !status}
+              type="button"
+            >
+              {backgroundEnabled ? "Disable background" : "Enable background"}
+            </button>
+          )}
 
-          <button
-            className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
-            onClick={onLoadLogs}
-            disabled={isBusy || isLoadingLogs}
-            type="button"
-          >
-            {isLoadingLogs ? "Loading logs..." : "Open logs"}
-          </button>
+          {recoveryMode ? null : (
+            <button
+              className="border border-foreground/[0.14] px-4 py-2 rounded-sm text-sm hover:bg-foreground/8 disabled:opacity-50"
+              onClick={onLoadLogs}
+              disabled={isBusy || isLoadingLogs}
+              type="button"
+            >
+              {isLoadingLogs ? "Loading logs..." : "Open logs"}
+            </button>
+          )}
         </div>
 
         <label className="space-y-2 block">
@@ -239,14 +254,16 @@ export default function DaemonSettings() {
         ) : null}
       </section>
 
-      <section className={`${glass} p-6 space-y-3`}>
-        <h3 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
-          Runtime diagnostics
-        </h3>
-        <pre className="max-h-64 overflow-auto bg-background/55 border border-foreground/[0.08] p-3 text-xs font-mono">
-          {logLines.length ? logLines.join("\n") : "No logs loaded."}
-        </pre>
-      </section>
+      {recoveryMode ? null : (
+        <section className={`${glass} p-6 space-y-3`}>
+          <h3 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+            Runtime diagnostics
+          </h3>
+          <pre className="max-h-64 overflow-auto bg-background/55 border border-foreground/[0.08] p-3 text-xs font-mono">
+            {logLines.length ? logLines.join("\n") : "No logs loaded."}
+          </pre>
+        </section>
+      )}
     </div>
   );
 }

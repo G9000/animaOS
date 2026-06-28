@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, Link } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -67,6 +67,38 @@ function AppRoutes() {
     </ProtectedRoute>
   );
 
+  const daemonRecovery = (
+    <div className="min-h-screen w-screen bg-background text-foreground overflow-auto p-4 sm:p-8">
+      <div className="max-w-5xl mx-auto space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-foreground/40">
+              Daemon recovery
+            </p>
+            <h1 className="text-2xl font-light tracking-[-0.03em]">
+              Runtime access controls
+            </h1>
+          </div>
+          <div className="flex gap-2">
+            <Link
+              className="border border-foreground/15 px-3 py-2 rounded-sm font-mono text-[10px] uppercase tracking-[0.16em] hover:bg-foreground/8"
+              to="/login"
+            >
+              Login
+            </Link>
+            <Link
+              className="border border-foreground/15 px-3 py-2 rounded-sm font-mono text-[10px] uppercase tracking-[0.16em] hover:bg-foreground/8"
+              to="/settings/daemon"
+            >
+              Settings
+            </Link>
+          </div>
+        </div>
+        <DaemonSettings recoveryMode />
+      </div>
+    </div>
+  );
+
   return (
     <Routes>
       <Route path="/" element={withLayout(<Dashboard />)} />
@@ -90,6 +122,7 @@ function AppRoutes() {
       <Route path="/consciousness" element={withLayout(<Consciousness />)} />
       <Route path="/database" element={withLayout(<Database />)} />
       <Route path="/graph" element={withLayout(<KnowledgeGraph />)} />
+      <Route path="/daemon" element={daemonRecovery} />
       <Route path="/login" element={<Login />} />
       <Route path="/init" element={<Init />} />
       <Route path="/journal" element={withLayout(<Journal />)} />
