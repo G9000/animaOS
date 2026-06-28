@@ -238,13 +238,15 @@ impl RuntimeConfig {
     }
 
     fn runtime_health_url(&self) -> String {
-        format!("http://{}:{}/health", self.runtime_host, self.runtime_port)
+        let host = runtime_probe_host(&self.runtime_host);
+        format!("http://{host}:{}/health", self.runtime_port)
     }
 
     fn runtime_health_url_with_prefix(&self) -> String {
+        let host = runtime_probe_host(&self.runtime_host);
         format!(
-            "http://{}:{}/api/health",
-            self.runtime_host, self.runtime_port
+            "http://{host}:{}/api/health",
+            self.runtime_port
         )
     }
 
@@ -442,6 +444,26 @@ impl RuntimeState {
         self.last_error = Some(format!("{reason}; restart in {next_delay}s"));
         Some(next_delay.min(max))
     }
+}
+
+fn runtime_probe_host(host: &str) -> String {
+    let trimmed = host.trim();
+    match trimmed {
+        "0.0.0.0" => "127.0.0.1".to_string(),
+        "::" | "[::]" => "[::1]".to_string(),
+        _ => http_url_host(trimmed),
+    }
+}
+
+fn http_url_host(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        return trimmed.to_string();
+    }
+    if trimmed.contains(':') {
+        return format!("[{trimmed}]");
+    }
+    trimmed.to_string()
 }
 
 fn resolve_control_token(path: &FsPath) -> String {

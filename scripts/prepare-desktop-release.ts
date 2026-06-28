@@ -407,6 +407,10 @@ function stageBundledRuntimeTools(destinationRoot: string, uvSource: string): st
   return relativeFrom(destinationRoot, uvDestination);
 }
 
+function removeBundledRuntimeTools(destinationRoot: string): void {
+  rmSync(join(destinationRoot, "runtime-tools"), { recursive: true, force: true });
+}
+
 function writeDesktopReleaseEnv(configDefault: ReleaseManifest["daemon"]["configDefault"]): void {
   const daemonOrigin = `http://${normalizeDesktopHost(configDefault.daemonBindHost)}:${configDefault.daemonBindPort}`;
   const apiBase = `http://${normalizeDesktopHost(configDefault.runtimeHost)}:${configDefault.runtimePort}/api`;
@@ -460,9 +464,12 @@ function main(): void {
   const bundledRuntimeArtifact = runtimeArtifactSource
     ? stageRuntimeArtifact(runtimeArtifactSource, bundledResourcesDir)
     : null;
-  const bundledUvLauncher = uvLauncherSource
-    ? stageBundledRuntimeTools(bundledResourcesDir, uvLauncherSource)
-    : null;
+  let bundledUvLauncher: string | null = null;
+  if (uvLauncherSource) {
+    bundledUvLauncher = stageBundledRuntimeTools(bundledResourcesDir, uvLauncherSource);
+  } else {
+    removeBundledRuntimeTools(bundledResourcesDir);
+  }
 
   const localManifest = buildManifest({
     artifactCandidates: manifestCandidates,
