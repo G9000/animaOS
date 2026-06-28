@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import MemoryItem, MemoryItemEvidence, User
+from anima_server.models import KGEntity, KGRelation, MemoryItem, MemoryItemEvidence, User
 from anima_server.services import vault as vault_module
 from anima_server.services.data_crypto import df, ef
 from anima_server.services.storage import get_user_data_dir
@@ -273,6 +273,80 @@ def test_export_and_import_vault_restores_memory_item_evidence() -> None:
                 )
                 == "User: I like oolong tea."
             )
+
+
+def test_export_and_import_vault_restores_knowledge_graph() -> None:
+    with managed_test_client("anima-vault-test-") as client:
+        user = _register_user(client, username="kg-vault-user", password="pw123456")
+        user_id = int(user["id"])
+        headers = {"x-anima-unlock": user["unlockToken"]}
+
+        with get_user_session_factory(user_id)() as db:
+            person = KGEntity(
+                user_id=user_id,
+                name="Ari",
+                name_normalized="ari",
+                entity_type="person",
+                description="Project collaborator",
+                mentions=3,
+                embedding_json=[0.1, 0.2],
+                embedding_checksum="checksum-person",
+            )
+            project = KGEntity(
+                user_id=user_id,
+                name="Temporal Memory",
+                name_normalized="temporal memory",
+                entity_type="project",
+                description="Memory v2 work",
+                mentions=2,
+            )
+            db.add_all([person, project])
+            db.flush()
+            relation = KGRelation(
+                user_id=user_id,
+                source_id=person.id,
+                destination_id=project.id,
+                relation_type="collaborates_on",
+                mentions=2,
+            )
+            db.add(relation)
+            db.commit()
+            person_id = person.id
+            relation_id = relation.id
+
+        export_response = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass"},
+        )
+        assert export_response.status_code == 200
+
+        envelope = json.loads(export_response.json()["vault"])
+        payload = json.loads(decrypt_string(envelope, "vault-pass"))
+        assert payload["database"]["kgEntities"][0]["name"] == "Ari"
+        assert payload["database"]["kgRelations"][0]["relation_type"] == "collaborates_on"
+
+        with get_user_session_factory(user_id)() as db:
+            db.execute(delete(KGRelation))
+            db.execute(delete(KGEntity))
+            db.commit()
+
+        import_response = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={"passphrase": "vault-pass", "vault": export_response.json()["vault"]},
+        )
+        assert import_response.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            restored_entity = db.get(KGEntity, person_id)
+            restored_relation = db.get(KGRelation, relation_id)
+            assert restored_entity is not None
+            assert restored_entity.name == "Ari"
+            assert restored_entity.embedding_json == [0.1, 0.2]
+            assert restored_relation is not None
+            assert restored_relation.source_id == person_id
+            assert restored_relation.relation_type == "collaborates_on"
 
 
 def test_capsule_sections_include_memory_item_evidence() -> None:

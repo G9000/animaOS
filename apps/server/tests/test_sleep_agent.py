@@ -10,11 +10,12 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import KGRelation, User
-from anima_server.models.runtime import RuntimeBackgroundTaskRun
+from anima_server.models.runtime import RuntimeBackgroundTaskRun, RuntimeMessage, RuntimeThread
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.sleep_agent import (
     _issue_background_task,
     _should_run_expensive,
+    _task_consolidation,
     _task_episode_gen,
     _task_graph_ingestion,
     get_last_processed_message_id,
@@ -430,6 +431,49 @@ class TestRestartCursor:
         msg_id = get_last_processed_message_id(
             1, thread_id=None, runtime_db_factory=rt_factory)
         assert msg_id == 50
+
+    @pytest.mark.asyncio()
+    async def test_consolidation_task_records_latest_runtime_message_cursor(self, rt_factory):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            first = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="first",
+            )
+            second = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=2,
+                role="assistant",
+                content_text="second",
+            )
+            db.add_all([first, second])
+            db.commit()
+            thread_id = thread.id
+            expected_message_id = second.id
+
+        with patch(
+            "anima_server.services.agent.soul_writer.run_soul_writer",
+            new_callable=AsyncMock,
+        ):
+            result = await _task_consolidation(
+                user_id=1,
+                user_message="first",
+                assistant_response="second",
+                thread_id=thread_id,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == {
+            "thread_id": thread_id,
+            "last_processed_message_id": expected_message_id,
+            "messages_processed": 2,
+        }
 
 
 # ── Orchestrator integration ─────────────────────────────────────────

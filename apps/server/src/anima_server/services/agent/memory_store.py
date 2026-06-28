@@ -565,7 +565,7 @@ def get_memory_items_scored(
     When *query_embedding* is provided, blends the retrieval score with cosine
     similarity to the query using per-category weights.
     """
-    from sqlalchemy import or_
+    from sqlalchemy import func, or_
 
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
@@ -584,7 +584,10 @@ def get_memory_items_scored(
         query = query.where(MemoryItem.category == category)
     # Fetch a larger pool, then rank in Python
     pool_limit = min(limit * 3, 200)
-    query = query.order_by(MemoryItem.created_at.desc()).limit(pool_limit)
+    query = query.order_by(
+        func.coalesce(MemoryItem.heat, 0.0).desc(),
+        MemoryItem.created_at.desc(),
+    ).limit(pool_limit)
     items = list(db.scalars(query).all())
 
     if not items:

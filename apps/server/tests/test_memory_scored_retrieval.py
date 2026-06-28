@@ -162,6 +162,44 @@ def test_scored_retrieval_returns_items_in_score_order() -> None:
         assert scored[1].id == item_low.id
 
 
+def test_scored_retrieval_pool_keeps_hot_older_items() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        now = datetime.now(UTC)
+        hot_old = MemoryItem(
+            user_id=user.id,
+            content="old but repeatedly important",
+            category="fact",
+            importance=5,
+            source="user",
+            reference_count=20,
+            heat=100.0,
+            last_referenced_at=now - timedelta(hours=1),
+            created_at=now - timedelta(days=365),
+            updated_at=now,
+        )
+        db.add(hot_old)
+        for index in range(210):
+            db.add(
+                MemoryItem(
+                    user_id=user.id,
+                    content=f"recent low heat {index}",
+                    category="fact",
+                    importance=1,
+                    source="test",
+                    reference_count=0,
+                    heat=0.1,
+                    created_at=now - timedelta(minutes=index),
+                    updated_at=now,
+                )
+            )
+        db.flush()
+
+        scored = get_memory_items_scored(db, user_id=user.id, category="fact", limit=1)
+
+        assert [item.id for item in scored] == [hot_old.id]
+
+
 def test_touch_memory_items_updates_tracking() -> None:
     with _db_session() as db:
         user = _make_user(db)

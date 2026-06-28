@@ -23,6 +23,8 @@ from anima_server.models import (
     AgentStep,
     AgentThread,
     EmotionalSignal,
+    KGEntity,
+    KGRelation,
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
@@ -112,6 +114,8 @@ _MEMORY_TABLES = frozenset(
         "memoryItemEvidence",
         "memoryItems",
         "memoryEpisodes",
+        "kgEntities",
+        "kgRelations",
         "selfModelBlocks",
         "emotionalSignals",
     }
@@ -158,6 +162,13 @@ _CAPSULE_FRAME_TABLES = frozenset(
         "agentRuns",
         "agentSteps",
         "agentMessages",
+    }
+)
+
+_CAPSULE_GRAPH_TABLES = frozenset(
+    {
+        "kgEntities",
+        "kgRelations",
     }
 )
 
@@ -279,6 +290,14 @@ def _payload_to_capsule_sections(payload: dict[str, Any]) -> dict[str, bytes]:
                 "database": {
                     table: database.get(table, [])
                     for table in sorted(_CAPSULE_FRAME_TABLES)
+                }
+            }
+        ),
+        "graph": _serialize_capsule_section(
+            {
+                "database": {
+                    table: database.get(table, [])
+                    for table in sorted(_CAPSULE_GRAPH_TABLES)
                 }
             }
         ),
@@ -704,6 +723,14 @@ def export_database_snapshot(
         serialize_memory_episode_record(ep, deks=deks)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
     ]
+    kg_entities = [
+        serialize_kg_entity_record(entity)
+        for entity in db.scalars(_scoped(select(KGEntity), KGEntity)).all()
+    ]
+    kg_relations = [
+        serialize_kg_relation_record(relation)
+        for relation in db.scalars(_scoped(select(KGRelation), KGRelation)).all()
+    ]
     tasks = [serialize_task_record(task) for task in db.scalars(_scoped(select(Task), Task)).all()]
     agent_threads = [
         serialize_agent_thread_record(t)
@@ -758,6 +785,8 @@ def export_database_snapshot(
         "memoryItems": memory_items,
         "memoryItemEvidence": memory_item_evidence,
         "memoryEpisodes": memory_episodes,
+        "kgEntities": kg_entities,
+        "kgRelations": kg_relations,
         "tasks": tasks,
         "selfModelBlocks": self_model_blocks,
         "emotionalSignals": emotional_signals,
@@ -782,6 +811,8 @@ def restore_database_snapshot(
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_item_evidence_payload = snapshot.get("memoryItemEvidence", [])
     memory_episodes_payload = snapshot.get("memoryEpisodes", [])
+    kg_entities_payload = snapshot.get("kgEntities", [])
+    kg_relations_payload = snapshot.get("kgRelations", [])
     tasks_payload = snapshot.get("tasks", [])
     self_model_blocks_payload = snapshot.get("selfModelBlocks", [])
     emotional_signals_payload = snapshot.get("emotionalSignals", [])
@@ -796,6 +827,8 @@ def restore_database_snapshot(
     try:
         db.query(EmotionalSignal).delete()
         db.query(SelfModelBlock).delete()
+        db.query(KGRelation).delete()
+        db.query(KGEntity).delete()
         db.query(MemoryItemEvidence).delete()
         if is_full:
             db.query(AgentStep).delete()
@@ -891,6 +924,44 @@ def restore_database_snapshot(
                     evidence_text=str(record.get("evidence_text", "")),
                     metadata_json=record.get("metadata_json"),
                     created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        for record in kg_entities_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                KGEntity(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    name=str(record["name"]),
+                    name_normalized=str(record["name_normalized"]),
+                    entity_type=str(record.get("entity_type", "unknown")),
+                    description=str(record.get("description", "")),
+                    mentions=int(record.get("mentions", 1)),
+                    embedding_json=record.get("embedding_json"),
+                    embedding_checksum=coerce_optional_str(record.get("embedding_checksum")),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        db.flush()
+
+        for record in kg_relations_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                KGRelation(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    source_id=int(record["source_id"]),
+                    destination_id=int(record["destination_id"]),
+                    relation_type=str(record["relation_type"]),
+                    mentions=int(record.get("mentions", 1)),
+                    source_memory_id=coerce_optional_int(record.get("source_memory_id")),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
             )
 
@@ -1280,6 +1351,36 @@ def serialize_memory_episode_record(
         "significance_score": ep.significance_score,
         "turn_count": ep.turn_count,
         "created_at": serialize_optional_datetime(ep.created_at),
+    }
+
+
+def serialize_kg_entity_record(entity: KGEntity) -> dict[str, Any]:
+    return {
+        "id": entity.id,
+        "user_id": entity.user_id,
+        "name": entity.name,
+        "name_normalized": entity.name_normalized,
+        "entity_type": entity.entity_type,
+        "description": entity.description,
+        "mentions": entity.mentions,
+        "embedding_json": entity.embedding_json,
+        "embedding_checksum": entity.embedding_checksum,
+        "created_at": serialize_optional_datetime(entity.created_at),
+        "updated_at": serialize_optional_datetime(entity.updated_at),
+    }
+
+
+def serialize_kg_relation_record(relation: KGRelation) -> dict[str, Any]:
+    return {
+        "id": relation.id,
+        "user_id": relation.user_id,
+        "source_id": relation.source_id,
+        "destination_id": relation.destination_id,
+        "relation_type": relation.relation_type,
+        "mentions": relation.mentions,
+        "source_memory_id": relation.source_memory_id,
+        "created_at": serialize_optional_datetime(relation.created_at),
+        "updated_at": serialize_optional_datetime(relation.updated_at),
     }
 
 

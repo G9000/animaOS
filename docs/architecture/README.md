@@ -38,6 +38,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Memory System](memory/memory-system.md) | Full memory lifecycle: write paths, retrieval scoring, consolidation, embeddings, claims, episodic memory, self-model |
+| [Single-User Temporal Memory v2 Baseline Audit](memory/single-user-temporal-memory-v2-baseline-audit.md) | SUM-001 live code-path audit and baseline probe summary for the memory v2 initiative |
 | [Memory Implementation Plan](memory/memory-implementation-plan.md) | Detailed engineering spec for F1-F6: function signatures, schemas, test plans, organized by workstream |
 | [Memory Repo Analysis](memory/memory-repo-analysis.md) | Comparative source-code analysis of Letta, Mem0, Nemori, MemOS, MemoryOS |
 

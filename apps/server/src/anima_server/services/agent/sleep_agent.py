@@ -356,11 +356,67 @@ async def _task_consolidation(
 
     await run_soul_writer(user_id)
 
+    cursor = _runtime_message_cursor(
+        user_id=user_id,
+        thread_id=thread_id,
+        runtime_db_factory=runtime_db_factory,
+    )
+    if cursor is not None:
+        last_processed_message_id, messages_processed = cursor
+        return {
+            "thread_id": thread_id,
+            "last_processed_message_id": last_processed_message_id,
+            "messages_processed": messages_processed,
+        }
+
     return {
         "thread_id": thread_id,
         "last_processed_message_id": None,
         "messages_processed": 1 if (user_message or assistant_response) else 0,
     }
+
+
+def _runtime_message_cursor(
+    *,
+    user_id: int,
+    thread_id: int | None,
+    runtime_db_factory: Callable[..., object] | None,
+) -> tuple[int, int] | None:
+    """Return the latest runtime message id and unprocessed message count."""
+    if runtime_db_factory is None:
+        return None
+
+    from sqlalchemy import func, select
+
+    from anima_server.models.runtime import RuntimeMessage
+
+    previous_message_id = get_last_processed_message_id(
+        user_id,
+        thread_id=thread_id,
+        runtime_db_factory=runtime_db_factory,
+    )
+
+    with runtime_db_factory() as rt_db:
+        filters = [
+            RuntimeMessage.user_id == user_id,
+        ]
+        if thread_id is not None:
+            filters.append(RuntimeMessage.thread_id == thread_id)
+
+        latest_message_id = rt_db.scalar(
+            select(func.max(RuntimeMessage.id)).where(*filters)
+        )
+        if latest_message_id is None:
+            return None
+
+        count_filters = list(filters)
+        if previous_message_id is not None:
+            count_filters.append(RuntimeMessage.id > previous_message_id)
+        messages_processed = int(
+            rt_db.scalar(select(func.count(RuntimeMessage.id)).where(*count_filters)) or 0
+        )
+
+    return int(latest_message_id), messages_processed
 
 
 async def _task_embedding_backfill(

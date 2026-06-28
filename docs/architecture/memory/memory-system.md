@@ -97,8 +97,8 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `memory_vectors` | Legacy packed float32 embedding table retained in the soul schema; active semantic search uses runtime pgvector plus `MemoryItem.embedding_json` | `item_id`, `content`, `embedding` (binary), `category`, `importance` |
 | `self_model_blocks` | Agent's self-model sections (identity, persona, soul, etc.) | `section`, `content`, `version`, `needs_regeneration` |
 | `emotional_signals` | Detected user emotional states | `emotion`, `confidence`, `trajectory`, `evidence_type`, `evidence` |
-| `kg_entities` | Knowledge graph entities (F4) | `name`, `name_normalized`, `entity_type`, `description`, `mention_count` |
-| `kg_relations` | Knowledge graph relations (F4) | `source_id`, `destination_id`, `relation_type`, `confidence` |
+| `kg_entities` | Knowledge graph entities (F4) | `name`, `name_normalized`, `entity_type`, `description`, `mentions`, `embedding_json`, `embedding_checksum` |
+| `kg_relations` | Knowledge graph relations (F4) | `source_id`, `destination_id`, `relation_type`, `mentions`, `source_memory_id` |
 | `forget_audit_log` | Audit trail for forgetting operations (F7) | `trigger`, `scope`, `items_forgotten`, `derived_refs_affected` |
 | `background_task_runs` | Sleep-time task tracking (F5) | `task_type`, `status`, `result_json`, `error_message` |
 
