@@ -48,6 +48,7 @@ const DEFAULT_DAEMON_STATE_FILE: &str = "runtime-daemon.state.json";
 const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
 const DEFAULT_DAEMON_ALLOWED_ORIGINS: &[&str] = &[
     "tauri://localhost",
+    "http://tauri.localhost",
     "https://tauri.localhost",
     "http://127.0.0.1:1420",
     "http://localhost:1420",
