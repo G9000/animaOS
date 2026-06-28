@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-28 17:59 MYT
+- Updated: 2026-06-28 18:12 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -57,6 +57,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-27 23:42 MYT - Addressed the fourteenth Codex review round: auth failures now stop reconnect loops, reconnect auth clears stale local approval prompts before replay, and turn completion finishes interrupted streaming assistant rows.
 - 2026-06-28 17:34 MYT - Addressed the latest Codex security review rounds: shell command checks normalize env/path wrappers, and saved secrets are redacted from permission denials and background process listings.
 - 2026-06-28 17:59 MYT - Addressed the latest Codex reconnect/run-state review round: replayed approval completions clear the active run, and active runs block normal composer submission.
+- 2026-06-28 18:12 MYT - Addressed the latest Codex replayed-approval review round: multiple replayed approvals now remain queued and actionable in order.
 
 ## Validation
 
@@ -210,6 +211,10 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - failed before active runs blocked normal prompt submission, passed after the fix
   - `cargo fmt -p animus` - completed after latest reconnect/run-state review fixes
   - `cargo test -p animus` - passed after latest reconnect/run-state review fixes: 99 passed
+  - `cargo test -p animus decisions_advance_through_queued_approvals -- --nocapture` - failed before queued approvals advanced in FIFO order, passed after the fix
+  - `cargo test -p animus replayed_approvals_remain_actionable_in_order -- --nocapture` - failed before multiple replayed approvals remained actionable, passed after the fix
+  - `cargo fmt -p animus` - completed after latest replayed-approval review fix
+  - `cargo test -p animus` - passed after latest replayed-approval review fix: 101 passed
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -268,5 +273,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Fourteenth review fixes treat `AUTH_FAILED`/`AUTH_REQUIRED` connection errors as terminal, clear stale pending approvals on reconnect auth before replayed approval frames arrive, finish the most recent streaming assistant transcript even after tool rows, and make the background secret substitution test wait robustly under parallel Windows load.
   - Latest security review fixes normalize env/path-wrapped shell commands before dangerous-command checks, redact substituted saved secrets from permission-denial text, and store only redacted background commands for `bg_list`.
   - Latest reconnect/run-state review fixes distinguish replayed approval frames from in-flight approval pauses, and keep normal prompts queued in the composer while a run is active.
+  - Latest replayed-approval review fix makes pending approvals a FIFO queue so reconnect replay cannot drop earlier awaiting runs.
   - No database schema changes; Alembic was not run.
 

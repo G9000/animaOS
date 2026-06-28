@@ -8,7 +8,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-26 18:51 MYT
-- Updated: 2026-06-28 17:59 MYT
+- Updated: 2026-06-28 18:12 MYT
 - Started: 2026-06-27 04:10 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -101,6 +101,7 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
 - 2026-06-27 23:42 MYT - Fourteenth Codex review round was fixed and revalidated.
 - 2026-06-28 17:34 MYT - Latest Codex security review rounds were fixed and revalidated.
 - 2026-06-28 17:59 MYT - Latest Codex reconnect/run-state review round was fixed and revalidated.
+- 2026-06-28 18:12 MYT - Latest Codex replayed-approval review round was fixed and revalidated.
 
 ## Validation
 
@@ -249,6 +250,10 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - failed before active runs blocked normal prompt submission, passed after the fix
   - `cargo fmt -p animus` - completed after latest reconnect/run-state review fixes
   - `cargo test -p animus` - passed after latest reconnect/run-state review fixes: 99 passed
+  - `cargo test -p animus decisions_advance_through_queued_approvals -- --nocapture` - failed before queued approvals advanced in FIFO order, passed after the fix
+  - `cargo test -p animus replayed_approvals_remain_actionable_in_order -- --nocapture` - failed before multiple replayed approvals remained actionable, passed after the fix
+  - `cargo fmt -p animus` - completed after latest replayed-approval review fix
+  - `cargo test -p animus` - passed after latest replayed-approval review fix: 101 passed
 - Changed paths:
   - tickets/animus-coding-tui/ACT-000-parent.md
   - docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
@@ -285,4 +290,5 @@ Track the rewrite that replaces the current Bun/Ink Animus CLI with a Rust-nativ
   - fourteenth Codex review fixes handled terminal auth failures, reconnect-time stale approval cleanup, and completion of interrupted streaming assistant transcript rows
   - latest Codex security review fixes normalize shell command permission checks and prevent substituted saved secrets from leaking through denial messages or `bg_list`
   - latest Codex reconnect/run-state review fixes clear replayed approval runs on final completion and block normal prompt submission while a run is active
+  - latest Codex replayed-approval review fix queues pending approvals so multiple replayed runs remain actionable in order
   - no database schema changes; Alembic was not run

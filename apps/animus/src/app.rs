@@ -616,6 +616,43 @@ mod tests {
     }
 
     #[test]
+    fn replayed_approvals_remain_actionable_in_order() {
+        let mut app = AppState::for_test();
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 42,
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"git status"}),
+        }));
+        app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {
+            run_id: 43,
+            tool_call_id: "call-2".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command":"cargo test"}),
+        }));
+
+        let first = app
+            .decide_approval(crate::approvals::ApprovalDecision::Approve)
+            .unwrap()
+            .frame;
+
+        assert_eq!(
+            first,
+            ClientFrame::ApprovalResponse {
+                run_id: 42,
+                tool_call_id: "call-1".to_string(),
+                approved: true,
+                reason: None,
+            }
+        );
+        assert_eq!(
+            app.approvals.pending().map(|pending| pending.run_id),
+            Some(43)
+        );
+        assert_eq!(app.approval_mode, "pending");
+    }
+
+    #[test]
     fn remembered_session_approval_auto_approves_matching_request() {
         let mut app = AppState::for_test();
         app.apply(AppEvent::ServerFrame(ServerFrame::ApprovalRequired {

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use serde_json::Value;
 
@@ -66,21 +66,21 @@ pub struct ApprovalOutcome {
 
 #[derive(Debug, Clone, Default)]
 pub struct ApprovalState {
-    pending: Option<PendingApproval>,
+    pending: VecDeque<PendingApproval>,
     session_approvals: HashSet<SessionApproval>,
 }
 
 impl ApprovalState {
     pub fn pending(&self) -> Option<&PendingApproval> {
-        self.pending.as_ref()
+        self.pending.front()
     }
 
     pub fn set_pending(&mut self, pending: PendingApproval) {
-        self.pending = Some(pending);
+        self.pending.push_back(pending);
     }
 
     pub fn decide(&mut self, decision: ApprovalDecision) -> Option<ApprovalOutcome> {
-        let pending = self.pending.take()?;
+        let pending = self.pending.pop_front()?;
         let (approved, reason, remembered) = match decision {
             ApprovalDecision::Approve => (true, None, None),
             ApprovalDecision::ApproveForSession => {
@@ -127,11 +127,8 @@ impl ApprovalState {
     }
 
     pub fn reconcile_after_reconnect(&mut self, active_run_ids: &[i64]) {
-        if let Some(pending) = &self.pending {
-            if !active_run_ids.contains(&pending.run_id) {
-                self.pending = None;
-            }
-        }
+        self.pending
+            .retain(|pending| active_run_ids.contains(&pending.run_id));
     }
 }
 
@@ -271,5 +268,30 @@ mod tests {
         approvals.reconcile_after_reconnect(&[7, 8]);
 
         assert!(approvals.pending().is_none());
+    }
+
+    #[test]
+    fn decisions_advance_through_queued_approvals() {
+        let mut approvals = ApprovalState::default();
+        approvals.set_pending(shell_pending());
+        approvals.set_pending(PendingApproval::new(
+            43,
+            "call-2".to_string(),
+            "bash".to_string(),
+            json!({"command":"cargo test"}),
+        ));
+
+        let first = approvals.decide(ApprovalDecision::Approve).unwrap();
+
+        assert_eq!(
+            first.frame,
+            ClientFrame::ApprovalResponse {
+                run_id: 42,
+                tool_call_id: "call-1".to_string(),
+                approved: true,
+                reason: None,
+            }
+        );
+        assert_eq!(approvals.pending().map(|pending| pending.run_id), Some(43));
     }
 }
