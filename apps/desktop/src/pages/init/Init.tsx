@@ -1,26 +1,17 @@
-import { useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import {
-  useAnimaSymbol,
-  useGlowLine,
-  useAsciiText,
-  cn,
-  Button,
-} from "@anima/standard-templates";
+import { cn, Button, StandardInput, InfoIcon } from "@anima/standard-templates";
 import { PersonaTemplateCards } from "../../components/PersonaTemplateCards";
-import { S, TEMPLATES } from "./constants";
+import { S, TEMPLATES, HINTS } from "./constants";
 import { useWelcomeScreen } from "./useWelcomeScreen";
 import { useProtocolLines } from "./useProtocolLines";
 import { useSetupMachine } from "./useSetupMachine";
 import { RecoveryPhraseStep } from "./RecoveryPhraseStep";
 import { InitFooter } from "./InitFooter";
-import { TerminalInput } from "./TerminalInput";
 
 export default function Init() {
   const { isProvisioned, setUser, user, isLoading } = useAuth();
-
-  const { welcomed, hintVisible, activeGreeting, startProtocol, setWelcomed } =
+  const { welcomed, hintVisible, startProtocol, setWelcomed } =
     useWelcomeScreen();
   const {
     lines,
@@ -61,9 +52,6 @@ export default function Init() {
     setUser,
   });
 
-  const [isFocused, setIsFocused] = useState(false);
-  const [modeHovered, setModeHovered] = useState(false);
-
   const showInput =
     welcomed &&
     ready &&
@@ -72,23 +60,18 @@ export default function Init() {
     step !== S.CONFIRM &&
     !done;
 
-  const symbolSpeed = (() => {
-    if (done) return 4;
-    if (!welcomed) return 0.6;
-    if (modeHovered || input.length > 0) return 2.5;
-    if (isFocused) return 1.6;
-    return 1;
-  })();
+  const glass =
+    "bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]";
 
-  const animaSymbol = useAnimaSymbol(symbolSpeed, activeGreeting);
-  const glowLine = useGlowLine(isFocused, isFocused ? 52 : 28);
-  const questionText = lastQuestion?.text ?? "";
-  const asciiQuestion = useAsciiText(
-    questionText,
-    !isRevealing && !!lastQuestion,
+  const hint = (text: string) => (
+    <div className={cn(glass, "border-accent px-3 py-1.5 animate-fade-in flex items-center gap-2")}>
+      <InfoIcon size="sm" className="text-accent shrink-0" />
+      <p className="font-mono text-detail text-accent tracking-wide uppercase">{text}</p>
+    </div>
   );
 
-  if (isProvisioned && !user && !isLoading && !done)
+  const hasPendingPhrase = !!recoveryPhrase;
+  if (welcomed && isProvisioned && !user && !isLoading && !done && !hasPendingPhrase)
     return <Navigate to="/login" replace />;
 
   function renderBottom() {
@@ -106,12 +89,18 @@ export default function Init() {
       return (
         <>
           {lastQuestion && (
-            <pre
-              key={lastQuestion.id}
-              className="font-mono text-ui mb-6 animate-fade-in text-center text-muted-foreground whitespace-pre-wrap uppercase"
-            >
-              {asciiQuestion}
-            </pre>
+            <div className="flex justify-center mb-6">
+              <div className={glass}>
+                <div className="bg-accent px-2">
+                  <p
+                    key={lastQuestion.id}
+                    className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+                  >
+                    {lastQuestion.text}
+                  </p>
+                </div>
+              </div>
+            </div>
           )}
           <div ref={bottomRef}>
             {savingProfile ? (
@@ -124,7 +113,7 @@ export default function Init() {
               <PersonaTemplateCards
                 templates={TEMPLATES}
                 onSelect={handleModeSelect}
-                onHoverChange={setModeHovered}
+                onHoverChange={() => {}}
                 onBack={backToAgentName}
               />
             )}
@@ -133,64 +122,81 @@ export default function Init() {
       );
     }
 
-    return (
-      <div ref={bottomRef} className="flex flex-col items-center gap-4">
-        {lastQuestion && (
-          <pre
-            key={lastQuestion.id}
-            className="font-mono text-ui animate-fade-in text-center text-muted-foreground whitespace-pre-wrap uppercase"
-          >
-            {asciiQuestion}
-          </pre>
-        )}
+    if (showInput) {
+      return (
+        <div ref={bottomRef} className="flex flex-col items-center gap-2">
+          <StandardInput
+            ref={inputRef}
+            label={lastQuestion?.text ?? ""}
+            value={input}
+            onChange={setInput}
+            onSubmit={submit}
+            onBack={goBack}
+            password={cur.password}
+            disabled={isRevealing}
+            error={lastError?.revealed}
+          />
+          {HINTS[step] && hint(HINTS[step]!)}
+        </div>
+      );
+    }
 
-        {/* Error */}
-        {lastError && (
-          <div
-            key={lastError.id}
-            className="font-mono text-detail text-subtle-foreground animate-fade-in text-center"
-          >
-            [err] {lastError.revealed}
-          </div>
-        )}
-
-        {/* Input / states */}
-        <div className="animate-fade-in w-full" key={step}>
-          {step === S.CONFIRM && !done ? (
-            <div className="flex flex-col items-center gap-3 animate-fade-in">
-              <Button size="sm" onClick={confirmCreate} disabled={isRevealing}>
-                initialize
-              </Button>
-              <Button size="xs" variant="ghost" onClick={goBack} disabled={isRevealing}>
-                ← go back
-              </Button>
-            </div>
-          ) : showInput ? (
-            <TerminalInput
-              inputRef={inputRef}
-              value={input}
-              onChange={setInput}
-              onSubmit={submit}
-              onBack={goBack}
-              onFocus={() => setIsFocused(true)}
-              onBlur={() => setIsFocused(false)}
-              placeholder=""
-              password={cur.password}
+    if (step === S.CONFIRM && !done) {
+      return (
+        <div ref={bottomRef} className="flex flex-col items-center gap-3">
+          {HINTS[S.CONFIRM] && hint(HINTS[S.CONFIRM]!)}
+          <div className={glass}>
+            {lastQuestion && (
+              <div className="bg-accent px-2">
+                <p
+                  key={lastQuestion.id}
+                  className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+                >
+                  {lastQuestion.text}
+                </p>
+              </div>
+            )}
+            <Button
+              size="xs"
+              variant="main"
+              onClick={confirmCreate}
               disabled={isRevealing}
-              isFocused={isFocused}
-              glowLine={glowLine}
-            />
-          ) : done ? (
-            <div className="text-center">
+              className="w-full h-12"
+            >
+              initialize →
+            </Button>
+          </div>
+          <div className={glass}>
+            <Button size="xs" variant="main" onClick={goBack} disabled={isRevealing}>
+              ← go back
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div ref={bottomRef} className="flex justify-center">
+        <div className={glass}>
+          {lastQuestion && (
+            <div className="bg-accent px-2">
+              <p
+                key={lastQuestion.id}
+                className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+              >
+                {lastQuestion.text}
+              </p>
+            </div>
+          )}
+          {done ? (
+            <div className="h-12 flex items-center px-4">
               <span className="font-mono text-caption text-subtle-foreground tracking-widest uppercase animate-pulse">
                 [ initializing ]
               </span>
             </div>
           ) : (
-            <div className="text-center">
-              <span className="font-mono text-subtle-foreground text-body animate-pulse">
-                _
-              </span>
+            <div className="h-12 flex items-center px-4">
+              <span className="font-mono text-subtle-foreground text-body animate-pulse">_</span>
             </div>
           )}
         </div>
@@ -201,7 +207,7 @@ export default function Init() {
   return (
     <div
       className={cn(
-        "h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden relative",
+        "h-screen w-screen text-foreground flex flex-col justify-end overflow-hidden relative",
         !welcomed ? "cursor-default" : "text-ui",
       )}
       onClick={
@@ -228,37 +234,24 @@ export default function Init() {
         daemon recovery
       </Link>
 
-      <div className="absolute inset-0 pointer-events-none" />
+      <div
+        className="absolute inset-0 pointer-events-none z-[1]"
+        style={{
+          background: "radial-gradient(ellipse 80% 50% at 50% 100%, rgba(0,0,0,0.82) 0%, transparent 100%)",
+        }}
+      />
 
-      <div className="flex-1 flex items-center justify-center pointer-events-none min-h-0 relative z-10">
-        <div
-          className={cn(
-            "relative origin-center transition-transform duration-700 ease-out",
-            welcomed
-              ? "scale-[0.45] sm:scale-[0.65]"
-              : "scale-[0.6] sm:scale-100",
-          )}
-        >
-          <pre className="text-body whitespace-pre leading-none text-foreground/50 bg-transparent">
-            {animaSymbol.base}
-          </pre>
-          {activeGreeting && (
-            <pre className="text-body whitespace-pre leading-none text-foreground/80 absolute inset-0 bg-transparent">
-              {animaSymbol.text}
-            </pre>
-          )}
-        </div>
-      </div>
-
-      {!welcomed ? (
-        <InitFooter hintVisible={hintVisible} onBegin={startProtocol} />
-      ) : (
-        <div className="shrink-0 px-8 pb-8 relative z-10">
-          <div className="w-full max-w-2xl mx-auto font-mono text-sm">
-            {renderBottom()}
+      <div>
+        {!welcomed ? (
+          <InitFooter hintVisible={hintVisible} onBegin={startProtocol} />
+        ) : (
+          <div className="shrink-0 px-8 pb-8 relative z-10">
+            <div className="w-full max-w-2xl mx-auto font-mono text-sm">
+              {renderBottom()}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

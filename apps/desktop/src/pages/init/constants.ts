@@ -84,21 +84,31 @@ export const GREETINGS = [
   "مرحبا",    // ar
 ];
 
+export const HINTS: Partial<Record<number, string>> = {
+  [0]: "your real name — just between us",
+  [1]: "lowercase, at least 2 characters",
+  [2]: "minimum 8 characters — you'll need this to get back in",
+  [3]: "type it again to make sure",
+  [4]: "this seals your vault and wakes your companion",
+  [7]: "what you'll call your AI companion",
+  [8]: "you can always change this later in settings",
+};
+
 export const COPY = {
   askName:       "What should I call you?",
-  greetUsername: (name: string) => `Hey ${name}. Pick a username.`,
-  askPassword:   "Good. Now a password — at least 6 characters.",
-  confirmPwd:    "One more time — just to be sure.",
+  greetUsername: (name: string) => `Hey ${name}. Pick a username`,
+  askPassword:   "Good. Now a password — at least 8 characters",
+  confirmPwd:    "One more time — just to be sure",
   confirmCreate: (name: string) => `Ready, ${name}?`,
-  creating:      "Sealing the vault.",
-  recoveryLabel: "Before you go in.",
-  recoverySub:   "Write these 12 words down. They're the only way back if you lose your password.",
-  agentIntro:    (name: string) => `One more thing, ${name}.`,
+  creating:      "Sealing the vault",
+  recoveryLabel: "Before you go in",
+  recoverySub:   "Write these 12 words down. They're the only way back if you lose your password",
+  agentIntro:    (name: string) => `One more thing, ${name}`,
   askAgentName:  "What should I call myself?",
   askAgentMode:  (n: string) => `How should ${n} begin?`,
-  allSet:        (n: string) => `${n} is ready.`,
+  allSet:        (n: string) => `${n} is ready`,
   errShort:      "Too short",
-  errMinChars:   "Min 6 chars",
-  errNoMatch:    "Doesn't match. Try again.",
+  errMinChars:   "Min 8 chars",
+  errNoMatch:    "Doesn't match. Try again",
   errCancelled:  "Cancelled",
 };

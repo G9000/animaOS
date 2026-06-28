@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useTheme } from "../../hooks/useTheme";
 import { Button } from "@anima/standard-templates";
 import pkg from "../../../package.json";
@@ -9,6 +10,27 @@ interface InitFooterProps {
 
 export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
   const { effective: theme, toggle: toggleTheme } = useTheme();
+  const [spaceHeld, setSpaceHeld] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code === "Space" && !e.repeat) {
+        e.preventDefault();
+        setSpaceHeld(true);
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code !== "Space") return;
+      setSpaceHeld(false);
+      onBegin();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [onBegin]);
 
   return (
     <div
@@ -16,36 +38,53 @@ export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
       style={{ opacity: hintVisible ? 1 : 0 }}
     >
       <div className="flex flex-col items-start gap-1.5">
-        <span className="text-label font-mono text-muted-foreground tracking-widest uppercase">
+        <span className="text-label font-mono text-accent tracking-widest uppercase">
           v{pkg.version}
         </span>
-        <Button
-          size="xs"
-          variant="ghost"
-          onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
-        >
-          {theme === "dark" ? "light" : "dark"}
-        </Button>
+        <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+          <Button
+            size="xs"
+            variant="main"
+            onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
+          >
+            {theme === "dark" ? "light" : "dark"}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-col items-center gap-1.5">
-        <Button size="sm" onClick={onBegin}>
-          BEGIN INITIALIZATION
-        </Button>
-        <span className="text-label font-mono text-muted-foreground tracking-widest uppercase">
-          or press enter
+        <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+          <Button
+            size="xl"
+            variant="main"
+            onClick={onBegin}
+            className={spaceHeld ? "font-bold btn-force-hover" : "font-bold"}
+          >
+            BEGIN INITIALIZATION
+          </Button>
+        </div>
+        <span className="text-base font-mono text-accent tracking-widest uppercase inline-flex items-center gap-1.5">
+          or press
+          <kbd
+            className="inline-flex items-center border border-current rounded-sm px-1.5 py-px text-[0.65em] leading-none"
+            style={{ letterSpacing: 0, borderBottomWidth: 2 }}
+          >
+            SPACE
+          </kbd>
         </span>
       </div>
 
-      <Button
-        size="xs"
-        variant="ghost"
-        icon={<span>↑</span>}
-        iconPosition="right"
-        onClick={(e) => e.stopPropagation()}
-      >
-        upload core
-      </Button>
+      <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+        <Button
+          size="xs"
+          variant="main"
+          icon={<span>↑</span>}
+          iconPosition="right"
+          onClick={(e) => e.stopPropagation()}
+        >
+          upload core
+        </Button>
+      </div>
     </div>
   );
 }

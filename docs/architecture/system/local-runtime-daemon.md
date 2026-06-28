@@ -2,6 +2,7 @@
 title: Local Runtime Daemon
 description: Architecture for keeping the Anima runtime alive independently of the desktop UI
 category: architecture
+last_edited: 2026-06-29
 ---
 
 # Local Runtime Daemon
@@ -70,6 +71,85 @@ flowchart LR
 - Open, hide, or quit the window without implicitly killing the runtime.
 - Ask the daemon for status and runtime control operations.
 - Offer user-facing controls for background mode, lock, restart, and diagnostics.
+
+## Build, Run, and Package
+
+The daemon is the Rust workspace crate in `apps/local-runtime-daemon`. Build it from the repository root.
+
+### Development build
+
+```powershell
+cargo build -p anima-local-runtime-daemon
+```
+
+The debug binary is written under the workspace `target/debug` directory. On Windows the executable name is:
+
+```text
+target/debug/anima-local-runtime-daemon.exe
+```
+
+### Release build
+
+```powershell
+cargo build -p anima-local-runtime-daemon --release
+```
+
+The release binary is written under the workspace `target/release` directory. On Windows the executable name is:
+
+```text
+target/release/anima-local-runtime-daemon.exe
+```
+
+### Run directly
+
+```powershell
+cargo run -p anima-local-runtime-daemon
+```
+
+By default the daemon binds its local control API to `127.0.0.1:3032` and supervises the Python runtime on `127.0.0.1:3031`. If no explicit runtime launcher is configured, it starts the runtime through the repository source with:
+
+```powershell
+uv run --project apps/server uvicorn anima_server.main:app --app-dir apps/server/src --host 127.0.0.1 --port 3031
+```
+
+The daemon data directory defaults to the platform data directory under `anima/runtime-daemon`, with a fallback to `.anima/runtime-daemon` when no platform data directory is available. Override it with `ANIMA_DAEMON_DATA_DIR` when isolating local test runs.
+
+The daemon writes `runtime-daemon.control-token` into its data directory. Desktop and local clients use that token through the `x-anima-daemon-token` header for control operations.
+
+### Desktop release staging
+
+For desktop packaging, run the release preparation script from the desktop app:
+
+```powershell
+cd apps/desktop
+bun run prepare:release
+```
+
+That script builds the daemon in release mode, writes runtime daemon release metadata, stages daemon artifacts under the local `.anima` release metadata directory, and stages bundled desktop resources under `apps/desktop/src-tauri/resources/.anima`.
+
+The desktop package scripts call the same release preparation path before Tauri builds:
+
+```powershell
+cd apps/desktop
+bun run package
+```
+
+Use `bun run package:app` for an app-only Tauri bundle.
+
+### Useful environment overrides
+
+| Variable | Purpose |
+| --- | --- |
+| `ANIMA_DAEMON_BIND_HOST` | Override the daemon control API host. Defaults to `127.0.0.1`. |
+| `ANIMA_DAEMON_BIND_PORT` | Override the daemon control API port. Defaults to `3032`. |
+| `ANIMA_DAEMON_RUNTIME_HOST` | Override the supervised runtime host. Defaults to `127.0.0.1`. |
+| `ANIMA_DAEMON_RUNTIME_PORT` | Override the supervised runtime port. Defaults to `3031`. |
+| `ANIMA_DAEMON_RUNTIME_COMMAND` | Use an explicit command to start the Python runtime. |
+| `ANIMA_DAEMON_RUNTIME_LAUNCH_MODE` | Select `python`, `command`, or `artifact` launch behavior. |
+| `ANIMA_DAEMON_RUNTIME_ARTIFACT` | Point the daemon at a runtime artifact or Python entrypoint. |
+| `ANIMA_DAEMON_RUNTIME_WORKDIR` | Set the working directory used when launching the runtime. |
+| `ANIMA_DAEMON_DATA_DIR` | Set the daemon state, token, PID, port, and log directory. |
+| `ANIMA_DAEMON_CONTROL_TOKEN` | Provide a fixed local control token instead of generating one. |
 
 ## Security Rules
 

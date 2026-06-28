@@ -1,32 +1,38 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
-import { useAnimaSymbol, useGlowLine, Button } from "@anima/standard-templates";
+import { Button, StandardInput } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
-import { TerminalInput } from "../init/TerminalInput";
 
 type LoginStep = "username" | "password";
 type RecoveryStep = "phrase" | "newPwd" | "confirm";
 
+const CACHED_USER_KEY = "anima_last_user";
+
+function readCachedUser(): string {
+  try {
+    return localStorage.getItem(CACHED_USER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export default function Login() {
-  const [step, setStep] = useState<LoginStep>("username");
-  const [username, setUsername] = useState("");
+  const [step, setStep] = useState<LoginStep>(() =>
+    readCachedUser() ? "password" : "username",
+  );
+  const [username, setUsername] = useState<string>(() => readCachedUser());
   const [input, setInput] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [isFocused, setIsFocused] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [recoveryStep, setRecoveryStep] = useState<RecoveryStep>("phrase");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const { setUser, isAuthenticated, isLoading } = useAuth();
   const navigate = useNavigate();
-
-  const symbolSpeed = isFocused ? 1.5 : 0.7;
-  const animaSymbol = useAnimaSymbol(symbolSpeed);
-  const glowLine = useGlowLine(isFocused, 28);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -39,18 +45,36 @@ export default function Login() {
     (!recovering && step === "password") ||
     (recovering && (recoveryStep === "newPwd" || recoveryStep === "confirm"));
 
-  const prompt = recovering
-    ? { phrase: "12-word recovery phrase", newPwd: "new password", confirm: "confirm password" }[recoveryStep]
-    : { username: "who are you?", password: "password" }[step];
+  const label = recovering
+    ? {
+        phrase: "12-word recovery phrase",
+        newPwd: "new password",
+        confirm: "confirm password",
+      }[recoveryStep]
+    : step === "username"
+      ? "who are you?"
+      : username
+        ? `welcome, ${username}`
+        : "password";
 
   function goBack() {
     setError("");
     if (!recovering) {
-      if (step === "password") { setStep("username"); setInput(username); }
+      if (step === "password" && !readCachedUser()) {
+        setStep("username");
+        setInput(username);
+      } else navigate("/init", { replace: true });
     } else {
-      if (recoveryStep === "phrase") { setRecovering(false); setInput(""); }
-      else if (recoveryStep === "newPwd") { setRecoveryStep("phrase"); setInput(phrase); }
-      else { setRecoveryStep("newPwd"); setInput(""); }
+      if (recoveryStep === "phrase") {
+        setRecovering(false);
+        setInput("");
+      } else if (recoveryStep === "newPwd") {
+        setRecoveryStep("phrase");
+        setInput(phrase);
+      } else {
+        setRecoveryStep("newPwd");
+        setInput("");
+      }
     }
   }
 
@@ -69,6 +93,11 @@ export default function Login() {
       try {
         const res = await api.auth.login(username, input);
         setUnlockToken(res.unlockToken);
+        try {
+          localStorage.setItem(CACHED_USER_KEY, username);
+        } catch {
+          /* ignore */
+        }
         setUser({ id: res.id, username: res.username, name: res.name });
         navigate("/");
       } catch (err) {
@@ -80,18 +109,24 @@ export default function Login() {
       return;
     }
 
-    // Recovery flow
     if (recoveryStep === "phrase") {
       setPhrase(input.trim().toLowerCase());
       setRecoveryStep("newPwd");
       setInput("");
     } else if (recoveryStep === "newPwd") {
-      if (input.length < 8) { setError("min 8 characters"); return; }
+      if (input.length < 8) {
+        setError("min 8 characters");
+        return;
+      }
       setNewPassword(input);
       setRecoveryStep("confirm");
       setInput("");
     } else {
-      if (input !== newPassword) { setError("doesn't match"); setInput(""); return; }
+      if (input !== newPassword) {
+        setError("doesn't match");
+        setInput("");
+        return;
+      }
       setLoading(true);
       try {
         const res = await api.auth.recover(phrase, newPassword);
@@ -101,7 +136,9 @@ export default function Login() {
       } catch (err) {
         setError(err instanceof Error ? err.message : "recovery failed");
         setRecoveryStep("phrase");
-        setPhrase(""); setNewPassword(""); setInput("");
+        setPhrase("");
+        setNewPassword("");
+        setInput("");
       } finally {
         setLoading(false);
       }
@@ -109,7 +146,7 @@ export default function Login() {
   }
 
   return (
-    <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden">
+    <div className="h-screen w-screen text-foreground overflow-hidden relative">
       <Link
         className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
         to="/daemon"
@@ -117,76 +154,44 @@ export default function Login() {
         daemon recovery
       </Link>
 
-      {/* Anima symbol — centered */}
-      <div className="flex-1 flex items-center justify-center pointer-events-none min-h-0">
-        <div className="scale-[0.5] sm:scale-[0.7] origin-center">
-          <pre className="text-body whitespace-pre leading-none text-foreground/40 bg-transparent">
-            {animaSymbol.base}
-          </pre>
+      {/* Bottom gradient */}
+      <div
+        className="absolute inset-0 pointer-events-none z-[1]"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 50% at 50% 100%, rgba(0,0,0,0.88) 0%, transparent 100%)",
+        }}
+      />
+
+      {/* Bottom bar */}
+      <div className="absolute bottom-0 left-0 right-0 z-10 px-8 pb-10 flex items-end justify-between">
+        <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+          <Button size="xs" variant="main" onClick={goBack}>← back</Button>
         </div>
-      </div>
 
-      {/* Input area */}
-      <div className="shrink-0 px-8 pb-12">
-        <div className="w-full max-w-sm mx-auto flex flex-col items-center gap-3">
+        <StandardInput
+          ref={inputRef}
+          label={label}
+          value={input}
+          onChange={(v) => { setInput(v); if (error) setError(""); }}
+          onSubmit={submit}
+          onBack={goBack}
+          password={isPassword}
+          disabled={loading}
+          loading={loading}
+          error={error}
+        />
 
-          {/* Confirmed username breadcrumb */}
-          {!recovering && step === "password" && (
-            <span className="font-mono text-label text-subtle-foreground tracking-widest uppercase animate-fade-in">
-              {username}
-            </span>
-          )}
 
-          {/* Current prompt */}
-          <p
-            key={prompt}
-            className="font-mono text-ui text-muted-foreground tracking-widest uppercase text-center animate-fade-in"
-          >
-            {prompt}
-          </p>
-
-          {/* Error */}
-          {error && (
-            <p className="font-mono text-detail text-destructive animate-fade-in">
-              [err] {error}
-            </p>
-          )}
-
-          {/* Terminal input */}
-          <TerminalInput
-            inputRef={inputRef}
-            value={input}
-            onChange={setInput}
-            onSubmit={submit}
-            onBack={goBack}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            placeholder=""
-            password={isPassword}
-            disabled={loading}
-            isFocused={isFocused}
-            glowLine={glowLine}
-          />
-
-          {/* Forgot password */}
-          {!recovering ? (
-            <Button
-              size="xs"
-              variant="ghost"
-              onClick={() => { setRecovering(true); setError(""); setInput(""); }}
-            >
+        {!recovering ? (
+          <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+            <Button size="xs" variant="main" onClick={() => { setRecovering(true); setError(""); setInput(""); }}>
               forgot password?
             </Button>
-          ) : (
-            <Button
-              size="xs"
-              variant="ghost"
-              onClick={goBack}
-            >
-              ← back
-            </Button>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="w-[112px]" />
+        )}
       </div>
     </div>
   );

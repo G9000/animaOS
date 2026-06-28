@@ -22,6 +22,7 @@ export { AttachMenu, type AttachMenuProps } from "./composed/AttachMenu";
 export { Field, type FieldProps } from "./composed/Field";
 export { PageHeader, type PageHeaderProps } from "./composed/PageHeader";
 export { PromptInput, type PromptInputProps, type AttachedImageItem, type AttachedDocumentItem, type AttachedDocumentStatus } from "./composed/PromptInput";
+export { StandardInput, type StandardInputProps } from "./composed/StandardInput";
 export { TabBar, type TabBarProps, type Tab } from "./composed/TabBar";
 export {
   ToastContainer,
@@ -69,8 +70,11 @@ export {
   CompassIcon,
   GearIcon,
   TrendIcon,
+  InfoIcon,
   InboxIcon,
   TargetIcon,
+  SpeakerOnIcon,
+  SpeakerOffIcon,
 } from "./icons";
 export {
   HomeIcon,

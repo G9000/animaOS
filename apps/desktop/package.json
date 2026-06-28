@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@anima/api-client": "workspace:*",
+    "@anima/ascii-motion": "workspace:*",
     "@anima/standard-templates": "workspace:*",
     "@anima/daemon-contracts": "workspace:*",
     "@fontsource/playfair-display": "^5.2.8",
@@ -29,13 +30,13 @@
     "@tiptap/extensions": "^3.26.0",
     "@tiptap/react": "^3.26.0",
     "@tiptap/starter-kit": "^3.26.0",
+    "@xyflow/react": "^12.11.0",
     "highlight.js": "^11.11.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.0",
     "rehype-highlight": "^7.0.2",
-    "@xyflow/react": "^12.11.0",
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {

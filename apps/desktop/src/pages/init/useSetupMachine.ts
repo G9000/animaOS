@@ -32,12 +32,20 @@ export function useSetupMachine({
 }: SetupMachineDeps) {
   const navigate = useNavigate();
 
+  const PENDING_PHRASE_KEY = "anima_pending_recovery";
+
   const [input, setInput] = useState("");
-  const [step, setStep] = useState<number>(S.NAME);
-  const [ready, setReady] = useState(false);
+  const [step, setStep] = useState<number>(() => {
+    try { return sessionStorage.getItem(PENDING_PHRASE_KEY) ? S.RECOVERY : S.NAME; } catch { return S.NAME; }
+  });
+  const [ready, setReady] = useState(() => {
+    try { return !!sessionStorage.getItem(PENDING_PHRASE_KEY); } catch { return false; }
+  });
   const [data, setData] = useState({ name: "", username: "", password: "" });
   const [done, setDone] = useState(false);
-  const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(null);
+  const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(() => {
+    try { return sessionStorage.getItem(PENDING_PHRASE_KEY); } catch { return null; }
+  });
   const [pendingUser, setPendingUser] = useState<{ id: number; username: string; name: string } | null>(null);
   const [agentName, setAgentName] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
@@ -152,6 +160,7 @@ export function useSetupMachine({
       setUnlockToken(u.unlockToken);
       setPendingUser({ id: u.id, username: u.username, name: u.name });
       if (u.recoveryPhrase) {
+        try { sessionStorage.setItem(PENDING_PHRASE_KEY, u.recoveryPhrase); } catch { /* ignore */ }
         setRecoveryPhrase(u.recoveryPhrase);
         setStep(S.RECOVERY);
         setInput("");
@@ -183,7 +192,7 @@ export function useSetupMachine({
         addLine("output", COPY.askPassword);
         advance(); break;
       case S.PASSWORD:
-        if (v.length < 6) return addLine("error", COPY.errMinChars);
+        if (v.length < 8) return addLine("error", COPY.errMinChars);
         setData((d) => ({ ...d, password: v }));
         addLine("output", COPY.confirmPwd);
         advance(); break;
@@ -213,6 +222,7 @@ export function useSetupMachine({
   }, [step, done, addLine]);
 
   const advanceFromRecovery = useCallback(() => {
+    try { sessionStorage.removeItem(PENDING_PHRASE_KEY); } catch { /* ignore */ }
     addLine("output", COPY.agentIntro(data.name));
     setStep(S.AGENT_INTRO);
     setInput("");

@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-06-29
+
+- documented local runtime daemon build, run, desktop release staging, default runtime launch behavior, data directory behavior, and key environment overrides
+
 ## 2026-06-26
 
 - documented the document processing architecture, including PDF upload, checkpointed ingestion, runtime document/chunk storage, pgvector indexing, chat grounding, citation pills, and the boundary between document RAG and durable memory

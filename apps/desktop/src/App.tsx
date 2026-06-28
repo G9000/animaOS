@@ -26,7 +26,9 @@ import Mods from "./pages/Mods";
 import ModDetail from "./pages/ModDetail";
 import Journal from "./pages/Journal";
 import Login from "./pages/auth/Login";
+import Register from "./pages/auth/Register";
 import Init from "./pages/init/Init";
+import { AtmosphereShell } from "./components/AtmosphereShell";
 import "./index.css";
 
 // Register global shortcut to summon ANIMA (Cmd+Shift+A / Ctrl+Shift+A)
@@ -123,8 +125,11 @@ function AppRoutes() {
       <Route path="/database" element={withLayout(<Database />)} />
       <Route path="/graph" element={withLayout(<KnowledgeGraph />)} />
       <Route path="/daemon" element={daemonRecovery} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/init" element={<Init />} />
+      <Route element={<AtmosphereShell />}>
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/init" element={<Init />} />
+      </Route>
       <Route path="/journal" element={withLayout(<Journal />)} />
       <Route path="/mods" element={withLayout(<Mods />)} />
       <Route path="/mods/:id" element={withLayout(<ModDetail />)} />
