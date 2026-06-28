@@ -264,6 +264,7 @@ async fn handle_ws_event(
             app.apply(AppEvent::ConnectionChanged(state));
         }
         WsEvent::Authenticated(user) => {
+            app.clear_active_run();
             app.approvals.reconcile_after_reconnect(&[]);
             if app.approvals.pending().is_none() && app.approval_mode == "pending" {
                 app.approval_mode = "manual".to_string();
@@ -982,6 +983,7 @@ mod tests {
 
         assert!(app.approvals.pending().is_none());
         assert_eq!(app.approval_mode, "manual");
+        assert_eq!(app.run.current_run_id, None);
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@
 - PRD: docs/prds/animus/rust-coding-tui-v1.md
 - Plan: docs/superpowers/plans/2026-06-27-animus-rust-coding-tui.md
 - Created: 2026-06-27 03:00 MYT
-- Updated: 2026-06-28 19:19 MYT
+- Updated: 2026-06-28 20:09 MYT
 - Started: 2026-06-27 06:31 MYT
 - Completed: 2026-06-27 11:38 MYT
 
@@ -61,6 +61,7 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
 - 2026-06-28 18:33 MYT - Addressed the latest Codex shell-substitution and stale-approval replay review round: dangerous commands inside substitutions are denied, and already answered approvals are not requeued from stale replay.
 - 2026-06-28 19:02 MYT - Addressed the latest Codex path-qualified git review round: quoted and path-qualified git executables now hit the dangerous-command deny-list.
 - 2026-06-28 19:19 MYT - Addressed the latest Codex approval-conflict review round: approval `RUN_CONFLICT` and `RUN_NOT_FOUND` errors now clear stale active run state.
+- 2026-06-28 20:09 MYT - Addressed the latest Codex reconnect review round: reconnect auth now clears stale active run state before replayed frames can re-establish it.
 
 ## Validation
 
@@ -233,6 +234,11 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - `cargo test -p animus terminal_agent_error_clears_active_run -- --nocapture` - passed after extending terminal run error classification
   - `cargo fmt -p animus` - completed after latest approval-conflict review fix
   - `cargo test -p animus` - passed after latest approval-conflict review fix: 105 passed
+  - `cargo test -p animus reconnect_auth_clears_stale_pending_approval_before_replay -- --nocapture` - failed before reconnect auth cleared stale active run state, passed after the fix
+  - `cargo test -p animus websocket_driver_delivers_replayed_approval_before_queued_response -- --nocapture` - passed after reconnect active-run cleanup
+  - `cargo test -p animus active_run_blocks_normal_composer_submission -- --nocapture` - passed after reconnect active-run cleanup
+  - `cargo fmt -p animus` - completed after latest reconnect active-run review fix
+  - `cargo test -p animus` - passed after latest reconnect active-run review fix: 105 passed
 - Changed paths:
   - apps/animus/Cargo.toml
   - apps/animus/package.json
@@ -295,5 +301,6 @@ Remove Bun/Ink support wiring, validate the Rust replacement, and update docs/tr
   - Latest shell-substitution and stale-approval replay fixes reject dangerous commands inside `$()`/backtick substitutions and prevent already answered approvals from being requeued by stale reconnect replay.
   - Latest path-qualified git review fix uses quote-aware shell tokenization and normalized executable names for the dangerous git deny-list.
   - Latest approval-conflict review fix treats `RUN_CONFLICT` and `RUN_NOT_FOUND` as terminal run errors so stale approval responses cannot leave the composer blocked.
+  - Latest reconnect review fix clears stale active run bookkeeping when websocket auth succeeds after a dropped connection, while replayed frames can still establish active approval state.
   - No database schema changes; Alembic was not run.
 

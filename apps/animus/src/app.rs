@@ -103,6 +103,11 @@ impl AppState {
         }
     }
 
+    pub fn clear_active_run(&mut self) {
+        self.run.current_run_id = None;
+        self.run.approval_pause_pending = false;
+    }
+
     pub fn handle_server_frame(&mut self, frame: ServerFrame) -> Option<ClientFrame> {
         match frame {
             ServerFrame::AuthOk { user } => {
@@ -249,8 +254,7 @@ impl AppState {
             }
             ServerFrame::Error { message, code } => {
                 if is_terminal_run_error_code(&code) {
-                    self.run.current_run_id = None;
-                    self.run.approval_pause_pending = false;
+                    self.clear_active_run();
                 }
                 self.errors.push(format!("{code}: {message}"));
                 self.transcript
