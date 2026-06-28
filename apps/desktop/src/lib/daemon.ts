@@ -170,7 +170,24 @@ async function request<T>(path: string, init: RequestInit = {}, allowRetry = tru
 }
 
 export async function getDaemonHealth(): Promise<{ status: string; version: string; updatedAt: string }> {
-  return request(`${DAEMON_ROUTES.health}`);
+  const response = await fetch(endpoint(DAEMON_ROUTES.health), {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  const text = await response.text();
+  let parsed: unknown = text;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
+  }
+
+  if (!response.ok) {
+    throw new Error(parseErrorResponse(parsed));
+  }
+
+  return parsed as { status: string; version: string; updatedAt: string };
 }
 
 export async function getDaemonStatus(): Promise<DaemonStatusResponse> {
