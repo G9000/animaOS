@@ -370,6 +370,31 @@ def test_capsule_sections_include_memory_item_evidence() -> None:
     assert restored["database"]["memoryItemEvidence"] == [{"id": 1, "memory_item_id": 10}]
 
 
+def test_capsule_sections_include_knowledge_graph_tables() -> None:
+    payload = {
+        "version": 2,
+        "createdAt": "2026-05-17T00:00:00+00:00",
+        "scope": "memories",
+        "database": {
+            "users": [],
+            "userKeys": [],
+            "kgEntities": [{"id": 1, "name": "Ari"}],
+            "kgRelations": [{"id": 2, "relation_type": "collaborates_on"}],
+        },
+        "manifest": {},
+        "userFiles": {},
+    }
+
+    sections = vault_module._payload_to_capsule_sections(payload)
+    restored = vault_module._capsule_sections_to_payload(sections)
+
+    assert "graph" in sections
+    assert restored["database"]["kgEntities"] == [{"id": 1, "name": "Ari"}]
+    assert restored["database"]["kgRelations"] == [
+        {"id": 2, "relation_type": "collaborates_on"}
+    ]
+
+
 def test_export_and_import_anima_capsule_restores_auth_and_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -200,6 +200,43 @@ def test_scored_retrieval_pool_keeps_hot_older_items() -> None:
         assert [item.id for item in scored] == [hot_old.id]
 
 
+def test_scored_retrieval_pool_keeps_fresh_unscored_items() -> None:
+    with _db_session() as db:
+        user = _make_user(db)
+        now = datetime.now(UTC)
+        fresh_unscored = MemoryItem(
+            user_id=user.id,
+            content="fresh important unscored fact",
+            category="fact",
+            importance=5,
+            source="user",
+            reference_count=0,
+            heat=0.0,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(fresh_unscored)
+        for index in range(210):
+            db.add(
+                MemoryItem(
+                    user_id=user.id,
+                    content=f"stored low heat {index}",
+                    category="fact",
+                    importance=1,
+                    source="test",
+                    reference_count=0,
+                    heat=0.1,
+                    created_at=now - timedelta(minutes=index + 1),
+                    updated_at=now,
+                )
+            )
+        db.flush()
+
+        scored = get_memory_items_scored(db, user_id=user.id, category="fact", limit=1)
+
+        assert [item.id for item in scored] == [fresh_unscored.id]
+
+
 def test_touch_memory_items_updates_tracking() -> None:
     with _db_session() as db:
         user = _make_user(db)

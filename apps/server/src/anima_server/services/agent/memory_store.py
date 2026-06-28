@@ -582,13 +582,28 @@ def get_memory_items_scored(
     )
     if category is not None:
         query = query.where(MemoryItem.category == category)
-    # Fetch a larger pool, then rank in Python
+    # Fetch complementary pools, then rank in Python. Heat-first keeps older
+    # accessed memories visible; recency-first keeps fresh unscored items from
+    # being starved before their on-the-fly heat can be computed.
     pool_limit = min(limit * 3, 200)
-    query = query.order_by(
-        func.coalesce(MemoryItem.heat, 0.0).desc(),
-        MemoryItem.created_at.desc(),
-    ).limit(pool_limit)
-    items = list(db.scalars(query).all())
+    heat_ranked = list(
+        db.scalars(
+            query.order_by(
+                func.coalesce(MemoryItem.heat, 0.0).desc(),
+                MemoryItem.created_at.desc(),
+            ).limit(pool_limit)
+        ).all()
+    )
+    recent_ranked = list(
+        db.scalars(query.order_by(MemoryItem.created_at.desc()).limit(pool_limit)).all()
+    )
+    items: list[MemoryItem] = []
+    seen_ids: set[int] = set()
+    for item in (*heat_ranked, *recent_ranked):
+        if item.id in seen_ids:
+            continue
+        seen_ids.add(item.id)
+        items.append(item)
 
     if not items:
         return []

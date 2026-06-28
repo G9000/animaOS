@@ -53,7 +53,7 @@ Consolidated list of every gap found during detailed per-requirement audits. Sor
 
 | ID | Change | Verification |
 |----|--------|--------------|
-| F2.9 | `get_memory_items_scored()` now orders the initial pool by heat first, then recency, before Python-side scoring and query blending | `test_scored_retrieval_pool_keeps_hot_older_items` |
+| F2.9 | `get_memory_items_scored()` now combines heat-ranked and recency-ranked candidate slices before Python-side scoring and query blending | `test_scored_retrieval_pool_keeps_hot_older_items`, `test_scored_retrieval_pool_keeps_fresh_unscored_items` |
 | F4.15 | Vault export/import now includes `kg_entities` and `kg_relations` with graph capsule grouping and restore ordering | `test_export_and_import_vault_restores_knowledge_graph` |
 | F5.14/F5.23 | Consolidation result payloads now include the latest runtime message cursor and processed-message count when runtime DB rows are available | `test_consolidation_task_records_latest_runtime_message_cursor` |
 

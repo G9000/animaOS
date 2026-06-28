@@ -69,7 +69,7 @@ This baseline also found several stale PRD claims. Most notably, the F3 predict-
 | --- | --- | --- |
 | Visibility floor | `apps/server/src/anima_server/services/agent/forgetting.py:33`, `apps/server/src/anima_server/services/agent/memory_store.py:570` | Memories with decayed nonzero heat below the visibility floor are filtered out of prompt retrieval. |
 | Scored retrieval | `apps/server/src/anima_server/services/agent/memory_store.py:554`, `apps/server/src/anima_server/services/agent/memory_store.py:643` | `get_memory_items_scored()` ranks by retrieval score and preserves query embedding blending. |
-| Pool ordering | `apps/server/src/anima_server/services/agent/memory_store.py:588` | SUM-001 changes the initial pool fetch to order by heat first, then recency, so hot older memories are not excluded before Python scoring. |
+| Pool ordering | `apps/server/src/anima_server/services/agent/memory_store.py:588` | SUM-001 builds the candidate pool from both heat-ranked and recency-ranked slices before Python scoring, so hot older memories and fresh unscored memories both survive the pre-score cap. |
 
 ## Drift And Follow-Up Scope
 
