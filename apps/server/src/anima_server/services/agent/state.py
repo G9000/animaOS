@@ -25,6 +25,7 @@ class StoredAttachment:
     sha256: str | None = None
     storage_path: str | None = None
     retention_state: str | None = None
+    delete_on_error: bool = True
 
     def to_content_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {

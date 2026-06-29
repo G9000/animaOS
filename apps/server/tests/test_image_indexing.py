@@ -82,6 +82,34 @@ def test_index_image_asset_creates_context_metadata_and_current_embeddings(
     assert runtime_db.get(RuntimeImageAsset, asset.id).indexed_at is not None
 
 
+def test_index_image_asset_defaults_to_configured_embedding_function(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images import indexing
+    from anima_server.services.images.capabilities import ImageProcessingCapabilities
+
+    asset = _asset(runtime_db, tmp_path, monkeypatch)
+    monkeypatch.setattr(indexing, "generate_embedding", lambda text: _embedding(2.0), raising=False)
+
+    result = indexing.index_image_asset(
+        runtime_db,
+        user_id=7,
+        image_asset_id=asset.id,
+        upload_context="User uploaded a dashboard screenshot.",
+        capabilities=ImageProcessingCapabilities(),
+    )
+
+    assert result.embedding_count == 2
+    assert runtime_db.scalar(
+        select(func.count(RuntimeEmbedding.id)).where(
+            RuntimeEmbedding.source_type == "image_annotation"
+        )
+    ) == 2
+    assert runtime_db.get(RuntimeImageAsset, asset.id).status == "indexed"
+
+
 def test_reindexing_unchanged_image_annotations_is_idempotent(
     runtime_db,
     tmp_path: Path,

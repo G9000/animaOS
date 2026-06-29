@@ -90,6 +90,7 @@ def prepare_chat_attachments(
                     size_bytes=stored_asset.asset.size_bytes,
                     sha256=stored_asset.asset.sha256,
                     retention_state=stored_asset.asset.retention_state,
+                    delete_on_error=stored_asset.created,
                 )
             )
             continue

@@ -106,7 +106,7 @@ def test_forget_image_asset_removes_links_annotations_embeddings_row_and_file(
     from anima_server.services.images.deletion import forget_image_asset
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    asset, _message, _attachment_id, path = _linked_image(runtime_db, user_id=7)
+    asset, message, _attachment_id, path = _linked_image(runtime_db, user_id=7)
     assert path.exists()
 
     result = forget_image_asset(runtime_db, user_id=7, image_asset_id=asset.id)
@@ -122,6 +122,7 @@ def test_forget_image_asset_removes_links_annotations_embeddings_row_and_file(
             RuntimeEmbedding.source_type == "image_annotation"
         )
     ) == 0
+    assert runtime_db.get(RuntimeMessage, message.id).content_json == {"attachments": []}
 
 
 def test_remove_message_image_link_updates_message_but_keeps_reused_asset(

@@ -217,6 +217,8 @@ def _prepare_image_attachments(
 
 def _delete_prepared_attachments(attachments: Sequence[StoredAttachment]) -> None:
     for attachment in attachments:
+        if not attachment.delete_on_error:
+            continue
         with contextlib.suppress(OSError):
             Path(attachment.path).unlink(missing_ok=True)
 
@@ -1979,7 +1981,6 @@ def _index_image_attachments_inline(
             user_id=user_id,
             image_asset_ids=image_asset_ids,
             upload_context=user_message,
-            embedding_fn=None,
         )
     except Exception:
         logger.debug("Inline image annotation indexing failed", exc_info=True)

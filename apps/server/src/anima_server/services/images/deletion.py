@@ -57,6 +57,24 @@ def forget_image_asset(
     if asset is None:
         return ForgetImageResult(forgotten=False, image_asset_id=image_asset_id)
 
+    linked_messages = list(
+        runtime_db.execute(
+            select(RuntimeImageMessageLink, RuntimeMessage)
+            .join(RuntimeMessage, RuntimeImageMessageLink.message_id == RuntimeMessage.id)
+            .where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.image_asset_id == image_asset_id,
+                RuntimeMessage.user_id == user_id,
+            )
+        ).all()
+    )
+    for link, message in linked_messages:
+        _remove_image_asset_metadata(
+            message,
+            image_asset_id=image_asset_id,
+            attachment_id=link.attachment_id,
+        )
+
     annotation_ids = list(
         runtime_db.scalars(
             select(RuntimeImageAnnotation.id).where(
@@ -261,6 +279,19 @@ def _delete_orphaned_transient_asset(
 
 
 def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> None:
+    _remove_image_asset_metadata(
+        message,
+        image_asset_id=None,
+        attachment_id=attachment_id,
+    )
+
+
+def _remove_image_asset_metadata(
+    message: RuntimeMessage,
+    *,
+    image_asset_id: int | None,
+    attachment_id: str | None,
+) -> None:
     payload = dict(message.content_json or {})
     raw_attachments = payload.get(ATTACHMENTS_CONTENT_KEY)
     if not isinstance(raw_attachments, list):
@@ -270,7 +301,13 @@ def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> 
         for attachment in raw_attachments
         if not (
             isinstance(attachment, dict)
-            and attachment.get("id") == attachment_id
+            and (
+                (attachment_id is not None and attachment.get("id") == attachment_id)
+                or (
+                    image_asset_id is not None
+                    and attachment.get("assetId") == image_asset_id
+                )
+            )
         )
     ]
     message.content_json = payload

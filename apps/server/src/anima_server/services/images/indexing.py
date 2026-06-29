@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from anima_server.models.runtime import RuntimeImageAnnotation, RuntimeImageAsset
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
+from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.extractors import ImageCaptioner, ImageTextExtractor
@@ -92,10 +93,10 @@ def index_image_asset(
         runtime_db,
         user_id=user_id,
         annotations=annotations,
-        embedding_fn=embedding_fn,
+        embedding_fn=embedding_fn or generate_embedding,
     )
 
-    if embedding_fn is not None and _all_active_annotations_embedded(
+    if _all_active_annotations_embedded(
         runtime_db,
         user_id=user_id,
         image_asset_id=asset.id,

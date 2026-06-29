@@ -76,6 +76,33 @@ def test_prepare_chat_attachments_with_runtime_db_returns_asset_backed_attachmen
     assert asset.storage_path.startswith("users/7/media/images/")
 
 
+def test_failed_turn_cleanup_keeps_reused_asset_file(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.service import _delete_prepared_attachments
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    first = prepare_chat_attachments(
+        user_id=7,
+        attachments=[_attachment()],
+        runtime_db=runtime_db,
+    )
+    reused = prepare_chat_attachments(
+        user_id=7,
+        attachments=[_attachment()],
+        runtime_db=runtime_db,
+    )
+    path = Path(reused[0].path)
+    assert first[0].asset_id == reused[0].asset_id
+    assert path.exists()
+
+    _delete_prepared_attachments(reused)
+
+    assert path.exists()
+
+
 def test_persisted_user_message_creates_image_asset_links(
     runtime_db,
     tmp_path: Path,
