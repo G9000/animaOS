@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-29 18:49 MYT
+- Updated: 2026-06-29 22:19 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -54,7 +54,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 
 ## Completed Tickets
 
-- `SUM-001` - Baseline memory truth audit and eval probes (completed 2026-06-29 03:32 MYT)
+- `SUM-001` - Baseline memory truth audit and eval probes (completed 2026-06-29 10:39 MYT)
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
 
 ## Activity Log
@@ -64,6 +64,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-29 03:12 MYT - `SUM-001` completed with baseline audit, deterministic recall probes, focused fixes, and validation.
 - 2026-06-29 03:32 MYT - `SUM-001` updated after Codex review fixes and validation rerun.
 - 2026-06-29 10:36 MYT - `SUM-002` claimed by Codex on branch `codex/sum-002-evidence-episode-quality`, based on PR #67 branch `codex/sum-001-memory-baseline`.
+- 2026-06-29 10:39 MYT - `SUM-001` updated after Codex PR comment fix for KG sequence reset and validation rerun.
 - 2026-06-29 11:03 MYT - `SUM-002` completed with evidence audit/backfill endpoints, episode timestamp/detail safeguards, focused validation, lint, build, and health smoke.
 - 2026-06-29 11:13 MYT - `SUM-002` updated after review feedback to use multilingual-safe exact user detail excerpts.
 - 2026-06-29 11:38 MYT - `SUM-002` expanded to production multilingual baseline across grounded episode details, lexical fallbacks, transcript search metadata, vector fallback scoring, and generic claim keys.
@@ -73,14 +74,15 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-29 17:37 MYT - `SUM-002` addressed Codex rereview thread for one-character ASCII memory slot values in relation matching.
 - 2026-06-29 18:08 MYT - `SUM-002` addressed Codex rereview threads for one-character ASCII fallback retrieval and long salient episode excerpt grounding.
 - 2026-06-29 18:49 MYT - `SUM-002` addressed Codex rereview thread for one-character transcript query false positives.
+- 2026-06-29 22:19 MYT - Resolved stacked PR merge conflict by preserving `SUM-001` base updates and `SUM-002` review validation history.
 
 ## Validation
 
 - Commands:
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 11 passed, 7 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - 1660 passed, 1 skipped, 242 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - 1661 passed, 1 skipped, 242 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_api.py` - SUM-002 focused suite: 45 passed, 17 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_api.py apps/server/tests/test_phase3_storage.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py::TestTranscriptSearch` - expanded SUM-002 multilingual suite: 118 passed, 34 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_provenance_backfill.py::test_backfill_memory_item_evidence_prioritizes_active_missing_rows apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_does_not_append_ordinary_turns_without_salient_details apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_resolves_relative_dates_in_summary apps/server/tests/test_memory_multilingual_baseline.py::test_unicode_tokens_preserve_one_character_multilingual_and_digit_values apps/server/tests/test_memory_multilingual_baseline.py::test_bm25_fallback_handles_empty_tokenized_corpus` - PR review regressions: 5 passed, 3 warnings

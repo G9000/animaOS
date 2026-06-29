@@ -1571,6 +1571,8 @@ def reset_identity_sequences(db: Session) -> None:
         "memory_items",
         "memory_item_evidence",
         "memory_episodes",
+        "kg_entities",
+        "kg_relations",
         "tasks",
         "self_model_blocks",
         "emotional_signals",
