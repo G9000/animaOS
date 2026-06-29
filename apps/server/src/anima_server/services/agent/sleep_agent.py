@@ -405,7 +405,7 @@ def _runtime_message_cursor(
     )
 
     with runtime_db_factory() as rt_db:
-        if _has_unprocessed_candidate_backlog(
+        if _has_unprocessed_memory_backlog(
             rt_db,
             user_id=user_id,
             thread_id=thread_id,
@@ -435,7 +435,7 @@ def _runtime_message_cursor(
     return int(latest_message_id), messages_processed
 
 
-def _has_unprocessed_candidate_backlog(
+def _has_unprocessed_memory_backlog(
     rt_db: Any,
     *,
     user_id: int,
@@ -445,7 +445,7 @@ def _has_unprocessed_candidate_backlog(
     from sqlalchemy import select
 
     from anima_server.models.runtime import RuntimeMessage
-    from anima_server.models.runtime_memory import MemoryCandidate
+    from anima_server.models.runtime_memory import MemoryCandidate, MemoryExtractionFailure
     from anima_server.services.agent.soul_writer import MAX_RETRY_COUNT
 
     candidates = list(
@@ -464,6 +464,24 @@ def _has_unprocessed_candidate_backlog(
         ):
             continue
         for message_id in candidate.source_message_ids or []:
+            try:
+                numeric_message_id = int(message_id)
+            except (TypeError, ValueError):
+                continue
+            if previous_message_id is None or numeric_message_id > previous_message_id:
+                backlog_message_ids.add(numeric_message_id)
+
+    extraction_failures = list(
+        rt_db.scalars(
+            select(MemoryExtractionFailure).where(
+                MemoryExtractionFailure.user_id == user_id,
+                MemoryExtractionFailure.status == "failed",
+                MemoryExtractionFailure.retry_count < MAX_RETRY_COUNT,
+            )
+        ).all()
+    )
+    for failure in extraction_failures:
+        for message_id in failure.source_message_ids or []:
             try:
                 numeric_message_id = int(message_id)
             except (TypeError, ValueError):
