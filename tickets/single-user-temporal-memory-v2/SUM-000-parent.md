@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 02:15 MYT
+- Updated: 2026-06-30 02:33 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -82,6 +82,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 00:12 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering superseded relations out of current public graph API endpoints, then reran focused, KG/vault, lint, build, full backend validation, and health smoke.
 - 2026-06-30 00:38 MYT - `SUM-003` addressed PR #70 rereview feedback by repairing current KG columns on legacy DBs with old KG tables and no Alembic version, then reran focused, KG/vault, runtime DB, lint, build, full backend validation, and health smoke.
 - 2026-06-30 02:15 MYT - `SUM-003` addressed PR #70 rereview feedback by preserving relation confidence on duplicate upserts when omitted and resolving graph reads/search from entity aliases, then reran red/green regressions, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 02:33 MYT - `SUM-003` addressed PR #70 rereview feedback by resolving graph-context entity extraction from aliases when semantic fallback is disabled, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 
 ## Validation
 
@@ -150,6 +151,13 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_dashboard_api.py::test_proactive_notice_uses_saved_custom_instruction -q` - SUM-003 isolated rerun of an order-dependent full-suite failure: 1 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 alias/confidence full backend suite: first run failed on order-dependent `test_proactive_notice_uses_saved_custom_instruction`, isolated rerun passed, longer rerun passed: 1694 passed, 1 skipped, 257 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 alias/confidence health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestGraphContextForQuery::test_resolves_alias_when_blocking_embeddings_disabled` - SUM-003 PR #70 alias-context regression failed before fix because alias-only graph context returned no lines when semantic fallback was disabled.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestGraphContextForQuery::test_resolves_alias_when_blocking_embeddings_disabled` - SUM-003 PR #70 alias-context regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 alias-context suite: 97 passed, 32 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 alias-context lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 alias-context build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 alias-context full backend suite: 1695 passed, 1 skipped, 258 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 alias-context health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -181,3 +189,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 PR #70 legacy repair fix adds current KG columns and indexes to old KG tables in the legacy stamp path before mapped KG operations run.
   - SUM-003 PR #70 alias/confidence fix preserves existing relation confidence when duplicate upserts omit confidence.
   - SUM-003 PR #70 alias/confidence fix resolves graph traversal and public graph search from entity aliases as well as canonical names.
+  - SUM-003 PR #70 alias-context fix resolves graph-context query entity extraction from aliases when semantic fallback is disabled.

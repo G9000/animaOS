@@ -1051,7 +1051,8 @@ def _extract_entity_names_from_query(
 
     matched: list[str] = []
     for entity in entities:
-        if entity.name.lower() in query_lower:
+        names = [entity.name, *(alias for alias in entity.aliases_json or [] if isinstance(alias, str))]
+        if any(name.strip() and name.lower() in query_lower for name in names):
             matched.append(entity.name)
 
     if matched:

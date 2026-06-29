@@ -848,6 +848,35 @@ class TestGraphContextForQuery:
             )
             assert lines == []
 
+    def test_resolves_alias_when_blocking_embeddings_disabled(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(
+                db,
+                user_id=user.id,
+                name="Bob",
+                entity_type="person",
+                aliases=["Robert"],
+            )
+            upsert_entity(db, user_id=user.id, name="Acme", entity_type="organization")
+            upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="Acme",
+                relation_type="works_at",
+            )
+            db.flush()
+
+            lines = graph_context_for_query(
+                db,
+                user_id=user.id,
+                query="what do we know about Robert",
+                allow_blocking_embedding=False,
+            )
+
+            assert lines == ["Bob (person) -> works_at -> Acme (organization)"]
+
     def test_semantic_fallback_uses_entity_embeddings(self, monkeypatch):
         with _db_session() as db:
             user = _create_user(db)

@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 02:15 MYT
+- Updated: 2026-06-30 02:33 MYT
 - Started: 2026-06-29 22:27 MYT
 - Completed: 2026-06-29 22:53 MYT
 
@@ -42,6 +42,7 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
 - 2026-06-30 00:12 MYT - Addressed PR #70 Codex rereview feedback by filtering superseded relations out of current public graph API endpoints.
 - 2026-06-30 00:38 MYT - Addressed PR #70 Codex rereview feedback by repairing current KG columns on legacy DBs with old KG tables and no Alembic version.
 - 2026-06-30 02:15 MYT - Addressed PR #70 Codex rereview feedback by preserving relation confidence on duplicate upserts when omitted and resolving graph reads/search from entity aliases.
+- 2026-06-30 02:33 MYT - Addressed PR #70 Codex rereview feedback by resolving graph-context entity extraction from aliases when semantic fallback is disabled.
 
 ## Validation
 
@@ -84,6 +85,13 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_dashboard_api.py::test_proactive_notice_uses_saved_custom_instruction -q` - isolated rerun of an order-dependent full-suite failure: 1 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 alias/confidence full backend suite: first run failed on order-dependent `test_proactive_notice_uses_saved_custom_instruction`, isolated rerun passed, longer rerun passed: 1694 passed, 1 skipped, 257 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 alias/confidence health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestGraphContextForQuery::test_resolves_alias_when_blocking_embeddings_disabled` - failed before fix because alias-only graph context returned no lines when semantic fallback was disabled.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestGraphContextForQuery::test_resolves_alias_when_blocking_embeddings_disabled` - PR #70 alias-context regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - PR #70 alias-context suite: 97 passed, 32 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #70 alias-context lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #70 alias-context build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 alias-context full backend suite: 1695 passed, 1 skipped, 258 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 alias-context health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
   - apps/server/src/anima_server/api/routes/graph.py
@@ -107,3 +115,4 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - PR #70 legacy repair fix adds current KG columns and indexes to old KG tables in the legacy stamp path before mapped KG operations run.
   - PR #70 alias/confidence fix preserves existing relation confidence when duplicate upserts omit confidence.
   - PR #70 alias/confidence fix resolves graph traversal and public graph search from entity aliases as well as canonical names.
+  - PR #70 alias-context fix resolves graph-context query entity extraction from aliases when semantic fallback is disabled.
