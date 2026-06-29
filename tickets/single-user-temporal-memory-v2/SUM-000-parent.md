@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 00:12 MYT
+- Updated: 2026-06-30 00:38 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -80,6 +80,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-29 22:53 MYT - `SUM-003` completed with temporal KG schema migration, evidence-backed relation lifecycle, alias/embedding entity deduplication, history/latest-belief retrieval helpers, vault portability, migration guard coverage, and full validation.
 - 2026-06-29 23:55 MYT - `SUM-003` addressed PR #70 review feedback for exact-name entity type drift and superseded relation re-add intervals, then reran focused, KG/vault, lint, build, and full backend validation.
 - 2026-06-30 00:12 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering superseded relations out of current public graph API endpoints, then reran focused, KG/vault, lint, build, full backend validation, and health smoke.
+- 2026-06-30 00:38 MYT - `SUM-003` addressed PR #70 rereview feedback by repairing current KG columns on legacy DBs with old KG tables and no Alembic version, then reran focused, KG/vault, runtime DB, lint, build, full backend validation, and health smoke.
 
 ## Validation
 
@@ -133,16 +134,25 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 rereview fix build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 rereview fix full backend suite: 1690 passed, 1 skipped, 255 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 rereview fix health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_soul_database_migration_repairs_existing_kg_columns` - SUM-003 PR #70 legacy KG repair regression failed before fix because legacy KG tables were missing current mapped columns.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_soul_database_migration_repairs_existing_kg_columns` - SUM-003 PR #70 legacy KG repair regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 legacy KG repair suite: 93 passed, 29 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 legacy KG repair lint: passed after import-order cleanup.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 legacy KG repair build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 legacy KG repair full backend suite: 1691 passed, 1 skipped, 255 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 legacy KG repair health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
   - apps/server/src/anima_server/api/routes/graph.py
+  - apps/server/src/anima_server/db/session.py
   - apps/server/src/anima_server/models/agent_runtime.py
   - apps/server/src/anima_server/services/agent/knowledge_graph.py
   - apps/server/src/anima_server/services/vault.py
   - apps/server/tests/test_graph_api.py
   - apps/server/tests/test_knowledge_graph.py
+  - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_vault.py
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
@@ -159,3 +169,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 PR #70 review fix keeps exact normalized-name entity upserts on the existing row when extractor type labels drift.
   - SUM-003 PR #70 review fix only reuses active relation rows so re-observed superseded triples create new intervals instead of mutating historical facts.
   - SUM-003 PR #70 rereview fix treats `/api/graph/{user_id}/overview`, `/entities/{id}`, and `/relations` as current-graph endpoints by filtering to active relations.
+  - SUM-003 PR #70 legacy repair fix adds current KG columns and indexes to old KG tables in the legacy stamp path before mapped KG operations run.
