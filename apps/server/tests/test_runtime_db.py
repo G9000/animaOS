@@ -330,6 +330,78 @@ def test_legacy_soul_database_migration_repairs_existing_kg_columns(
         assert db.get(KGRelation, relation.id).status == "active"
 
 
+def test_legacy_kg_migration_downgrade_tolerates_missing_constraints(
+    managed_tmp_path: Path,
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+    from anima_server.db import session as session_module
+    from anima_server.db.session import _run_alembic_upgrade
+
+    legacy_db = managed_tmp_path / "legacy-kg-downgrade-soul.db"
+    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE kg_entities (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name VARCHAR(200) NOT NULL,
+                    name_normalized VARCHAR(200) NOT NULL,
+                    entity_type VARCHAR(50) NOT NULL DEFAULT 'unknown',
+                    description TEXT NOT NULL DEFAULT '',
+                    mentions INTEGER NOT NULL DEFAULT 1,
+                    embedding_json JSON,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_kg_entities_user_name UNIQUE (user_id, name_normalized)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE kg_relations (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    source_id INTEGER NOT NULL,
+                    destination_id INTEGER NOT NULL,
+                    relation_type VARCHAR(100) NOT NULL,
+                    mentions INTEGER NOT NULL DEFAULT 1,
+                    source_memory_id INTEGER,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
+    _run_alembic_upgrade(engine)
+
+    cfg = Config(str(session_module._ALEMBIC_INI))
+    with engine.begin() as connection:
+        cfg.attributes["connection"] = connection
+        command.downgrade(cfg, "-1")
+
+    inspector = inspect(engine)
+    entity_columns = {column["name"] for column in inspector.get_columns("kg_entities")}
+    relation_columns = {column["name"] for column in inspector.get_columns("kg_relations")}
+    assert "aliases_json" not in entity_columns
+    assert "status" not in relation_columns
+
+
 def test_embedded_pg_recovers_stale_lockfile(managed_tmp_path: Path) -> None:
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
     pg.data_dir.mkdir(parents=True, exist_ok=True)

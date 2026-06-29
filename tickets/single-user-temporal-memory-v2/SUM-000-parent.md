@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 03:09 MYT
+- Updated: 2026-06-30 03:32 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -85,6 +85,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 02:33 MYT - `SUM-003` addressed PR #70 rereview feedback by resolving graph-context entity extraction from aliases when semantic fallback is disabled, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 02:54 MYT - `SUM-003` addressed PR #70 rereview feedback by resolving stale-pruning turn entities through aliases and relation endpoints, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 03:09 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering stale-pruning candidates to active relations, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 03:32 MYT - `SUM-003` addressed PR #70 rereview feedback by guarding legacy downgrade FK drops when repaired KG tables lack constraints, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 
 ## Validation
 
@@ -174,6 +175,13 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `bun run build` - SUM-003 PR #70 active-pruning build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 active-pruning full backend suite: 1697 passed, 1 skipped, 260 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 active-pruning health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_kg_migration_downgrade_tolerates_missing_constraints` - SUM-003 PR #70 legacy downgrade regression failed before fix with `ValueError: No such constraint` during Alembic downgrade.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_kg_migration_downgrade_tolerates_missing_constraints` - SUM-003 PR #70 legacy downgrade regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 legacy downgrade suite: 100 passed, 34 warnings.
+  - `bun run lint` - SUM-003 PR #70 legacy downgrade lint: passed.
+  - `bun run build` - SUM-003 PR #70 legacy downgrade build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 legacy downgrade full backend suite: 1698 passed, 1 skipped, 260 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 legacy downgrade health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -208,3 +216,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 PR #70 alias-context fix resolves graph-context query entity extraction from aliases when semantic fallback is disabled.
   - SUM-003 PR #70 alias-pruning fix resolves stale-pruning turn entities from aliases and relation endpoints so canonical stale edges are considered when a turn uses an alias-only subject.
   - SUM-003 PR #70 active-pruning fix filters stale-pruning candidate relations to active rows so already-superseded edges are not re-presented as current facts.
+  - SUM-003 PR #70 legacy downgrade fix skips FK drops for repaired legacy KG tables that were stamped at head without named constraints.

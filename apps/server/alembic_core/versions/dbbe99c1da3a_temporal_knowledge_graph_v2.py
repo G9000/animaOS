@@ -35,6 +35,16 @@ def _has_index(table_name: str, index_name: str) -> bool:
     return any(index["name"] == index_name for index in inspector.get_indexes(table_name))
 
 
+def _has_foreign_key(table_name: str, constraint_name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table_name):
+        return False
+    return any(
+        foreign_key["name"] == constraint_name
+        for foreign_key in inspector.get_foreign_keys(table_name)
+    )
+
+
 def upgrade() -> None:
     if not _has_table("kg_entities") or not _has_table("kg_relations"):
         return
@@ -125,18 +135,13 @@ def downgrade() -> None:
             ):
                 if _has_index("kg_relations", index_name):
                     batch_op.drop_index(index_name)
-            batch_op.drop_constraint(
+            for constraint_name in (
                 "fk_kg_relations_evolves_from_relation_id_kg_relations",
-                type_="foreignkey",
-            )
-            batch_op.drop_constraint(
                 "fk_kg_relations_supersedes_relation_id_kg_relations",
-                type_="foreignkey",
-            )
-            batch_op.drop_constraint(
                 "fk_kg_relations_evidence_id_memory_item_evidence",
-                type_="foreignkey",
-            )
+            ):
+                if _has_foreign_key("kg_relations", constraint_name):
+                    batch_op.drop_constraint(constraint_name, type_="foreignkey")
             batch_op.drop_column("evolves_from_relation_id")
             batch_op.drop_column("supersedes_relation_id")
             batch_op.drop_column("status")
