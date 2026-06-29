@@ -29,7 +29,7 @@
     "test:animus": "cargo test -p animus",
     "python:sync": "uv sync --all-packages",
     "python:lock": "uv lock",
-"db:server:revision": "node ./scripts/server-db-revision.cjs",
+    "db:server:revision": "node ./scripts/server-db-revision.cjs",
     "db:server:heads": "node ./scripts/run-nx.cjs run server:db-heads",
     "db:server:current": "node ./scripts/run-nx.cjs run server:db-current",
     "db:server:upgrade": "node ./scripts/run-nx.cjs run server:db-upgrade",
@@ -39,7 +39,7 @@
     "dev:site": "cd apps/site && bun run dev"
   },
   "devDependencies": {
-    "nx": "^21.0.3",
-    "typescript": "^5.3.3"
+    "nx": "^21.6.11",
+    "typescript": "^5.9.3"
   }
 }

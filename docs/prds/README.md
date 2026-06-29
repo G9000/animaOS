@@ -25,6 +25,7 @@ All memory system features — retrieval, scoring, consolidation, knowledge stru
 | [F5 — Async Sleep Agents](memory/F5-async-sleep-agents.md) | 10.6 | P2 | Draft | Frequency-gated background orchestrator |
 | [F6 — Batch Segmentation](memory/F6-batch-segmentation.md) | 10.7 | P2 | Draft | LLM-driven topic-coherent episode boundaries |
 | [F7 — Intentional Forgetting](memory/F7-intentional-forgetting.md) | 10.5 | P1 | Draft | Passive decay, active suppression, cryptographic deletion |
+| [Visual Memory Image Assets v1](memory/visual-memory-image-assets-v1.md) | V1 | P1 | Draft | Central image assets, indexing, proactive visual recall, and deletion controls |
 
 ### Build Order
 
@@ -51,6 +52,7 @@ Physical separation of Soul (SQLCipher) / Runtime (embedded PostgreSQL) / Archiv
 | [P6 — pgvector Embeddings](three-tier-architecture/P6-pgvector-embeddings.md) | P6 | P1 | Approved | Migrate embeddings from in-memory to pgvector |
 | [P7 — Concurrency Refactor](three-tier-architecture/P7-concurrency-refactor.md) | P7 | P0 | Approved | Per-thread locking, stateless ToolExecutor |
 | [P8 — N-Agent Spawning](three-tier-architecture/P8-n-agent-spawning.md) | P8 | P0 | Approved | SpawnManager, spawn tools, LLM semaphore |
+| [Local Turso Core and Runtime v1](three-tier-architecture/local-turso-core-runtime-v1.md) | LTR | P0 | Draft | Evaluate local Turso as the Soul and Runtime engine without Turso Cloud |
 
 ### Build Order
 
@@ -76,3 +78,11 @@ P1 ──> P2 ──> P3 ──> P4 ──> P5
 | PRD | Phase | Priority | Status | Summary |
 |-----|-------|----------|--------|---------|
 | [Rust Coding TUI v1](animus/rust-coding-tui-v1.md) | 1 | P1 | Draft | Rust-native ANIMA-first coding terminal replacing Bun/Ink Animus |
+
+## Voice (`voice/`)
+
+Local-first listening and speaking surfaces around the existing Anima runtime.
+
+| PRD | Phase | Priority | Status | Summary |
+|-----|-------|----------|--------|---------|
+| [Voice Foundation v1](voice/voice-foundation-v1.md) | 1 | P1 | Draft | Local-first STT/TTS provider layer, push-to-talk desktop chat, and voice privacy rules |

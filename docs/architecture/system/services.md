@@ -20,6 +20,7 @@ category: architecture
 | `turn_coordinator.py` | Per-user asyncio locks (LRU, max 256) to serialize concurrent turns | `get_user_lock(user_id)` |
 | `executor.py` | Tool call execution engine | `ToolExecutor` |
 | `tools.py` | 17 tool definitions available to the agent | `get_tools()`, `get_tool_summaries()`, `get_tool_rules()` |
+| `capabilities/` | Planned server-side capability module registry for optional body systems such as perception, voice, action, and presence | `CapabilityManifest`, `CapabilityRegistry` |
 | `system_prompt.py` | Jinja2 template-based system prompt assembly | `build_system_prompt()`, `SystemPromptContext` |
 | `streaming.py` | SSE event construction | `AgentStreamEvent`, `build_chunk_event()`, `build_done_event()` |
 

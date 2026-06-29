@@ -19,6 +19,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 |----------|----------|
 | [Directory Structure](system/directory-structure.md) | Top-level folder layout and purpose of each directory |
 | [Gateway + Runtime Boundary](system/gateway-runtime-boundary.md) | Product boundary for single-user local-first, gateway-auth split, and future multi-device extensions |
+| [External Integration Boundary](system/external-integration-boundary.md) | Difference between server-side capability modules and `apps/anima-mod` integrations |
 | [Local Runtime Daemon](system/local-runtime-daemon.md) | Background runtime supervisor so Anima can keep running after the desktop UI closes |
 | [API Routes](system/api-routes.md) | All REST endpoints grouped by router, dependency injection |
 | [Services](system/services.md) | Agent runtime, memory stack, consciousness layer, LLM clients |
@@ -31,6 +32,21 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Agent Runtime](agent/agent-runtime.md) | Deep dive into the cognitive loop, step execution, tool orchestration, compaction, approval flow |
+| [Brain System](agent/brain-system.md) | Required agent runtime and state machine that hosts capability modules |
+| [Agent Capability Modules](agent/capability-modules/README.md) | Module standard plus optional bolt-on modules for perception, voice, action, presence, and governed body systems |
+| [Body System Doctrine](agent/capability-modules/body-system-doctrine.md) | One self with modular governed body systems |
+| [Body System Diagrams](agent/capability-modules/body-system-diagrams.md) | Mermaid diagrams for Brain System, governed body systems, bridges, retention, and lifecycle |
+| [Upgrade And Compatibility Model](agent/capability-modules/upgrade-and-compatibility.md) | Versioned Brain System and Capability Module upgrades around the portable Core |
+| [Capability Module Contract](agent/capability-modules/module-contract.md) | Manifest, config, tool, bridge, memory, and audit contract for server-side capability modules |
+| [Capability Runtime Flow](agent/capability-modules/runtime-flow.md) | How manifests become status, tools, bridge calls, audit events, and memory candidates |
+| [Capability Data Boundaries](agent/capability-modules/data-boundaries.md) | Retention, audit, and durable memory boundaries for module outputs |
+| [Capability Lifecycle](agent/capability-modules/lifecycle-and-gating.md) | Enabled/configured/available/degraded states and tool visibility rules |
+| [Desktop Bridges](agent/capability-modules/desktop-bridges.md) | How hardware-backed modules use desktop-controlled camera, mic, screen, and local surfaces |
+| [Perception Modules](agent/capability-modules/perception.md) | Governed senses such as camera, screen, window, and media perception |
+| [Voice Core Module](agent/capability-modules/voice-core.md) | Optional STT/TTS, voice sessions, audio bridges, and retention policy |
+| [Local Action Module](agent/capability-modules/action-local.md) | Governed local execution, automation, approval rings, and audit |
+| [Presence Core Module](agent/capability-modules/presence-core.md) | Ambient awareness, follow-ups, nudges, quiet hours, and proactive policy |
+| [Camera Perception Module](agent/capability-modules/perception-camera.md) | First concrete perception module for consented one-frame webcam sight |
 | [Document Processing](agent/document-processing.md) | PDF upload, checkpointed ingestion, runtime document storage, pgvector RAG, chat grounding, and citation pills |
 | [Agent Tools](agent/agent-tools.md) | The 17 tools available to the LLM agent |
 
@@ -39,6 +55,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 |----------|----------|
 | [Memory System](memory/memory-system.md) | Full memory lifecycle: write paths, retrieval scoring, consolidation, embeddings, claims, episodic memory, self-model |
 | [Single-User Temporal Memory v2 Baseline Audit](memory/single-user-temporal-memory-v2-baseline-audit.md) | SUM-001 live code-path audit and baseline probe summary for the memory v2 initiative |
+| [Memory Core Boundary](memory/memory-core-boundary.md) | Durable memory authority, status, and promotion boundary for module outputs |
 | [Memory Implementation Plan](memory/memory-implementation-plan.md) | Detailed engineering spec for F1-F6: function signatures, schemas, test plans, organized by workstream |
 | [Memory Repo Analysis](memory/memory-repo-analysis.md) | Comparative source-code analysis of Letta, Mem0, Nemori, MemOS, MemoryOS |
 
