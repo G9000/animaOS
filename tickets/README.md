@@ -10,6 +10,7 @@ Local ticket backlog for planned work that is not yet in implementation.
 - `repo-workflow`: local ticketing workflow, dashboard, and legacy scratchboard migration
 - `single-user-temporal-memory-v2`: single-user temporal cognitive memory upgrade
 - `visual-memory-image-assets`: central indexed image assets and proactive visual memory
+- `voice-foundation-v1`: local-first voice-to-voice chat around Anima's existing runtime
 
 ## Conventions
 

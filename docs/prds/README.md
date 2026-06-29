@@ -77,3 +77,11 @@ P1 ──> P2 ──> P3 ──> P4 ──> P5
 | PRD | Phase | Priority | Status | Summary |
 |-----|-------|----------|--------|---------|
 | [Rust Coding TUI v1](animus/rust-coding-tui-v1.md) | 1 | P1 | Draft | Rust-native ANIMA-first coding terminal replacing Bun/Ink Animus |
+
+## Voice (`voice/`)
+
+Local-first listening and speaking surfaces around the existing Anima runtime.
+
+| PRD | Phase | Priority | Status | Summary |
+|-----|-------|----------|--------|---------|
+| [Voice Foundation v1](voice/voice-foundation-v1.md) | 1 | P1 | Draft | Local-first STT/TTS provider layer, push-to-talk desktop chat, and voice privacy rules |
