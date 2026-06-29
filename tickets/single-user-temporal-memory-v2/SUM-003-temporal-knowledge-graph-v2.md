@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 03:32 MYT
+- Updated: 2026-06-30 03:49 MYT
 - Started: 2026-06-29 22:27 MYT
 - Completed: 2026-06-29 22:53 MYT
 
@@ -46,6 +46,7 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
 - 2026-06-30 02:54 MYT - Addressed PR #70 Codex rereview feedback by resolving stale-pruning turn entities through aliases and relation endpoints.
 - 2026-06-30 03:09 MYT - Addressed PR #70 Codex rereview feedback by filtering stale-pruning candidates to active relations.
 - 2026-06-30 03:32 MYT - Addressed PR #70 Codex rereview feedback by guarding legacy downgrade FK drops when repaired KG tables lack constraints.
+- 2026-06-30 03:49 MYT - Addressed PR #70 Codex rereview feedback by preventing same-triple self-supersession from mutating the replacement row.
 
 ## Validation
 
@@ -116,6 +117,13 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - `bun run build` - PR #70 legacy downgrade build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 legacy downgrade full backend suite: 1698 passed, 1 skipped, 260 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 legacy downgrade health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_same_triple_supersession_creates_replacement_interval` - failed before fix because same-triple supersession updated and superseded the existing row instead of inserting a replacement.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_same_triple_supersession_creates_replacement_interval` - PR #70 self-supersession regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - PR #70 self-supersession suite: 101 passed, 35 warnings.
+  - `bun run lint` - PR #70 self-supersession lint: passed.
+  - `bun run build` - PR #70 self-supersession build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 self-supersession full backend suite: 1699 passed, 1 skipped, 261 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 self-supersession health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
   - apps/server/src/anima_server/api/routes/graph.py
@@ -143,3 +151,4 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - PR #70 alias-pruning fix resolves stale-pruning turn entities from aliases and relation endpoints so canonical stale edges are considered when a turn uses an alias-only subject.
   - PR #70 active-pruning fix filters stale-pruning candidate relations to active rows so already-superseded edges are not re-presented as current facts.
   - PR #70 legacy downgrade fix skips FK drops for repaired legacy KG tables that were stamped at head without named constraints.
+  - PR #70 self-supersession fix excludes explicitly superseded/evolved relation IDs from duplicate-active lookup so same-triple corrections create a new active interval.

@@ -477,6 +477,73 @@ class TestUpsertRelation:
                 ("works_at", "Anthropic")
             }
 
+    def test_same_triple_supersession_creates_replacement_interval(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            old_observed_at = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+            new_observed_at = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
+            old_evidence = _create_memory_evidence(
+                db,
+                user_id=user.id,
+                text="Bob said he lives in Paris.",
+                observed_at=old_observed_at,
+                confidence=0.55,
+            )
+            new_evidence = _create_memory_evidence(
+                db,
+                user_id=user.id,
+                text="Bob confirmed he still lives in Paris.",
+                observed_at=new_observed_at,
+                confidence=0.91,
+            )
+            upsert_entity(db, user_id=user.id, name="Bob", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="Paris", entity_type="place")
+            old_relation = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="Paris",
+                relation_type="lives_in",
+                evidence_id=old_evidence.id,
+                observed_at=old_observed_at,
+                valid_from=old_observed_at,
+                confidence=0.55,
+            )
+            assert old_relation is not None
+
+            replacement = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="Paris",
+                relation_type="lives_in",
+                evidence_id=new_evidence.id,
+                observed_at=new_observed_at,
+                valid_from=new_observed_at,
+                confidence=0.91,
+                supersedes_relation_id=old_relation.id,
+                evolves_from_relation_id=old_relation.id,
+            )
+            db.flush()
+
+            assert replacement is not None
+            assert replacement.id != old_relation.id
+            assert old_relation.status == "superseded"
+            assert old_relation.valid_to == new_observed_at
+            assert replacement.status == "active"
+            assert replacement.supersedes_relation_id == old_relation.id
+            assert replacement.evolves_from_relation_id == old_relation.id
+            assert replacement.evidence_id == new_evidence.id
+
+            latest = resolve_latest_relation_belief(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                relation_type="lives_in",
+            )
+            assert latest is not None
+            assert latest["relation_id"] == replacement.id
+
 
     # Additional relation lifecycle coverage.
     def test_readding_superseded_relation_creates_new_interval(self):

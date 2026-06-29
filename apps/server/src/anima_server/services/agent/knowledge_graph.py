@@ -568,15 +568,21 @@ def upsert_relation(
     normalized_confidence = _normalize_confidence(confidence)
 
     # Check for existing relation
-    existing = db.scalar(
-        select(KGRelation).where(
-            KGRelation.user_id == user_id,
-            KGRelation.source_id == source.id,
-            KGRelation.destination_id == dest.id,
-            KGRelation.relation_type == relation_type,
-            KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
-        )
+    existing_query = select(KGRelation).where(
+        KGRelation.user_id == user_id,
+        KGRelation.source_id == source.id,
+        KGRelation.destination_id == dest.id,
+        KGRelation.relation_type == relation_type,
+        KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
     )
+    excluded_existing_ids = {
+        relation_id
+        for relation_id in (supersedes_relation_id, evolves_from_relation_id)
+        if relation_id is not None
+    }
+    if excluded_existing_ids:
+        existing_query = existing_query.where(KGRelation.id.not_in(excluded_existing_ids))
+    existing = db.scalar(existing_query)
     if existing is not None:
         existing.mentions = (existing.mentions or 1) + 1
         existing.updated_at = now
