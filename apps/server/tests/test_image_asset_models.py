@@ -88,11 +88,11 @@ def test_image_asset_hash_is_unique_per_user_constraint_registered() -> None:
     )
 
 
-def test_image_message_link_is_unique_per_message_asset_constraint_registered() -> None:
+def test_image_message_link_is_unique_per_message_attachment_constraint_registered() -> None:
     assert _constraint_columns(
         RuntimeImageMessageLink,
-        "uq_runtime_image_message_links_message_asset",
-    ) == ("message_id", "image_asset_id")
+        "uq_runtime_image_message_links_message_attachment",
+    ) == ("message_id", "attachment_id")
 
 
 def test_image_annotation_is_unique_per_asset_kind_hash_constraint_registered() -> None:

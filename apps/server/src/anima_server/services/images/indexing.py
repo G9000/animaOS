@@ -190,6 +190,27 @@ def _upsert_active_annotation(
         )
     )
     if existing is not None:
+        if existing.status != "active":
+            now = datetime.now(UTC)
+            stale = list(
+                runtime_db.scalars(
+                    select(RuntimeImageAnnotation).where(
+                        RuntimeImageAnnotation.user_id == user_id,
+                        RuntimeImageAnnotation.image_asset_id == image_asset_id,
+                        RuntimeImageAnnotation.annotation_kind == annotation_kind,
+                        RuntimeImageAnnotation.status == "active",
+                    )
+                ).all()
+            )
+            for annotation in stale:
+                annotation.status = "replaced"
+                annotation.updated_at = now
+                runtime_db.add(annotation)
+            existing.status = "active"
+            existing.source_model = source_model
+            existing.updated_at = now
+            runtime_db.add(existing)
+            runtime_db.flush()
         return existing
 
     stale = list(

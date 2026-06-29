@@ -220,17 +220,15 @@ def link_message_image_assets(
     attachments: tuple[StoredAttachment, ...],
 ) -> list[RuntimeImageMessageLink]:
     links: list[RuntimeImageMessageLink] = []
-    seen_asset_ids: set[int] = set()
     for attachment in attachments:
-        if attachment.asset_id is None or attachment.asset_id in seen_asset_ids:
+        if attachment.asset_id is None:
             continue
-        seen_asset_ids.add(attachment.asset_id)
 
         existing = db.scalar(
             select(RuntimeImageMessageLink).where(
                 RuntimeImageMessageLink.user_id == message.user_id,
                 RuntimeImageMessageLink.message_id == message.id,
-                RuntimeImageMessageLink.image_asset_id == attachment.asset_id,
+                RuntimeImageMessageLink.attachment_id == attachment.id,
             )
         )
         if existing is not None:

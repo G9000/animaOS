@@ -198,8 +198,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "message_id",
-            "image_asset_id",
-            name="uq_runtime_image_message_links_message_asset",
+            "attachment_id",
+            name="uq_runtime_image_message_links_message_attachment",
         ),
     )
     op.create_index(

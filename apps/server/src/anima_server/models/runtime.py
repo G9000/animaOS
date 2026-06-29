@@ -583,8 +583,8 @@ class RuntimeImageMessageLink(RuntimeBase):
         ),
         UniqueConstraint(
             "message_id",
-            "image_asset_id",
-            name="uq_runtime_image_message_links_message_asset",
+            "attachment_id",
+            name="uq_runtime_image_message_links_message_attachment",
         ),
         Index(
             "ix_runtime_image_message_links_user_message",

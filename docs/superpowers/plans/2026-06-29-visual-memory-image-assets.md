@@ -186,7 +186,7 @@ Ensure unique constraints:
 
 ```text
 uq_runtime_image_assets_user_sha256
-uq_runtime_image_message_links_message_asset
+uq_runtime_image_message_links_message_attachment
 uq_runtime_image_annotations_asset_kind_hash
 ```
 

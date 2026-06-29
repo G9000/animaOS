@@ -133,6 +133,35 @@ def test_persisted_user_message_creates_image_asset_links(
     assert runtime_db.scalar(select(func.count(RuntimeImageMessageLink.id))) == 1
 
 
+def test_duplicate_image_attachments_keep_distinct_links(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    thread = _thread(runtime_db, user_id=7)
+    prepared = prepare_chat_attachments(
+        user_id=7,
+        attachments=[_attachment("first.png"), _attachment("second.png")],
+        runtime_db=runtime_db,
+    )
+
+    message = append_user_message(
+        runtime_db,
+        thread=thread,
+        run_id=None,
+        content="compare these",
+        sequence_id=1,
+        attachments=prepared,
+    )
+    links = link_message_image_assets(runtime_db, message=message, attachments=prepared)
+
+    assert len({attachment.asset_id for attachment in prepared}) == 1
+    assert len(links) == 2
+    assert {link.attachment_id for link in links} == {attachment.id for attachment in prepared}
+    assert runtime_db.scalar(select(func.count(RuntimeImageMessageLink.id))) == 2
+
+
 def test_resolve_message_attachment_uses_asset_link_for_new_metadata(
     runtime_db,
     tmp_path: Path,

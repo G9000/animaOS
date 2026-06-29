@@ -138,6 +138,44 @@ def test_reindexing_unchanged_image_annotations_is_idempotent(
     ) == 2
 
 
+def test_reindexing_reactivates_reused_annotation_text(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.capabilities import ImageProcessingCapabilities
+    from anima_server.services.images.indexing import index_image_asset
+
+    asset = _asset(runtime_db, tmp_path, monkeypatch)
+
+    for context in ("first context", "second context", "first context"):
+        index_image_asset(
+            runtime_db,
+            user_id=7,
+            image_asset_id=asset.id,
+            upload_context=context,
+            embedding_fn=lambda text: _embedding(1.0),
+            capabilities=ImageProcessingCapabilities(),
+        )
+
+    active_context = runtime_db.scalar(
+        select(RuntimeImageAnnotation).where(
+            RuntimeImageAnnotation.image_asset_id == asset.id,
+            RuntimeImageAnnotation.annotation_kind == "upload_context",
+            RuntimeImageAnnotation.status == "active",
+        )
+    )
+    assert active_context is not None
+    assert "first context" in active_context.content_text
+    assert runtime_db.scalar(
+        select(RuntimeEmbedding.id).where(
+            RuntimeEmbedding.source_type == "image_annotation",
+            RuntimeEmbedding.source_id == active_context.id,
+            RuntimeEmbedding.content_hash == active_context.content_hash,
+        )
+    ) is not None
+
+
 def test_ocr_text_annotation_is_created_only_when_capability_is_declared(
     runtime_db,
     tmp_path: Path,
