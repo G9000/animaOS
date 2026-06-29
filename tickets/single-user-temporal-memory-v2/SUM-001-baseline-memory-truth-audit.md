@@ -9,9 +9,9 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-29 03:32 MYT
+- Updated: 2026-06-29 10:39 MYT
 - Started: 2026-06-29 02:30 MYT
-- Completed: 2026-06-29 03:32 MYT
+- Completed: 2026-06-29 10:39 MYT
 
 ## Goal
 
@@ -37,14 +37,15 @@ Establish the true live state of the memory system and add baseline recall probe
 - 2026-06-29 02:30 MYT - Claimed by Codex on branch `codex/sum-001-memory-baseline`; starting baseline audit and deterministic eval probes.
 - 2026-06-29 03:12 MYT - Added live baseline audit, deterministic recall probes, focused fixes for retrieval heat pool ordering, sleep restart cursor metadata, KG vault round-trip, and completed validation.
 - 2026-06-29 03:32 MYT - Addressed Codex review feedback by preserving fresh unscored memories in the retrieval candidate pool and adding KG capsule coverage; validation rerun.
+- 2026-06-29 10:39 MYT - Addressed Codex PR comment by resetting PostgreSQL identity sequences for restored KG tables; validation rerun.
 
 ## Validation
 
 - Commands:
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 11 passed, 7 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - 1660 passed, 1 skipped, 242 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - 1661 passed, 1 skipped, 242 warnings
 - Changed paths:
   - apps/server/src/anima_server/services/agent/memory_store.py
   - apps/server/src/anima_server/services/agent/sleep_agent.py
@@ -63,3 +64,4 @@ Establish the true live state of the memory system and add baseline recall probe
 - Notes:
   - Full-suite warnings are existing SQLite test teardown warnings and one pytest assert-rewrite warning.
   - Codex review requested the fresh-unscored retrieval edge case and KG capsule test coverage; both are covered.
+  - Codex PR comment requested PostgreSQL sequence reset coverage for KG tables; covered by `test_reset_identity_sequences_includes_knowledge_graph_tables`.

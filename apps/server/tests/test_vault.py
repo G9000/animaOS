@@ -563,3 +563,20 @@ def test_rebuild_vector_indices_syncs_runtime_before_vector_store(monkeypatch) -
     )
 
     assert calls == [("runtime", 42), ("vector", 42)]
+
+
+def test_reset_identity_sequences_includes_knowledge_graph_tables() -> None:
+    statements: list[str] = []
+
+    class FakeSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    vault_module.reset_identity_sequences(FakeSession())
+
+    joined = "\n".join(statements)
+    assert "kg_entities" in joined
+    assert "kg_relations" in joined
