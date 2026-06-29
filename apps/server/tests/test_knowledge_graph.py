@@ -1476,3 +1476,100 @@ class TestIngestConversationGraphRules:
                 ("Bob", "lives_in", "London"),
                 ("Bob", "lives_in", "Paris"),
             }
+
+    @pytest.mark.asyncio()
+    async def test_pruning_ignores_superseded_relation_candidates(self, monkeypatch):
+        async def _fake_extract_entities_and_relations(**_kwargs):
+            return (
+                [
+                    {"name": "Robert", "type": "person"},
+                    {"name": "Paris", "type": "place"},
+                ],
+                [
+                    {
+                        "source": "Robert",
+                        "relation": "lives_in",
+                        "destination": "Paris",
+                    }
+                ],
+            )
+
+        async def _skip_entity_embeddings(_entities):
+            return None
+
+        captured_existing_relations = []
+
+        async def _fake_prune_stale_relations(
+            db,
+            *,
+            user_id,
+            new_facts,
+            existing_relations,
+        ):
+            captured_existing_relations.extend(existing_relations)
+            return []
+
+        monkeypatch.setattr(
+            knowledge_graph_module,
+            "extract_entities_and_relations",
+            _fake_extract_entities_and_relations,
+        )
+        monkeypatch.setattr(
+            knowledge_graph_module,
+            "_attach_entity_embeddings",
+            _skip_entity_embeddings,
+        )
+        monkeypatch.setattr(
+            knowledge_graph_module,
+            "prune_stale_relations",
+            _fake_prune_stale_relations,
+        )
+
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(
+                db,
+                user_id=user.id,
+                name="Bob",
+                entity_type="person",
+                aliases=["Robert"],
+            )
+            upsert_entity(db, user_id=user.id, name="London", entity_type="place")
+            upsert_entity(db, user_id=user.id, name="Berlin", entity_type="place")
+            old_relation = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="London",
+                relation_type="lives_in",
+            )
+            active_relation = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="Berlin",
+                relation_type="lives_in",
+            )
+            assert old_relation is not None
+            assert active_relation is not None
+            old_relation.status = "superseded"
+            old_relation.valid_to = datetime.now(UTC)
+            db.flush()
+
+            entities, relations, pruned = await ingest_conversation_graph(
+                db,
+                user_id=user.id,
+                user_message="Robert lives in Paris now.",
+                assistant_response="",
+            )
+
+            assert entities == 2
+            assert relations == 1
+            assert pruned == 0
+            assert {
+                (relation["source"], relation["relation"], relation["destination"])
+                for relation in captured_existing_relations
+            } == {
+                ("Bob", "lives_in", "Berlin"),
+                ("Bob", "lives_in", "Paris"),
+            }

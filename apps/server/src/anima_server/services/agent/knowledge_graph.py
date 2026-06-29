@@ -1575,6 +1575,7 @@ async def ingest_conversation_graph(
             db.scalars(
                 select(KGRelation).where(
                     KGRelation.user_id == user_id,
+                    KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
                     or_(
                         KGRelation.source_id.in_(turn_entity_ids),
                         KGRelation.destination_id.in_(turn_entity_ids),

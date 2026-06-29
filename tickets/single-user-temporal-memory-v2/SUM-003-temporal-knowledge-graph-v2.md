@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 02:54 MYT
+- Updated: 2026-06-30 03:09 MYT
 - Started: 2026-06-29 22:27 MYT
 - Completed: 2026-06-29 22:53 MYT
 
@@ -44,6 +44,7 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
 - 2026-06-30 02:15 MYT - Addressed PR #70 Codex rereview feedback by preserving relation confidence on duplicate upserts when omitted and resolving graph reads/search from entity aliases.
 - 2026-06-30 02:33 MYT - Addressed PR #70 Codex rereview feedback by resolving graph-context entity extraction from aliases when semantic fallback is disabled.
 - 2026-06-30 02:54 MYT - Addressed PR #70 Codex rereview feedback by resolving stale-pruning turn entities through aliases and relation endpoints.
+- 2026-06-30 03:09 MYT - Addressed PR #70 Codex rereview feedback by filtering stale-pruning candidates to active relations.
 
 ## Validation
 
@@ -100,6 +101,13 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - `bun run build` - PR #70 alias-pruning build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 alias-pruning full backend suite: 1696 passed, 1 skipped, 259 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 alias-pruning health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_ignores_superseded_relation_candidates` - failed before fix because superseded relations were still sent to stale-pruning candidates.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_resolves_alias_subject_entities apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_ignores_superseded_relation_candidates` - PR #70 active-pruning regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - PR #70 active-pruning suite: 99 passed, 34 warnings.
+  - `bun run lint` - PR #70 active-pruning lint: passed.
+  - `bun run build` - PR #70 active-pruning build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 active-pruning full backend suite: 1697 passed, 1 skipped, 260 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 active-pruning health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
   - apps/server/src/anima_server/api/routes/graph.py
@@ -125,3 +133,4 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - PR #70 alias/confidence fix resolves graph traversal and public graph search from entity aliases as well as canonical names.
   - PR #70 alias-context fix resolves graph-context query entity extraction from aliases when semantic fallback is disabled.
   - PR #70 alias-pruning fix resolves stale-pruning turn entities from aliases and relation endpoints so canonical stale edges are considered when a turn uses an alias-only subject.
+  - PR #70 active-pruning fix filters stale-pruning candidate relations to active rows so already-superseded edges are not re-presented as current facts.
