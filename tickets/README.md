@@ -9,6 +9,7 @@ Local ticket backlog for planned work that is not yet in implementation.
 - `local-runtime-daemon`: local background supervisor and desktop packaging
 - `repo-workflow`: local ticketing workflow, dashboard, and legacy scratchboard migration
 - `single-user-temporal-memory-v2`: single-user temporal cognitive memory upgrade
+- `visual-memory-image-assets`: central indexed image assets and proactive visual memory
 
 ## Conventions
 

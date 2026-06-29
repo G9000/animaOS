@@ -25,6 +25,7 @@ All memory system features — retrieval, scoring, consolidation, knowledge stru
 | [F5 — Async Sleep Agents](memory/F5-async-sleep-agents.md) | 10.6 | P2 | Draft | Frequency-gated background orchestrator |
 | [F6 — Batch Segmentation](memory/F6-batch-segmentation.md) | 10.7 | P2 | Draft | LLM-driven topic-coherent episode boundaries |
 | [F7 — Intentional Forgetting](memory/F7-intentional-forgetting.md) | 10.5 | P1 | Draft | Passive decay, active suppression, cryptographic deletion |
+| [Visual Memory Image Assets v1](memory/visual-memory-image-assets-v1.md) | V1 | P1 | Draft | Central image assets, indexing, proactive visual recall, and deletion controls |
 
 ### Build Order
 
