@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-29 22:19 MYT
+- Updated: 2026-06-29 22:53 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | --- | --- | --- | --- |
 | `SUM-001` | Baseline memory truth audit and eval probes | `done` | none |
 | `SUM-002` | Evidence baseline and episode quality | `done` | `SUM-001` |
-| `SUM-003` | Temporal knowledge graph v2 | `backlog` | `SUM-002` |
+| `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
 | `SUM-004` | Structured user profile | `backlog` | `SUM-002` |
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `backlog` | `SUM-003`, `SUM-004` |
@@ -56,6 +56,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 
 - `SUM-001` - Baseline memory truth audit and eval probes (completed 2026-06-29 10:39 MYT)
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
+- `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
 
 ## Activity Log
 
@@ -75,6 +76,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-29 18:08 MYT - `SUM-002` addressed Codex rereview threads for one-character ASCII fallback retrieval and long salient episode excerpt grounding.
 - 2026-06-29 18:49 MYT - `SUM-002` addressed Codex rereview thread for one-character transcript query false positives.
 - 2026-06-29 22:19 MYT - Resolved stacked PR merge conflict by preserving `SUM-001` base updates and `SUM-002` review validation history.
+- 2026-06-29 22:27 MYT - `SUM-003` claimed by Codex on branch `codex/sum-003-temporal-kg-v2`, based on PR #68 branch `codex/sum-002-evidence-episode-quality`.
+- 2026-06-29 22:53 MYT - `SUM-003` completed with temporal KG schema migration, evidence-backed relation lifecycle, alias/embedding entity deduplication, history/latest-belief retrieval helpers, vault portability, migration guard coverage, and full validation.
 
 ## Validation
 
@@ -105,8 +108,23 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: first attempt timed out at 5 minutes, rerun with longer timeout passed: 1680 passed, 1 skipped, 250 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: 1682 passed, 1 skipped, 250 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: 1682 passed, 1 skipped, 250 warnings
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::test_temporal_knowledge_graph_model_metadata apps/server/tests/test_knowledge_graph.py::TestUpsertEntity::test_upsert_entity_deduplicates_aliases_and_similar_embeddings apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_upsert_relation_records_temporal_evidence_fields apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_relation_evolution_preserves_history_and_resolves_latest_belief apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph` - SUM-003 red test failed before implementation because `get_relation_history` was missing.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 KG/vault suite: 65 passed, 27 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables` - SUM-003 migration guard regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server alembic -c apps/server/alembic_core.ini downgrade -1`; `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run db:server:upgrade`; `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run db:server:current` - SUM-003 migration rollback/re-upgrade passed, current `dbbe99c1da3a (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 full backend suite: 1687 passed, 1 skipped, 253 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
+  - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
+  - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/services/agent/knowledge_graph.py
+  - apps/server/src/anima_server/services/vault.py
+  - apps/server/tests/test_knowledge_graph.py
+  - apps/server/tests/test_vault.py
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
   - SUM-002 did not require schema migration.
@@ -117,3 +135,5 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-002 degraded BM25, vector, and transcript fallback retrieval now preserves one-character ASCII identifiers.
   - SUM-002 salient episode detail grounding now checks full cleaned text before truncating stored excerpts.
   - SUM-002 transcript fallback no longer treats one-character ASCII queries as raw substrings inside unrelated words.
+  - SUM-003 keeps KG traversal active-relation compatible while preserving superseded relation history for latest-belief and relationship-history retrieval.
+  - SUM-003 core migration skips safely for stamped legacy soul databases missing KG tables; metadata repair creates the current schema immediately afterward.

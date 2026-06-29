@@ -280,8 +280,39 @@ def test_export_and_import_vault_restores_knowledge_graph() -> None:
         user = _register_user(client, username="kg-vault-user", password="pw123456")
         user_id = int(user["id"])
         headers = {"x-anima-unlock": user["unlockToken"]}
+        observed_at = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+        valid_from = datetime(2026, 5, 20, 9, 0, tzinfo=UTC)
 
         with get_user_session_factory(user_id)() as db:
+            item = MemoryItem(
+                user_id=user_id,
+                content=ef(
+                    user_id,
+                    "Ari collaborates on Temporal Memory.",
+                    table="memory_items",
+                    field="content",
+                ),
+                category="relationship",
+                importance=4,
+                source="test",
+            )
+            db.add(item)
+            db.flush()
+            evidence = MemoryItemEvidence(
+                user_id=user_id,
+                memory_item_id=item.id,
+                source_kind="explicit_save",
+                observed_at=observed_at,
+                confidence=0.82,
+                evidence_text=ef(
+                    user_id,
+                    "User: Ari collaborates on Temporal Memory.",
+                    table="memory_item_evidence",
+                    field="evidence_text",
+                ),
+            )
+            db.add(evidence)
+            db.flush()
             person = KGEntity(
                 user_id=user_id,
                 name="Ari",
@@ -308,11 +339,17 @@ def test_export_and_import_vault_restores_knowledge_graph() -> None:
                 destination_id=project.id,
                 relation_type="collaborates_on",
                 mentions=2,
+                source_memory_id=item.id,
+                evidence_id=evidence.id,
+                observed_at=observed_at,
+                valid_from=valid_from,
+                confidence=0.82,
             )
             db.add(relation)
             db.commit()
             person_id = person.id
             relation_id = relation.id
+            evidence_id = evidence.id
 
         export_response = client.post(
             "/api/vault/export",
@@ -325,6 +362,16 @@ def test_export_and_import_vault_restores_knowledge_graph() -> None:
         payload = json.loads(decrypt_string(envelope, "vault-pass"))
         assert payload["database"]["kgEntities"][0]["name"] == "Ari"
         assert payload["database"]["kgRelations"][0]["relation_type"] == "collaborates_on"
+        assert payload["database"]["kgRelations"][0]["evidence_id"] == evidence_id
+        assert (
+            payload["database"]["kgRelations"][0]["observed_at"]
+            == observed_at.replace(tzinfo=None).isoformat()
+        )
+        assert (
+            payload["database"]["kgRelations"][0]["valid_from"]
+            == valid_from.replace(tzinfo=None).isoformat()
+        )
+        assert payload["database"]["kgRelations"][0]["confidence"] == 0.82
 
         with get_user_session_factory(user_id)() as db:
             db.execute(delete(KGRelation))
@@ -347,6 +394,10 @@ def test_export_and_import_vault_restores_knowledge_graph() -> None:
             assert restored_relation is not None
             assert restored_relation.source_id == person_id
             assert restored_relation.relation_type == "collaborates_on"
+            assert restored_relation.evidence_id == evidence_id
+            assert restored_relation.observed_at == observed_at.replace(tzinfo=None)
+            assert restored_relation.valid_from == valid_from.replace(tzinfo=None)
+            assert restored_relation.confidence == pytest.approx(0.82)
 
 
 def test_capsule_sections_include_memory_item_evidence() -> None:

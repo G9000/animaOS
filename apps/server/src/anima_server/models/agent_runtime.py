@@ -700,6 +700,7 @@ class KGEntity(Base):
     )
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     mentions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    aliases_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     embedding_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -717,6 +718,12 @@ class KGRelation(Base):
     __table_args__ = (
         Index("ix_kg_relations_source", "source_id"),
         Index("ix_kg_relations_dest", "destination_id"),
+        Index("ix_kg_relations_user_status", "user_id", "status"),
+        Index("ix_kg_relations_user_source_type", "user_id", "source_id", "relation_type"),
+        Index("ix_kg_relations_user_observed", "user_id", "observed_at"),
+        Index("ix_kg_relations_evidence", "evidence_id"),
+        Index("ix_kg_relations_supersedes", "supersedes_relation_id"),
+        Index("ix_kg_relations_evolves_from", "evolves_from_relation_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -731,6 +738,24 @@ class KGRelation(Base):
     mentions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     source_memory_id: Mapped[int | None] = mapped_column(
         ForeignKey("memory_items.id", ondelete="SET NULL"), nullable=True
+    )
+    evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_item_evidence.id", ondelete="SET NULL"), nullable=True
+    )
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidence: Mapped[float] = mapped_column(
+        Float, nullable=False, default=1.0, server_default=text("1.0")
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="active", server_default=text("'active'")
+    )
+    supersedes_relation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kg_relations.id", ondelete="SET NULL"), nullable=True
+    )
+    evolves_from_relation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kg_relations.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

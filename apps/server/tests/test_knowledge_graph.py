@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import KGEntity, KGRelation, User
+from anima_server.models import KGEntity, KGRelation, MemoryItem, MemoryItemEvidence, User
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.knowledge_graph import (
@@ -15,10 +16,12 @@ from anima_server.services.agent.knowledge_graph import (
     _map_ids_to_sequential,
     _mention_boost,
     extract_entities_and_relations,
+    get_relation_history,
     graph_context_for_query,
     ingest_conversation_graph,
     normalize_entity_name,
     rerank_graph_results,
+    resolve_latest_relation_belief,
     search_graph,
     upsert_entity,
     upsert_relation,
@@ -62,6 +65,51 @@ def _create_user(session: Session, username: str = "kg-test") -> User:
     session.add(user)
     session.commit()
     return user
+
+
+def _create_memory_evidence(
+    session: Session,
+    *,
+    user_id: int,
+    text: str,
+    observed_at: datetime,
+    confidence: float = 1.0,
+) -> MemoryItemEvidence:
+    item = MemoryItem(
+        user_id=user_id,
+        content=text,
+        category="relationship",
+        importance=4,
+        source="test",
+    )
+    session.add(item)
+    session.flush()
+    evidence = MemoryItemEvidence(
+        user_id=user_id,
+        memory_item_id=item.id,
+        source_kind="test_fixture",
+        observed_at=observed_at,
+        confidence=confidence,
+        evidence_text=text,
+    )
+    session.add(evidence)
+    session.flush()
+    return evidence
+
+
+def test_temporal_knowledge_graph_model_metadata() -> None:
+    relation_columns = set(KGRelation.__table__.c.keys())
+    assert {
+        "observed_at",
+        "valid_from",
+        "valid_to",
+        "confidence",
+        "status",
+        "evidence_id",
+        "supersedes_relation_id",
+        "evolves_from_relation_id",
+    }.issubset(relation_columns)
+    assert "aliases_json" in KGEntity.__table__.c
 
 
 # ── T1: normalize_entity_name ────────────────────────────────────────
@@ -182,6 +230,42 @@ class TestUpsertEntity:
                     embedding=[1.0, float("nan")],
                 )
 
+    def test_upsert_entity_deduplicates_aliases_and_similar_embeddings(self):
+        with _db_session() as db:
+            user = _create_user(db)
+
+            canonical = upsert_entity(
+                db,
+                user_id=user.id,
+                name="Ari",
+                entity_type="person",
+                aliases=["Ariane"],
+                embedding=[1.0, 0.0],
+            )
+            alias_match = upsert_entity(
+                db,
+                user_id=user.id,
+                name="Ariane",
+                entity_type="person",
+                embedding=[1.0, 0.0],
+            )
+            semantic_match = upsert_entity(
+                db,
+                user_id=user.id,
+                name="Anima collaborator",
+                entity_type="person",
+                aliases=["Ari"],
+                embedding=[0.99, 0.01],
+            )
+
+            assert alias_match.id == canonical.id
+            assert semantic_match.id == canonical.id
+            assert set(semantic_match.aliases_json or []) >= {
+                "Ari",
+                "Ariane",
+                "Anima collaborator",
+            }
+
 
 # ── T3: upsert_relation ─────────────────────────────────────────────
 
@@ -237,6 +321,142 @@ class TestUpsertRelation:
                 relation_type="knows",
             )
             assert rel is None
+
+    def test_upsert_relation_records_temporal_evidence_fields(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            observed_at = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+            valid_from = datetime(2026, 5, 20, 9, 0, tzinfo=UTC)
+            evidence = _create_memory_evidence(
+                db,
+                user_id=user.id,
+                text="User said Ari collaborates on Temporal Memory.",
+                observed_at=observed_at,
+                confidence=0.82,
+            )
+            upsert_entity(db, user_id=user.id, name="Ari", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="Temporal Memory", entity_type="project")
+
+            rel = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Ari",
+                destination_name="Temporal Memory",
+                relation_type="collaborates_on",
+                source_memory_id=evidence.memory_item_id,
+                evidence_id=evidence.id,
+                observed_at=observed_at,
+                valid_from=valid_from,
+                confidence=0.82,
+            )
+
+            assert rel is not None
+            assert rel.status == "active"
+            assert rel.evidence_id == evidence.id
+            assert rel.source_memory_id == evidence.memory_item_id
+            assert rel.observed_at == observed_at
+            assert rel.valid_from == valid_from
+            assert rel.valid_to is None
+            assert rel.confidence == pytest.approx(0.82)
+
+    def test_relation_evolution_preserves_history_and_resolves_latest_belief(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            old_observed_at = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+            new_observed_at = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
+            old_evidence = _create_memory_evidence(
+                db,
+                user_id=user.id,
+                text="User said they work at Acme.",
+                observed_at=old_observed_at,
+                confidence=0.75,
+            )
+            new_evidence = _create_memory_evidence(
+                db,
+                user_id=user.id,
+                text="User said they now work at Anthropic.",
+                observed_at=new_observed_at,
+                confidence=0.93,
+            )
+            upsert_entity(db, user_id=user.id, name="User", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="Acme", entity_type="organization")
+            upsert_entity(db, user_id=user.id, name="Anthropic", entity_type="organization")
+            old_relation = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="User",
+                destination_name="Acme",
+                relation_type="works_at",
+                evidence_id=old_evidence.id,
+                observed_at=old_observed_at,
+                valid_from=old_observed_at,
+                confidence=0.75,
+            )
+            assert old_relation is not None
+
+            new_relation = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="User",
+                destination_name="Anthropic",
+                relation_type="works_at",
+                evidence_id=new_evidence.id,
+                observed_at=new_observed_at,
+                valid_from=new_observed_at,
+                confidence=0.93,
+                supersedes_relation_id=old_relation.id,
+                evolves_from_relation_id=old_relation.id,
+            )
+            db.flush()
+
+            assert new_relation is not None
+            assert old_relation.status == "superseded"
+            assert old_relation.valid_to == new_observed_at
+            assert new_relation.status == "active"
+            assert new_relation.supersedes_relation_id == old_relation.id
+            assert new_relation.evolves_from_relation_id == old_relation.id
+
+            history = get_relation_history(
+                db,
+                user_id=user.id,
+                source_name="User",
+                relation_type="works_at",
+            )
+            assert [entry["destination"] for entry in history] == ["Acme", "Anthropic"]
+            assert [entry["status"] for entry in history] == ["superseded", "active"]
+
+            latest = resolve_latest_relation_belief(
+                db,
+                user_id=user.id,
+                source_name="User",
+                relation_type="works_at",
+            )
+            assert latest is not None
+            assert latest["relation_id"] == new_relation.id
+            assert latest["destination"] == "Anthropic"
+            assert latest["evidence_ids"] == [new_evidence.id]
+            assert latest["history_count"] == 2
+
+            past = resolve_latest_relation_belief(
+                db,
+                user_id=user.id,
+                source_name="User",
+                relation_type="works_at",
+                as_of=datetime(2026, 3, 1, 8, 0, tzinfo=UTC),
+            )
+            assert past is not None
+            assert past["relation_id"] == old_relation.id
+            assert past["destination"] == "Acme"
+
+            active_results = search_graph(
+                db,
+                user_id=user.id,
+                entity_names=["User"],
+                max_depth=1,
+            )
+            assert {(r["relation"], r["destination"]) for r in active_results} == {
+                ("works_at", "Anthropic")
+            }
 
 
 # ── T4: search_graph depth=1 ────────────────────────────────────────

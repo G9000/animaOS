@@ -939,6 +939,7 @@ def restore_database_snapshot(
                     entity_type=str(record.get("entity_type", "unknown")),
                     description=str(record.get("description", "")),
                     mentions=int(record.get("mentions", 1)),
+                    aliases_json=record.get("aliases_json"),
                     embedding_json=record.get("embedding_json"),
                     embedding_checksum=coerce_optional_str(record.get("embedding_checksum")),
                     created_at=parse_optional_datetime(record.get("created_at")),
@@ -960,6 +961,18 @@ def restore_database_snapshot(
                     relation_type=str(record["relation_type"]),
                     mentions=int(record.get("mentions", 1)),
                     source_memory_id=coerce_optional_int(record.get("source_memory_id")),
+                    evidence_id=coerce_optional_int(record.get("evidence_id")),
+                    observed_at=parse_optional_datetime(record.get("observed_at")),
+                    valid_from=parse_optional_datetime(record.get("valid_from")),
+                    valid_to=parse_optional_datetime(record.get("valid_to")),
+                    confidence=float(
+                        record.get("confidence")
+                        if record.get("confidence") is not None
+                        else 1.0
+                    ),
+                    status=str(record.get("status") or "active"),
+                    supersedes_relation_id=coerce_optional_int(record.get("supersedes_relation_id")),
+                    evolves_from_relation_id=coerce_optional_int(record.get("evolves_from_relation_id")),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
@@ -1363,6 +1376,7 @@ def serialize_kg_entity_record(entity: KGEntity) -> dict[str, Any]:
         "entity_type": entity.entity_type,
         "description": entity.description,
         "mentions": entity.mentions,
+        "aliases_json": entity.aliases_json,
         "embedding_json": entity.embedding_json,
         "embedding_checksum": entity.embedding_checksum,
         "created_at": serialize_optional_datetime(entity.created_at),
@@ -1379,6 +1393,14 @@ def serialize_kg_relation_record(relation: KGRelation) -> dict[str, Any]:
         "relation_type": relation.relation_type,
         "mentions": relation.mentions,
         "source_memory_id": relation.source_memory_id,
+        "evidence_id": relation.evidence_id,
+        "observed_at": serialize_optional_datetime(relation.observed_at),
+        "valid_from": serialize_optional_datetime(relation.valid_from),
+        "valid_to": serialize_optional_datetime(relation.valid_to),
+        "confidence": relation.confidence,
+        "status": relation.status,
+        "supersedes_relation_id": relation.supersedes_relation_id,
+        "evolves_from_relation_id": relation.evolves_from_relation_id,
         "created_at": serialize_optional_datetime(relation.created_at),
         "updated_at": serialize_optional_datetime(relation.updated_at),
     }
