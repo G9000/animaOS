@@ -11,6 +11,7 @@ from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import KGRelation, User
 from anima_server.models.runtime import RuntimeBackgroundTaskRun, RuntimeMessage, RuntimeThread
+from anima_server.models.runtime_memory import MemoryCandidate
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.sleep_agent import (
     _issue_background_task,
@@ -522,6 +523,76 @@ class TestRestartCursor:
             "thread_id": thread_id,
             "last_processed_message_id": expected_message_id,
             "messages_processed": 2,
+        }
+
+    @pytest.mark.asyncio()
+    async def test_consolidation_task_does_not_advance_cursor_with_candidate_backlog(
+        self, rt_factory
+    ):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            first = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="first",
+            )
+            second = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=2,
+                role="assistant",
+                content_text="second",
+            )
+            db.add_all([first, second])
+            db.flush()
+            db.add_all(
+                [
+                    MemoryCandidate(
+                        user_id=1,
+                        content="processed fact",
+                        category="fact",
+                        importance=3,
+                        source="extractor",
+                        source_message_ids=[first.id],
+                        content_hash="processed",
+                        status="promoted",
+                        processed_at=datetime.now(UTC),
+                    ),
+                    MemoryCandidate(
+                        user_id=1,
+                        content="queued fact",
+                        category="fact",
+                        importance=3,
+                        source="extractor",
+                        source_message_ids=[second.id],
+                        content_hash="queued",
+                        status="extracted",
+                    ),
+                ]
+            )
+            db.commit()
+            thread_id = thread.id
+
+        with patch(
+            "anima_server.services.agent.soul_writer.run_soul_writer",
+            new_callable=AsyncMock,
+        ):
+            result = await _task_consolidation(
+                user_id=1,
+                user_message="first",
+                assistant_response="second",
+                thread_id=thread_id,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == {
+            "thread_id": thread_id,
+            "last_processed_message_id": None,
+            "messages_processed": 0,
         }
 
 

@@ -358,7 +358,11 @@ async def _task_consolidation(
     """
     from anima_server.services.agent.soul_writer import run_soul_writer
 
-    await run_soul_writer(user_id)
+    await run_soul_writer(
+        user_id,
+        soul_db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
 
     cursor = _runtime_message_cursor(
         user_id=user_id,
@@ -385,7 +389,7 @@ def _runtime_message_cursor(
     user_id: int,
     thread_id: int | None,
     runtime_db_factory: Callable[..., object] | None,
-) -> tuple[int, int] | None:
+) -> tuple[int | None, int] | None:
     """Return the latest runtime message id and unprocessed message count."""
     if runtime_db_factory is None:
         return None
@@ -401,6 +405,14 @@ def _runtime_message_cursor(
     )
 
     with runtime_db_factory() as rt_db:
+        if _has_unprocessed_candidate_backlog(
+            rt_db,
+            user_id=user_id,
+            thread_id=thread_id,
+            previous_message_id=previous_message_id,
+        ):
+            return previous_message_id, 0
+
         filters = [
             RuntimeMessage.user_id == user_id,
         ]
@@ -421,6 +433,55 @@ def _runtime_message_cursor(
         )
 
     return int(latest_message_id), messages_processed
+
+
+def _has_unprocessed_candidate_backlog(
+    rt_db: Any,
+    *,
+    user_id: int,
+    thread_id: int | None,
+    previous_message_id: int | None,
+) -> bool:
+    from sqlalchemy import select
+
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.models.runtime_memory import MemoryCandidate
+    from anima_server.services.agent.soul_writer import MAX_RETRY_COUNT
+
+    candidates = list(
+        rt_db.scalars(
+            select(MemoryCandidate).where(
+                MemoryCandidate.user_id == user_id,
+                MemoryCandidate.status.in_(["extracted", "queued", "failed"]),
+            )
+        ).all()
+    )
+    backlog_message_ids: set[int] = set()
+    for candidate in candidates:
+        if (
+            candidate.status == "failed"
+            and (candidate.retry_count or 0) >= MAX_RETRY_COUNT
+        ):
+            continue
+        for message_id in candidate.source_message_ids or []:
+            try:
+                numeric_message_id = int(message_id)
+            except (TypeError, ValueError):
+                continue
+            if previous_message_id is None or numeric_message_id > previous_message_id:
+                backlog_message_ids.add(numeric_message_id)
+
+    if not backlog_message_ids:
+        return False
+
+    filters = [
+        RuntimeMessage.user_id == user_id,
+        RuntimeMessage.id.in_(backlog_message_ids),
+    ]
+    if thread_id is not None:
+        filters.append(RuntimeMessage.thread_id == thread_id)
+
+    return rt_db.scalar(select(RuntimeMessage.id).where(*filters).limit(1)) is not None
 
 
 async def _task_embedding_backfill(
