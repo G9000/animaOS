@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-29 23:55 MYT
+- Updated: 2026-06-30 00:12 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -79,6 +79,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-29 22:27 MYT - `SUM-003` claimed by Codex on branch `codex/sum-003-temporal-kg-v2`, based on PR #68 branch `codex/sum-002-evidence-episode-quality`.
 - 2026-06-29 22:53 MYT - `SUM-003` completed with temporal KG schema migration, evidence-backed relation lifecycle, alias/embedding entity deduplication, history/latest-belief retrieval helpers, vault portability, migration guard coverage, and full validation.
 - 2026-06-29 23:55 MYT - `SUM-003` addressed PR #70 review feedback for exact-name entity type drift and superseded relation re-add intervals, then reran focused, KG/vault, lint, build, and full backend validation.
+- 2026-06-30 00:12 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering superseded relations out of current public graph API endpoints, then reran focused, KG/vault, lint, build, full backend validation, and health smoke.
 
 ## Validation
 
@@ -125,13 +126,22 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 review fix build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 review fix full backend suite: first run failed on order-dependent `test_agent_can_generate_thinking_monologue_draft`, isolated rerun passed, longer rerun passed: 1689 passed, 1 skipped, 255 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 review fix health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_graph_api.py::test_graph_current_endpoints_filter_superseded_relations` - SUM-003 PR #70 rereview graph API regression failed before fix because `/api/graph/{user_id}/entities/{id}` returned the superseded `Acme` edge.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_graph_api.py::test_graph_current_endpoints_filter_superseded_relations` - SUM-003 PR #70 rereview graph API regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 rereview graph/API suite: 68 passed, 29 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 rereview fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 rereview fix build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 rereview fix full backend suite: 1690 passed, 1 skipped, 255 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 rereview fix health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
+  - apps/server/src/anima_server/api/routes/graph.py
   - apps/server/src/anima_server/models/agent_runtime.py
   - apps/server/src/anima_server/services/agent/knowledge_graph.py
   - apps/server/src/anima_server/services/vault.py
+  - apps/server/tests/test_graph_api.py
   - apps/server/tests/test_knowledge_graph.py
   - apps/server/tests/test_vault.py
 - Notes:
@@ -148,3 +158,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 core migration skips safely for stamped legacy soul databases missing KG tables; metadata repair creates the current schema immediately afterward.
   - SUM-003 PR #70 review fix keeps exact normalized-name entity upserts on the existing row when extractor type labels drift.
   - SUM-003 PR #70 review fix only reuses active relation rows so re-observed superseded triples create new intervals instead of mutating historical facts.
+  - SUM-003 PR #70 rereview fix treats `/api/graph/{user_id}/overview`, `/entities/{id}`, and `/relations` as current-graph endpoints by filtering to active relations.
