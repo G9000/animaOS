@@ -1556,17 +1556,16 @@ async def ingest_conversation_graph(
             logger.debug("Failed to upsert relation: %s", rel_data)
 
     # 4. Prune stale relations touching this turn's entities
-    entity_names = [e["name"] for e in entities]
-    normalized_names = [normalize_entity_name(n) for n in entity_names]
+    turn_entity_names = [str(e.get("name", "")) for e in entities]
+    for rel_data in relations:
+        turn_entity_names.append(str(rel_data.get("source", "")))
+        turn_entity_names.append(str(rel_data.get("destination", "")))
 
     # Find entity IDs for this turn
-    turn_entities = list(
-        db.scalars(
-            select(KGEntity).where(
-                KGEntity.user_id == user_id,
-                KGEntity.name_normalized.in_(normalized_names),
-            )
-        ).all()
+    turn_entities = resolve_entities_by_name_or_aliases(
+        db,
+        user_id=user_id,
+        names=turn_entity_names,
     )
     turn_entity_ids = {e.id for e in turn_entities}
 
