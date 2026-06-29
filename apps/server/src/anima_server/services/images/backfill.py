@@ -149,7 +149,7 @@ def _ensure_message_link(
         select(RuntimeImageMessageLink).where(
             RuntimeImageMessageLink.user_id == user_id,
             RuntimeImageMessageLink.message_id == message_id,
-            RuntimeImageMessageLink.image_asset_id == image_asset_id,
+            RuntimeImageMessageLink.attachment_id == attachment_id,
         )
     )
     if existing is not None:

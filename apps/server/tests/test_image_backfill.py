@@ -99,6 +99,75 @@ def test_backfill_legacy_chat_images_is_idempotent_and_preserves_fetch(
     assert resolved[1] == "image/png"
 
 
+def test_backfill_legacy_chat_images_links_duplicate_bytes_per_attachment(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.backfill import backfill_legacy_chat_images
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    first_path = tmp_path / "users/7/attachments/chat/first.png"
+    second_path = tmp_path / "users/7/attachments/chat/second.png"
+    first_path.parent.mkdir(parents=True)
+    first_path.write_bytes(PNG_BYTES)
+    second_path.write_bytes(PNG_BYTES)
+
+    thread = RuntimeThread(user_id=7, status="active")
+    runtime_db.add(thread)
+    runtime_db.flush()
+    message = RuntimeMessage(
+        thread_id=thread.id,
+        user_id=7,
+        sequence_id=1,
+        role="user",
+        content_text="legacy duplicate images",
+        content_json={
+            "attachments": [
+                {
+                    "id": "legacy_first",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "filename": "first.png",
+                    "storagePath": "users/7/attachments/chat/first.png",
+                },
+                {
+                    "id": "legacy_second",
+                    "kind": "image",
+                    "mimeType": "image/png",
+                    "filename": "second.png",
+                    "storagePath": "users/7/attachments/chat/second.png",
+                },
+            ]
+        },
+    )
+    runtime_db.add(message)
+    runtime_db.flush()
+
+    report = backfill_legacy_chat_images(runtime_db, user_id=7)
+
+    links = list(
+        runtime_db.scalars(
+            select(RuntimeImageMessageLink).order_by(
+                RuntimeImageMessageLink.attachment_id
+            )
+        ).all()
+    )
+    refreshed = runtime_db.get(RuntimeMessage, message.id)
+    attachments = refreshed.content_json["attachments"]
+
+    assert report.assets_created == 1
+    assert report.links_created == 2
+    assert runtime_db.scalar(select(func.count(RuntimeImageAsset.id))) == 1
+    assert {attachment["assetId"] for attachment in attachments} == {
+        links[0].image_asset_id
+    }
+    assert {link.attachment_id for link in links} == {
+        "legacy_first",
+        "legacy_second",
+    }
+
+
 def test_backfill_legacy_chat_images_reports_missing_files_without_aborting(
     runtime_db,
     tmp_path: Path,

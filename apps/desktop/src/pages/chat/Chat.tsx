@@ -34,6 +34,10 @@ import {
   getShowTrace,
   setShowTrace as persistShowTrace,
 } from "../../lib/preferences";
+import {
+  type AttachmentRemovalScope,
+  removeMatchingAttachmentsFromMessages,
+} from "./attachmentState";
 
 // Local chat components
 import {
@@ -731,18 +735,12 @@ export default function Chat() {
   };
 
   const removeAttachmentFromMessages = useCallback(
-    (messageId: number, predicate: (attachment: ChatAttachment) => boolean) => {
+    (
+      scope: AttachmentRemovalScope,
+      predicate: (attachment: ChatAttachment) => boolean,
+    ) => {
       setMessages((prev) =>
-        prev.map((message) =>
-          message.id === messageId
-            ? {
-                ...message,
-                attachments: (message.attachments ?? []).filter(
-                  (attachment) => !predicate(attachment),
-                ),
-              }
-            : message,
-        ),
+        removeMatchingAttachmentsFromMessages(prev, scope, predicate),
       );
     },
     [],
@@ -753,7 +751,7 @@ export default function Chat() {
       try {
         await api.images.removeFromMessage(messageId, attachment.id);
         removeAttachmentFromMessages(
-          messageId,
+          { kind: "single_message", messageId },
           (candidate) => candidate.id === attachment.id,
         );
       } catch {
@@ -764,13 +762,13 @@ export default function Chat() {
   );
 
   const handleForgetImageAttachment = useCallback(
-    async (messageId: number, attachment: ChatAttachment) => {
+    async (_messageId: number, attachment: ChatAttachment) => {
       if (attachment.assetId == null) return;
       if (!window.confirm("Forget this image everywhere?")) return;
       try {
         await api.images.forget(attachment.assetId);
         removeAttachmentFromMessages(
-          messageId,
+          { kind: "all_messages" },
           (candidate) => candidate.assetId === attachment.assetId,
         );
       } catch {
