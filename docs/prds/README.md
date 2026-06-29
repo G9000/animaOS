@@ -52,6 +52,7 @@ Physical separation of Soul (SQLCipher) / Runtime (embedded PostgreSQL) / Archiv
 | [P6 — pgvector Embeddings](three-tier-architecture/P6-pgvector-embeddings.md) | P6 | P1 | Approved | Migrate embeddings from in-memory to pgvector |
 | [P7 — Concurrency Refactor](three-tier-architecture/P7-concurrency-refactor.md) | P7 | P0 | Approved | Per-thread locking, stateless ToolExecutor |
 | [P8 — N-Agent Spawning](three-tier-architecture/P8-n-agent-spawning.md) | P8 | P0 | Approved | SpawnManager, spawn tools, LLM semaphore |
+| [Local Turso Core and Runtime v1](three-tier-architecture/local-turso-core-runtime-v1.md) | LTR | P0 | Draft | Evaluate local Turso as the Soul and Runtime engine without Turso Cloud |
 
 ### Build Order
 
