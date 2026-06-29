@@ -46,6 +46,8 @@ class SoulWriterResult:
     candidates_rejected: int = 0
     candidates_superseded: int = 0
     candidates_failed: int = 0
+    profile_updates_promoted: int = 0
+    profile_updates_failed: int = 0
     access_sync: dict = field(default_factory=dict)
     retrieval_feedback_sync: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -143,7 +145,11 @@ async def run_soul_writer(
 
     # Soul Writer mutates identity blocks (human/persona/soul) outside the
     # turn pipeline, so the companion's static-block cache must be told.
-    if result.ops_processed > 0 or result.candidates_promoted > 0:
+    if (
+        result.ops_processed > 0
+        or result.candidates_promoted > 0
+        or result.profile_updates_promoted > 0
+    ):
         try:
             from anima_server.services.agent.companion import get_companion
 
@@ -165,12 +171,14 @@ async def run_soul_writer(
         + result.candidates_rejected
         + result.candidates_superseded
         + result.candidates_failed
+        + result.profile_updates_promoted
+        + result.profile_updates_failed
     )
     if total_work > 0 or result.errors:
         logger.info(
             (
                 "Soul Writer user=%s: ops=%d/%d/%d extraction_retries=%d/%d/%d "
-                "cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d"
+                "cands=%d/%d/%d/%d profile=%d/%d access=%s retrieval=%s errors=%d"
             ),
             user_id,
             result.ops_processed,
@@ -183,6 +191,8 @@ async def run_soul_writer(
             result.candidates_rejected,
             result.candidates_superseded,
             result.candidates_failed,
+            result.profile_updates_promoted,
+            result.profile_updates_failed,
             result.access_sync.get("items_synced", 0),
             result.retrieval_feedback_sync.get("items_synced", 0),
             len(result.errors),
@@ -357,6 +367,42 @@ def _run_soul_writer_inner(
 
         runtime_db.commit()
 
+    # Phase 2.5: Promote structured profile updates.
+    with rt_factory() as runtime_db:
+        from anima_server.services.agent.user_profile import (
+            get_profile_update_candidates_for_promotion,
+        )
+
+        profile_candidates = get_profile_update_candidates_for_promotion(
+            runtime_db,
+            user_id=user_id,
+            limit=MAX_ITEMS_PER_RUN,
+            max_retry=MAX_RETRY_COUNT,
+        )
+
+        for candidate in profile_candidates:
+            candidate.status = "queued"
+        runtime_db.flush()
+
+        for candidate in profile_candidates:
+            try:
+                _process_profile_update_candidate(
+                    candidate,
+                    soul_db_factory=soul_factory,
+                    result=result,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Soul Writer profile update candidate %s failed", candidate.id
+                )
+                candidate.status = "failed"
+                candidate.last_error = str(e)[:500]
+                candidate.retry_count = (candidate.retry_count or 0) + 1
+                result.profile_updates_failed += 1
+                result.errors.append(f"profile update {candidate.id}: {e}")
+
+        runtime_db.commit()
+
     # Phase 3: Access sync (always runs)
     with rt_factory() as runtime_db, soul_factory() as soul_db:
         from anima_server.services.agent.access_sync import sync_access_metadata
@@ -417,6 +463,9 @@ def _retry_memory_extraction_failures(
     from anima_server.models.runtime_memory import MemoryExtractionFailure
     from anima_server.services.agent.candidate_ops import create_memory_candidate
     from anima_server.services.agent.consolidation import extract_memories_via_llm
+    from anima_server.services.agent.user_profile import (
+        create_profile_update_candidates_from_payload,
+    )
 
     failures = list(
         runtime_db.scalars(
@@ -482,6 +531,14 @@ def _retry_memory_extraction_failures(
                 source_message_ids=list(failure.source_message_ids or []),
                 extraction_model=failure.extraction_model,
             )
+
+        create_profile_update_candidates_from_payload(
+            runtime_db,
+            user_id=user_id,
+            profile_updates=llm_result.profile_updates,
+            source_message_ids=list(failure.source_message_ids or []),
+            extraction_model=failure.extraction_model,
+        )
 
         failure.status = "resolved"
         failure.resolved_at = now
@@ -665,6 +722,25 @@ def _process_pending_op(
     op.consolidated_at = now
     journal.journal_status = "confirmed"
     result.ops_processed += 1
+
+
+def _process_profile_update_candidate(
+    candidate,
+    *,
+    soul_db_factory: Callable,
+    result: SoulWriterResult,
+) -> None:
+    """Promote one structured profile candidate into the durable soul DB."""
+    from anima_server.services.agent.user_profile import promote_profile_update_candidate
+
+    with soul_db_factory() as soul_db:
+        promote_profile_update_candidate(soul_db, candidate=candidate)
+        soul_db.commit()
+
+    candidate.status = "promoted"
+    candidate.processed_at = datetime.now(UTC)
+    candidate.last_error = None
+    result.profile_updates_promoted += 1
 
 
 def _process_candidate(

@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 03:49 MYT
+- Updated: 2026-06-30 05:47 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -23,7 +23,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-001` | Baseline memory truth audit and eval probes | `done` | none |
 | `SUM-002` | Evidence baseline and episode quality | `done` | `SUM-001` |
 | `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
-| `SUM-004` | Structured user profile | `backlog` | `SUM-002` |
+| `SUM-004` | Structured user profile | `done` | `SUM-002` |
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `backlog` | `SUM-005`, `SUM-006` |
@@ -57,6 +57,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-001` - Baseline memory truth audit and eval probes (completed 2026-06-29 10:39 MYT)
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
 - `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
+- `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
 
 ## Activity Log
 
@@ -87,6 +88,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 03:09 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering stale-pruning candidates to active relations, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 03:32 MYT - `SUM-003` addressed PR #70 rereview feedback by guarding legacy downgrade FK drops when repaired KG tables lack constraints, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 03:49 MYT - `SUM-003` addressed PR #70 rereview feedback by preventing same-triple self-supersession from mutating the replacement row, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 05:34 MYT - `SUM-004` claimed by Codex on branch `codex/sum-004-structured-user-profile`, based on PR #70 head for `SUM-003`.
+- 2026-06-30 05:47 MYT - `SUM-004` completed with structured profile storage, extraction and Soul Writer promotion, sleep-time claim reconciliation, profile prompt rendering, correction API, migrations, focused validation, lint, build, full backend tests, and health smoke.
 
 ## Validation
 

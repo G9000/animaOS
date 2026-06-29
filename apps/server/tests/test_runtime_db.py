@@ -393,7 +393,7 @@ def test_legacy_kg_migration_downgrade_tolerates_missing_constraints(
     cfg = Config(str(session_module._ALEMBIC_INI))
     with engine.begin() as connection:
         cfg.attributes["connection"] = connection
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, "20260626_0002")
 
     inspector = inspect(engine)
     entity_columns = {column["name"] for column in inspector.get_columns("kg_entities")}

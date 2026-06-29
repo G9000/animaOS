@@ -586,6 +586,141 @@ class MemoryClaimEvidence(Base):
     claim: Mapped[MemoryClaim] = relationship(back_populates="evidence")
 
 
+class UserProfileField(Base):
+    """Evidence-backed structured user profile field.
+
+    Active rows describe Anima's current compact model of the user; older
+    rows remain for audit when a field is corrected or superseded.
+    """
+
+    __tablename__ = "user_profile_fields"
+    __table_args__ = (
+        Index("ix_user_profile_fields_user_status", "user_id", "status"),
+        Index(
+            "ix_user_profile_fields_user_category_key",
+            "user_id",
+            "category",
+            "key",
+        ),
+        Index("ix_user_profile_fields_superseded_by", "superseded_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value_text: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.8,
+        server_default=text("0.8"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    source_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="extraction",
+        server_default=text("'extraction'"),
+    )
+    source_memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_item_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    superseded_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("user_profile_fields.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    evidence: Mapped[list[UserProfileFieldEvidence]] = relationship(
+        back_populates="profile_field",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="UserProfileFieldEvidence.profile_field_id",
+    )
+
+
+class UserProfileFieldEvidence(Base):
+    """Evidence row supporting a structured user profile field."""
+
+    __tablename__ = "user_profile_field_evidence"
+    __table_args__ = (
+        Index("ix_user_profile_field_evidence_user_field", "user_id", "profile_field_id"),
+        Index("ix_user_profile_field_evidence_user_observed", "user_id", "observed_at"),
+        Index("ix_user_profile_field_evidence_memory", "source_memory_id"),
+        Index("ix_user_profile_field_evidence_source_evidence", "source_evidence_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    profile_field_id: Mapped[int] = mapped_column(
+        ForeignKey("user_profile_fields.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_item_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    runtime_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_text: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    profile_field: Mapped[UserProfileField] = relationship(
+        back_populates="evidence",
+        foreign_keys=[profile_field_id],
+    )
+
+
 
 class MemoryVector(Base):
     __tablename__ = "memory_vectors"
