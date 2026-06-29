@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 00:38 MYT
+- Updated: 2026-06-30 02:15 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -81,6 +81,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-29 23:55 MYT - `SUM-003` addressed PR #70 review feedback for exact-name entity type drift and superseded relation re-add intervals, then reran focused, KG/vault, lint, build, and full backend validation.
 - 2026-06-30 00:12 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering superseded relations out of current public graph API endpoints, then reran focused, KG/vault, lint, build, full backend validation, and health smoke.
 - 2026-06-30 00:38 MYT - `SUM-003` addressed PR #70 rereview feedback by repairing current KG columns on legacy DBs with old KG tables and no Alembic version, then reran focused, KG/vault, runtime DB, lint, build, full backend validation, and health smoke.
+- 2026-06-30 02:15 MYT - `SUM-003` addressed PR #70 rereview feedback by preserving relation confidence on duplicate upserts when omitted and resolving graph reads/search from entity aliases, then reran red/green regressions, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 
 ## Validation
 
@@ -141,6 +142,14 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 legacy KG repair build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 legacy KG repair full backend suite: 1691 passed, 1 skipped, 255 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 legacy KG repair health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_duplicate_relation_without_confidence_preserves_existing_confidence apps/server/tests/test_knowledge_graph.py::TestSearchGraphDepth1::test_resolves_start_entity_by_alias apps/server/tests/test_graph_api.py::test_graph_search_resolves_entity_aliases` - SUM-003 PR #70 alias/confidence regressions failed before fix because duplicate relation upsert overwrote stored confidence and alias graph search returned no results.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_duplicate_relation_without_confidence_preserves_existing_confidence apps/server/tests/test_knowledge_graph.py::TestSearchGraphDepth1::test_resolves_start_entity_by_alias apps/server/tests/test_graph_api.py::test_graph_search_resolves_entity_aliases` - SUM-003 PR #70 alias/confidence regressions: 3 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 alias/confidence suite: 96 passed, 31 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 alias/confidence lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 alias/confidence build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_dashboard_api.py::test_proactive_notice_uses_saved_custom_instruction -q` - SUM-003 isolated rerun of an order-dependent full-suite failure: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 alias/confidence full backend suite: first run failed on order-dependent `test_proactive_notice_uses_saved_custom_instruction`, isolated rerun passed, longer rerun passed: 1694 passed, 1 skipped, 257 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 alias/confidence health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -170,3 +179,5 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 PR #70 review fix only reuses active relation rows so re-observed superseded triples create new intervals instead of mutating historical facts.
   - SUM-003 PR #70 rereview fix treats `/api/graph/{user_id}/overview`, `/entities/{id}`, and `/relations` as current-graph endpoints by filtering to active relations.
   - SUM-003 PR #70 legacy repair fix adds current KG columns and indexes to old KG tables in the legacy stamp path before mapped KG operations run.
+  - SUM-003 PR #70 alias/confidence fix preserves existing relation confidence when duplicate upserts omit confidence.
+  - SUM-003 PR #70 alias/confidence fix resolves graph traversal and public graph search from entity aliases as well as canonical names.

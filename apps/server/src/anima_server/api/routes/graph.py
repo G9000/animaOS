@@ -12,6 +12,7 @@ from anima_server.models import KGEntity, KGRelation
 from anima_server.services.agent.knowledge_graph import (
     graph_context_for_query,
     normalize_entity_name,
+    resolve_entities_by_name_or_aliases,
     search_graph,
 )
 from anima_server.services.data_crypto import df
@@ -324,6 +325,11 @@ async def search_graph_endpoint(
             )
         ).all()
     )
+    seen_matching_ids = {entity.id for entity in matching}
+    for entity in resolve_entities_by_name_or_aliases(db, user_id=user_id, names=[q]):
+        if entity.id not in seen_matching_ids:
+            matching.append(entity)
+            seen_matching_ids.add(entity.id)
 
     if not matching:
         return {"entities": [], "paths": []}

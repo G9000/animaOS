@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 00:38 MYT
+- Updated: 2026-06-30 02:15 MYT
 - Started: 2026-06-29 22:27 MYT
 - Completed: 2026-06-29 22:53 MYT
 
@@ -41,6 +41,7 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
 - 2026-06-29 23:55 MYT - Addressed PR #70 Codex review feedback for exact-name entity type drift and re-adding superseded relation triples without corrupting temporal history.
 - 2026-06-30 00:12 MYT - Addressed PR #70 Codex rereview feedback by filtering superseded relations out of current public graph API endpoints.
 - 2026-06-30 00:38 MYT - Addressed PR #70 Codex rereview feedback by repairing current KG columns on legacy DBs with old KG tables and no Alembic version.
+- 2026-06-30 02:15 MYT - Addressed PR #70 Codex rereview feedback by preserving relation confidence on duplicate upserts when omitted and resolving graph reads/search from entity aliases.
 
 ## Validation
 
@@ -75,6 +76,14 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #70 legacy KG repair build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 legacy KG repair full backend suite: 1691 passed, 1 skipped, 255 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 legacy KG repair health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_duplicate_relation_without_confidence_preserves_existing_confidence apps/server/tests/test_knowledge_graph.py::TestSearchGraphDepth1::test_resolves_start_entity_by_alias apps/server/tests/test_graph_api.py::test_graph_search_resolves_entity_aliases` - failed before fix because duplicate relation upsert overwrote stored confidence and alias graph search returned no results.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_duplicate_relation_without_confidence_preserves_existing_confidence apps/server/tests/test_knowledge_graph.py::TestSearchGraphDepth1::test_resolves_start_entity_by_alias apps/server/tests/test_graph_api.py::test_graph_search_resolves_entity_aliases` - PR #70 alias/confidence regressions: 3 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - PR #70 alias/confidence suite: 96 passed, 31 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #70 alias/confidence lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #70 alias/confidence build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_dashboard_api.py::test_proactive_notice_uses_saved_custom_instruction -q` - isolated rerun of an order-dependent full-suite failure: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 alias/confidence full backend suite: first run failed on order-dependent `test_proactive_notice_uses_saved_custom_instruction`, isolated rerun passed, longer rerun passed: 1694 passed, 1 skipped, 257 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 alias/confidence health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
   - apps/server/src/anima_server/api/routes/graph.py
@@ -96,3 +105,5 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - PR #70 review fix only reuses active relation rows so re-observed superseded triples create new intervals instead of mutating historical facts.
   - PR #70 rereview fix treats `/api/graph/{user_id}/overview`, `/entities/{id}`, and `/relations` as current-graph endpoints by filtering to active relations.
   - PR #70 legacy repair fix adds current KG columns and indexes to old KG tables in the legacy stamp path before mapped KG operations run.
+  - PR #70 alias/confidence fix preserves existing relation confidence when duplicate upserts omit confidence.
+  - PR #70 alias/confidence fix resolves graph traversal and public graph search from entity aliases as well as canonical names.

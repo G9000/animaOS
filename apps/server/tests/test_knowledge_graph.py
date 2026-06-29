@@ -576,6 +576,34 @@ class TestUpsertRelation:
             assert latest["relation_id"] == returned_relation.id
             assert latest["destination"] == "Acme"
 
+    def test_duplicate_relation_without_confidence_preserves_existing_confidence(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(db, user_id=user.id, name="User", entity_type="person")
+            upsert_entity(db, user_id=user.id, name="Acme", entity_type="organization")
+            relation = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="User",
+                destination_name="Acme",
+                relation_type="works_at",
+                confidence=0.42,
+            )
+            assert relation is not None
+
+            duplicate = upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="User",
+                destination_name="Acme",
+                relation_type="works_at",
+            )
+            db.flush()
+
+            assert duplicate is relation
+            assert duplicate.mentions == 2
+            assert duplicate.confidence == 0.42
+
 
 # ── T4: search_graph depth=1 ────────────────────────────────────────
 
@@ -605,6 +633,38 @@ class TestSearchGraphDepth1:
             assert results[0]["source"] == "A"
             assert results[0]["destination"] == "B"
             assert results[0]["relation"] == "knows"
+
+    def test_resolves_start_entity_by_alias(self):
+        with _db_session() as db:
+            user = _create_user(db)
+            upsert_entity(
+                db,
+                user_id=user.id,
+                name="Bob",
+                entity_type="person",
+                aliases=["Robert"],
+            )
+            upsert_entity(db, user_id=user.id, name="Acme", entity_type="organization")
+            upsert_relation(
+                db,
+                user_id=user.id,
+                source_name="Bob",
+                destination_name="Acme",
+                relation_type="works_at",
+            )
+            db.flush()
+
+            results = search_graph(
+                db,
+                user_id=user.id,
+                entity_names=["Robert"],
+                max_depth=1,
+            )
+
+            assert len(results) == 1
+            assert results[0]["source"] == "Bob"
+            assert results[0]["destination"] == "Acme"
+            assert results[0]["relation"] == "works_at"
 
 
 # ── T5: search_graph depth=2 ────────────────────────────────────────

@@ -169,6 +169,24 @@ def _find_entity_by_name_or_alias(
     return None
 
 
+def resolve_entities_by_name_or_aliases(
+    db: Session,
+    *,
+    user_id: int,
+    names: list[str],
+) -> list[KGEntity]:
+    normalized_names = {normalize_entity_name(name) for name in names}
+    normalized_names.discard("")
+    if not normalized_names:
+        return []
+
+    matches: list[KGEntity] = []
+    for entity in db.scalars(select(KGEntity).where(KGEntity.user_id == user_id)):
+        if _entity_alias_keys(entity) & normalized_names:
+            matches.append(entity)
+    return matches
+
+
 def _find_semantic_entity(
     db: Session,
     user_id: int,
@@ -567,7 +585,8 @@ def upsert_relation(
         existing.valid_from = valid_from or existing.valid_from or valid_start
         if valid_to is not None:
             existing.valid_to = valid_to
-        existing.confidence = normalized_confidence
+        if confidence is not None or existing.confidence is None:
+            existing.confidence = normalized_confidence
         if source_memory_id is not None:
             existing.source_memory_id = source_memory_id
         if evidence_id is not None:
@@ -630,14 +649,10 @@ def search_graph(
               "source_type": ..., "destination_type": ...}, ...]
     """
     # Resolve starting entity IDs
-    normalized_names = [normalize_entity_name(n) for n in entity_names]
-    start_entities = list(
-        db.scalars(
-            select(KGEntity).where(
-                KGEntity.user_id == user_id,
-                KGEntity.name_normalized.in_(normalized_names),
-            )
-        ).all()
+    start_entities = resolve_entities_by_name_or_aliases(
+        db,
+        user_id=user_id,
+        names=entity_names,
     )
 
     if not start_entities:

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import KGEntity, KGRelation
+from anima_server.services.agent.knowledge_graph import upsert_entity, upsert_relation
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 
@@ -106,3 +107,37 @@ def test_graph_current_endpoints_filter_superseded_relations() -> None:
         overview = overview_response.json()
         assert overview["relationCount"] == 1
         assert overview["relationTypeDistribution"] == {"works_at": 1}
+
+
+def test_graph_search_resolves_entity_aliases() -> None:
+    with managed_test_client("anima-graph-api-alias-") as client:
+        payload = _register_user(client, username="graph-alias-user")
+        headers = _headers(payload)
+        user_id = int(payload["id"])
+        session_factory = get_user_session_factory(user_id)
+
+        with session_factory() as db:
+            upsert_entity(
+                db,
+                user_id=user_id,
+                name="Bob",
+                entity_type="person",
+                aliases=["Robert"],
+            )
+            upsert_entity(db, user_id=user_id, name="Acme", entity_type="organization")
+            upsert_relation(
+                db,
+                user_id=user_id,
+                source_name="Bob",
+                destination_name="Acme",
+                relation_type="works_at",
+            )
+            db.commit()
+
+        response = client.get(f"/api/graph/{user_id}/search?q=Robert", headers=headers)
+        assert response.status_code == 200
+        payload = response.json()
+        assert [entity["name"] for entity in payload["entities"]] == ["Bob"]
+        assert [(path["source"], path["relation"], path["destination"]) for path in payload["paths"]] == [
+            ("Bob", "works_at", "Acme")
+        ]
