@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from anima_server.models import MemoryItem, MemoryItemTag
 from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.embedding_integrity import check_embedding
+from anima_server.services.agent.text_processing import unicode_lexical_tokens
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,6 @@ _CATEGORY_QUERY_WEIGHTS: dict[str, tuple[float, float]] = {
     "relationship": (0.3, 0.7),
 }
 _DEFAULT_QUERY_WEIGHTS: tuple[float, float] = (0.5, 0.5)
-_WORD_RE = re.compile(r"[a-z0-9']+")
 _TOKEN_STOPWORDS = frozenset(
     {
         "a",
@@ -1025,7 +1025,7 @@ def _clean_memory_text(value: str) -> str:
 
 
 def _tokenize(value: str) -> list[str]:
-    return [token for token in _WORD_RE.findall(value.lower()) if token not in _TOKEN_STOPWORDS]
+    return unicode_lexical_tokens(value, stopwords=_TOKEN_STOPWORDS, min_word_chars=1)
 
 
 def _normalize_subject(value: str) -> str:

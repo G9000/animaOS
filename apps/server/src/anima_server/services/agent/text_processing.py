@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
+from collections.abc import Collection
 
 from anima_server.services import anima_core_bindings
 
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TEXT_LIMIT = 16_384
 _VALID_SINGLE_CHARS = {"a", "i", "A", "I"}
+_NON_SPACE_SCRIPT_KINDS = {"han", "hiragana", "katakana", "hangul", "thai"}
 _COMMON_WORDS = {
     "a", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
     "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we", "am", "are",
@@ -19,6 +21,117 @@ _COMMON_WORDS = {
     "was", "way", "who", "why", "yet", "you", "all", "and", "any", "but", "few",
     "how", "man", "new", "per", "put", "via",
 }
+
+
+def _token_kind(ch: str) -> str | None:
+    if not _is_token_char(ch):
+        return None
+    if ch.isascii():
+        return "ascii"
+
+    name = unicodedata.name(ch, "")
+    if name.startswith("CJK UNIFIED IDEOGRAPH"):
+        return "han"
+    if name.startswith("HIRAGANA"):
+        return "hiragana"
+    if name.startswith("KATAKANA"):
+        return "katakana"
+    if name.startswith("HANGUL"):
+        return "hangul"
+    if name.startswith("THAI"):
+        return "thai"
+    if name.startswith("ARABIC"):
+        return "arabic"
+    return "word"
+
+
+def _is_token_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "'"
+
+
+def _emit_lexical_run(
+    tokens: list[str],
+    run: list[str],
+    *,
+    run_kind: str | None,
+    stopwords: Collection[str],
+    min_word_chars: int,
+    ngram_size: int,
+) -> None:
+    if not run:
+        return
+
+    raw = "".join(run)
+    token = raw.casefold()
+    if (
+        token not in stopwords
+        and (
+            len(token) >= min_word_chars
+            or any(ch.isdigit() for ch in raw)
+            or not raw.isascii()
+        )
+    ):
+        tokens.append(token)
+
+    if run_kind in _NON_SPACE_SCRIPT_KINDS and len(raw) > 1:
+        for ch in raw:
+            unigram = ch.casefold()
+            if unigram not in stopwords:
+                tokens.append(unigram)
+
+    if raw.isascii() or len(raw) < ngram_size:
+        return
+
+    for index in range(0, len(raw) - ngram_size + 1):
+        ngram = raw[index : index + ngram_size].casefold()
+        if ngram not in stopwords:
+            tokens.append(ngram)
+
+
+def unicode_lexical_tokens(
+    text: str,
+    *,
+    stopwords: Collection[str] = (),
+    min_word_chars: int = 2,
+    ngram_size: int = 2,
+) -> list[str]:
+    """Tokenize multilingual text for degraded lexical matching.
+
+    Space-delimited languages keep word tokens. Non-ASCII runs also emit
+    character n-grams so scripts without spaces can still match substrings.
+    This is a fallback aid, not a replacement for semantic retrieval.
+    """
+    normalized_stopwords = {word.casefold() for word in stopwords}
+    tokens: list[str] = []
+    run: list[str] = []
+    run_kind: str | None = None
+
+    for ch in unicodedata.normalize("NFKC", text):
+        kind = _token_kind(ch)
+        if kind is not None and (run_kind is None or kind == run_kind):
+            run.append(ch)
+            run_kind = kind
+            continue
+        _emit_lexical_run(
+            tokens,
+            run,
+            run_kind=run_kind,
+            stopwords=normalized_stopwords,
+            min_word_chars=min_word_chars,
+            ngram_size=ngram_size,
+        )
+        run = [ch] if kind is not None else []
+        run_kind = kind
+
+    _emit_lexical_run(
+        tokens,
+        run,
+        run_kind=run_kind,
+        stopwords=normalized_stopwords,
+        min_word_chars=min_word_chars,
+        ngram_size=ngram_size,
+    )
+    return tokens
 
 
 def _is_common_word(value: str) -> bool:

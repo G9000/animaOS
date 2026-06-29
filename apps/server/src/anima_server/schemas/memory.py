@@ -48,3 +48,24 @@ class MemoryOverview(BaseModel):
     relationshipCount: int
     currentFocus: str | None = None
     episodeCount: int
+
+
+class MemoryEvidenceAuditResponse(BaseModel):
+    totalActive: int
+    withEvidence: int
+    missingEvidence: int
+    coverageRatio: float
+    coveragePercent: float
+    missingItemIds: list[int] = Field(default_factory=list)
+
+
+class MemoryEvidenceBackfillResponse(BaseModel):
+    scanned: int
+    created: int
+    skippedExisting: int
+    skippedEmpty: int
+
+
+class MemoryEvidenceBackfillRunResponse(BaseModel):
+    backfill: MemoryEvidenceBackfillResponse
+    audit: MemoryEvidenceAuditResponse

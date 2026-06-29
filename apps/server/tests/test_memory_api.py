@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import MemoryEpisode, MemoryItemEvidence
+from anima_server.models import MemoryEpisode, MemoryItem, MemoryItemEvidence
 from anima_server.services import anima_core_retrieval as retrieval_module
-from anima_server.services.data_crypto import df
+from anima_server.services.data_crypto import df, ef
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -171,6 +171,56 @@ def test_memory_create_records_item_evidence() -> None:
             )
             == "Keeps provenance automatically"
         )
+
+
+def test_memory_evidence_audit_and_backfill_endpoints() -> None:
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        first = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Already covered one", "category": "fact"},
+        )
+        assert first.status_code == 201
+        second = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Already covered two", "category": "preference"},
+        )
+        assert second.status_code == 201
+
+        with get_user_session_factory(user_id)() as db:
+            legacy = MemoryItem(
+                user_id=user_id,
+                content=ef(user_id, "Legacy memory needs evidence.", table="memory_items", field="content"),
+                category="fact",
+                source="extraction",
+            )
+            db.add(legacy)
+            db.commit()
+            legacy_id = int(legacy.id)
+
+        audit = client.get(f"/api/memory/{user_id}/evidence/audit", headers=headers)
+
+        assert audit.status_code == 200
+        payload = audit.json()
+        assert payload["totalActive"] == 3
+        assert payload["withEvidence"] == 2
+        assert payload["missingEvidence"] == 1
+        assert payload["coverageRatio"] == pytest.approx(2 / 3)
+        assert payload["missingItemIds"] == [legacy_id]
+
+        backfill = client.post(f"/api/memory/{user_id}/evidence/backfill", headers=headers)
+
+        assert backfill.status_code == 200
+        backfill_payload = backfill.json()
+        assert backfill_payload["backfill"]["created"] == 1
+        assert backfill_payload["audit"]["totalActive"] == 3
+        assert backfill_payload["audit"]["missingEvidence"] == 0
+        assert backfill_payload["audit"]["coverageRatio"] == 1.0
 
 
 def test_memory_create_defers_retrieval_index_upsert_until_after_commit(

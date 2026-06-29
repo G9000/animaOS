@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from anima_server.services import anima_core_retrieval
 from anima_server.services.agent import transcript_archive as transcript_archive_module
+from anima_server.services.agent.text_processing import unicode_lexical_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +34,13 @@ class TranscriptSearchResults(list[TranscriptSnippet]):
 
 def _keyword_overlap_score(query: str, keywords: list[str]) -> float:
     """Score a sidecar's keywords against the search query."""
-    query_words = set(re.findall(r"[a-zA-Z]{3,}", query.lower()))
+    query_words = set(unicode_lexical_tokens(query, min_word_chars=1))
     if not query_words or not keywords:
         return 0.0
 
     keyword_words: set[str] = set()
     for keyword in keywords:
-        keyword_words.update(re.findall(r"[a-zA-Z]{3,}", str(keyword).lower()))
+        keyword_words.update(unicode_lexical_tokens(str(keyword), min_word_chars=1))
 
     if not keyword_words:
         return 0.0
@@ -51,12 +51,12 @@ def _keyword_overlap_score(query: str, keywords: list[str]) -> float:
 
 def _text_overlap_score(query: str, text: str) -> float:
     """Score a transcript message against the search query."""
-    query_words = set(re.findall(r"[a-zA-Z]{3,}", query.lower()))
-    text_words = set(re.findall(r"[a-zA-Z]{3,}", text.lower()))
+    if len(query.strip()) > 1 and query.casefold() in text.casefold():
+        return 1.0
+    query_words = set(unicode_lexical_tokens(query, min_word_chars=1))
+    text_words = set(unicode_lexical_tokens(text, min_word_chars=1))
     if not query_words or not text_words:
         return 0.0
-    if query.lower() in text.lower():
-        return 1.0
     overlap = len(query_words & text_words)
     return overlap / max(len(query_words), 1)
 

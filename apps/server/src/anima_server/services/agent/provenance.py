@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryItem, MemoryItemEvidence
@@ -32,6 +32,16 @@ class EvidenceBackfillResult:
     created: int = 0
     skipped_existing: int = 0
     skipped_empty: int = 0
+
+
+@dataclass(slots=True)
+class EvidenceCoverageReport:
+    total_active: int = 0
+    with_evidence: int = 0
+    missing_evidence: int = 0
+    coverage_ratio: float = 1.0
+    coverage_percent: float = 100.0
+    missing_item_ids: list[int] = field(default_factory=list)
 
 
 def add_memory_item_evidence(
@@ -141,7 +151,7 @@ def backfill_memory_item_evidence(
                 MemoryItem.user_id == user_id,
                 ~existing_evidence,
             )
-            .order_by(MemoryItem.id)
+            .order_by(MemoryItem.superseded_by.is_not(None), MemoryItem.id)
             .limit(max(1, limit))
         ).all()
     )
@@ -180,6 +190,72 @@ def backfill_memory_item_evidence(
         created=created,
         skipped_existing=0,
         skipped_empty=skipped_empty,
+    )
+
+
+def audit_memory_item_evidence(
+    db: Session,
+    *,
+    user_id: int,
+    missing_limit: int = 50,
+) -> EvidenceCoverageReport:
+    """Measure evidence coverage for active durable memory items."""
+
+    active_filter = (
+        MemoryItem.user_id == user_id,
+        MemoryItem.superseded_by.is_(None),
+    )
+    evidence_exists = (
+        select(MemoryItemEvidence.id)
+        .where(
+            MemoryItemEvidence.user_id == user_id,
+            MemoryItemEvidence.memory_item_id == MemoryItem.id,
+        )
+        .exists()
+    )
+    total_active = (
+        db.scalar(
+            select(func.count(MemoryItem.id)).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.superseded_by.is_(None),
+            )
+        )
+        or 0
+    )
+    if total_active == 0:
+        return EvidenceCoverageReport()
+
+    with_evidence = (
+        db.scalar(
+            select(func.count(MemoryItem.id)).where(
+                *active_filter,
+                evidence_exists,
+            )
+        )
+        or 0
+    )
+    missing_evidence = total_active - with_evidence
+    coverage_ratio = with_evidence / total_active
+    missing_ids = [
+        int(item_id)
+        for item_id in db.scalars(
+            select(MemoryItem.id)
+            .where(
+                *active_filter,
+                ~evidence_exists,
+            )
+            .order_by(MemoryItem.id)
+            .limit(max(0, missing_limit))
+        ).all()
+    ]
+
+    return EvidenceCoverageReport(
+        total_active=total_active,
+        with_evidence=with_evidence,
+        missing_evidence=missing_evidence,
+        coverage_ratio=coverage_ratio,
+        coverage_percent=coverage_ratio * 100.0,
+        missing_item_ids=missing_ids,
     )
 
 

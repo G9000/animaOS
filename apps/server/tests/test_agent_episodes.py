@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryEpisode, User
+from anima_server.models import AgentProfile, MemoryEpisode, User
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.episodes import maybe_generate_episode
 from sqlalchemy import BigInteger, create_engine
@@ -89,9 +89,11 @@ def _create_runtime_messages(
     user_id: int,
     thread_id: int,
     message_pairs: list[tuple[str, str]],
+    start_at: datetime | None = None,
 ) -> None:
     """Insert paired user/assistant RuntimeMessages for a thread."""
     seq = 1
+    timestamp = start_at or datetime.now(UTC)
     for user_msg, assistant_msg in message_pairs:
         rt_session.add(
             RuntimeMessage(
@@ -103,7 +105,7 @@ def _create_runtime_messages(
                 role="user",
                 content_text=user_msg,
                 is_in_context=True,
-                created_at=datetime.now(UTC),
+                created_at=timestamp + timedelta(minutes=seq - 1),
             )
         )
         seq += 1
@@ -117,7 +119,7 @@ def _create_runtime_messages(
                 role="assistant",
                 content_text=assistant_msg,
                 is_in_context=True,
-                created_at=datetime.now(UTC),
+                created_at=timestamp + timedelta(minutes=seq - 1),
             )
         )
         seq += 1
@@ -368,12 +370,536 @@ async def test_episode_generation_prompt_uses_names_and_agent_perspective(
         user_id=1,
         user_name="Leo",
         agent_name="Alo",
+        conversation_started_at=datetime(2026, 6, 29, 2, 15, 30, tzinfo=UTC),
     )
 
     assert parsed["summary"] == "Leo showed me a photo and I noticed the style."
+    assert "Conversation timestamp: 2026-06-29T02:15:30+00:00" in captured_prompt
     assert "Leo: I sent a photo." in captured_prompt
     assert "Alo: I noticed your softer style." in captured_prompt
     assert "Use first person for Alo" in captured_prompt
     assert "Use Leo's name" in captured_prompt
+    assert '"salient_user_details"' in captured_prompt
+    assert "Preserve the user's original language" in captured_prompt
     assert '"the user"' in captured_prompt
     assert '"the assistant"' in captured_prompt
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_passes_timestamp_names_and_preserves_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    captured: dict[str, object] = {}
+
+    async def terse_episode_payload(
+        pairs: list[tuple[str, str]],
+        *,
+        user_id: int = 0,
+        user_name: str = "the user",
+        agent_name: str = "Anima",
+        conversation_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        captured["pairs"] = pairs
+        captured["user_id"] = user_id
+        captured["user_name"] = user_name
+        captured["agent_name"] = agent_name
+        captured["conversation_started_at"] = conversation_started_at
+        return {
+            "summary": "Leo discussed model kits and pets.",
+            "topics": ["hobbies", "pets"],
+            "emotional_arc": "curious -> warm",
+            "significance": 3,
+            "salient_user_details": [
+                "1/72 scale B-29 bomber",
+                "1/24 scale Camaro",
+                "Muffin, Tappy, and Whiskers",
+            ],
+        }
+
+    monkeypatch.setattr(
+        episodes_module,
+        "_call_llm_for_episode_safe",
+        terse_episode_payload,
+    )
+
+    first_turn_at = datetime(2026, 6, 29, 2, 15, 30, tzinfo=UTC)
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-details",
+            password_hash="not-used",
+            display_name="Leo",
+        )
+        soul_session.add(user)
+        soul_session.flush()
+        soul_session.add(
+            AgentProfile(
+                user_id=user.id,
+                agent_name="Alo",
+                creator_name="Leo",
+            )
+        )
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            start_at=first_turn_at,
+            message_pairs=[
+                (
+                    "I bought a 1/72 scale B-29 bomber and a 1/24 scale Camaro.",
+                    "I helped Leo compare paint and display options.",
+                ),
+                (
+                    "My cats are Muffin, Tappy, and Whiskers.",
+                    "I noted each cat's name so I could remember them.",
+                ),
+                (
+                    "Please remember the model kits and the cats together.",
+                    "I tied the hobby details and pet names into one memory.",
+                ),
+            ],
+        )
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+
+    assert captured["user_name"] == "Leo"
+    assert captured["agent_name"] == "Alo"
+    assert captured["conversation_started_at"] == first_turn_at
+    assert "1/72" in summary
+    assert "B-29" in summary
+    assert "1/24" in summary
+    assert "Camaro" in summary
+    assert "Muffin" in summary
+    assert "Tappy" in summary
+    assert "Whiskers" in summary
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_preserves_multilingual_user_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    async def terse_episode_payload(
+        pairs: list[tuple[str, str]],
+        *,
+        user_id: int = 0,
+        user_name: str = "the user",
+        agent_name: str = "Anima",
+        conversation_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        return {
+            "summary": "Leo discussed food and travel memories.",
+            "topics": ["food", "travel"],
+            "emotional_arc": "nostalgic -> settled",
+            "significance": 3,
+            "salient_user_details": [
+                "今日は東京で寿司を食べた",
+                "nasi lemak dekat Kampung Baru",
+                "猫の名前はモモ",
+            ],
+        }
+
+    monkeypatch.setattr(
+        episodes_module,
+        "_call_llm_for_episode_safe",
+        terse_episode_payload,
+    )
+
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-multilingual-details",
+            password_hash="not-used",
+            display_name="Leo",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            message_pairs=[
+                (
+                    "今日は東京で寿司を食べた。忘れないで。",
+                    "I noted that Tokyo sushi mattered today.",
+                ),
+                (
+                    "Saya rindu nasi lemak dekat Kampung Baru.",
+                    "I held onto that food memory with you.",
+                ),
+                (
+                    "猫の名前はモモです。",
+                    "I remembered the cat's name.",
+                ),
+            ],
+        )
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+
+    assert "今日は東京で寿司を食べた" in summary
+    assert "nasi lemak" in summary
+    assert "猫の名前はモモ" in summary
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_uses_grounded_llm_salient_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    async def terse_episode_payload(
+        pairs: list[tuple[str, str]],
+        *,
+        user_id: int = 0,
+        user_name: str = "the user",
+        agent_name: str = "Anima",
+        conversation_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        return {
+            "summary": "Leo shared food memories.",
+            "topics": ["food"],
+            "emotional_arc": "warm -> reflective",
+            "significance": 3,
+            "salient_user_details": [
+                "東京で寿司",
+                "nasi lemak dekat Kampung Baru",
+                "大阪でラーメン",
+            ],
+        }
+
+    monkeypatch.setattr(
+        episodes_module,
+        "_call_llm_for_episode_safe",
+        terse_episode_payload,
+    )
+
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-llm-grounded-details",
+            password_hash="not-used",
+            display_name="Leo",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            message_pairs=[
+                (
+                    "Long setup that should not be copied wholesale. 今日は東京で寿司を食べた。",
+                    "I noticed the Tokyo sushi detail.",
+                ),
+                (
+                    "Saya rindu nasi lemak dekat Kampung Baru.",
+                    "I held onto that Kuala Lumpur food memory.",
+                ),
+                (
+                    "Keep the important food memories, not every filler word.",
+                    "I focused on the concrete details.",
+                ),
+            ],
+        )
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+
+    assert "東京で寿司" in summary
+    assert "nasi lemak dekat Kampung Baru" in summary
+    assert "大阪でラーメン" not in summary
+    assert "Long setup that should not be copied wholesale" not in summary
+
+
+def test_ground_salient_user_details_truncates_after_grounding_long_excerpt() -> None:
+    from anima_server.services.agent.episodes import _ground_salient_user_details
+
+    detail = (
+        "Leo said the deployment password is a single-use emergency recovery phrase "
+        "that should be preserved exactly for the audit trail."
+    )
+
+    grounded = _ground_salient_user_details(
+        [detail],
+        [(detail, "I will preserve that carefully.")],
+        max_chars=72,
+    )
+
+    assert grounded == [f"{detail[:72].rstrip()}..."]
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_does_not_append_ordinary_turns_without_salient_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    async def terse_episode_payload(
+        pairs: list[tuple[str, str]],
+        *,
+        user_id: int = 0,
+        user_name: str = "the user",
+        agent_name: str = "Anima",
+        conversation_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        return {
+            "summary": "Leo asked a few ordinary setup questions.",
+            "topics": ["setup"],
+            "emotional_arc": "neutral -> neutral",
+            "significance": 2,
+        }
+
+    monkeypatch.setattr(
+        episodes_module,
+        "_call_llm_for_episode_safe",
+        terse_episode_payload,
+    )
+
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-no-ordinary-fallback",
+            password_hash="not-used",
+            display_name="Leo",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            message_pairs=[
+                ("Can you help me set this up?", "Yes."),
+                ("What should I try next?", "Try this small step."),
+                ("Okay, continue.", "Continuing."),
+            ],
+        )
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+
+    assert "Key details from user" not in summary
+    assert "Can you help me set this up?" not in summary
+    assert "What should I try next?" not in summary
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_resolves_relative_dates_in_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    async def relative_date_payload(
+        pairs: list[tuple[str, str]],
+        *,
+        user_id: int = 0,
+        user_name: str = "the user",
+        agent_name: str = "Anima",
+        conversation_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        return {
+            "summary": "Leo said the presentation is tomorrow.",
+            "topics": ["presentation"],
+            "emotional_arc": "focused -> prepared",
+            "significance": 3,
+            "salient_user_details": ["presentation is tomorrow"],
+        }
+
+    monkeypatch.setattr(
+        episodes_module,
+        "_call_llm_for_episode_safe",
+        relative_date_payload,
+    )
+
+    first_turn_at = datetime(2026, 6, 29, 9, 0, tzinfo=UTC)
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-relative-date",
+            password_hash="not-used",
+            display_name="Leo",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        _create_runtime_messages(
+            rt_session,
+            user_id=user.id,
+            thread_id=thread.id,
+            start_at=first_turn_at,
+            message_pairs=[
+                ("My presentation is tomorrow.", "I noted the timing."),
+                ("Please help me remember the prep.", "I will keep the prep in view."),
+                ("The slides still need polish.", "We can focus on the slides."),
+            ],
+        )
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+
+    assert "tomorrow" in summary
+    assert "2026-06-30" in summary
+
+
+@pytest.mark.asyncio
+async def test_maybe_generate_episode_resolves_relative_dates_from_matching_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import episodes as episodes_module
+    from anima_server.services.data_crypto import df
+
+    async def relative_date_payload(
+        pairs: list[tuple[str, str]],
+        *,
+        user_id: int = 0,
+        user_name: str = "the user",
+        agent_name: str = "Anima",
+        conversation_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        return {
+            "summary": "Leo said the presentation is tomorrow.",
+            "topics": ["presentation"],
+            "emotional_arc": "focused -> prepared",
+            "significance": 3,
+            "salient_user_details": ["presentation is tomorrow"],
+        }
+
+    monkeypatch.setattr(
+        episodes_module,
+        "_call_llm_for_episode_safe",
+        relative_date_payload,
+    )
+
+    with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
+        user = User(
+            username="episode-relative-date-cross-midnight",
+            password_hash="not-used",
+            display_name="Leo",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.commit()
+
+        messages = [
+            (
+                "user",
+                "We were talking before midnight.",
+                datetime(2026, 6, 28, 23, 50, tzinfo=UTC),
+            ),
+            (
+                "assistant",
+                "I kept that earlier context.",
+                datetime(2026, 6, 28, 23, 51, tzinfo=UTC),
+            ),
+            (
+                "user",
+                "My presentation is tomorrow.",
+                datetime(2026, 6, 29, 0, 10, tzinfo=UTC),
+            ),
+            (
+                "assistant",
+                "I noted the presentation timing.",
+                datetime(2026, 6, 29, 0, 11, tzinfo=UTC),
+            ),
+            (
+                "user",
+                "The slides still need polish.",
+                datetime(2026, 6, 29, 0, 12, tzinfo=UTC),
+            ),
+            (
+                "assistant",
+                "We can focus on the slides.",
+                datetime(2026, 6, 29, 0, 13, tzinfo=UTC),
+            ),
+        ]
+        for sequence_id, (role, content, created_at) in enumerate(messages, start=1):
+            rt_session.add(
+                RuntimeMessage(
+                    thread_id=thread.id,
+                    user_id=user.id,
+                    run_id=None,
+                    step_id=None,
+                    sequence_id=sequence_id,
+                    role=role,
+                    content_text=content,
+                    is_in_context=True,
+                    created_at=created_at,
+                )
+            )
+        rt_session.commit()
+
+        result = await maybe_generate_episode(
+            user_id=user.id,
+            db_factory=soul_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        assert result is not None
+        summary = df(user.id, result.summary, table="memory_episodes", field="summary")
+
+    assert "tomorrow" in summary
+    assert "2026-06-30" in summary
+    assert "tomorrow=2026-06-29" not in summary

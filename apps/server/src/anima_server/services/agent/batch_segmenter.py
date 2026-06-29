@@ -8,6 +8,7 @@ sequential chunking.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -221,6 +222,7 @@ async def generate_episodes_from_segments(
     pairs: list[tuple[str, str]],
     segments: list[list[int]],
     today: str,
+    pair_started_at: list[datetime | None] | None = None,
     user_name: str = "the user",
     agent_name: str = "Anima",
 ) -> list[MemoryEpisode]:
@@ -245,8 +247,16 @@ async def generate_episodes_from_segments(
         # Sort indices chronologically so the summarizer sees turns in order
         sorted_indices = sorted(segment_0based)
         segment_pairs = [pairs[i] for i in sorted_indices]
+        segment_pair_times = [
+            pair_started_at[i] if pair_started_at and i < len(pair_started_at) else None
+            for i in sorted_indices
+        ]
         # Store 1-based indices for the DB column
         indices_1based = [i + 1 for i in sorted_indices]
+        conversation_started_at = _segment_started_at(
+            sorted_indices,
+            pair_started_at or [],
+        )
 
         if settings.agent_provider == "scaffold":
             episode = _create_fallback_episode(
@@ -255,6 +265,7 @@ async def generate_episodes_from_segments(
                 thread_id=thread_id,
                 pairs=segment_pairs,
                 today=today,
+                conversation_started_at=conversation_started_at,
             )
         else:
             parsed = await _call_llm_for_episode_safe(
@@ -262,6 +273,7 @@ async def generate_episodes_from_segments(
                 user_id=user_id,
                 user_name=user_name,
                 agent_name=agent_name,
+                conversation_started_at=conversation_started_at,
             )
             episode = _build_episode_from_parsed(
                 db,
@@ -270,6 +282,8 @@ async def generate_episodes_from_segments(
                 thread_id=thread_id,
                 pairs=segment_pairs,
                 today=today,
+                conversation_started_at=conversation_started_at,
+                pair_started_at=segment_pair_times,
             )
 
         # Annotate with segmentation metadata
@@ -278,3 +292,13 @@ async def generate_episodes_from_segments(
         episodes.append(episode)
 
     return episodes
+
+
+def _segment_started_at(
+    indices: list[int],
+    pair_started_at: list[datetime | None],
+) -> datetime | None:
+    for index in indices:
+        if 0 <= index < len(pair_started_at) and pair_started_at[index] is not None:
+            return pair_started_at[index]
+    return None
