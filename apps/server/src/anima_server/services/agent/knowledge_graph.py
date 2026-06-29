@@ -158,7 +158,7 @@ def _find_entity_by_name_or_alias(
         )
     )
     if entity is not None:
-        return entity if _entity_type_compatible(entity.entity_type, entity_type) else None
+        return entity
 
     entities = list(db.scalars(select(KGEntity).where(KGEntity.user_id == user_id)).all())
     for candidate in entities:
@@ -556,6 +556,7 @@ def upsert_relation(
             KGRelation.source_id == source.id,
             KGRelation.destination_id == dest.id,
             KGRelation.relation_type == relation_type,
+            KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
         )
     )
     if existing is not None:

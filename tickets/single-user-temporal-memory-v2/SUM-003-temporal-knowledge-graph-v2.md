@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-29 22:53 MYT
+- Updated: 2026-06-29 23:55 MYT
 - Started: 2026-06-29 22:27 MYT
 - Completed: 2026-06-29 22:53 MYT
 
@@ -38,6 +38,7 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
 - 2026-06-27 12:40 MYT - Ticket created.
 - 2026-06-29 22:27 MYT - Claimed by Codex on branch `codex/sum-003-temporal-kg-v2`, based on PR #68 branch `codex/sum-002-evidence-episode-quality`.
 - 2026-06-29 22:53 MYT - Completed temporal KG v2 schema, relation lifecycle helpers, alias/embedding entity deduplication, KG vault portability, migration guard, validation, and health smoke.
+- 2026-06-29 23:55 MYT - Addressed PR #70 Codex review feedback for exact-name entity type drift and re-adding superseded relation triples without corrupting temporal history.
 
 ## Validation
 
@@ -50,6 +51,14 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` health smoke for `GET /health` - 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertEntity::test_upsert_same_exact_name_tolerates_type_drift apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_readding_superseded_relation_creates_new_interval` - failed before fix with entity unique constraint violation and superseded relation row reuse.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertEntity::test_upsert_same_exact_name_tolerates_type_drift apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_readding_superseded_relation_creates_new_interval` - PR #70 review regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - PR #70 review suite: 67 passed, 29 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_creation_flow.py::test_agent_can_generate_thinking_monologue_draft -q` - isolated rerun of an order-dependent full-suite failure: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #70 review fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #70 review fix build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - PR #70 review fix full backend suite: first run failed on order-dependent `test_agent_can_generate_thinking_monologue_draft`, isolated rerun passed, longer rerun passed: 1689 passed, 1 skipped, 255 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - PR #70 review fix health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
   - apps/server/src/anima_server/models/agent_runtime.py
@@ -63,3 +72,5 @@ Upgrade the existing knowledge graph into a temporal, evidence-backed graph suit
   - Temporal KG relations now preserve observed/valid time, confidence, lifecycle status, evidence references, and evolution links.
   - Existing graph traversal remains compatible by returning active relations by default; relationship history and latest-belief helpers expose superseded history.
   - The core migration guards stamped legacy soul databases that are missing KG tables; `Base.metadata.create_all()` still repairs those databases after Alembic completes.
+  - PR #70 review fix keeps exact normalized-name entity upserts on the existing row when extractor type labels drift.
+  - PR #70 review fix only reuses active relation rows so re-observed superseded triples create new intervals instead of mutating historical facts.
