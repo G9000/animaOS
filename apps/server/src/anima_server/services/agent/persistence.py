@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeStep,
+    RuntimeThread,
+)
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.retrieval_feedback import record_retrieval_feedback
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
@@ -192,7 +198,7 @@ def append_user_message(
 ) -> RuntimeMessage:
     content_json = attach_serialized_attachments(None, attachments)
     content_json = attach_serialized_pills(content_json, list(pills))
-    return append_message(
+    message = append_message(
         db,
         thread=thread,
         run_id=run_id,
@@ -203,6 +209,46 @@ def append_user_message(
         content_json=content_json,
         source=source,
     )
+    link_message_image_assets(db, message=message, attachments=attachments)
+    return message
+
+
+def link_message_image_assets(
+    db: Session,
+    *,
+    message: RuntimeMessage,
+    attachments: tuple[StoredAttachment, ...],
+) -> list[RuntimeImageMessageLink]:
+    links: list[RuntimeImageMessageLink] = []
+    seen_asset_ids: set[int] = set()
+    for attachment in attachments:
+        if attachment.asset_id is None or attachment.asset_id in seen_asset_ids:
+            continue
+        seen_asset_ids.add(attachment.asset_id)
+
+        existing = db.scalar(
+            select(RuntimeImageMessageLink).where(
+                RuntimeImageMessageLink.user_id == message.user_id,
+                RuntimeImageMessageLink.message_id == message.id,
+                RuntimeImageMessageLink.image_asset_id == attachment.asset_id,
+            )
+        )
+        if existing is not None:
+            links.append(existing)
+            continue
+
+        link = RuntimeImageMessageLink(
+            user_id=message.user_id,
+            message_id=message.id,
+            image_asset_id=attachment.asset_id,
+            attachment_id=attachment.id,
+        )
+        db.add(link)
+        links.append(link)
+
+    if links:
+        db.flush()
+    return links
 
 
 def persist_agent_result(

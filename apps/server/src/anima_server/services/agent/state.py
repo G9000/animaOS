@@ -19,10 +19,12 @@ class StoredAttachment:
     kind: Literal["image"]
     mime_type: str
     path: str
+    asset_id: int | None = None
     filename: str | None = None
     size_bytes: int | None = None
     sha256: str | None = None
     storage_path: str | None = None
+    retention_state: str | None = None
 
     def to_content_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -32,12 +34,16 @@ class StoredAttachment:
         }
         if self.filename is not None:
             payload["filename"] = self.filename
+        if self.asset_id is not None:
+            payload["assetId"] = self.asset_id
         if self.size_bytes is not None:
             payload["sizeBytes"] = self.size_bytes
         if self.sha256 is not None:
             payload["sha256"] = self.sha256
         if self.storage_path is not None:
             payload["storagePath"] = self.storage_path
+        if self.retention_state is not None:
+            payload["retentionState"] = self.retention_state
         return payload
 
     def to_public_dict(self, *, message_id: int) -> dict[str, object]:
@@ -49,8 +55,12 @@ class StoredAttachment:
         }
         if self.filename is not None:
             payload["filename"] = self.filename
+        if self.asset_id is not None:
+            payload["assetId"] = self.asset_id
         if self.size_bytes is not None:
             payload["sizeBytes"] = self.size_bytes
+        if self.retention_state is not None:
+            payload["retentionState"] = self.retention_state
         return payload
 
 
@@ -261,12 +271,16 @@ def deserialize_stored_attachments(
                 mime_type=mime_type,
                 path=str(resolved_path),
                 storage_path=storage_path,
+                asset_id=_coerce_int(raw_attachment.get("assetId")),
                 filename=raw_attachment.get("filename")
                 if isinstance(raw_attachment.get("filename"), str)
                 else None,
                 size_bytes=_coerce_int(raw_attachment.get("sizeBytes")),
                 sha256=raw_attachment.get("sha256")
                 if isinstance(raw_attachment.get("sha256"), str)
+                else None,
+                retention_state=raw_attachment.get("retentionState")
+                if isinstance(raw_attachment.get("retentionState"), str)
                 else None,
             )
         )

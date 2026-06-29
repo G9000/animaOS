@@ -14,6 +14,7 @@ Key differences from the soul models:
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 
 from sqlalchemy import (
@@ -325,6 +326,127 @@ class RuntimeDocumentChunk(RuntimeBase):
     )
 
 
+class RuntimeImageAsset(RuntimeBase):
+    __tablename__ = "runtime_image_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "sha256",
+            name="uq_runtime_image_assets_user_sha256",
+        ),
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_runtime_image_assets_id_user",
+        ),
+        Index("ix_runtime_image_assets_user_status", "user_id", "status"),
+        Index("ix_runtime_image_assets_user_created", "user_id", "created_at"),
+        Index("ix_runtime_image_assets_user_retention", "user_id", "retention_state"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="registered",
+        server_default=text("'registered'"),
+    )
+    retention_state: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="transient",
+        server_default=text("'transient'"),
+    )
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    indexed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+    message_links: Mapped[list[RuntimeImageMessageLink]] = relationship(
+        back_populates="image_asset",
+        cascade="all, delete-orphan",
+        overlaps="image_links,message",
+    )
+    annotations: Mapped[list[RuntimeImageAnnotation]] = relationship(
+        back_populates="image_asset",
+        cascade="all, delete-orphan",
+        order_by="RuntimeImageAnnotation.created_at",
+    )
+
+
+class RuntimeImageAnnotation(RuntimeBase):
+    __tablename__ = "runtime_image_annotations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_asset_id", "user_id"],
+            ["runtime_image_assets.id", "runtime_image_assets.user_id"],
+            name="fk_runtime_image_annotations_asset_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "image_asset_id",
+            "annotation_kind",
+            "content_hash",
+            name="uq_runtime_image_annotations_asset_kind_hash",
+        ),
+        Index(
+            "ix_runtime_image_annotations_user_kind",
+            "user_id",
+            "annotation_kind",
+        ),
+        Index(
+            "ix_runtime_image_annotations_user_asset",
+            "user_id",
+            "image_asset_id",
+        ),
+        Index(
+            "ix_runtime_image_annotations_user_status",
+            "user_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    image_asset_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    annotation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+    image_asset: Mapped[RuntimeImageAsset] = relationship(back_populates="annotations")
+
+    @staticmethod
+    def compute_content_hash(plaintext: str) -> str:
+        """SHA-256 hex digest for annotation embedding staleness checks."""
+        return hashlib.sha256(plaintext.encode()).hexdigest()
+
+
 class RuntimeStep(RuntimeBase):
     __tablename__ = "runtime_steps"
     __table_args__ = (
@@ -363,6 +485,7 @@ class RuntimeStep(RuntimeBase):
 class RuntimeMessage(RuntimeBase):
     __tablename__ = "runtime_messages"
     __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_runtime_messages_id_user"),
         UniqueConstraint(
             "thread_id", "sequence_id", name="uq_runtime_messages_thread_id_sequence_id"
         ),
@@ -415,6 +538,12 @@ class RuntimeMessage(RuntimeBase):
     )
 
     thread: Mapped[RuntimeThread] = relationship(back_populates="messages")
+    image_links: Mapped[list[RuntimeImageMessageLink]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="RuntimeImageMessageLink.created_at",
+        overlaps="image_asset,message_links",
+    )
 
     @property
     def is_internal(self) -> bool:
@@ -435,6 +564,59 @@ class RuntimeMessage(RuntimeBase):
             and self.tool_name is not None
             and self.tool_name != "send_message"
         )
+
+
+class RuntimeImageMessageLink(RuntimeBase):
+    __tablename__ = "runtime_image_message_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["message_id", "user_id"],
+            ["runtime_messages.id", "runtime_messages.user_id"],
+            name="fk_runtime_image_message_links_message_user",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["image_asset_id", "user_id"],
+            ["runtime_image_assets.id", "runtime_image_assets.user_id"],
+            name="fk_runtime_image_message_links_asset_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "message_id",
+            "image_asset_id",
+            name="uq_runtime_image_message_links_message_asset",
+        ),
+        Index(
+            "ix_runtime_image_message_links_user_message",
+            "user_id",
+            "message_id",
+        ),
+        Index(
+            "ix_runtime_image_message_links_user_asset",
+            "user_id",
+            "image_asset_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    image_asset_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    attachment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    message: Mapped[RuntimeMessage] = relationship(
+        back_populates="image_links",
+        overlaps="image_asset,message_links",
+    )
+    image_asset: Mapped[RuntimeImageAsset] = relationship(
+        back_populates="message_links",
+        overlaps="image_links,message",
+    )
 
 
 class RuntimeBackgroundTaskRun(RuntimeBase):

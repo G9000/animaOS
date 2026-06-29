@@ -925,6 +925,55 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
 
 
 @tool
+def search_images(query: str, limit: str = "5") -> str:
+    """Search indexed image memories by visual annotation text. Use for explicit recall of uploaded images, screenshots, photos, or visible text."""
+    from anima_server.services.agent.embeddings import generate_embedding
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.images.rag import search_image_annotations
+
+    query_stripped = query.strip()
+    if not query_stripped:
+        return "Please provide an image search query."
+
+    try:
+        max_results = max(1, min(10, int(limit)))
+    except (TypeError, ValueError):
+        max_results = 5
+
+    ctx = get_tool_context()
+    results = search_image_annotations(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        query=query_stripped,
+        embedding_fn=generate_embedding,
+        limit=max_results,
+    )
+    if not results:
+        return f"No indexed image memories found for: {query_stripped}"
+
+    noun = "match" if len(results) == 1 else "matches"
+    lines = [f"Found {len(results)} image memory {noun} for: {query_stripped}"]
+    for result in results:
+        label = result.filename or f"image-{result.image_asset_id}"
+        source_parts = [
+            f"thread={result.source_thread_id}" if result.source_thread_id is not None else None,
+            f"message={result.source_message_id}" if result.source_message_id is not None else None,
+            f"attachment={result.attachment_id}" if result.attachment_id else None,
+            f"url={result.attachment_url}" if result.attachment_url else None,
+        ]
+        source_text = "; ".join(part for part in source_parts if part)
+        source_suffix = f"; {source_text}" if source_text else ""
+        snippet = " ".join(result.snippet.split())
+        if len(snippet) > 220:
+            snippet = snippet[:219].rstrip() + "..."
+        lines.append(
+            f"- image:{result.image_asset_id} {label} "
+            f"({result.mime_type}; score={result.similarity:.2f}{source_suffix}): {snippet}"
+        )
+    return "\n".join(lines)
+
+
+@tool
 def recall_conversation(
     query: str, role: str = "", start_date: str = "", end_date: str = "", limit: str = "10"
 ) -> str:
@@ -1279,6 +1328,7 @@ def get_core_tools() -> list[Any]:
         send_message,
         recall_memory,
         search_long_memory,
+        search_images,
         recall_conversation,
         core_memory_append,
         core_memory_replace,

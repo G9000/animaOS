@@ -135,6 +135,8 @@ class ChatMessageAttachment(BaseModel):
     mimeType: str
     filename: str | None = None
     sizeBytes: int | None = None
+    assetId: int | None = None
+    retentionState: str | None = None
     url: str
 
 

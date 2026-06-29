@@ -1,17 +1,17 @@
 # VMI-004 - Image annotation and indexing pipeline
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `VMI-000`
 - Depends on: `VMI-003`
-- Owner: unassigned
+- Owner: Codex
 - PRD: docs/prds/memory/visual-memory-image-assets-v1.md
 - Plan: docs/superpowers/plans/2026-06-29-visual-memory-image-assets.md
 - Created: 2026-06-29 10:53 MYT
-- Updated: 2026-06-29 11:30 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-29 12:10 MYT
+- Started: 2026-06-29 12:05 MYT
+- Completed: 2026-06-29 12:10 MYT
 
 ## Goal
 
@@ -45,12 +45,21 @@ Index image-derived text so image assets become searchable and usable by memory 
 - 2026-06-29 10:53 MYT - Ticket created.
 - 2026-06-29 11:27 MYT - Clarified that OCR/text extraction is supported through capability-gated processing.
 - 2026-06-29 11:30 MYT - Made OCR/text extraction an explicit VMI-004 deliverable and acceptance target.
+- 2026-06-29 12:05 MYT - Claimed by Codex after completing `VMI-003`; starting indexing tests with mocked embedding and extractor capabilities.
+- 2026-06-29 12:10 MYT - Added image annotation indexing, capability-gated caption/OCR hooks, embedding upsert, image search helper, and guarded chat-path base annotation creation.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_image_indexing.py -q`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_chat_image_assets.py -q`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_chat_attachments.py -q`
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/images/capabilities.py
+  - apps/server/src/anima_server/services/images/extractors.py
+  - apps/server/src/anima_server/services/images/indexing.py
+  - apps/server/src/anima_server/services/images/rag.py
+  - apps/server/tests/test_image_indexing.py
 - Notes:
-  - none
+  - Chat turn preparation creates base annotations inline without provider calls; embedding/caption/OCR indexing is covered by the explicit indexing service with injectable callables.

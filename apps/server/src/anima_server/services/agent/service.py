@@ -206,8 +206,13 @@ def _prepare_image_attachments(
     *,
     user_id: int,
     attachments: Sequence[ChatRequestAttachment],
+    runtime_db: Session | None = None,
 ) -> tuple[StoredAttachment, ...]:
-    return prepare_chat_attachments(user_id=user_id, attachments=attachments)
+    return prepare_chat_attachments(
+        user_id=user_id,
+        attachments=attachments,
+        runtime_db=runtime_db,
+    )
 
 
 def _delete_prepared_attachments(attachments: Sequence[StoredAttachment]) -> None:
@@ -951,6 +956,7 @@ async def _prepare_turn_context(
     prepared_attachments = _prepare_image_attachments(
         user_id=user_id,
         attachments=attachments,
+        runtime_db=runtime_db,
     )
     cleaned_context_messages = [
         (message, message.content.strip())
@@ -1011,6 +1017,12 @@ async def _prepare_turn_context(
                 user_id=user_id,
                 document_ids=document_ids,
             ),
+        )
+        _index_image_attachments_inline(
+            runtime_db,
+            user_id=user_id,
+            user_message=user_message,
+            attachments=prepared_attachments,
         )
         conversation_turn_count = count_messages_by_role(
             runtime_db, thread.id, "user")
@@ -1945,6 +1957,32 @@ def _rebuild_turn_context_after_compaction(
 
 def _memory_item_uri(memory_item_id: int) -> str:
     return f"memory://items/{memory_item_id}"
+
+
+def _index_image_attachments_inline(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    user_message: str,
+    attachments: Sequence[StoredAttachment],
+) -> None:
+    image_asset_ids = [
+        attachment.asset_id for attachment in attachments if attachment.asset_id is not None
+    ]
+    if not image_asset_ids:
+        return
+    try:
+        from anima_server.services.images.indexing import index_image_attachments_for_message
+
+        index_image_attachments_for_message(
+            runtime_db,
+            user_id=user_id,
+            image_asset_ids=image_asset_ids,
+            upload_context=user_message,
+            embedding_fn=None,
+        )
+    except Exception:
+        logger.debug("Inline image annotation indexing failed", exc_info=True)
 
 
 def _refresh_companion_history(

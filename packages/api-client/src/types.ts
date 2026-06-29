@@ -187,6 +187,8 @@ export interface ChatAttachment {
   mimeType: string;
   filename?: string | null;
   sizeBytes?: number | null;
+  assetId?: number | null;
+  retentionState?: string | null;
   url: string;
 }
 
@@ -354,6 +356,7 @@ export interface ProactiveNotice {
   message: string;
   source: string;
   llmGenerated: boolean;
+  pills?: MessagePill[];
   context: {
     currentFocus: string | null;
     openTaskCount: number;
@@ -677,6 +680,7 @@ export interface ThreadContextStats {
 }
 
 export interface ThreadMessage {
+  id?: number | null;
   role: string;
   content: string;
   ts: string | null;

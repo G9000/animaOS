@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
@@ -18,6 +18,7 @@ from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
+from anima_server.services.images.deletion import delete_thread_with_image_cleanup
 from anima_server.services.sessions import get_active_dek
 
 logger = logging.getLogger(__name__)
@@ -228,11 +229,16 @@ async def delete_thread_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
-    # Delete all messages, then the thread itself.
-    runtime_db.execute(
-        delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id)
+    cleanup = delete_thread_with_image_cleanup(
+        runtime_db,
+        user_id=unlock_session.user_id,
+        thread_id=thread_id,
     )
-    runtime_db.delete(thread)
     runtime_db.commit()
 
-    return {"status": "deleted", "threadId": thread_id}
+    return {
+        "status": "deleted",
+        "threadId": thread_id,
+        "assetsDeleted": cleanup.assets_deleted,
+        "filesDeleted": cleanup.files_deleted,
+    }

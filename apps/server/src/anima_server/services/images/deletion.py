@@ -1,0 +1,276 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+
+from anima_server.models.runtime import (
+    RuntimeImageAnnotation,
+    RuntimeImageAsset,
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeThread,
+)
+from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY
+from anima_server.services.images.store import delete_image_asset_file_if_safe
+
+RETAINED_IMAGE_STATES = frozenset({"retained", "durable"})
+
+
+@dataclass(frozen=True, slots=True)
+class ForgetImageResult:
+    forgotten: bool
+    image_asset_id: int
+    file_deleted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveImageLinkResult:
+    removed: bool
+    image_asset_id: int | None = None
+    asset_deleted: bool = False
+    file_deleted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteThreadImageCleanupResult:
+    deleted: bool
+    thread_id: int
+    assets_deleted: list[int] = field(default_factory=list)
+    files_deleted: list[str] = field(default_factory=list)
+
+
+def forget_image_asset(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    image_asset_id: int,
+) -> ForgetImageResult:
+    asset = runtime_db.scalar(
+        select(RuntimeImageAsset).where(
+            RuntimeImageAsset.id == image_asset_id,
+            RuntimeImageAsset.user_id == user_id,
+        )
+    )
+    if asset is None:
+        return ForgetImageResult(forgotten=False, image_asset_id=image_asset_id)
+
+    annotation_ids = list(
+        runtime_db.scalars(
+            select(RuntimeImageAnnotation.id).where(
+                RuntimeImageAnnotation.user_id == user_id,
+                RuntimeImageAnnotation.image_asset_id == image_asset_id,
+            )
+        ).all()
+    )
+    if annotation_ids:
+        runtime_db.execute(
+            delete(RuntimeEmbedding).where(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == "image_annotation",
+                RuntimeEmbedding.source_id.in_(annotation_ids),
+            )
+        )
+
+    file_deleted = delete_image_asset_file_if_safe(asset)
+    runtime_db.delete(asset)
+    runtime_db.flush()
+    return ForgetImageResult(
+        forgotten=True,
+        image_asset_id=image_asset_id,
+        file_deleted=file_deleted,
+    )
+
+
+def remove_message_image_link(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    message_id: int,
+    attachment_id: str,
+) -> RemoveImageLinkResult:
+    message = runtime_db.scalar(
+        select(RuntimeMessage).where(
+            RuntimeMessage.id == message_id,
+            RuntimeMessage.user_id == user_id,
+        )
+    )
+    if message is None:
+        return RemoveImageLinkResult(removed=False)
+
+    link = runtime_db.scalar(
+        select(RuntimeImageMessageLink).where(
+            RuntimeImageMessageLink.user_id == user_id,
+            RuntimeImageMessageLink.message_id == message_id,
+            RuntimeImageMessageLink.attachment_id == attachment_id,
+        )
+    )
+    if link is None:
+        return RemoveImageLinkResult(removed=False)
+
+    image_asset_id = link.image_asset_id
+    _remove_attachment_metadata(message, attachment_id)
+    runtime_db.delete(link)
+    runtime_db.flush()
+    deleted, file_deleted = _delete_orphaned_transient_asset(
+        runtime_db,
+        user_id=user_id,
+        image_asset_id=image_asset_id,
+    )
+    return RemoveImageLinkResult(
+        removed=True,
+        image_asset_id=image_asset_id,
+        asset_deleted=deleted,
+        file_deleted=file_deleted,
+    )
+
+
+def delete_thread_with_image_cleanup(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+) -> DeleteThreadImageCleanupResult:
+    thread = runtime_db.scalar(
+        select(RuntimeThread).where(
+            RuntimeThread.id == thread_id,
+            RuntimeThread.user_id == user_id,
+        )
+    )
+    if thread is None:
+        return DeleteThreadImageCleanupResult(deleted=False, thread_id=thread_id)
+
+    message_ids = list(
+        runtime_db.scalars(
+            select(RuntimeMessage.id).where(
+                RuntimeMessage.user_id == user_id,
+                RuntimeMessage.thread_id == thread_id,
+            )
+        ).all()
+    )
+    candidate_asset_ids = list(
+        runtime_db.scalars(
+            select(RuntimeImageMessageLink.image_asset_id)
+            .where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.message_id.in_(message_ids),
+            )
+            .distinct()
+        ).all()
+    )
+
+    if message_ids:
+        runtime_db.execute(
+            delete(RuntimeImageMessageLink).where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.message_id.in_(message_ids),
+            )
+        )
+    runtime_db.execute(delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id))
+    runtime_db.delete(thread)
+    runtime_db.flush()
+
+    assets_deleted: list[int] = []
+    files_deleted: list[str] = []
+    for image_asset_id in candidate_asset_ids:
+        asset = runtime_db.get(RuntimeImageAsset, image_asset_id)
+        file_path = None
+        if asset is not None:
+            try:
+                from anima_server.services.images.store import resolve_image_storage_path
+
+                file_path = resolve_image_storage_path(
+                    asset.storage_path,
+                    user_id=asset.user_id,
+                )
+            except Exception:
+                file_path = None
+        deleted, file_deleted = _delete_orphaned_transient_asset(
+            runtime_db,
+            user_id=user_id,
+            image_asset_id=image_asset_id,
+        )
+        if deleted:
+            assets_deleted.append(image_asset_id)
+        if file_deleted and file_path is not None:
+            files_deleted.append(str(file_path))
+
+    return DeleteThreadImageCleanupResult(
+        deleted=True,
+        thread_id=thread_id,
+        assets_deleted=assets_deleted,
+        files_deleted=files_deleted,
+    )
+
+
+def set_image_retention_state(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    image_asset_id: int,
+    retention_state: str,
+) -> RuntimeImageAsset | None:
+    normalized = retention_state.strip().lower()
+    if normalized not in {"transient", "retained", "durable"}:
+        raise ValueError("retention_state must be transient, retained, or durable")
+    asset = runtime_db.scalar(
+        select(RuntimeImageAsset).where(
+            RuntimeImageAsset.id == image_asset_id,
+            RuntimeImageAsset.user_id == user_id,
+        )
+    )
+    if asset is None:
+        return None
+    asset.retention_state = normalized
+    runtime_db.flush()
+    return asset
+
+
+def _delete_orphaned_transient_asset(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    image_asset_id: int,
+) -> tuple[bool, bool]:
+    asset = runtime_db.scalar(
+        select(RuntimeImageAsset).where(
+            RuntimeImageAsset.id == image_asset_id,
+            RuntimeImageAsset.user_id == user_id,
+        )
+    )
+    if asset is None:
+        return False, False
+    if asset.retention_state in RETAINED_IMAGE_STATES:
+        return False, False
+    link_count = runtime_db.scalar(
+        select(func.count(RuntimeImageMessageLink.id)).where(
+            RuntimeImageMessageLink.user_id == user_id,
+            RuntimeImageMessageLink.image_asset_id == image_asset_id,
+        )
+    ) or 0
+    if link_count > 0:
+        return False, False
+    result = forget_image_asset(
+        runtime_db,
+        user_id=user_id,
+        image_asset_id=image_asset_id,
+    )
+    return result.forgotten, result.file_deleted
+
+
+def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> None:
+    payload = dict(message.content_json or {})
+    raw_attachments = payload.get(ATTACHMENTS_CONTENT_KEY)
+    if not isinstance(raw_attachments, list):
+        return
+    payload[ATTACHMENTS_CONTENT_KEY] = [
+        attachment
+        for attachment in raw_attachments
+        if not (
+            isinstance(attachment, dict)
+            and attachment.get("id") == attachment_id
+        )
+    ]
+    message.content_json = payload

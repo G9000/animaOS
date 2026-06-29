@@ -366,6 +366,7 @@ def get_thread_messages_for_display(
     if pg_messages:
         return [
             {
+                "id": m.id,
                 "role": _display_role(m),
                 "content": m.content_text or "",
                 "ts": m.created_at.isoformat() if m.created_at else None,
@@ -389,6 +390,7 @@ def get_thread_messages_for_display(
         transcripts_dir, thread_id=thread.id, dek=dek)
     return [
         {
+            "id": m.get("id") if isinstance(m.get("id"), int) else None,
             "role": str(m.get("role", "user")),
             "content": str(m.get("content", "")),
             "ts": m.get("ts"),

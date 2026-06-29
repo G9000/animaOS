@@ -2,6 +2,7 @@
 
 ## 2026-06-29
 
+- documented visual memory image assets: central image storage, image annotation embeddings, retrieval/proactive behavior, deletion semantics, backfill, and the boundary with PDF document processing
 - documented local runtime daemon build, run, desktop release staging, default runtime launch behavior, data directory behavior, and key environment overrides
 
 ## 2026-06-26

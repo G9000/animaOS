@@ -252,20 +252,42 @@ function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
 
 function ChatImageAttachments({
   attachments,
+  messageId,
+  onRemove,
+  onForget,
 }: {
   attachments?: ChatAttachment[];
+  messageId?: number;
+  onRemove?: (messageId: number, attachment: ChatAttachment) => void;
+  onForget?: (messageId: number, attachment: ChatAttachment) => void;
 }) {
   if (!attachments || attachments.length === 0) return null;
   return (
     <div className="mb-2 flex flex-wrap gap-1.5">
       {attachments.map((attachment) => (
-        <AttachmentImage key={attachment.id} attachment={attachment} />
+        <AttachmentImage
+          key={attachment.id}
+          attachment={attachment}
+          messageId={messageId}
+          onRemove={onRemove}
+          onForget={onForget}
+        />
       ))}
     </div>
   );
 }
 
-function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
+function AttachmentImage({
+  attachment,
+  messageId,
+  onRemove,
+  onForget,
+}: {
+  attachment: ChatAttachment;
+  messageId?: number;
+  onRemove?: (messageId: number, attachment: ChatAttachment) => void;
+  onForget?: (messageId: number, attachment: ChatAttachment) => void;
+}) {
   const [src, setSrc] = useState(
     attachment.url.startsWith("blob:") || attachment.url.startsWith("data:")
       ? attachment.url
@@ -313,12 +335,34 @@ function AttachmentImage({ attachment }: { attachment: ChatAttachment }) {
     );
   }
 
+  const canManage = messageId != null && attachment.assetId != null;
+
   return (
-    <img
-      src={src}
-      alt={attachment.filename || "Attached image"}
-      className="h-20 w-auto max-w-[140px] object-cover border border-foreground/[0.08]"
-    />
+    <div className="group/image relative">
+      <img
+        src={src}
+        alt={attachment.filename || "Attached image"}
+        className="h-20 w-auto max-w-[140px] object-cover border border-foreground/[0.08]"
+      />
+      {canManage && (
+        <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-background/85 px-1 py-1 opacity-0 transition-opacity group-hover/image:opacity-100">
+          <button
+            type="button"
+            className="font-mono text-[8px] uppercase tracking-[0.12em] text-foreground/70 hover:text-foreground"
+            onClick={() => onRemove?.(messageId, attachment)}
+          >
+            remove
+          </button>
+          <button
+            type="button"
+            className="font-mono text-[8px] uppercase tracking-[0.12em] text-destructive/80 hover:text-destructive"
+            onClick={() => onForget?.(messageId, attachment)}
+          >
+            forget
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -347,6 +391,7 @@ function dedupeThreads(threads: Thread[]): Thread[] {
 
 function mapThreadMessages(
   messages: Array<{
+    id?: number | null;
     role: string;
     content: string;
     ts?: string | null;
@@ -359,7 +404,7 @@ function mapThreadMessages(
   return messages
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message, index) => ({
-      id: index,
+      id: message.id ?? index,
       userId,
       role: message.role as "user" | "assistant",
       content: message.content,
@@ -684,6 +729,56 @@ export default function Chat() {
       setError("Failed to delete thread.");
     }
   };
+
+  const removeAttachmentFromMessages = useCallback(
+    (messageId: number, predicate: (attachment: ChatAttachment) => boolean) => {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                attachments: (message.attachments ?? []).filter(
+                  (attachment) => !predicate(attachment),
+                ),
+              }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
+  const handleRemoveImageAttachment = useCallback(
+    async (messageId: number, attachment: ChatAttachment) => {
+      try {
+        await api.images.removeFromMessage(messageId, attachment.id);
+        removeAttachmentFromMessages(
+          messageId,
+          (candidate) => candidate.id === attachment.id,
+        );
+      } catch {
+        setError("Failed to remove image from chat.");
+      }
+    },
+    [removeAttachmentFromMessages],
+  );
+
+  const handleForgetImageAttachment = useCallback(
+    async (messageId: number, attachment: ChatAttachment) => {
+      if (attachment.assetId == null) return;
+      if (!window.confirm("Forget this image everywhere?")) return;
+      try {
+        await api.images.forget(attachment.assetId);
+        removeAttachmentFromMessages(
+          messageId,
+          (candidate) => candidate.assetId === attachment.assetId,
+        );
+      } catch {
+        setError("Failed to forget image.");
+      }
+    },
+    [removeAttachmentFromMessages],
+  );
 
   const handleToggleTrace = useCallback(() => {
     setShowTrace((prev) => {
@@ -1070,13 +1165,22 @@ export default function Chat() {
   const renderMessageContent = (
     content: string,
     role: string,
-    message?: { attachments?: ChatAttachment[]; pills?: ChatMessage["pills"] },
+    message?: {
+      id?: number;
+      attachments?: ChatAttachment[];
+      pills?: ChatMessage["pills"];
+    },
   ) => {
     if (role === "user") {
       return (
         <div className="pr-6">
           <MessagePills pills={message?.pills} />
-          <ChatImageAttachments attachments={message?.attachments} />
+          <ChatImageAttachments
+            attachments={message?.attachments}
+            messageId={message?.id}
+            onRemove={handleRemoveImageAttachment}
+            onForget={handleForgetImageAttachment}
+          />
           {content && (
             <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
               {content}

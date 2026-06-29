@@ -1,17 +1,17 @@
 # VMI-002 - Central image storage service
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `VMI-000`
 - Depends on: `VMI-001`
-- Owner: unassigned
+- Owner: Codex
 - PRD: docs/prds/memory/visual-memory-image-assets-v1.md
 - Plan: docs/superpowers/plans/2026-06-29-visual-memory-image-assets.md
 - Created: 2026-06-29 10:53 MYT
-- Updated: 2026-06-29 10:53 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-29 12:01 MYT
+- Started: 2026-06-29 11:57 MYT
+- Completed: 2026-06-29 12:01 MYT
 
 ## Goal
 
@@ -37,12 +37,19 @@ Create the server-side image storage service that validates uploaded image bytes
 ## Activity Log
 
 - 2026-06-29 10:53 MYT - Ticket created.
+- 2026-06-29 11:57 MYT - Claimed by Codex after completing `VMI-001`; starting storage-service tests.
+- 2026-06-29 12:01 MYT - Added central image storage service, shared MIME/magic validation, path safety, dedupe, and safe file deletion tests.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_image_assets.py -q`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_chat_attachments.py -q`
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/attachments.py
+  - apps/server/src/anima_server/services/images/__init__.py
+  - apps/server/src/anima_server/services/images/models.py
+  - apps/server/src/anima_server/services/images/store.py
+  - apps/server/tests/test_image_assets.py
 - Notes:
-  - none
+  - Chat attachment validation now uses the central image MIME/magic-byte helpers; chat persistence is handled by `VMI-003`.

@@ -8,16 +8,19 @@ import secrets
 from collections.abc import Sequence
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from anima_server.config import settings
+from anima_server.models.runtime import RuntimeImageMessageLink, RuntimeMessage
 from anima_server.schemas.chat import ChatRequestAttachment
 from anima_server.services.agent.state import StoredAttachment, deserialize_stored_attachments
-
-ALLOWED_IMAGE_MIME_TYPES = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/webp": "webp",
-    "image/gif": "gif",
-}
+from anima_server.services.images.store import (
+    ALLOWED_IMAGE_MIME_TYPES,
+    detect_image_mime,
+    register_image_asset,
+    resolve_image_storage_path,
+)
 
 
 class AttachmentValidationError(ValueError):
@@ -51,6 +54,7 @@ def prepare_chat_attachments(
     *,
     user_id: int,
     attachments: Sequence[ChatRequestAttachment],
+    runtime_db: Session | None = None,
 ) -> tuple[StoredAttachment, ...]:
     decoded = _decode_and_validate_attachments(attachments)
     if not decoded:
@@ -58,11 +62,38 @@ def prepare_chat_attachments(
 
     stored: list[StoredAttachment] = []
     attachment_dir = settings.data_dir / "users" / str(user_id) / "attachments" / "chat"
-    attachment_dir.mkdir(parents=True, exist_ok=True)
+    if runtime_db is None:
+        attachment_dir.mkdir(parents=True, exist_ok=True)
 
     for request_attachment, data, ext in decoded:
         attachment_id = _new_attachment_id()
         filename = _sanitize_filename(request_attachment.filename)
+        normalized_mime = _normalize_mime_type(request_attachment.mimeType)
+        if runtime_db is not None:
+            stored_asset = register_image_asset(
+                runtime_db,
+                user_id=user_id,
+                data=data,
+                mime_type=normalized_mime,
+                filename=filename,
+                metadata_json={"origin": "chat"},
+            )
+            stored.append(
+                StoredAttachment(
+                    id=attachment_id,
+                    kind="image",
+                    mime_type=stored_asset.asset.mime_type,
+                    path=str(stored_asset.path),
+                    asset_id=stored_asset.asset.id,
+                    storage_path=stored_asset.asset.storage_path,
+                    filename=stored_asset.asset.filename,
+                    size_bytes=stored_asset.asset.size_bytes,
+                    sha256=stored_asset.asset.sha256,
+                    retention_state=stored_asset.asset.retention_state,
+                )
+            )
+            continue
+
         storage_path = f"users/{user_id}/attachments/chat/{attachment_id}.{ext}"
         path = settings.data_dir / storage_path
         path.write_bytes(data)
@@ -70,7 +101,7 @@ def prepare_chat_attachments(
             StoredAttachment(
                 id=attachment_id,
                 kind="image",
-                mime_type=_normalize_mime_type(request_attachment.mimeType),
+                mime_type=normalized_mime,
                 path=str(path),
                 storage_path=storage_path,
                 filename=filename,
@@ -80,6 +111,42 @@ def prepare_chat_attachments(
         )
 
     return tuple(stored)
+
+
+def resolve_message_attachment(
+    runtime_db: Session,
+    *,
+    message: RuntimeMessage,
+    attachment_id: str,
+) -> tuple[Path, str] | None:
+    for attachment in deserialize_stored_attachments(message.content_json):
+        if attachment.id != attachment_id:
+            continue
+        if attachment.asset_id is None:
+            return resolve_message_attachment_path(
+                message.content_json,
+                attachment_id=attachment_id,
+            )
+
+        link = runtime_db.scalar(
+            select(RuntimeImageMessageLink).where(
+                RuntimeImageMessageLink.user_id == message.user_id,
+                RuntimeImageMessageLink.message_id == message.id,
+                RuntimeImageMessageLink.image_asset_id == attachment.asset_id,
+            )
+        )
+        if link is None or link.image_asset is None:
+            return None
+
+        try:
+            path = resolve_image_storage_path(
+                link.image_asset.storage_path,
+                user_id=message.user_id,
+            )
+        except ValueError:
+            return None
+        return path, link.image_asset.mime_type
+    return None
 
 
 def resolve_message_attachment_path(
@@ -134,7 +201,7 @@ def _decode_and_validate_attachments(
                 f"{settings.chat_image_max_size_bytes} bytes."
             )
 
-        actual_mime = _detect_image_mime(data)
+        actual_mime = detect_image_mime(data)
         if actual_mime != declared_mime:
             raise AttachmentValidationError(
                 "Declared MIME type does not match image bytes."
@@ -143,18 +210,6 @@ def _decode_and_validate_attachments(
         decoded.append((attachment, data, ALLOWED_IMAGE_MIME_TYPES[declared_mime]))
 
     return decoded
-
-
-def _detect_image_mime(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
 
 
 def _normalize_mime_type(value: str) -> str:
