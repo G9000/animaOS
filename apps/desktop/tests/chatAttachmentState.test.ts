@@ -34,15 +34,22 @@ describe("removeMatchingAttachmentsFromMessages", () => {
           url: "/api/images/11",
         },
       ]),
-      message(2, [
-        {
-          id: "second",
-          kind: "image",
-          mimeType: "image/png",
-          assetId: 10,
-          url: "/api/images/10",
-        },
-      ]),
+      {
+        ...message(2, [
+          {
+            id: "second",
+            kind: "image",
+            mimeType: "image/png",
+            assetId: 10,
+            url: "/api/images/10",
+          },
+        ]),
+        pills: [
+          { kind: "image_source", label: "first.png", ref: "first" },
+          { kind: "image_source", label: "asset.png", ref: "image:10" },
+          { kind: "document_source", label: "Plan", ref: 44 },
+        ],
+      },
     ];
 
     const next = removeMatchingAttachmentsFromMessages(
@@ -55,6 +62,9 @@ describe("removeMatchingAttachmentsFromMessages", () => {
       "other",
     ]);
     expect(next[1].attachments).toEqual([]);
+    expect(next[1].pills).toEqual([
+      { kind: "document_source", label: "Plan", ref: 44 },
+    ]);
   });
 
   test("can scope removal to one message", () => {

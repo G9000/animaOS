@@ -13,7 +13,7 @@ from anima_server.models.runtime import (
     RuntimeThread,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
-from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY
+from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
 from anima_server.services.images.store import delete_image_asset_file_if_safe
 
 RETAINED_IMAGE_STATES = frozenset({"retained", "durable"})
@@ -68,12 +68,19 @@ def forget_image_asset(
             )
         ).all()
     )
+    linked_attachment_ids = {link.attachment_id for link, _message in linked_messages}
     for link, message in linked_messages:
         _remove_image_asset_metadata(
             message,
             image_asset_id=image_asset_id,
             attachment_id=link.attachment_id,
         )
+    _remove_image_source_pills(
+        runtime_db,
+        user_id=user_id,
+        image_asset_id=image_asset_id,
+        attachment_ids=linked_attachment_ids,
+    )
 
     annotation_ids = list(
         runtime_db.scalars(
@@ -311,3 +318,54 @@ def _remove_image_asset_metadata(
         )
     ]
     message.content_json = payload
+
+
+def _remove_image_source_pills(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    image_asset_id: int,
+    attachment_ids: set[str],
+) -> None:
+    messages = list(
+        runtime_db.scalars(
+            select(RuntimeMessage).where(
+                RuntimeMessage.user_id == user_id,
+                RuntimeMessage.content_json.is_not(None),
+            )
+        ).all()
+    )
+    for message in messages:
+        payload = dict(message.content_json or {})
+        raw_pills = payload.get(PILLS_CONTENT_KEY)
+        if not isinstance(raw_pills, list):
+            continue
+        next_pills = [
+            pill
+            for pill in raw_pills
+            if not _is_matching_image_source_pill(
+                pill,
+                image_asset_id=image_asset_id,
+                attachment_ids=attachment_ids,
+            )
+        ]
+        if len(next_pills) == len(raw_pills):
+            continue
+        payload[PILLS_CONTENT_KEY] = next_pills
+        message.content_json = payload
+
+
+def _is_matching_image_source_pill(
+    pill: object,
+    *,
+    image_asset_id: int,
+    attachment_ids: set[str],
+) -> bool:
+    if not isinstance(pill, dict) or pill.get("kind") != "image_source":
+        return False
+    ref = pill.get("ref")
+    return (
+        ref == image_asset_id
+        or ref == f"image:{image_asset_id}"
+        or (isinstance(ref, str) and ref in attachment_ids)
+    )

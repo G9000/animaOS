@@ -4,27 +4,82 @@ export type AttachmentRemovalScope =
   | { kind: "single_message"; messageId: number }
   | { kind: "all_messages" };
 
+type ChatPill = NonNullable<ChatMessage["pills"]>[number];
+
 export function removeMatchingAttachmentsFromMessages(
   messages: ChatMessage[],
   scope: AttachmentRemovalScope,
   predicate: (attachment: ChatAttachment) => boolean,
 ): ChatMessage[] {
-  return messages.map((message) => {
-    if (scope.kind === "single_message" && message.id !== scope.messageId) {
-      return message;
+  const removedAttachmentIds = new Set<string>();
+  const removedAssetIds = new Set<number>();
+
+  for (const message of messages) {
+    if (!isMessageInRemovalScope(message, scope)) continue;
+    for (const attachment of message.attachments ?? []) {
+      if (!predicate(attachment)) continue;
+      removedAttachmentIds.add(attachment.id);
+      if (attachment.assetId != null) {
+        removedAssetIds.add(attachment.assetId);
+      }
     }
+  }
+
+  return messages.map((message) => {
+    const isInScope = isMessageInRemovalScope(message, scope);
 
     const attachments = message.attachments ?? [];
-    if (attachments.length === 0) return message;
+    const nextAttachments = isInScope
+      ? attachments.filter((attachment) => !predicate(attachment))
+      : attachments;
+    const pills = message.pills ?? [];
+    const nextPills =
+      isInScope || scope.kind === "all_messages"
+        ? pills.filter(
+            (pill) =>
+              !isMatchingImageSourcePill(
+                pill,
+                removedAttachmentIds,
+                removedAssetIds,
+              ),
+          )
+        : pills;
 
-    const nextAttachments = attachments.filter(
-      (attachment) => !predicate(attachment),
-    );
-    if (nextAttachments.length === attachments.length) return message;
+    if (
+      nextAttachments.length === attachments.length &&
+      nextPills.length === pills.length
+    ) {
+      return message;
+    }
 
     return {
       ...message,
       attachments: nextAttachments,
+      pills: nextPills,
     };
   });
+}
+
+function isMessageInRemovalScope(
+  message: ChatMessage,
+  scope: AttachmentRemovalScope,
+): boolean {
+  return scope.kind === "all_messages" || message.id === scope.messageId;
+}
+
+function isMatchingImageSourcePill(
+  pill: ChatPill,
+  attachmentIds: Set<string>,
+  assetIds: Set<number>,
+): boolean {
+  if (pill.kind !== "image_source") return false;
+  const ref = pill.ref;
+  if (typeof ref === "string") {
+    if (attachmentIds.has(ref)) return true;
+    if (ref.startsWith("image:")) {
+      const assetId = Number.parseInt(ref.slice("image:".length), 10);
+      return assetIds.has(assetId);
+    }
+  }
+  return typeof ref === "number" && assetIds.has(ref);
 }

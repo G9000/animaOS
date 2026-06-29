@@ -10,7 +10,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageAsset,
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeThread,
+)
 from anima_server.services.agent.state import (
     attach_serialized_attachments,
     attach_serialized_retrieval,
@@ -294,27 +299,71 @@ def _bulk_insert_archived_history(
             role == "assistant" or (role == "user" and not attachments)
         ):
             continue
-        db.add(
-            RuntimeMessage(
-                thread_id=thread.id,
-                user_id=user_id,
-                sequence_id=max_seq + inserted_count,
-                role=role,
-                content_text=content,
-                content_json=attach_serialized_attachments(
-                    attach_serialized_retrieval(
-                        content_json=None,
-                        retrieval=retrieval if isinstance(retrieval, dict) else None,
-                    ),
-                    attachments,
+        message = RuntimeMessage(
+            thread_id=thread.id,
+            user_id=user_id,
+            sequence_id=max_seq + inserted_count,
+            role=role,
+            content_text=content,
+            content_json=attach_serialized_attachments(
+                attach_serialized_retrieval(
+                    content_json=None,
+                    retrieval=retrieval if isinstance(retrieval, dict) else None,
                 ),
-                is_in_context=False,
-                is_archived_history=True,
-            )
+                attachments,
+            ),
+            is_in_context=False,
+            is_archived_history=True,
+        )
+        db.add(message)
+        db.flush()
+        _link_archived_image_attachments(
+            db,
+            user_id=user_id,
+            message=message,
+            attachments=attachments,
         )
         inserted_count += 1
     thread.next_message_sequence = max_seq + inserted_count
     db.flush()
+
+
+def _link_archived_image_attachments(
+    db: Session,
+    *,
+    user_id: int,
+    message: RuntimeMessage,
+    attachments: tuple,
+) -> None:
+    for attachment in attachments:
+        image_asset_id = attachment.asset_id
+        if image_asset_id is None:
+            continue
+        asset_exists = db.scalar(
+            select(RuntimeImageAsset.id).where(
+                RuntimeImageAsset.id == image_asset_id,
+                RuntimeImageAsset.user_id == user_id,
+            )
+        )
+        if asset_exists is None:
+            continue
+        existing = db.scalar(
+            select(RuntimeImageMessageLink.id).where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.message_id == message.id,
+                RuntimeImageMessageLink.attachment_id == attachment.id,
+            )
+        )
+        if existing is not None:
+            continue
+        db.add(
+            RuntimeImageMessageLink(
+                user_id=user_id,
+                message_id=message.id,
+                image_asset_id=image_asset_id,
+                attachment_id=attachment.id,
+            )
+        )
 
 
 def _insert_summary_message(

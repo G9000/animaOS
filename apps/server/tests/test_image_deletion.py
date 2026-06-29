@@ -125,6 +125,44 @@ def test_forget_image_asset_removes_links_annotations_embeddings_row_and_file(
     assert runtime_db.get(RuntimeMessage, message.id).content_json == {"attachments": []}
 
 
+def test_forget_image_asset_removes_matching_image_source_pills(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.deletion import forget_image_asset
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    asset, message, attachment_id, _path = _linked_image(runtime_db, user_id=7)
+    assistant = RuntimeMessage(
+        thread_id=message.thread_id,
+        user_id=7,
+        sequence_id=2,
+        role="assistant",
+        content_text="I used the image.",
+        content_json={
+            "pills": [
+                {"kind": "image_source", "label": "screen.png", "ref": attachment_id},
+                {
+                    "kind": "image_source",
+                    "label": "screen.png",
+                    "ref": f"image:{asset.id}",
+                },
+                {"kind": "document_source", "label": "Plan", "ref": 44},
+            ]
+        },
+    )
+    runtime_db.add(assistant)
+    runtime_db.flush()
+
+    result = forget_image_asset(runtime_db, user_id=7, image_asset_id=asset.id)
+
+    assert result.forgotten is True
+    assert runtime_db.get(RuntimeMessage, assistant.id).content_json == {
+        "pills": [{"kind": "document_source", "label": "Plan", "ref": 44}]
+    }
+
+
 def test_remove_message_image_link_updates_message_but_keeps_reused_asset(
     runtime_db,
     tmp_path: Path,
