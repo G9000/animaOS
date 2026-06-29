@@ -158,6 +158,55 @@ class TestIssueBackgroundTask:
             assert run.status == "completed"
             assert run.result_json is None
 
+    @pytest.mark.asyncio()
+    async def test_uses_default_runtime_factory_for_task_cursor(self, db_factory, rt_factory):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            message = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="hello",
+            )
+            db.add(message)
+            db.commit()
+            thread_id = thread.id
+            expected_message_id = message.id
+
+        with (
+            patch(
+                "anima_server.db.runtime.get_runtime_session_factory",
+                return_value=rt_factory,
+            ),
+            patch(
+                "anima_server.services.agent.soul_writer.run_soul_writer",
+                new_callable=AsyncMock,
+            ),
+        ):
+            run_id = await _issue_background_task(
+                user_id=1,
+                task_type="consolidation",
+                task_fn=_task_consolidation,
+                db_factory=db_factory,
+                user_message="hello",
+                thread_id=thread_id,
+                _task_runtime_db_factory=None,
+            )
+
+        task_id = int(run_id.split(":")[1])
+        with rt_factory() as db:
+            run = db.get(RuntimeBackgroundTaskRun, task_id)
+            assert run is not None
+            assert run.status == "completed"
+            assert run.result_json == {
+                "thread_id": thread_id,
+                "last_processed_message_id": expected_message_id,
+                "messages_processed": 1,
+            }
+
 
 # ── Task failure isolation ───────────────────────────────────────────
 

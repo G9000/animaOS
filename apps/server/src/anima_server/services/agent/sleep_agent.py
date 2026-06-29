@@ -113,7 +113,11 @@ async def _issue_background_task(
             run.started_at = datetime.now(UTC)
             rt_db.commit()
 
-    task_runtime_db_factory = kwargs.pop("_task_runtime_db_factory", None)
+    missing_task_runtime_db_factory = object()
+    task_runtime_db_factory = kwargs.pop(
+        "_task_runtime_db_factory",
+        missing_task_runtime_db_factory,
+    )
 
     # Execute the task function (no session held open here)
     try:
@@ -122,8 +126,8 @@ async def _issue_background_task(
             "db_factory": db_factory,
             **kwargs,
         }
-        if task_runtime_db_factory is not None:
-            task_kwargs["runtime_db_factory"] = task_runtime_db_factory
+        if task_runtime_db_factory is not missing_task_runtime_db_factory:
+            task_kwargs["runtime_db_factory"] = task_runtime_db_factory or rt_factory
 
         result = await task_fn(
             **task_kwargs,
