@@ -359,6 +359,9 @@ def reconcile_profile_from_claims(
         if _profile_claim_already_reconciled(
             db,
             user_id=user_id,
+            category=category,
+            key=key,
+            value=value,
             source_claim_evidence_id=source_claim_evidence_id,
             source_memory_id=claim.memory_item_id,
         ):
@@ -698,9 +701,28 @@ def _profile_claim_already_reconciled(
     db: Session,
     *,
     user_id: int,
+    category: str,
+    key: str,
+    value: str,
     source_claim_evidence_id: int | None,
     source_memory_id: int | None,
 ) -> bool:
+    active = _get_active_profile_field(
+        db,
+        user_id=user_id,
+        category=category,
+        key=key,
+    )
+    if active is not None and active.source_kind == "user_correction":
+        active_value = df(
+            user_id,
+            active.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        )
+        if active_value.strip().casefold() != value.strip().casefold():
+            return True
+
     if source_claim_evidence_id is not None:
         existing = db.scalar(
             select(UserProfileFieldEvidence.id).where(
@@ -720,6 +742,25 @@ def _profile_claim_already_reconciled(
             )
         )
         return existing is not None
+
+    if active is not None:
+        active_value = df(
+            user_id,
+            active.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        )
+        if active_value.strip().casefold() == value.strip().casefold():
+            existing = db.scalar(
+                select(UserProfileFieldEvidence.id).where(
+                    UserProfileFieldEvidence.user_id == user_id,
+                    UserProfileFieldEvidence.profile_field_id == active.id,
+                    UserProfileFieldEvidence.source_kind == "claim_reconciliation",
+                    UserProfileFieldEvidence.source_claim_evidence_id.is_(None),
+                    UserProfileFieldEvidence.source_memory_id.is_(None),
+                )
+            )
+            return existing is not None
 
     return False
 

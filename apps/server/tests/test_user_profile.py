@@ -478,6 +478,69 @@ def test_reconcile_profile_from_claims_is_idempotent_for_same_claim() -> None:
     assert evidence_count == 1
 
 
+def test_reconcile_profile_from_claims_does_not_count_user_correction_skip() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="Designer",
+            evidence_text="I work as a designer",
+            source_kind="profile_llm",
+        )
+        corrected = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="Engineer",
+            evidence_text="Actually, I work as an engineer",
+            source_kind="user_correction",
+        )
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a designer",
+            category="fact",
+            evidence_text="older claim said designer",
+        )
+
+        first_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        second_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        active = service.list_profile_fields(db, user_id=user.id)
+        evidence_count = len(active[0].evidence)
+
+    assert first_count == 0
+    assert second_count == 0
+    assert [profile_field.id for profile_field in active] == [corrected.id]
+    assert evidence_count == 1
+
+
+def test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a product manager",
+            category="fact",
+            evidence_text=None,
+        )
+
+        first_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        second_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        active = service.list_profile_fields(db, user_id=user.id)
+        evidence_count = len(active[0].evidence)
+
+    assert first_count == 1
+    assert second_count == 0
+    assert evidence_count == 1
+
+
 def test_reconcile_profile_from_claims_tracks_claim_evidence_separately() -> None:
     service = _profile_service()
     with _db_session() as db:
