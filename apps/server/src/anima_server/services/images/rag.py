@@ -17,6 +17,8 @@ from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.indexing import EmbeddingFn
 
+MIN_RELEVANT_IMAGE_ANNOTATION_SIMILARITY = 0.0
+
 
 @dataclass(frozen=True, slots=True)
 class ImageAnnotationSearchResult:
@@ -92,6 +94,11 @@ def search_image_annotations_by_embedding(
     results: list[ImageAnnotationSearchResult] = []
     seen_assets: set[int] = set()
     for similarity, annotation, asset in scored:
+        if (
+            not math.isfinite(similarity)
+            or similarity <= MIN_RELEVANT_IMAGE_ANNOTATION_SIMILARITY
+        ):
+            continue
         if asset.id in seen_assets:
             continue
         seen_assets.add(asset.id)
