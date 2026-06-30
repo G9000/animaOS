@@ -74,7 +74,7 @@ def normalize_profile_category(category: str) -> str:
 
 
 def normalize_profile_key(key: str) -> str:
-    normalized = re.sub(r"\s+", " ", key.strip())
+    normalized = re.sub(r"\s+", " ", key.strip()).casefold()
     if not normalized:
         raise ValueError("Profile key cannot be empty")
     return normalized[:128]
@@ -127,6 +127,8 @@ def upsert_profile_field(
         )
         if existing_value.strip().casefold() == clean_value.casefold():
             existing.confidence = max(float(existing.confidence), confidence)
+            if source_kind == "user_correction":
+                existing.source_kind = "user_correction"
             existing.last_observed_at = observed
             existing.updated_at = now
             _add_profile_evidence(

@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 17:21 MYT
+- Updated: 2026-06-30 17:35 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -100,6 +100,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 16:50 MYT - `SUM-004` addressed additional PR #71 feedback for preserving unrelated same-turn profile fields during runtime-message forget cleanup, then reran red/green regressions, related suites, lint, diff, and build.
 - 2026-06-30 17:03 MYT - `SUM-004` addressed additional PR #71 feedback for preserving manual profile corrections from automatic updates and cascading profile rows on user deletion, then reran red/green regressions, related suites, lint, diff, and build.
 - 2026-06-30 17:21 MYT - `SUM-004` addressed additional PR #71 feedback for rejecting pending profile candidates after source-memory forget and accepting profile-only extraction payloads, then reran red/green regressions and related profile/API tests.
+- 2026-06-30 17:35 MYT - `SUM-004` addressed additional PR #71 feedback for canonical profile keys and same-value user corrections, then reran red/green regressions and the user profile suite.
 
 ## Validation
 

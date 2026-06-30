@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 17:21 MYT
+- Updated: 2026-06-30 17:35 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -48,6 +48,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 16:50 MYT - Addressed additional PR #71 review feedback by narrowing runtime-message profile forget cleanup so unrelated profile fields from the same turn are preserved.
 - 2026-06-30 17:03 MYT - Addressed additional PR #71 review feedback by preserving user-corrected profile fields from conflicting automatic updates and setting profile `user_id` FKs to `ON DELETE CASCADE` in the migration.
 - 2026-06-30 17:21 MYT - Addressed additional PR #71 review feedback by rejecting pending profile update candidates tied to forgotten source memories and parsing profile-only LLM extraction responses.
+- 2026-06-30 17:35 MYT - Addressed additional PR #71 review feedback by canonicalizing structured profile keys and preserving same-value user corrections from later automatic updates.
 
 ## Validation
 
@@ -132,6 +133,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn apps/server/tests/test_user_profile.py::test_llm_extraction_parses_profile_updates_without_memories -q` - PR #71 review regressions failed before fix because `forget_memory()` could not reject pending runtime profile candidates and profile-only extraction payloads were parsed as memories.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn apps/server/tests/test_user_profile.py::test_llm_extraction_parses_profile_updates_without_memories -q` - 2 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_agent_consolidation.py::test_run_background_extraction_stores_profile_update_candidates -q` - 22 passed, 16 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_canonicalizes_key_case apps/server/tests/test_user_profile.py::test_upsert_profile_field_marks_same_value_user_correction -q` - PR #71 review regressions failed before fix because differently cased profile keys created parallel active rows and same-value user corrections remained supersedable automatic rows.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_canonicalizes_key_case apps/server/tests/test_user_profile.py::test_upsert_profile_field_marks_same_value_user_correction -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 22 passed, 18 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `git diff --check` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
