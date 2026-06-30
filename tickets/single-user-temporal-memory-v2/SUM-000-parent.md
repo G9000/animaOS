@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 05:47 MYT
+- Updated: 2026-06-30 12:54 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -90,6 +90,9 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 03:49 MYT - `SUM-003` addressed PR #70 rereview feedback by preventing same-triple self-supersession from mutating the replacement row, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 05:34 MYT - `SUM-004` claimed by Codex on branch `codex/sum-004-structured-user-profile`, based on PR #70 head for `SUM-003`.
 - 2026-06-30 05:47 MYT - `SUM-004` completed with structured profile storage, extraction and Soul Writer promotion, sleep-time claim reconciliation, profile prompt rendering, correction API, migrations, focused validation, lint, build, full backend tests, and health smoke.
+- 2026-06-30 12:29 MYT - `SUM-004` addressed PR #71 review feedback for idempotent claim-profile reconciliation and companion memory invalidation after sleep-time profile updates, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 12:42 MYT - `SUM-004` addressed additional PR #71 feedback for profile source FK delete semantics and promoted-candidate re-extraction, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 12:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim-specific profile provenance and profile retraction during user-initiated forget, then reran focused, lint, build, and full backend validation.
 
 ## Validation
 

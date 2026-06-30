@@ -92,6 +92,7 @@ def upsert_profile_field(
     source_kind: str = "extraction",
     source_memory_id: int | None = None,
     source_evidence_id: int | None = None,
+    source_claim_evidence_id: int | None = None,
     runtime_thread_id: int | None = None,
     runtime_message_id: int | None = None,
     observed_at: datetime | None = None,
@@ -136,6 +137,7 @@ def upsert_profile_field(
                 source_kind=source_kind,
                 source_memory_id=source_memory_id,
                 source_evidence_id=source_evidence_id,
+                source_claim_evidence_id=source_claim_evidence_id,
                 runtime_thread_id=runtime_thread_id,
                 runtime_message_id=runtime_message_id,
                 observed_at=observed,
@@ -158,6 +160,7 @@ def upsert_profile_field(
         source_kind=source_kind,
         source_memory_id=source_memory_id,
         source_evidence_id=source_evidence_id,
+        source_claim_evidence_id=source_claim_evidence_id,
         first_observed_at=observed,
         last_observed_at=observed,
         updated_at=now,
@@ -179,6 +182,7 @@ def upsert_profile_field(
         source_kind=source_kind,
         source_memory_id=source_memory_id,
         source_evidence_id=source_evidence_id,
+        source_claim_evidence_id=source_claim_evidence_id,
         runtime_thread_id=runtime_thread_id,
         runtime_message_id=runtime_message_id,
         observed_at=observed,
@@ -314,7 +318,21 @@ def reconcile_profile_from_claims(
             table="memory_items",
             field="content",
         )
-        evidence = _claim_evidence_text(db, user_id=user_id, claim_id=claim.id) or value
+        claim_evidence = _latest_claim_evidence(db, claim_id=claim.id)
+        source_claim_evidence_id = claim_evidence.id if claim_evidence is not None else None
+        if _profile_claim_already_reconciled(
+            db,
+            user_id=user_id,
+            source_claim_evidence_id=source_claim_evidence_id,
+            source_memory_id=claim.memory_item_id,
+        ):
+            continue
+
+        evidence = (
+            _claim_evidence_text(user_id=user_id, evidence=claim_evidence)
+            if claim_evidence is not None
+            else value
+        )
         upsert_profile_field(
             db,
             user_id=user_id,
@@ -325,6 +343,7 @@ def reconcile_profile_from_claims(
             evidence_text=evidence,
             source_kind="claim_reconciliation",
             source_memory_id=claim.memory_item_id,
+            source_claim_evidence_id=source_claim_evidence_id,
         )
         reconciled += 1
     db.flush()
@@ -376,7 +395,7 @@ def create_profile_update_candidate(
     existing = runtime_db.scalar(
         select(ProfileUpdateCandidate.id).where(
             ProfileUpdateCandidate.content_hash == content_hash,
-            ProfileUpdateCandidate.status.not_in(["rejected", "failed"]),
+            ProfileUpdateCandidate.status.not_in(["rejected", "failed", "promoted"]),
         )
     )
     if existing is not None:
@@ -553,16 +572,40 @@ def _add_profile_evidence(
     source_kind: str,
     source_memory_id: int | None,
     source_evidence_id: int | None,
+    source_claim_evidence_id: int | None,
     runtime_thread_id: int | None,
     runtime_message_id: int | None,
     observed_at: datetime | None,
 ) -> UserProfileFieldEvidence:
+    if source_evidence_id is not None:
+        existing = db.scalar(
+            select(UserProfileFieldEvidence).where(
+                UserProfileFieldEvidence.profile_field_id == field.id,
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.source_evidence_id == source_evidence_id,
+            )
+        )
+        if existing is not None:
+            return existing
+    if source_claim_evidence_id is not None:
+        existing = db.scalar(
+            select(UserProfileFieldEvidence).where(
+                UserProfileFieldEvidence.profile_field_id == field.id,
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.source_claim_evidence_id
+                == source_claim_evidence_id,
+            )
+        )
+        if existing is not None:
+            return existing
+
     evidence = UserProfileFieldEvidence(
         profile_field_id=field.id,
         user_id=user_id,
         source_kind=source_kind,
         source_memory_id=source_memory_id,
         source_evidence_id=source_evidence_id,
+        source_claim_evidence_id=source_claim_evidence_id,
         runtime_thread_id=runtime_thread_id,
         runtime_message_id=runtime_message_id,
         evidence_text=ef(
@@ -596,14 +639,55 @@ def _profile_mapping_for_claim(claim: MemoryClaim) -> tuple[str, str] | None:
     return None
 
 
-def _claim_evidence_text(db: Session, *, user_id: int, claim_id: int) -> str | None:
-    evidence = db.scalar(
+def _profile_claim_already_reconciled(
+    db: Session,
+    *,
+    user_id: int,
+    source_claim_evidence_id: int | None,
+    source_memory_id: int | None,
+) -> bool:
+    if source_claim_evidence_id is not None:
+        existing = db.scalar(
+            select(UserProfileFieldEvidence.id).where(
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.source_claim_evidence_id
+                == source_claim_evidence_id,
+            )
+        )
+        return existing is not None
+
+    if source_memory_id is not None:
+        existing = db.scalar(
+            select(UserProfileFieldEvidence.id).where(
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.source_kind == "claim_reconciliation",
+                UserProfileFieldEvidence.source_memory_id == source_memory_id,
+            )
+        )
+        return existing is not None
+
+    return False
+
+
+def _latest_claim_evidence(
+    db: Session,
+    *,
+    claim_id: int,
+) -> MemoryClaimEvidence | None:
+    return db.scalar(
         select(MemoryClaimEvidence)
         .where(MemoryClaimEvidence.claim_id == claim_id)
         .order_by(MemoryClaimEvidence.created_at.desc(), MemoryClaimEvidence.id.desc())
     )
+
+
+def _claim_evidence_text(
+    *,
+    user_id: int,
+    evidence: MemoryClaimEvidence,
+) -> str:
     if evidence is None:
-        return None
+        return ""
     return df(
         user_id,
         evidence.source_text,

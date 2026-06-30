@@ -640,6 +640,10 @@ class UserProfileField(Base):
         ForeignKey("memory_item_evidence.id", ondelete="SET NULL"),
         nullable=True,
     )
+    source_claim_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_claim_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     superseded_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("user_profile_fields.id", ondelete="SET NULL"),
         nullable=True,
@@ -680,6 +684,10 @@ class UserProfileFieldEvidence(Base):
         Index("ix_user_profile_field_evidence_user_observed", "user_id", "observed_at"),
         Index("ix_user_profile_field_evidence_memory", "source_memory_id"),
         Index("ix_user_profile_field_evidence_source_evidence", "source_evidence_id"),
+        Index(
+            "ix_user_profile_field_evidence_source_claim_evidence",
+            "source_claim_evidence_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -700,6 +708,10 @@ class UserProfileFieldEvidence(Base):
     )
     source_evidence_id: Mapped[int | None] = mapped_column(
         ForeignKey("memory_item_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_claim_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_claim_evidence.id", ondelete="SET NULL"),
         nullable=True,
     )
     runtime_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

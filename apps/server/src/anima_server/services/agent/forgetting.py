@@ -13,7 +13,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import (
@@ -23,6 +23,8 @@ from anima_server.models import (
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.services.data_crypto import df
@@ -300,6 +302,33 @@ def forget_memory(
             )
         ).all()
     )
+    claim_ids = [claim.id for claim in all_claims]
+    claim_evidence_ids = (
+        list(
+            db.scalars(
+                select(MemoryClaimEvidence.id).where(
+                    MemoryClaimEvidence.claim_id.in_(claim_ids),
+                )
+            ).all()
+        )
+        if claim_ids
+        else []
+    )
+    memory_evidence_ids = list(
+        db.scalars(
+            select(MemoryItemEvidence.id).where(
+                MemoryItemEvidence.user_id == user_id,
+                MemoryItemEvidence.memory_item_id.in_(chain_ids),
+            )
+        ).all()
+    )
+    _retract_profile_fields_for_forget(
+        db,
+        user_id=user_id,
+        source_memory_ids=chain_ids,
+        source_evidence_ids=memory_evidence_ids,
+        source_claim_evidence_ids=claim_evidence_ids,
+    )
     for claim in all_claims:
         db.execute(
             delete(MemoryClaimEvidence).where(
@@ -341,6 +370,57 @@ def forget_memory(
     result.audit_log_id = log.id
 
     return result
+
+
+def _retract_profile_fields_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    source_memory_ids: list[int],
+    source_evidence_ids: list[int],
+    source_claim_evidence_ids: list[int],
+) -> int:
+    criteria = [
+        UserProfileField.source_memory_id.in_(source_memory_ids),
+        UserProfileFieldEvidence.source_memory_id.in_(source_memory_ids),
+    ]
+    if source_evidence_ids:
+        criteria.extend(
+            [
+                UserProfileField.source_evidence_id.in_(source_evidence_ids),
+                UserProfileFieldEvidence.source_evidence_id.in_(source_evidence_ids),
+            ]
+        )
+    if source_claim_evidence_ids:
+        criteria.extend(
+            [
+                UserProfileField.source_claim_evidence_id.in_(source_claim_evidence_ids),
+                UserProfileFieldEvidence.source_claim_evidence_id.in_(
+                    source_claim_evidence_ids,
+                ),
+            ]
+        )
+
+    fields = list(
+        db.scalars(
+            select(UserProfileField)
+            .outerjoin(UserProfileFieldEvidence)
+            .where(
+                UserProfileField.user_id == user_id,
+                UserProfileField.status == "active",
+                or_(*criteria),
+            )
+            .distinct()
+        ).all()
+    )
+
+    now = datetime.now(UTC)
+    for profile_field in fields:
+        profile_field.status = "retracted"
+        profile_field.updated_at = now
+    if fields:
+        db.flush()
+    return len(fields)
 
 
 def _schedule_forget_external_cleanup_after_commit(

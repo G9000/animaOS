@@ -154,6 +154,17 @@ async def run_sleep_tasks(
             )
             if result.profile_fields_reconciled > 0:
                 db.commit()
+                try:
+                    from anima_server.services.agent.companion import get_companion
+
+                    companion = get_companion(user_id)
+                    if companion is not None:
+                        companion.invalidate_memory()
+                except Exception:
+                    logger.debug(
+                        "Companion cache invalidation failed after profile reconciliation",
+                        exc_info=True,
+                    )
     except Exception as e:
         logger.exception("Structured profile reconciliation failed for user %s", user_id)
         result.errors.append(f"profile_reconciliation: {e}")

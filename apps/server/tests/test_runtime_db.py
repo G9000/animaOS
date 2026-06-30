@@ -231,6 +231,41 @@ def test_stamped_soul_database_migration_repairs_missing_new_tables(
     assert inspect(engine).has_table("presence_configs")
 
 
+def test_user_profile_migration_sets_source_fks_null_on_delete(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.db.session import _run_alembic_upgrade
+
+    legacy_db = managed_tmp_path / "profile-fks-soul.db"
+    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
+
+    _run_alembic_upgrade(engine)
+
+    inspector = inspect(engine)
+    fields_fks = inspector.get_foreign_keys("user_profile_fields")
+    evidence_fks = inspector.get_foreign_keys("user_profile_field_evidence")
+
+    def ondelete_for(
+        fks: list[dict[str, object]],
+        *,
+        constrained_column: str,
+    ) -> str | None:
+        for fk in fks:
+            if fk.get("constrained_columns") == [constrained_column]:
+                options = fk.get("options") or {}
+                if isinstance(options, dict):
+                    value = options.get("ondelete")
+                    return str(value) if value is not None else None
+        return None
+
+    assert ondelete_for(fields_fks, constrained_column="source_memory_id") == "SET NULL"
+    assert ondelete_for(fields_fks, constrained_column="source_evidence_id") == "SET NULL"
+    assert ondelete_for(fields_fks, constrained_column="source_claim_evidence_id") == "SET NULL"
+    assert ondelete_for(evidence_fks, constrained_column="source_memory_id") == "SET NULL"
+    assert ondelete_for(evidence_fks, constrained_column="source_evidence_id") == "SET NULL"
+    assert ondelete_for(evidence_fks, constrained_column="source_claim_evidence_id") == "SET NULL"
+
+
 def test_legacy_soul_database_migration_repairs_existing_kg_columns(
     managed_tmp_path: Path,
 ) -> None:

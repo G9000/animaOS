@@ -57,6 +57,7 @@ def upgrade() -> None:
             ),
             sa.Column("source_memory_id", sa.Integer(), nullable=True),
             sa.Column("source_evidence_id", sa.Integer(), nullable=True),
+            sa.Column("source_claim_evidence_id", sa.Integer(), nullable=True),
             sa.Column("superseded_by_id", sa.Integer(), nullable=True),
             sa.Column("first_observed_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("last_observed_at", sa.DateTime(timezone=True), nullable=True),
@@ -72,8 +73,21 @@ def upgrade() -> None:
                 server_default=sa.func.now(),
                 nullable=False,
             ),
-            sa.ForeignKeyConstraint(["source_evidence_id"], ["memory_item_evidence.id"]),
-            sa.ForeignKeyConstraint(["source_memory_id"], ["memory_items.id"]),
+            sa.ForeignKeyConstraint(
+                ["source_evidence_id"],
+                ["memory_item_evidence.id"],
+                ondelete="SET NULL",
+            ),
+            sa.ForeignKeyConstraint(
+                ["source_claim_evidence_id"],
+                ["memory_claim_evidence.id"],
+                ondelete="SET NULL",
+            ),
+            sa.ForeignKeyConstraint(
+                ["source_memory_id"],
+                ["memory_items.id"],
+                ondelete="SET NULL",
+            ),
             sa.ForeignKeyConstraint(["superseded_by_id"], ["user_profile_fields.id"]),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
             sa.PrimaryKeyConstraint("id"),
@@ -112,6 +126,7 @@ def upgrade() -> None:
             ),
             sa.Column("source_memory_id", sa.Integer(), nullable=True),
             sa.Column("source_evidence_id", sa.Integer(), nullable=True),
+            sa.Column("source_claim_evidence_id", sa.Integer(), nullable=True),
             sa.Column("runtime_thread_id", sa.Integer(), nullable=True),
             sa.Column("runtime_message_id", sa.Integer(), nullable=True),
             sa.Column("evidence_text", sa.Text(), nullable=False),
@@ -127,8 +142,21 @@ def upgrade() -> None:
                 ["user_profile_fields.id"],
                 ondelete="CASCADE",
             ),
-            sa.ForeignKeyConstraint(["source_evidence_id"], ["memory_item_evidence.id"]),
-            sa.ForeignKeyConstraint(["source_memory_id"], ["memory_items.id"]),
+            sa.ForeignKeyConstraint(
+                ["source_evidence_id"],
+                ["memory_item_evidence.id"],
+                ondelete="SET NULL",
+            ),
+            sa.ForeignKeyConstraint(
+                ["source_claim_evidence_id"],
+                ["memory_claim_evidence.id"],
+                ondelete="SET NULL",
+            ),
+            sa.ForeignKeyConstraint(
+                ["source_memory_id"],
+                ["memory_items.id"],
+                ondelete="SET NULL",
+            ),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
             sa.PrimaryKeyConstraint("id"),
         )
@@ -169,11 +197,21 @@ def upgrade() -> None:
             "user_profile_field_evidence",
             ["source_evidence_id"],
         )
+    if not _has_index(
+        "user_profile_field_evidence",
+        "ix_user_profile_field_evidence_source_claim_evidence",
+    ):
+        op.create_index(
+            "ix_user_profile_field_evidence_source_claim_evidence",
+            "user_profile_field_evidence",
+            ["source_claim_evidence_id"],
+        )
 
 
 def downgrade() -> None:
     if _has_table("user_profile_field_evidence"):
         for index_name in (
+            "ix_user_profile_field_evidence_source_claim_evidence",
             "ix_user_profile_field_evidence_source_evidence",
             "ix_user_profile_field_evidence_memory",
             "ix_user_profile_field_evidence_user_observed",

@@ -73,6 +73,7 @@ class UserProfileEvidenceResponse(BaseModel):
     sourceKind: str
     sourceMemoryId: int | None = None
     sourceEvidenceId: int | None = None
+    sourceClaimEvidenceId: int | None = None
     runtimeThreadId: int | None = None
     runtimeMessageId: int | None = None
     evidenceText: str
@@ -90,6 +91,7 @@ class UserProfileFieldResponse(BaseModel):
     sourceKind: str
     sourceMemoryId: int | None = None
     sourceEvidenceId: int | None = None
+    sourceClaimEvidenceId: int | None = None
     supersededById: int | None = None
     firstObservedAt: str | None = None
     lastObservedAt: str | None = None
@@ -261,6 +263,7 @@ def _profile_field_response(*, user_id: int, field) -> UserProfileFieldResponse:
         sourceKind=field.source_kind,
         sourceMemoryId=field.source_memory_id,
         sourceEvidenceId=field.source_evidence_id,
+        sourceClaimEvidenceId=field.source_claim_evidence_id,
         supersededById=field.superseded_by_id,
         firstObservedAt=_iso_seconds(field.first_observed_at),
         lastObservedAt=_iso_seconds(field.last_observed_at),
@@ -271,6 +274,7 @@ def _profile_field_response(*, user_id: int, field) -> UserProfileFieldResponse:
                 sourceKind=evidence.source_kind,
                 sourceMemoryId=evidence.source_memory_id,
                 sourceEvidenceId=evidence.source_evidence_id,
+                sourceClaimEvidenceId=evidence.source_claim_evidence_id,
                 runtimeThreadId=evidence.runtime_thread_id,
                 runtimeMessageId=evidence.runtime_message_id,
                 evidenceText=df(

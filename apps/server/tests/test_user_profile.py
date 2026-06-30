@@ -13,7 +13,7 @@ from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import MemoryClaimEvidence, User
 from anima_server.services.agent.claims import upsert_claim
-from anima_server.services.data_crypto import df
+from anima_server.services.data_crypto import df, ef
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -251,6 +251,98 @@ def test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields() ->
     assert has_claim_evidence
 
 
+def test_reconcile_profile_from_claims_is_idempotent_for_same_claim() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a product manager",
+            category="fact",
+            evidence_text="I work as a product manager",
+        )
+
+        first_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        second_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        active = service.list_profile_fields(db, user_id=user.id)
+        evidence_count = len(active[0].evidence)
+
+    assert first_count == 1
+    assert second_count == 0
+    assert evidence_count == 1
+
+
+def test_reconcile_profile_from_claims_tracks_claim_evidence_separately() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        claim = upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a product manager",
+            category="fact",
+            evidence_text="I work as a product manager",
+        )
+        assert claim is not None
+        claim_evidence = db.scalar(
+            select(MemoryClaimEvidence).where(MemoryClaimEvidence.claim_id == claim.id)
+        )
+        assert claim_evidence is not None
+
+        reconciled = service.reconcile_profile_from_claims(db, user_id=user.id)
+        field = service.list_profile_fields(db, user_id=user.id)[0]
+        evidence = field.evidence[0]
+
+    assert reconciled == 1
+    assert field.source_evidence_id is None
+    assert field.source_claim_evidence_id == claim_evidence.id
+    assert evidence.source_evidence_id is None
+    assert evidence.source_claim_evidence_id == claim_evidence.id
+
+
+def test_forget_memory_retracts_profile_fields_sourced_from_claim_chain() -> None:
+    service = _profile_service()
+    from anima_server.models import MemoryItem, UserProfileField
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as a product manager",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a product manager",
+            category="fact",
+            memory_item_id=item.id,
+            evidence_text="I work as a product manager",
+        )
+        service.reconcile_profile_from_claims(db, user_id=user.id)
+        field = service.list_profile_fields(db, user_id=user.id)[0]
+        field_id = field.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=user.id)
+        active_after_forget = service.list_profile_fields(db, user_id=user.id)
+        forgotten_field = db.get(UserProfileField, field_id)
+
+    assert result.items_forgotten == 1
+    assert active_after_forget == []
+    assert forgotten_field.status == "retracted"
+
+
 @pytest.mark.asyncio
 async def test_sleep_tasks_reconciles_claims_to_profile_fields(
     monkeypatch: pytest.MonkeyPatch,
@@ -305,6 +397,69 @@ async def test_sleep_tasks_reconciles_claims_to_profile_fields(
         ]
     finally:
         settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_sleep_tasks_invalidates_companion_memory_after_profile_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import sleep_tasks
+
+    class FakeCompanion:
+        def __init__(self) -> None:
+            self.invalidations = 0
+
+        def invalidate_memory(self) -> None:
+            self.invalidations += 1
+
+    async def no_scan(**kwargs: object) -> tuple[int, int]:
+        del kwargs
+        return (0, 0)
+
+    async def no_merge(**kwargs: object) -> int:
+        del kwargs
+        return 0
+
+    companion = FakeCompanion()
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "scaffold"
+        monkeypatch.setattr(sleep_tasks, "scan_contradictions", no_scan)
+        monkeypatch.setattr(sleep_tasks, "synthesize_profile", no_merge)
+        monkeypatch.setattr(
+            sleep_tasks,
+            "_should_run_deep_monologue",
+            lambda *args, **kwargs: False,
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.companion.get_companion",
+            lambda user_id: companion,
+        )
+
+        with _soul_session_factory() as factory:
+            with factory() as db:
+                user = _make_user(db)
+                user_id = user.id
+                upsert_claim(
+                    db,
+                    user_id=user_id,
+                    content="works as a product manager",
+                    category="fact",
+                    evidence_text="I work as a product manager",
+                )
+                db.commit()
+
+            result = await sleep_tasks.run_sleep_tasks(
+                user_id=user_id,
+                db_factory=factory,
+            )
+
+    finally:
+        settings.agent_provider = original_provider
+
+    assert result.profile_fields_reconciled == 1
+    assert companion.invalidations == 1
 
 
 def test_static_memory_blocks_include_structured_user_profile_block() -> None:
@@ -522,3 +677,33 @@ async def test_soul_writer_promotes_profile_update_candidates() -> None:
     assert promoted_candidate.status == "promoted"
     assert [(field.category, field.key) for field in fields] == [("work", "role")]
     assert evidence_count == 1
+
+
+def test_profile_update_candidate_can_be_reextracted_after_promotion() -> None:
+    service = _profile_service()
+    with _runtime_session_factory() as runtime_session_factory, runtime_session_factory() as runtime_db:
+        first = service.create_profile_update_candidate(
+            runtime_db,
+            user_id=1,
+            category="work",
+            key="role",
+            value="Founder building AnimaOS",
+            evidence_text="I am the founder building AnimaOS",
+        )
+        assert first is not None
+        first.status = "promoted"
+        runtime_db.commit()
+
+        second = service.create_profile_update_candidate(
+            runtime_db,
+            user_id=1,
+            category="work",
+            key="role",
+            value="Founder building AnimaOS",
+            evidence_text="I said again that I am building AnimaOS",
+        )
+        runtime_db.commit()
+
+    assert second is not None
+    assert second.id != first.id
+    assert second.status == "extracted"

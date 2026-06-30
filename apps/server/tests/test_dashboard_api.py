@@ -115,7 +115,11 @@ def test_nudges_endpoint() -> None:
         assert isinstance(data["nudges"], list)
 
 
-def test_proactive_notice_endpoint_accepts_custom_instruction() -> None:
+def test_proactive_notice_endpoint_accepts_custom_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+
     with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]
@@ -209,7 +213,11 @@ def test_proactive_notice_respects_disabled_main_chat_config() -> None:
         assert resp.json() == {"notice": None}
 
 
-def test_proactive_notice_uses_saved_custom_instruction() -> None:
+def test_proactive_notice_uses_saved_custom_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+
     with managed_test_client("anima-dashboard-test-") as client:
         reg = _register_user(client)
         user_id = reg["id"]

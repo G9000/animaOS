@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +124,21 @@ def _create_runtime_messages(
         )
         seq += 1
     rt_session.commit()
+
+
+def _freeze_episode_now(
+    monkeypatch: pytest.MonkeyPatch,
+    episodes_module: object,
+    value: datetime,
+) -> None:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            if tz is None:
+                return value.replace(tzinfo=None)
+            return value.astimezone(tz)
+
+    monkeypatch.setattr(episodes_module, "datetime", FrozenDateTime)
 
 
 @pytest.mark.asyncio
@@ -423,6 +438,11 @@ async def test_maybe_generate_episode_passes_timestamp_names_and_preserves_detai
         episodes_module,
         "_call_llm_for_episode_safe",
         terse_episode_payload,
+    )
+    _freeze_episode_now(
+        monkeypatch,
+        episodes_module,
+        datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
     )
 
     first_turn_at = datetime(2026, 6, 29, 2, 15, 30, tzinfo=UTC)
@@ -761,6 +781,11 @@ async def test_maybe_generate_episode_resolves_relative_dates_in_summary(
         "_call_llm_for_episode_safe",
         relative_date_payload,
     )
+    _freeze_episode_now(
+        monkeypatch,
+        episodes_module,
+        datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
+    )
 
     first_turn_at = datetime(2026, 6, 29, 9, 0, tzinfo=UTC)
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
@@ -828,6 +853,11 @@ async def test_maybe_generate_episode_resolves_relative_dates_from_matching_turn
         episodes_module,
         "_call_llm_for_episode_safe",
         relative_date_payload,
+    )
+    _freeze_episode_now(
+        monkeypatch,
+        episodes_module,
+        datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
     )
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
