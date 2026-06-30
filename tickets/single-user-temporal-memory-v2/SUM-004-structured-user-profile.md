@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 12:54 MYT
+- Updated: 2026-06-30 13:21 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -41,6 +41,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 12:29 MYT - Addressed PR #71 review feedback by deduplicating claim reconciliation evidence, invalidating companion memory after sleep-time profile reconciliation, and tightening deterministic test fixtures uncovered by the full backend gate.
 - 2026-06-30 12:42 MYT - Addressed additional PR #71 review feedback by setting profile source FKs to `ON DELETE SET NULL` in the Alembic revision and allowing profile update re-extraction after promoted candidates.
 - 2026-06-30 12:54 MYT - Addressed additional PR #71 review feedback by moving claim evidence provenance into a claim-specific FK column and retracting profile fields sourced from memories during user-initiated forget.
+- 2026-06-30 13:21 MYT - Addressed additional PR #71 review feedback by invalidating the companion memory cache after the forget endpoint commits profile-field retractions.
 
 ## Validation
 
@@ -69,6 +70,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `git diff --check` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1715 passed, 1 skipped, 272 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_retraction -q` - PR #71 review regression failed before fix because the forget endpoint left the companion memory cache valid after retracting sourced profile fields.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_retraction -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py apps/server/tests/test_user_profile.py::test_forget_memory_retracts_profile_fields_sourced_from_claim_chain -q` - 22 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_agent_consolidation.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_memory_api.py` - 45 passed, 15 warnings.
   - `bun install` - installed workspace dependencies in the isolated worktree after the first full lint attempt showed missing desktop packages.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed.
@@ -82,6 +89,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py
   - apps/server/src/anima_server/api/routes/consciousness.py
+  - apps/server/src/anima_server/api/routes/forgetting.py
   - apps/server/src/anima_server/models/__init__.py
   - apps/server/src/anima_server/models/agent_runtime.py
   - apps/server/src/anima_server/models/runtime_memory.py

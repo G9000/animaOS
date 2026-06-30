@@ -36,6 +36,7 @@ async def forget_single_memory(
 
     result = forget_memory(db, memory_id=memory_id, user_id=user_id)
     db.commit()
+    _invalidate_companion_memory(user_id)
 
     return {
         "forgotten": True,
@@ -75,3 +76,14 @@ async def forget_by_topic_endpoint(
             for item in candidates
         ],
     }
+
+
+def _invalidate_companion_memory(user_id: int) -> None:
+    try:
+        from anima_server.services.agent.companion import get_companion
+
+        companion = get_companion(user_id)
+        if companion is not None:
+            companion.invalidate_memory()
+    except Exception:
+        pass
