@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.config import settings
+from anima_server.models.runtime import (
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeThread,
+)
 from anima_server.services.agent.persistence import (
     append_message,
     create_run,
@@ -16,6 +21,13 @@ from conftest_runtime import runtime_db_session
 from sqlalchemy.orm import Session
 
 _db_session = runtime_db_session
+
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+    b"\x90wS\xde"
+)
 
 _COUNTER = 0
 
@@ -456,6 +468,161 @@ def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
             "stats": None,
         }
     }
+
+
+def test_reactivate_thread_from_jsonl_recreates_image_links(
+    db: Session,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from anima_server.services.agent.attachments import resolve_message_attachment
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+    from anima_server.services.images.store import register_image_asset
+    from sqlalchemy import select
+
+    uid = _uid()
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    stored = register_image_asset(
+        db,
+        user_id=uid,
+        data=PNG_BYTES,
+        mime_type="image/png",
+        filename="archive.png",
+    )
+    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
+    db.add(thread)
+    db.flush()
+
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir()
+    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
+    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
+    jsonl_path.write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "content": "",
+                "ts": "2026-01-01T00:00:30Z",
+                "seq": 1,
+                "attachments": [
+                    {
+                        "id": "img_archive",
+                        "kind": "image",
+                        "mimeType": "image/png",
+                        "filename": "archive.png",
+                        "assetId": stored.asset.id,
+                        "storagePath": stored.asset.storage_path,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    meta_path.write_text(
+        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Old image"}),
+        encoding="utf-8",
+    )
+
+    reactivate_thread_if_needed(
+        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None
+    )
+
+    archived_image_user = db.scalar(
+        select(RuntimeMessage).where(
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.role == "user",
+            RuntimeMessage.is_archived_history.is_(True),
+        )
+    )
+    assert archived_image_user is not None
+    link = db.scalar(
+        select(RuntimeImageMessageLink).where(
+            RuntimeImageMessageLink.message_id == archived_image_user.id,
+            RuntimeImageMessageLink.attachment_id == "img_archive",
+        )
+    )
+    assert link is not None
+    assert link.image_asset_id == stored.asset.id
+    resolved = resolve_message_attachment(
+        db,
+        message=archived_image_user,
+        attachment_id="img_archive",
+    )
+    assert resolved is not None
+    assert resolved[0].read_bytes() == PNG_BYTES
+    assert resolved[1] == "image/png"
+
+
+def test_reactivate_thread_from_jsonl_drops_deleted_image_asset_attachment(
+    db: Session,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from anima_server.services.agent.state import deserialize_stored_attachments
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+    from sqlalchemy import select
+
+    uid = _uid()
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
+    db.add(thread)
+    db.flush()
+
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir()
+    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
+    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
+    jsonl_path.write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "content": "this used to include an image",
+                "ts": "2026-01-01T00:00:30Z",
+                "seq": 1,
+                "attachments": [
+                    {
+                        "id": "img_deleted",
+                        "kind": "image",
+                        "mimeType": "image/png",
+                        "filename": "deleted.png",
+                        "assetId": 999_999,
+                        "storagePath": f"users/{uid}/media/images/deleted.png",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    meta_path.write_text(
+        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Old deleted image"}),
+        encoding="utf-8",
+    )
+
+    reactivate_thread_if_needed(
+        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None
+    )
+
+    archived_image_user = db.scalar(
+        select(RuntimeMessage).where(
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.role == "user",
+            RuntimeMessage.is_archived_history.is_(True),
+        )
+    )
+    assert archived_image_user is not None
+    assert archived_image_user.content_text == "this used to include an image"
+    assert deserialize_stored_attachments(archived_image_user.content_json) == ()
+    link = db.scalar(
+        select(RuntimeImageMessageLink).where(
+            RuntimeImageMessageLink.message_id == archived_image_user.id,
+            RuntimeImageMessageLink.attachment_id == "img_deleted",
+        )
+    )
+    assert link is None
 
 
 def test_display_messages_include_retrieval_from_archive(db: Session, tmp_path) -> None:

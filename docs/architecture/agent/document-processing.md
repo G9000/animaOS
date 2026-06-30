@@ -37,6 +37,12 @@ The source of truth is:
 | Runtime models | `apps/server/src/anima_server/models/runtime.py` |
 | Runtime embedding model | `apps/server/src/anima_server/models/runtime_embedding.py` |
 
+Image uploads are intentionally handled by a separate visual-memory path:
+`runtime_image_assets`, `runtime_image_message_links`, `runtime_image_annotations`,
+and `RuntimeEmbedding.source_type = "image_annotation"`. The PDF pipeline should not
+copy PDFs into image assets. Future unified media recall should compose document
+results and image results at the prompt/source-pill layer.
+
 ## End-to-End Flow
 
 ```mermaid
@@ -298,6 +304,7 @@ Important regression coverage lives in:
 ## Current Constraints
 
 - PDF is the only supported document format in the chat upload flow.
+- Chat images use the central image asset/indexing path, not the PDF document workflow.
 - OCR is not implemented.
 - Chunk overlap is not implemented.
 - Document chunks are runtime context, not encrypted soul memory.

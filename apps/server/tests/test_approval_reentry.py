@@ -11,18 +11,27 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageAnnotation,
+    RuntimeImageAsset,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeThread,
+)
 from anima_server.services.agent import persistence as persistence_module
 from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.persistence import (
     append_message,
+    append_user_message,
     cancel_run,
     clear_approval_checkpoint,
     create_run,
@@ -52,6 +61,7 @@ from anima_server.services.agent.state import (
     AgentResult,
     AgentRetrievalStats,
     AgentRetrievalTrace,
+    StoredAttachment,
 )
 from anima_server.services.agent.streaming import build_approval_pending_event
 from anima_server.services.agent.tools import current_datetime, send_message, tool
@@ -889,6 +899,104 @@ async def test_approve_or_deny_turn_persists_and_finalizes(
     assert result.stop_reason == "terminal_tool"
     assert runner.resume_calls, "resume_after_approval was not called"
     assert runner.resume_calls[0]["approved"] is True
+
+
+@pytest.mark.asyncio
+async def test_approve_or_deny_turn_indexes_original_image_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    canned_result = AgentResult(
+        response="Image turn completed.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="terminal_tool",
+        step_traces=[StepTrace(step_index=0, assistant_text="Image turn completed.")],
+    )
+    runner = _ApproveResumeRunner(canned_result)
+
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kw: None)
+
+    image_bytes = b"approval-image"
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    annotation_kinds: set[str] = set()
+
+    with _db_session() as db:
+        thread, run, user = _setup_thread_and_run(db)
+        storage_path = f"users/{user.id}/media/images/{digest[:2]}/{digest}.png"
+        image_path = tmp_path / storage_path
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image_bytes)
+        asset = RuntimeImageAsset(
+            user_id=user.id,
+            filename="approval.png",
+            mime_type="image/png",
+            storage_path=storage_path,
+            sha256=digest,
+            size_bytes=len(image_bytes),
+            width=1,
+            height=1,
+            retention_state="active",
+        )
+        db.add(asset)
+        db.flush()
+        attachment = StoredAttachment(
+            id="approval-image",
+            kind="image",
+            mime_type="image/png",
+            path=str(image_path),
+            storage_path=storage_path,
+            asset_id=asset.id,
+            filename="approval.png",
+            size_bytes=len(image_bytes),
+            sha256=digest,
+            retention_state="active",
+        )
+        append_user_message(
+            db,
+            thread=thread,
+            run_id=run.id,
+            content="please inspect this approval image",
+            sequence_id=reserve_message_sequences(db, thread_id=thread.id, count=1),
+            attachments=(attachment,),
+        )
+        save_approval_checkpoint(
+            db,
+            thread=thread,
+            run=run,
+            tool_call=ToolCall(
+                id="call-1",
+                name="delete_file",
+                arguments={"path": "/tmp/data.txt"},
+            ),
+            step_id=None,
+            sequence_id=reserve_message_sequences(db, thread_id=thread.id, count=1),
+        )
+        db.commit()
+
+        from anima_server.services.agent import approve_or_deny_turn
+
+        await approve_or_deny_turn(
+            run_id=run.id,
+            user_id=user.id,
+            approved=True,
+            db=db,
+            runtime_db=db,
+        )
+        annotations = (
+            db.query(RuntimeImageAnnotation)
+            .filter(
+                RuntimeImageAnnotation.user_id == user.id,
+                RuntimeImageAnnotation.image_asset_id == asset.id,
+                RuntimeImageAnnotation.status == "active",
+            )
+            .all()
+        )
+        annotation_kinds = {annotation.annotation_kind for annotation in annotations}
+
+    assert {"upload_context", "metadata"} <= annotation_kinds
 
 
 @pytest.mark.asyncio

@@ -44,7 +44,7 @@ from anima_server.services.agent import (
 from anima_server.services.agent.attachments import (
     AttachmentTooLargeError,
     AttachmentValidationError,
-    resolve_message_attachment_path,
+    resolve_message_attachment,
     validate_chat_attachment_inputs,
 )
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
@@ -205,8 +205,9 @@ async def get_message_attachment(
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
 
-    resolved = resolve_message_attachment_path(
-        message.content_json,
+    resolved = resolve_message_attachment(
+        runtime_db,
+        message=message,
         attachment_id=attachment_id,
     )
     if resolved is None:
@@ -375,12 +376,21 @@ async def get_proactive_notice(
     if result is None:
         return {"notice": None}
 
+    context_message: dict[str, object] = {
+        "role": "assistant",
+        "content": result.message,
+        "source": result.source,
+    }
+    if result.pills:
+        context_message["pills"] = result.pills
+
     return {
         "notice": {
             "id": result.id,
             "message": result.message,
             "source": result.source,
             "llmGenerated": result.llm_generated,
+            "pills": result.pills,
             "context": {
                 "currentFocus": result.context.current_focus,
                 "openTaskCount": result.context.open_task_count,
@@ -388,13 +398,7 @@ async def get_proactive_notice(
                 "daysSinceLastChat": result.context.days_since_last_chat,
                 "upcomingDeadlines": list(result.context.upcoming_deadlines),
             },
-            "contextMessages": [
-                {
-                    "role": "assistant",
-                    "content": result.message,
-                    "source": result.source,
-                }
-            ],
+            "contextMessages": [context_message],
         }
     }
 

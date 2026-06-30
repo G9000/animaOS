@@ -115,6 +115,7 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `memory_access_log`, `memory_retrieval_feedback` | Deferred read/feedback updates for ranking and heat | Synced back to durable memory metrics |
 | `embeddings` | pgvector-backed search rows for `MemoryItem` content | Cache derived from `MemoryItem.embedding_json` and rebuildable |
 | `runtime_documents`, `runtime_document_chunks` | Uploaded document metadata and chunk text for RAG | Runtime context; not durable memory unless conclusions are promoted |
+| `runtime_image_assets`, `runtime_image_message_links`, `runtime_image_annotations` | Central per-user image binaries, chat provenance links, and searchable image-derived text | Runtime visual memory assets; not durable SQLCipher memory unless a future explicit promotion flow creates memory candidates |
 
 ### Memory Categories
 
@@ -135,6 +136,22 @@ Uploaded documents and their chunks are runtime context, not canonical memories.
 pgvector indexes document chunks in the runtime `embeddings` table with `source_type="document_chunk"` and `source_id` pointing at `runtime_document_chunks.id`. Document RAG search hydrates those hits back into chunks and document metadata so the agent can cite or reason over source text without converting the whole document into memory.
 
 Only approved conclusions cross into long-term memory. A PDF or document workflow may extract proposed facts, preferences, goals, or relationships, but those proposals must become `MemoryCandidate` rows and pass through the Soul Writer promotion path before they become `MemoryItem` records, structured claims, or evidence in SQLCipher. Rejected or unreviewed extracted text remains runtime document context.
+
+## Visual Image Asset Boundary
+
+Chat images are first-class runtime visual memory assets. `services.images.store.register_image_asset()` validates MIME type and magic bytes, computes SHA-256, and stores each user-owned image once under `users/<user_id>/media/images/<sha-prefix>/<sha>.<ext>`. `runtime_image_assets` owns the binary metadata and retention state; `runtime_image_message_links` records which chat message/attachment referenced the asset.
+
+Image indexing writes text annotations into `runtime_image_annotations`:
+
+- `upload_context` from the user message and filename,
+- `metadata` for MIME/size and other local facts,
+- optional `vision_caption`, `vision_tags`, and `ocr_text` when the configured image helper/model declares support.
+
+Active annotations are embedded into runtime `embeddings` rows with `source_type="image_annotation"` and the annotation id as `source_id`. Prompt assembly reuses the turn query embedding to build a small `relevant_images` block, and the agent can explicitly call `search_images` for bounded visual recall. Proactive image prompts select only owned, indexed, non-deleted, unprompted assets and record `proactivePromptedAt` in image metadata to suppress repeats.
+
+Deletion is explicit. Removing an image from a chat deletes the message link and attachment metadata; orphaned transient assets are deleted with their annotations, embeddings, row, and safe-to-delete file. Reused or retained assets survive link removal. Forgetting an image globally removes all links, annotations, `image_annotation` embeddings, the asset row, and the local file when path validation succeeds. Thread deletion uses the same cleanup rule for orphaned transient images.
+
+This is separate from the document path. PDFs continue to use `runtime_documents` and `runtime_document_chunks`; GIF uploads are stored as image assets without frame-level analysis in v1; video, audio, timecoded media, and generic media annotation should be planned as separate work rather than folded into the image tables.
 
 ---
 

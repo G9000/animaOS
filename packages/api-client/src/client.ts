@@ -968,6 +968,36 @@ export function createApiClient(options: ApiClientOptions) {
           },
         }),
     },
+    images: {
+      removeFromMessage: (messageId: number, attachmentId: string) =>
+        request<{
+          status: string;
+          imageAssetId: number | null;
+          assetDeleted: boolean;
+          fileDeleted: boolean;
+        }>(
+          `/images/messages/${messageId}/attachments/${encodeURIComponent(attachmentId)}`,
+          { method: "DELETE" },
+        ),
+      forget: (imageAssetId: number) =>
+        request<{
+          status: string;
+          imageAssetId: number;
+          fileDeleted: boolean;
+        }>(`/images/${imageAssetId}`, { method: "DELETE" }),
+      setRetention: (
+        imageAssetId: number,
+        retentionState: "transient" | "retained" | "durable",
+      ) =>
+        request<{
+          status: string;
+          imageAssetId: number;
+          retentionState: string;
+        }>(`/images/${imageAssetId}/retention`, {
+          method: "PATCH",
+          body: { retentionState },
+        }),
+    },
     threads: {
       list: () => request<ThreadListResponse>("/threads"),
       create: () =>

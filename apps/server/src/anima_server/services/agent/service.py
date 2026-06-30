@@ -10,11 +10,16 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeThread,
+)
 from anima_server.schemas.chat import (
     ChatContextMessage,
     ChatRequestAttachment,
@@ -79,6 +84,7 @@ from anima_server.services.agent.sequencing import (
     reserve_message_sequences,
 )
 from anima_server.services.agent.state import (
+    ATTACHMENTS_CONTENT_KEY,
     AgentCitation,
     AgentContextFragment,
     AgentResult,
@@ -88,6 +94,7 @@ from anima_server.services.agent.state import (
     StoredMessage,
     attach_serialized_pills,
     deserialize_agent_retrieval,
+    deserialize_stored_attachments,
     extract_stored_pills,
     extract_stored_retrieval,
     serialize_agent_retrieval,
@@ -206,12 +213,19 @@ def _prepare_image_attachments(
     *,
     user_id: int,
     attachments: Sequence[ChatRequestAttachment],
+    runtime_db: Session | None = None,
 ) -> tuple[StoredAttachment, ...]:
-    return prepare_chat_attachments(user_id=user_id, attachments=attachments)
+    return prepare_chat_attachments(
+        user_id=user_id,
+        attachments=attachments,
+        runtime_db=runtime_db,
+    )
 
 
 def _delete_prepared_attachments(attachments: Sequence[StoredAttachment]) -> None:
     for attachment in attachments:
+        if not attachment.delete_on_error:
+            continue
         with contextlib.suppress(OSError):
             Path(attachment.path).unlink(missing_ok=True)
 
@@ -493,6 +507,8 @@ async def _approve_or_deny_turn_locked(
             else 0
         ),
     )
+    runtime_db.commit()
+    _index_run_user_image_attachments_inline(runtime_db, user_id=user_id, run=run)
     runtime_db.commit()
     _refresh_companion_history(
         user_id=user_id,
@@ -808,6 +824,13 @@ async def _execute_agent_turn_locked(
             exc=exc,
         )
         raise
+    _index_image_attachments_inline(
+        runtime_db,
+        user_id=user_id,
+        user_message=user_message,
+        attachments=turn_ctx.attachments,
+    )
+    runtime_db.commit()
     _refresh_companion_history(
         user_id=user_id,
         runtime_db=runtime_db,
@@ -951,6 +974,7 @@ async def _prepare_turn_context(
     prepared_attachments = _prepare_image_attachments(
         user_id=user_id,
         attachments=attachments,
+        runtime_db=runtime_db,
     )
     cleaned_context_messages = [
         (message, message.content.strip())
@@ -1083,11 +1107,11 @@ def _fail_turn_setup(
         runtime_db.refresh(run)
         if run.status != "running":
             return
-        user_msg.is_in_context = False
-        runtime_db.add(user_msg)
-        for context_message in context_messages:
-            context_message.is_in_context = False
-            runtime_db.add(context_message)
+        _evict_failed_turn_messages(
+            runtime_db,
+            user_msg=user_msg,
+            context_messages=context_messages,
+        )
         mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
     except Exception:
@@ -1793,13 +1817,11 @@ async def _invoke_turn_runtime(
         )
         raise exc.cause from exc
     except Exception as exc:
-        # Remove orphaned user message from active context so it doesn't
-        # replay as valid history on the next turn.
-        user_msg.is_in_context = False
-        runtime_db.add(user_msg)
-        for context_message in turn_ctx.context_messages:
-            context_message.is_in_context = False
-            runtime_db.add(context_message)
+        _evict_failed_turn_messages(
+            runtime_db,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+        )
         mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
         raise
@@ -1947,6 +1969,59 @@ def _memory_item_uri(memory_item_id: int) -> str:
     return f"memory://items/{memory_item_id}"
 
 
+def _index_image_attachments_inline(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    user_message: str,
+    attachments: Sequence[StoredAttachment],
+) -> None:
+    image_asset_ids = [
+        attachment.asset_id for attachment in attachments if attachment.asset_id is not None
+    ]
+    if not image_asset_ids:
+        return
+    try:
+        from anima_server.services.images.indexing import index_image_attachments_for_message
+
+        with runtime_db.begin_nested():
+            index_image_attachments_for_message(
+                runtime_db,
+                user_id=user_id,
+                image_asset_ids=image_asset_ids,
+                upload_context=user_message,
+            )
+    except Exception:
+        logger.debug("Inline image annotation indexing failed", exc_info=True)
+
+
+def _index_run_user_image_attachments_inline(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    run: RuntimeRun,
+) -> None:
+    user_message = runtime_db.scalar(
+        select(RuntimeMessage)
+        .where(
+            RuntimeMessage.run_id == run.id,
+            RuntimeMessage.user_id == user_id,
+            RuntimeMessage.role == "user",
+        )
+        .order_by(RuntimeMessage.sequence_id, RuntimeMessage.id)
+        .limit(1)
+    )
+    if user_message is None:
+        return
+
+    _index_image_attachments_inline(
+        runtime_db,
+        user_id=user_id,
+        user_message=user_message.content_text or "",
+        attachments=deserialize_stored_attachments(user_message.content_json),
+    )
+
+
 def _refresh_companion_history(
     *,
     user_id: int,
@@ -1981,15 +2056,120 @@ def _handle_step_failure(
     # Remove orphaned user message from active context regardless of
     # how far the step progressed — tool side-effects (if any) are
     # committed atomically with the run-failure record below.
-    user_msg.is_in_context = False
-    runtime_db.add(user_msg)
-    for context_message in context_messages:
-        context_message.is_in_context = False
-        runtime_db.add(context_message)
+    _evict_failed_turn_messages(
+        runtime_db,
+        user_msg=user_msg,
+        context_messages=context_messages,
+    )
 
     detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
     mark_run_failed(runtime_db, run, detail)
     runtime_db.commit()
+
+
+def _evict_failed_turn_messages(
+    runtime_db: Session,
+    *,
+    user_msg: RuntimeMessage,
+    context_messages: Sequence[RuntimeMessage] = (),
+) -> None:
+    user_msg.is_in_context = False
+    runtime_db.add(user_msg)
+    _remove_failed_turn_image_links(runtime_db, user_msg=user_msg)
+    for context_message in context_messages:
+        context_message.is_in_context = False
+        runtime_db.add(context_message)
+
+
+def _remove_failed_turn_image_links(
+    runtime_db: Session,
+    *,
+    user_msg: RuntimeMessage,
+) -> None:
+    link_rows = list(
+        runtime_db.execute(
+            select(
+                RuntimeImageMessageLink.attachment_id,
+                RuntimeImageMessageLink.image_asset_id,
+            ).where(
+                RuntimeImageMessageLink.user_id == user_msg.user_id,
+                RuntimeImageMessageLink.message_id == user_msg.id,
+            )
+        ).all()
+    )
+    image_asset_ids = {image_asset_id for _attachment_id, image_asset_id in link_rows}
+    if not image_asset_ids:
+        return
+
+    _remove_failed_turn_attachment_metadata(
+        user_msg,
+        attachment_ids={attachment_id for attachment_id, _image_asset_id in link_rows},
+        image_asset_ids=image_asset_ids,
+    )
+    runtime_db.execute(
+        delete(RuntimeImageMessageLink).where(
+            RuntimeImageMessageLink.user_id == user_msg.user_id,
+            RuntimeImageMessageLink.message_id == user_msg.id,
+        )
+    )
+    runtime_db.flush()
+
+    from anima_server.services.images.deletion import _delete_orphaned_transient_asset
+
+    for image_asset_id in image_asset_ids:
+        _delete_orphaned_transient_asset(
+            runtime_db,
+            user_id=user_msg.user_id,
+            image_asset_id=image_asset_id,
+        )
+
+
+def _remove_failed_turn_attachment_metadata(
+    user_msg: RuntimeMessage,
+    *,
+    attachment_ids: set[str],
+    image_asset_ids: set[int],
+) -> None:
+    content_json = user_msg.content_json
+    if not isinstance(content_json, dict):
+        return
+    raw_attachments = content_json.get(ATTACHMENTS_CONTENT_KEY)
+    if not isinstance(raw_attachments, list):
+        return
+
+    filtered_attachments = [
+        attachment
+        for attachment in raw_attachments
+        if not _is_failed_turn_attachment(
+            attachment,
+            attachment_ids=attachment_ids,
+            image_asset_ids=image_asset_ids,
+        )
+    ]
+    if len(filtered_attachments) == len(raw_attachments):
+        return
+
+    next_content_json = dict(content_json)
+    if filtered_attachments:
+        next_content_json[ATTACHMENTS_CONTENT_KEY] = filtered_attachments
+    else:
+        next_content_json.pop(ATTACHMENTS_CONTENT_KEY, None)
+    user_msg.content_json = next_content_json or None
+
+
+def _is_failed_turn_attachment(
+    attachment: object,
+    *,
+    attachment_ids: set[str],
+    image_asset_ids: set[int],
+) -> bool:
+    if not isinstance(attachment, dict):
+        return False
+    attachment_id = attachment.get("id")
+    if isinstance(attachment_id, str) and attachment_id in attachment_ids:
+        return True
+    asset_id = attachment.get("assetId")
+    return isinstance(asset_id, int) and asset_id in image_asset_ids
 
 
 def _persist_approval_checkpoint(

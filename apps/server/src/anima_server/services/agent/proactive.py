@@ -77,7 +77,20 @@ class ProactiveNoticeResult:
     context: GreetingContext
     source: str = "proactive_notice"
     llm_generated: bool = False
+    pills: list[dict[str, object]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProactiveImageCandidate:
+    image_asset_id: int
+    filename: str | None
+    source_message_id: int | None
+    source_thread_id: int | None
+    attachment_id: str | None
+    attachment_url: str | None
+    snippet: str
+    pills: list[dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -463,6 +476,131 @@ def build_static_proactive_notice(
     return None
 
 
+def select_proactive_image_candidate(
+    runtime_db: Session,
+    *,
+    user_id: int,
+) -> ProactiveImageCandidate | None:
+    """Select one indexed image that has not already been proactively surfaced."""
+    from anima_server.models.runtime import (
+        RuntimeImageAnnotation,
+        RuntimeImageAsset,
+        RuntimeImageMessageLink,
+        RuntimeMessage,
+    )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+    rows = runtime_db.execute(
+        select(RuntimeImageAsset, RuntimeImageAnnotation)
+        .join(
+            RuntimeImageAnnotation,
+            RuntimeImageAnnotation.image_asset_id == RuntimeImageAsset.id,
+        )
+        .where(
+            RuntimeImageAsset.user_id == user_id,
+            RuntimeImageAsset.status == "indexed",
+            RuntimeImageAnnotation.user_id == user_id,
+            RuntimeImageAnnotation.status == "active",
+            select(RuntimeEmbedding.id)
+            .where(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == "image_annotation",
+                RuntimeEmbedding.source_id == RuntimeImageAnnotation.id,
+                RuntimeEmbedding.content_hash == RuntimeImageAnnotation.content_hash,
+            )
+            .exists(),
+        )
+        .order_by(RuntimeImageAsset.created_at.desc(), RuntimeImageAnnotation.created_at.desc())
+        .limit(50)
+    ).all()
+
+    seen_assets: set[int] = set()
+    for asset, annotation in rows:
+        if asset.id in seen_assets:
+            continue
+        seen_assets.add(asset.id)
+        metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+        if metadata.get("proactivePromptedAt"):
+            continue
+
+        source = runtime_db.execute(
+            select(RuntimeImageMessageLink, RuntimeMessage)
+            .join(RuntimeMessage, RuntimeImageMessageLink.message_id == RuntimeMessage.id)
+            .where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.image_asset_id == asset.id,
+                RuntimeMessage.user_id == user_id,
+            )
+            .order_by(RuntimeImageMessageLink.created_at.desc())
+            .limit(1)
+        ).first()
+        source_message_id: int | None = None
+        source_thread_id: int | None = None
+        attachment_id: str | None = None
+        attachment_url: str | None = None
+        if source is not None:
+            link, message = source
+            source_message_id = message.id
+            source_thread_id = message.thread_id
+            attachment_id = link.attachment_id
+            if attachment_id:
+                attachment_url = f"/api/chat/messages/{message.id}/attachments/{attachment_id}"
+
+        label = asset.filename or f"image-{asset.id}"
+        return ProactiveImageCandidate(
+            image_asset_id=asset.id,
+            filename=asset.filename,
+            source_message_id=source_message_id,
+            source_thread_id=source_thread_id,
+            attachment_id=attachment_id,
+            attachment_url=attachment_url,
+            snippet=_compact_notice_snippet(annotation.content_text),
+            pills=[
+                {
+                    "kind": "image_source",
+                    "label": label[:_MAX_GREETING_PILL_LABEL_CHARS],
+                    "ref": f"image:{asset.id}",
+                }
+            ],
+        )
+    return None
+
+
+def mark_proactive_image_prompted(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    image_asset_id: int,
+    now: datetime | None = None,
+) -> None:
+    from anima_server.models.runtime import RuntimeImageAsset
+
+    asset = runtime_db.scalar(
+        select(RuntimeImageAsset).where(
+            RuntimeImageAsset.id == image_asset_id,
+            RuntimeImageAsset.user_id == user_id,
+        )
+    )
+    if asset is None:
+        return
+    metadata = dict(asset.metadata_json) if isinstance(asset.metadata_json, dict) else {}
+    metadata["proactivePromptedAt"] = (now or datetime.now(UTC)).isoformat()
+    asset.metadata_json = metadata
+    runtime_db.flush()
+
+
+def _compact_notice_snippet(text: str, *, limit: int = 120) -> str:
+    snippet = " ".join(text.split())
+    if len(snippet) <= limit:
+        return snippet
+    return snippet[: limit - 1].rstrip() + "..."
+
+
+def _build_image_proactive_message(candidate: ProactiveImageCandidate) -> str:
+    label = candidate.filename or f"image {candidate.image_asset_id}"
+    return f"You shared {label}. Want to look at it together?"
+
+
 def build_agent_state(
     db: Session,
     *,
@@ -770,6 +908,26 @@ async def generate_proactive_notice(
 
     effective_instruction = (instruction or "").strip() or config.custom_instruction
     ctx = gather_greeting_context(db, user_id=user_id, runtime_db=runtime_db)
+    if (
+        runtime_db is not None
+        and config.memory_nudges_enabled
+        and not effective_instruction
+    ):
+        image_candidate = select_proactive_image_candidate(runtime_db, user_id=user_id)
+        if image_candidate is not None:
+            mark_proactive_image_prompted(
+                runtime_db,
+                user_id=user_id,
+                image_asset_id=image_candidate.image_asset_id,
+            )
+            return ProactiveNoticeResult(
+                id=f"proactive_image_{image_candidate.image_asset_id}",
+                message=_build_image_proactive_message(image_candidate),
+                context=ctx,
+                source="proactive_image",
+                pills=image_candidate.pills,
+            )
+
     fallback = build_static_proactive_notice(
         ctx,
         instruction=effective_instruction,

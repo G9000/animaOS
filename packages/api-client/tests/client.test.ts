@@ -149,6 +149,43 @@ describe("createApiClient error handling", () => {
     );
   });
 
+  test("calls image deletion and retention endpoints", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(JSON.stringify({ status: "ok" }));
+      },
+    });
+
+    await api.images.removeFromMessage(12, "img_abc");
+    await api.images.forget(34);
+    await api.images.setRetention(34, "retained");
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/images/messages/12/attachments/img_abc",
+        method: "DELETE",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/images/34",
+        method: "DELETE",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/images/34/retention",
+        method: "PATCH",
+        body: { retentionState: "retained" },
+      },
+    ]);
+  });
+
   test("gets and updates presence configuration", async () => {
     const requests: Array<{ url: string; method: string; body?: unknown }> = [];
     const api = createApiClient({

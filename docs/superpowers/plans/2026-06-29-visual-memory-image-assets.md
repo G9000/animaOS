@@ -80,7 +80,7 @@ flowchart TD
 | Area | Files |
 | --- | --- |
 | Runtime models | `apps/server/src/anima_server/models/runtime.py`, `apps/server/src/anima_server/models/__init__.py` |
-| Runtime migration | `apps/server/alembic_runtime/versions/<new_revision>_image_assets.py` |
+| Runtime migration | `apps/server/alembic_runtime/versions/018_image_assets.py` |
 | Image service package | new `apps/server/src/anima_server/services/images/` |
 | Image storage | new `apps/server/src/anima_server/services/images/store.py` |
 | Image capability/extraction | new `apps/server/src/anima_server/services/images/capabilities.py`, new `apps/server/src/anima_server/services/images/extractors.py` |
@@ -157,7 +157,7 @@ Keep this plan image-first. Do not broaden `VMI-001` through `VMI-006` into full
 **Files:**
 - Modify: `apps/server/src/anima_server/models/runtime.py`
 - Modify: `apps/server/src/anima_server/models/__init__.py`
-- Create: `apps/server/alembic_runtime/versions/<revision>_image_assets.py`
+- Create: `apps/server/alembic_runtime/versions/018_image_assets.py`
 - Test: `apps/server/tests/test_image_asset_models.py`
 
 - [ ] **Step 1: Write migration/model tests**
@@ -186,7 +186,7 @@ Ensure unique constraints:
 
 ```text
 uq_runtime_image_assets_user_sha256
-uq_runtime_image_message_links_message_asset
+uq_runtime_image_message_links_message_attachment
 uq_runtime_image_annotations_asset_kind_hash
 ```
 

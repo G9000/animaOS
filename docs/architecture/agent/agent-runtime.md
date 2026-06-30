@@ -402,6 +402,10 @@ Error handling at this layer catches `LLMConfigError`, `LLMInvocationError`, and
 |----------|---------|
 | `GET /api/chat/history` | Load past messages (decrypted) |
 | `GET /api/chat/messages/{message_id}/attachments/{attachment_id}` | Return an authenticated chat image attachment for the owning unlocked user |
+| `GET /api/images/{image_asset_id}` | Return an authenticated central image asset for the owning unlocked user |
+| `DELETE /api/images/messages/{message_id}/attachments/{attachment_id}` | Remove one image from a chat message and clean orphaned transient assets |
+| `DELETE /api/images/{image_asset_id}` | Forget an image globally, including links, annotations, embeddings, asset row, and safe-to-delete file |
+| `PATCH /api/images/{image_asset_id}/retention` | Set image retention to `transient`, `retained`, or `durable` |
 | `DELETE /api/chat/history` | Clear thread |
 | `POST /api/chat/reset` | Close current thread, rotate to a new one |
 | `POST /api/chat/dry-run` | Assemble full prompt without calling LLM |
@@ -485,10 +489,10 @@ This is the most complex preparation stage. It assembles everything the runtime 
 4. **Set thread title** -- `maybe_set_thread_title(thread, user_message)` sets from first message if not already set (truncated to 60 chars)
 5. **Track thread switch** -- if companion's thread_id changed, invalidate history cache
 6. **Load history** -- `companion.ensure_history_loaded(runtime_db)` returns cached conversation window or loads from runtime DB (PostgreSQL)
-7. **Save attachments** -- `attachments.prepare_chat_attachments()` writes validated image files under `{data_dir}/users/{user_id}/attachments/chat/` and returns `StoredAttachment` metadata
+7. **Save attachments** -- `attachments.prepare_chat_attachments()` writes validated image files through the central image store under `{data_dir}/users/{user_id}/media/images/<sha-prefix>/<sha>.<ext>` and returns `StoredAttachment` metadata with `assetId`
 8. **Create run record** -- `persistence.create_run()` writes a `RuntimeRun` row (status, provider, model, mode)
 9. **Reserve sequences** -- `sequencing.reserve_message_sequences()` allocates monotonic message IDs
-10. **Persist user message** -- `persistence.append_user_message()` writes to `runtime_messages`; image metadata is stored in `content_json.attachments`, while `content_text` remains the text prompt
+10. **Persist user message** -- `persistence.append_user_message()` writes to `runtime_messages`; image metadata is stored in `content_json.attachments`, and `runtime_image_message_links` records message-to-asset provenance while `content_text` remains the text prompt
 11. **Pre-turn Soul Writer** -- `count_eligible_candidates()` checks for pending promotions; if any, `run_soul_writer(user_id)` promotes PendingMemoryOps and MemoryCandidates from PG to SQLCipher before building memory blocks
 12. **Semantic retrieval** -- `embeddings.hybrid_search()`:
     - Embeds the user message
@@ -501,6 +505,7 @@ This is the most complex preparation stage. It assembles everything the runtime 
     - Emotional context
     - Semantic results (query-dependent)
     - Facts, preferences, goals, tasks, relationships
+    - Relevant images from indexed `runtime_image_annotations`, ranked with the turn query embedding
     - Current focus, thread summary, episodes, session notes
     - Merged blocks read from both soul DB and runtime DB pending ops
 14. **Feedback signals** -- `feedback_signals.collect_feedback_signals()` detects re-asks and corrections
@@ -508,7 +513,7 @@ This is the most complex preparation stage. It assembles everything the runtime 
 
 Returns a `_TurnContext(history, conversation_turn_count, memory_blocks, attachments)`.
 
-Image attachments are runtime conversation artifacts. They are available to the active thread history and thread-message APIs, but are not embedded, searched, summarized into soul memory, or promoted by the Soul Writer. If a user image message remains in the context window, the saved image is sent to the provider again; if compaction removes it from active context, only a text placeholder such as `[image: board.jpg]` remains in summaries and transcripts.
+Image attachments are runtime visual memory assets. The binary is stored once per user by checksum in `runtime_image_assets`; messages link to it through `runtime_image_message_links`. Upload context and metadata are indexed as `runtime_image_annotations` and embedded into `RuntimeEmbedding` rows with `source_type="image_annotation"`. Caption and OCR/text annotations are capability-gated: they are added only when the configured helper/model declares support. If the image remains in the active context window, the provider still receives the saved image bytes for vision input; later turns can also retrieve indexed annotation snippets through the `relevant_images` memory block or the `search_images` tool.
 
 ### Stage 1b: Proactive Compaction (`_proactive_compact_if_needed`)
 
@@ -818,7 +823,7 @@ Retry limit and backoff are configurable via `agent_llm_retry_limit`, `agent_llm
 
 The runtime keeps image input provider-neutral until the adapter boundary. `StoredMessage.attachments` and the current turn's `user_attachments` become `HumanMessage.content` blocks in `messages.py`; adapters then read the saved file bytes while constructing provider payloads.
 
-OpenAI-compatible adapters emit mixed content arrays with text blocks and `image_url` data URIs. Anthropic-compatible adapters emit text blocks and base64 image source blocks. Base64 is never stored in the runtime database; the database stores only metadata and a data-dir-relative storage path. The authenticated attachment endpoint resolves that path under the configured data directory and verifies message ownership before returning the file.
+OpenAI-compatible adapters emit mixed content arrays with text blocks and `image_url` data URIs. Anthropic-compatible adapters emit text blocks and base64 image source blocks. Base64 is never stored in the runtime database; the database stores only metadata and a data-dir-relative storage path. The authenticated chat attachment endpoint resolves through message ownership and `runtime_image_message_links`; `/api/images/{image_asset_id}` resolves central assets directly for the owning unlocked user.
 
 ---
 

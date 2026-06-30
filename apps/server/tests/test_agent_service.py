@@ -10,7 +10,16 @@ from pathlib import Path
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import User
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageAnnotation,
+    RuntimeImageAsset,
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeStep,
+    RuntimeThread,
+)
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.schemas.chat import ChatRequestAttachment
 from anima_server.services.agent import list_agent_history, run_agent
 from anima_server.services.agent import service as agent_service
@@ -1317,6 +1326,7 @@ async def test_cancelled_agent_task_marks_running_run_cancelled(
 
 @pytest.mark.asyncio
 async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure after the run/user message are persisted but before the
@@ -1326,7 +1336,35 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
     async def fail_assemble(**kwargs: object) -> None:
         raise RuntimeError("memory load failed")
 
+    class FakeCompanion:
+        thread_id: int | None = None
+
+        def invalidate_history(self, *, thread_id: int) -> None:
+            del thread_id
+
+        def ensure_history_loaded(
+            self,
+            runtime_db: Session,
+            *,
+            thread_id: int,
+        ) -> list[agent_service.StoredMessage]:
+            del runtime_db, thread_id
+            return []
+
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+    monkeypatch.setattr(
+        agent_service, "_get_companion", lambda user_id: FakeCompanion()
+    )
     monkeypatch.setattr(agent_service, "_assemble_turn_context", fail_assemble)
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="stage1-failed.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
         user = User(
@@ -1338,13 +1376,169 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
         soul_session.commit()
 
         with pytest.raises(RuntimeError, match="memory load failed"):
-            await run_agent("hello", user.id, soul_session, runtime_session)
+            await run_agent(
+                "hello",
+                user.id,
+                soul_session,
+                runtime_session,
+                attachments=[attachment],
+            )
 
         run = runtime_session.query(RuntimeRun).one()
         message = runtime_session.query(RuntimeMessage).one()
+        image_link_count = runtime_session.query(RuntimeImageMessageLink).count()
+        image_asset_count = runtime_session.query(RuntimeImageAsset).count()
 
     assert run.status == "failed"
     assert message.is_in_context is False
+    assert image_link_count == 0
+    assert image_asset_count == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_image_turn_does_not_leave_active_image_annotations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.thread_manager import get_thread_messages_for_display
+
+    class FailingRunner:
+        async def invoke(self, *args, **kwargs) -> AgentResult:
+            del args, kwargs
+            raise RuntimeError("provider failed")
+
+    agent_service.invalidate_agent_runtime_cache()
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: FailingRunner())
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="failed.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="failed-image-turn",
+                password_hash="not-used",
+                display_name="Failed Image Turn",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            with pytest.raises(RuntimeError, match="provider failed"):
+                await run_agent(
+                    "what is this failed image?",
+                    user.id,
+                    soul_session,
+                    runtime_session,
+                    attachments=[attachment],
+                )
+
+            run = runtime_session.query(RuntimeRun).one()
+            user_msg = (
+                runtime_session.query(RuntimeMessage)
+                .filter(RuntimeMessage.role == "user")
+                .one()
+            )
+            thread = runtime_session.query(RuntimeThread).one()
+            display_messages = get_thread_messages_for_display(
+                runtime_session,
+                thread=thread,
+                user_id=user.id,
+                transcripts_dir=tmp_path / "transcripts",
+                dek=None,
+            )
+            annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
+            image_link_count = runtime_session.query(RuntimeImageMessageLink).count()
+            image_asset_count = runtime_session.query(RuntimeImageAsset).count()
+            embedding_count = (
+                runtime_session.query(RuntimeEmbedding)
+                .filter(RuntimeEmbedding.source_type == "image_annotation")
+                .count()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert run.status == "failed"
+    assert user_msg.is_in_context is False
+    assert image_link_count == 0
+    assert image_asset_count == 0
+    assert display_messages[0]["attachments"] == []
+    assert annotation_count == 0
+    assert embedding_count == 0
+
+
+def test_inline_image_indexing_rolls_back_partial_rows_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_after_partial_flush(
+        runtime_db: Session,
+        *,
+        user_id: int,
+        image_asset_ids: list[int],
+        upload_context: str,
+    ) -> None:
+        runtime_db.add(
+            RuntimeImageAnnotation(
+                user_id=user_id,
+                image_asset_id=image_asset_ids[0],
+                annotation_kind="upload_context",
+                content_text=upload_context,
+                content_hash=RuntimeImageAnnotation.compute_content_hash(upload_context),
+                status="active",
+            )
+        )
+        runtime_db.flush()
+        raise RuntimeError("indexing failed after flush")
+
+    from anima_server.services.images import indexing as indexing_module
+
+    monkeypatch.setattr(
+        indexing_module,
+        "index_image_attachments_for_message",
+        fail_after_partial_flush,
+    )
+
+    with runtime_db_session() as runtime_session:
+        asset = RuntimeImageAsset(
+            user_id=7,
+            filename="partial.png",
+            mime_type="image/png",
+            storage_path="users/7/media/images/aa/partial.png",
+            sha256="a" * 64,
+            size_bytes=len(PNG_BYTES),
+            retention_state="active",
+        )
+        runtime_session.add(asset)
+        runtime_session.flush()
+
+        agent_service._index_image_attachments_inline(
+            runtime_session,
+            user_id=7,
+            user_message="partial indexing should not persist",
+            attachments=(
+                agent_service.StoredAttachment(
+                    id="partial",
+                    kind="image",
+                    mime_type="image/png",
+                    path="unused",
+                    storage_path=asset.storage_path,
+                    asset_id=asset.id,
+                    retention_state="active",
+                ),
+            ),
+        )
+        runtime_session.commit()
+
+        annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
+
+    assert annotation_count == 0
 
 
 def test_should_retry_after_compaction_only_before_tools_executed(

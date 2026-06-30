@@ -1,17 +1,17 @@
 # VMI-005 - Agent retrieval and proactive image use
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `VMI-000`
 - Depends on: `VMI-004`
-- Owner: unassigned
+- Owner: Codex
 - PRD: docs/prds/memory/visual-memory-image-assets-v1.md
 - Plan: docs/superpowers/plans/2026-06-29-visual-memory-image-assets.md
 - Created: 2026-06-29 10:53 MYT
-- Updated: 2026-06-29 10:53 MYT
-- Started:
-- Completed:
+- Updated: 2026-06-29 12:23 MYT
+- Started: 2026-06-29 12:10 MYT
+- Completed: 2026-06-29 12:23 MYT
 
 ## Goal
 
@@ -38,12 +38,22 @@ Let Anima retrieve indexed images during agent context assembly and safely ask p
 ## Activity Log
 
 - 2026-06-29 10:53 MYT - Ticket created.
+- 2026-06-29 12:10 MYT - Claimed by Codex after completing `VMI-004`; starting bounded agent retrieval context work.
+- 2026-06-29 12:23 MYT - Added bounded `relevant_images` prompt context, `search_images`, source metadata, proactive image candidate selection, and repeat suppression.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_image_retrieval_context.py apps/server/tests/test_proactive_image_memory.py -q`
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/images/rag.py`
+  - `apps/server/src/anima_server/services/agent/memory_blocks.py`
+  - `apps/server/src/anima_server/services/agent/tools.py`
+  - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/server/src/anima_server/api/routes/chat.py`
+  - `packages/api-client/src/types.ts`
+  - `apps/server/tests/test_image_retrieval_context.py`
+  - `apps/server/tests/test_proactive_image_memory.py`
 - Notes:
-  - none
+  - Retrieval reuses the turn query embedding for prompt context, so context assembly does not add a second provider call.
+  - `search_images` uses the configured embedding path only when the agent explicitly invokes the tool.

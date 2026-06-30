@@ -36,6 +36,7 @@ _MIRROR_DESCRIPTIONS: dict[str, str] = {
     "goals": "My goals and aspirations.",
     "relationships": "People in my life.",
     "relevant_memories": "Relevant memories. Use these naturally.",
+    "relevant_images": "Relevant image memories. Use these naturally when the visual source helps answer.",
     "user_tasks": "My task list.",
     "current_focus": "My current focus.",
     "thread_summary": "Summary of earlier conversation (compacted).",
@@ -214,6 +215,15 @@ def build_turn_memory_blocks(
             semantic_item_ids = frozenset(
                 item_id for item_id, _content, _score in semantic_results)
 
+    image_block = build_image_memory_block(
+        runtime_db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        agent_type=agent_type,
+    )
+    if image_block is not None:
+        blocks.append(image_block)
+
     facts_block = build_facts_memory_block(
         db, user_id=user_id, query_embedding=query_embedding, runtime_db=runtime_db, agent_type=agent_type,
         exclude_ids=semantic_item_ids,
@@ -279,6 +289,65 @@ def build_turn_memory_blocks(
         blocks.append(session_block)
 
     return tuple(blocks)
+
+
+def build_image_memory_block(
+    runtime_db: Session | None,
+    *,
+    user_id: int,
+    query_embedding: Sequence[float] | None,
+    agent_type: str = "companion",
+    limit: int = 3,
+) -> MemoryBlock | None:
+    """Build a compact prompt block from indexed image annotations."""
+    if runtime_db is None or not query_embedding or limit <= 0:
+        return None
+
+    from anima_server.services.images.rag import search_image_annotations_by_embedding
+
+    results = search_image_annotations_by_embedding(
+        runtime_db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        limit=limit,
+    )
+    if not results:
+        return None
+
+    lines: list[str] = []
+    for result in results:
+        label = result.filename or f"image-{result.image_asset_id}"
+        source_parts = [
+            f"thread={result.source_thread_id}" if result.source_thread_id is not None else None,
+            f"message={result.source_message_id}" if result.source_message_id is not None else None,
+            f"attachment={result.attachment_id}" if result.attachment_id else None,
+            f"url={result.attachment_url}" if result.attachment_url else None,
+        ]
+        source_text = "; ".join(part for part in source_parts if part)
+        source_suffix = f"; {source_text}" if source_text else ""
+        snippet = _compact_image_snippet(result.snippet)
+        lines.append(
+            f"- image:{result.image_asset_id} {label} "
+            f"({result.mime_type}; score={result.similarity:.2f}{source_suffix}): {snippet}"
+        )
+
+    return MemoryBlock(
+        label="relevant_images",
+        value="\n".join(lines),
+        description=_desc(
+            "relevant_images",
+            "Relevant image memories from previous uploads. Use naturally when visual context helps; cite image ids or attachment URLs only when useful.",
+            agent_type,
+        ),
+        read_only=True,
+    )
+
+
+def _compact_image_snippet(text: str, *, limit: int = 220) -> str:
+    snippet = " ".join(text.split())
+    if len(snippet) <= limit:
+        return snippet
+    return snippet[: limit - 1].rstrip() + "..."
 
 
 def _build_semantic_block(
