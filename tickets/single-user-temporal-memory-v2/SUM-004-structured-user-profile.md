@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 01:17 MYT
+- Updated: 2026-07-01 01:35 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -54,6 +54,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 18:44 MYT - Addressed additional PR #71 review feedback by preserving structured profile fields/evidence in vault exports and keeping profile retractions sticky against automated upserts.
 - 2026-07-01 00:54 MYT - Addressed additional PR #71 review feedback by not counting claim reconciliation when user corrections block stale claims and deduping source-less claim reconciliation evidence.
 - 2026-07-01 01:17 MYT - Addressed additional PR #71 review feedback by deferring profile self-link restore during vault import and dropping claim-evidence profile FKs that cannot be valid without exporting claim evidence.
+- 2026-07-01 01:35 MYT - Addressed additional PR #71 review feedback by explicitly deleting profile evidence before deleting profile fields during user-initiated forget.
 
 ## Validation
 
@@ -178,6 +179,11 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `git diff --check` - passed with CRLF warnings only.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade -q` - PR #71 review regression failed before fix because deleting a profile field could leave orphaned profile evidence when SQLite FK cascades were not enforced.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 4 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 28 passed, 24 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 2 passed.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py

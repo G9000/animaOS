@@ -620,6 +620,77 @@ def test_forget_memory_deletes_profile_fields_sourced_from_claim_chain() -> None
     assert forgotten_evidence is None
 
 
+def test_forget_memory_deletes_profile_evidence_without_fk_cascade() -> None:
+    service = _profile_service()
+    from anima_server.models import (
+        MemoryItem,
+        MemoryItemEvidence,
+        UserProfileField,
+        UserProfileFieldEvidence,
+    )
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as a systems designer",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        source_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=item.id,
+            source_kind="explicit_save",
+            evidence_text=ef(
+                user.id,
+                "works as a systems designer",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add(source_evidence)
+        db.flush()
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="systems designer",
+            evidence_text="works as a systems designer",
+            source_kind="explicit_save",
+            source_memory_id=item.id,
+            source_evidence_id=source_evidence.id,
+        )
+        field_id = field.id
+        profile_evidence_id = db.scalar(
+            select(UserProfileFieldEvidence.id).where(
+                UserProfileFieldEvidence.profile_field_id == field_id,
+            )
+        )
+        assert profile_evidence_id is not None
+        db.expire(field, ["evidence"])
+
+        result = forget_memory(db, memory_id=item.id, user_id=user.id)
+        forgotten_field = db.get(UserProfileField, field_id)
+        forgotten_profile_evidence = db.get(
+            UserProfileFieldEvidence,
+            profile_evidence_id,
+        )
+
+    assert result.items_forgotten == 1
+    assert forgotten_field is None
+    assert forgotten_profile_evidence is None
+
+
 def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None:
     service = _profile_service()
     from anima_server.models import MemoryItem, MemoryItemEvidence, UserProfileFieldEvidence

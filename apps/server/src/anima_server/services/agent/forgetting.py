@@ -487,6 +487,19 @@ def _delete_profile_fields_for_forget(
             db.scalars(surviving_query.order_by(UserProfileFieldEvidence.id.desc())).all()
         )
         if not surviving_evidence_rows:
+            evidence_to_delete = {
+                evidence.id: evidence
+                for evidence in matching_evidence_by_field.get(field_id, [])
+            }
+            for evidence in db.scalars(
+                select(UserProfileFieldEvidence).where(
+                    UserProfileFieldEvidence.user_id == user_id,
+                    UserProfileFieldEvidence.profile_field_id == field.id,
+                )
+            ).all():
+                evidence_to_delete[evidence.id] = evidence
+            for evidence in evidence_to_delete.values():
+                db.delete(evidence)
             db.delete(field)
             deleted_count += 1
             continue
