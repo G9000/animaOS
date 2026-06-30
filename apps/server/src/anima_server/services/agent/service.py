@@ -10,11 +10,16 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageMessageLink,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeThread,
+)
 from anima_server.schemas.chat import (
     ChatContextMessage,
     ChatRequestAttachment,
@@ -1101,11 +1106,11 @@ def _fail_turn_setup(
         runtime_db.refresh(run)
         if run.status != "running":
             return
-        user_msg.is_in_context = False
-        runtime_db.add(user_msg)
-        for context_message in context_messages:
-            context_message.is_in_context = False
-            runtime_db.add(context_message)
+        _evict_failed_turn_messages(
+            runtime_db,
+            user_msg=user_msg,
+            context_messages=context_messages,
+        )
         mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
     except Exception:
@@ -1811,13 +1816,11 @@ async def _invoke_turn_runtime(
         )
         raise exc.cause from exc
     except Exception as exc:
-        # Remove orphaned user message from active context so it doesn't
-        # replay as valid history on the next turn.
-        user_msg.is_in_context = False
-        runtime_db.add(user_msg)
-        for context_message in turn_ctx.context_messages:
-            context_message.is_in_context = False
-            runtime_db.add(context_message)
+        _evict_failed_turn_messages(
+            runtime_db,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+        )
         mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
         raise
@@ -2052,15 +2055,63 @@ def _handle_step_failure(
     # Remove orphaned user message from active context regardless of
     # how far the step progressed — tool side-effects (if any) are
     # committed atomically with the run-failure record below.
-    user_msg.is_in_context = False
-    runtime_db.add(user_msg)
-    for context_message in context_messages:
-        context_message.is_in_context = False
-        runtime_db.add(context_message)
+    _evict_failed_turn_messages(
+        runtime_db,
+        user_msg=user_msg,
+        context_messages=context_messages,
+    )
 
     detail = f"step {err.context.step_index} failed at {stage.name}: {err.cause}"
     mark_run_failed(runtime_db, run, detail)
     runtime_db.commit()
+
+
+def _evict_failed_turn_messages(
+    runtime_db: Session,
+    *,
+    user_msg: RuntimeMessage,
+    context_messages: Sequence[RuntimeMessage] = (),
+) -> None:
+    user_msg.is_in_context = False
+    runtime_db.add(user_msg)
+    _remove_failed_turn_image_links(runtime_db, user_msg=user_msg)
+    for context_message in context_messages:
+        context_message.is_in_context = False
+        runtime_db.add(context_message)
+
+
+def _remove_failed_turn_image_links(
+    runtime_db: Session,
+    *,
+    user_msg: RuntimeMessage,
+) -> None:
+    image_asset_ids = set(
+        runtime_db.scalars(
+            select(RuntimeImageMessageLink.image_asset_id).where(
+                RuntimeImageMessageLink.user_id == user_msg.user_id,
+                RuntimeImageMessageLink.message_id == user_msg.id,
+            )
+        ).all()
+    )
+    if not image_asset_ids:
+        return
+
+    runtime_db.execute(
+        delete(RuntimeImageMessageLink).where(
+            RuntimeImageMessageLink.user_id == user_msg.user_id,
+            RuntimeImageMessageLink.message_id == user_msg.id,
+        )
+    )
+    runtime_db.flush()
+
+    from anima_server.services.images.deletion import _delete_orphaned_transient_asset
+
+    for image_asset_id in image_asset_ids:
+        _delete_orphaned_transient_asset(
+            runtime_db,
+            user_id=user_msg.user_id,
+            image_asset_id=image_asset_id,
+        )
 
 
 def _persist_approval_checkpoint(

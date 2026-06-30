@@ -13,6 +13,7 @@ from anima_server.models import User
 from anima_server.models.runtime import (
     RuntimeImageAnnotation,
     RuntimeImageAsset,
+    RuntimeImageMessageLink,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
@@ -1325,6 +1326,7 @@ async def test_cancelled_agent_task_marks_running_run_cancelled(
 
 @pytest.mark.asyncio
 async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure after the run/user message are persisted but before the
@@ -1334,7 +1336,35 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
     async def fail_assemble(**kwargs: object) -> None:
         raise RuntimeError("memory load failed")
 
+    class FakeCompanion:
+        thread_id: int | None = None
+
+        def invalidate_history(self, *, thread_id: int) -> None:
+            del thread_id
+
+        def ensure_history_loaded(
+            self,
+            runtime_db: Session,
+            *,
+            thread_id: int,
+        ) -> list[agent_service.StoredMessage]:
+            del runtime_db, thread_id
+            return []
+
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+    monkeypatch.setattr(
+        agent_service, "_get_companion", lambda user_id: FakeCompanion()
+    )
     monkeypatch.setattr(agent_service, "_assemble_turn_context", fail_assemble)
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="stage1-failed.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
         user = User(
@@ -1346,13 +1376,23 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
         soul_session.commit()
 
         with pytest.raises(RuntimeError, match="memory load failed"):
-            await run_agent("hello", user.id, soul_session, runtime_session)
+            await run_agent(
+                "hello",
+                user.id,
+                soul_session,
+                runtime_session,
+                attachments=[attachment],
+            )
 
         run = runtime_session.query(RuntimeRun).one()
         message = runtime_session.query(RuntimeMessage).one()
+        image_link_count = runtime_session.query(RuntimeImageMessageLink).count()
+        image_asset_count = runtime_session.query(RuntimeImageAsset).count()
 
     assert run.status == "failed"
     assert message.is_in_context is False
+    assert image_link_count == 0
+    assert image_asset_count == 0
 
 
 @pytest.mark.asyncio
@@ -1405,6 +1445,8 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
                 .one()
             )
             annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
+            image_link_count = runtime_session.query(RuntimeImageMessageLink).count()
+            image_asset_count = runtime_session.query(RuntimeImageAsset).count()
             embedding_count = (
                 runtime_session.query(RuntimeEmbedding)
                 .filter(RuntimeEmbedding.source_type == "image_annotation")
@@ -1415,6 +1457,8 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
 
     assert run.status == "failed"
     assert user_msg.is_in_context is False
+    assert image_link_count == 0
+    assert image_asset_count == 0
     assert annotation_count == 0
     assert embedding_count == 0
 
