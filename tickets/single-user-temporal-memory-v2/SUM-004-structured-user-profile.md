@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 03:15 MYT
+- Updated: 2026-07-01 03:33 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -60,6 +60,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 02:34 MYT - Addressed additional PR #71 review feedback by preserving profile update candidate timestamps during promotion so older retryable candidates cannot supersede newer profile fields.
 - 2026-07-01 02:55 MYT - Addressed additional PR #71 review feedback by deleting single-token runtime-message profile facts during forget cleanup and scoping sourceless claim reconciliation idempotency to the target profile field.
 - 2026-07-01 03:15 MYT - Addressed additional PR #71 review feedback by preserving newer same-value profile observation timestamps and adding an explicit tier-0 prompt budget policy for the `user_profile` block.
+- 2026-07-01 03:33 MYT - Addressed additional PR #71 review feedback by truncating rendered structured-profile prompt blocks at line boundaries instead of cutting profile fields mid-line.
 
 ## Validation
 
@@ -211,6 +212,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_keeps_newer_observed_time_for_same_value apps/server/tests/test_prompt_budget.py::TestBlockPriority::test_user_profile_keeps_identity_priority_under_tight_budget -q` - PR #71 review regressions failed before fix because same-value upserts moved `last_observed_at` backwards and `user_profile` used the default tier-3 prompt-budget policy.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_keeps_newer_observed_time_for_same_value apps/server/tests/test_prompt_budget.py::TestBlockPriority::test_user_profile_keeps_identity_priority_under_tight_budget -q` - 2 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_prompt_budget.py -q` - 45 passed, 30 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_render_profile_prompt_block_truncates_at_line_boundary -q` - PR #71 review regression failed before fix because the rendered profile block returned a partial `- pronouns: they` field line.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_render_profile_prompt_block_truncates_at_line_boundary -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 35 passed, 31 warnings.
   - `git diff --check` - passed with CRLF warnings only.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.

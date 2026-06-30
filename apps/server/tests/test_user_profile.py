@@ -441,6 +441,37 @@ def test_render_profile_prompt_block_is_grouped_and_deterministic() -> None:
     assert "evidence" not in rendered.lower()
 
 
+def test_render_profile_prompt_block_truncates_at_line_boundary() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="identity",
+            key="name",
+            value="Leo",
+            evidence_text="my name is Leo",
+        )
+        service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="identity",
+            key="pronouns",
+            value="they/them with a deliberately long value that should not be split",
+            evidence_text="pronouns detail",
+        )
+
+        rendered = service.render_profile_prompt_block(
+            db,
+            user_id=user.id,
+            max_chars=len("Identity:\n- name: Leo\n- pronouns: they"),
+        )
+
+    assert rendered == "Identity:\n- name: Leo"
+    assert "- pronouns: they" not in rendered
+
+
 def test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields() -> None:
     service = _profile_service()
     with _db_session() as db:

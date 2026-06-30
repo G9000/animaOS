@@ -342,7 +342,17 @@ def render_profile_prompt_block(
             lines.append(f"- {field.key}: {value}")
 
     rendered = "\n".join(lines)
-    return rendered[:max_chars].rstrip()
+    return _truncate_profile_prompt_block(rendered, max_chars)
+
+
+def _truncate_profile_prompt_block(rendered: str, max_chars: int) -> str:
+    if len(rendered) <= max_chars:
+        return rendered.rstrip()
+    truncated = rendered[:max_chars]
+    line_boundary = truncated.rfind("\n")
+    if line_boundary > 0:
+        return truncated[:line_boundary].rstrip()
+    return truncated.rstrip()
 
 
 def reconcile_profile_from_claims(
