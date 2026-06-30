@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeImageAnnotation,
     RuntimeImageAsset,
@@ -14,9 +16,11 @@ from anima_server.models.runtime import (
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
+from anima_server.services.data_crypto import get_active_dek
 from anima_server.services.images.store import delete_image_asset_file_if_safe
 
 RETAINED_IMAGE_STATES = frozenset({"retained", "durable"})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,15 +187,11 @@ def delete_thread_with_image_cleanup(
             )
         ).all()
     )
-    candidate_asset_ids = list(
-        runtime_db.scalars(
-            select(RuntimeImageMessageLink.image_asset_id)
-            .where(
-                RuntimeImageMessageLink.user_id == user_id,
-                RuntimeImageMessageLink.message_id.in_(message_ids),
-            )
-            .distinct()
-        ).all()
+    candidate_asset_ids = _candidate_thread_image_asset_ids(
+        runtime_db,
+        user_id=user_id,
+        thread_id=thread_id,
+        message_ids=message_ids,
     )
 
     if message_ids:
@@ -259,6 +259,112 @@ def set_image_retention_state(
     asset.retention_state = normalized
     runtime_db.flush()
     return asset
+
+
+def _candidate_thread_image_asset_ids(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+    message_ids: list[int],
+) -> list[int]:
+    candidate_asset_ids: list[int] = []
+    seen: set[int] = set()
+
+    if message_ids:
+        for image_asset_id in runtime_db.scalars(
+            select(RuntimeImageMessageLink.image_asset_id)
+            .where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.message_id.in_(message_ids),
+            )
+            .distinct()
+        ).all():
+            _append_candidate_asset_id(candidate_asset_ids, seen, image_asset_id)
+
+    for image_asset_id in _archived_thread_image_asset_ids(
+        user_id=user_id,
+        thread_id=thread_id,
+    ):
+        _append_candidate_asset_id(candidate_asset_ids, seen, image_asset_id)
+
+    return candidate_asset_ids
+
+
+def _append_candidate_asset_id(
+    candidate_asset_ids: list[int],
+    seen: set[int],
+    value: object,
+) -> None:
+    image_asset_id = _coerce_positive_int(value)
+    if image_asset_id is None or image_asset_id in seen:
+        return
+    seen.add(image_asset_id)
+    candidate_asset_ids.append(image_asset_id)
+
+
+def _archived_thread_image_asset_ids(
+    *,
+    user_id: int,
+    thread_id: int,
+) -> list[int]:
+    transcripts_dir = settings.data_dir / "transcripts"
+    if not transcripts_dir.exists():
+        return []
+
+    candidates = [
+        path
+        for path in transcripts_dir.glob(f"*_thread-{thread_id}.jsonl*")
+        if path.suffix in {".jsonl", ".enc"}
+    ]
+    if not candidates:
+        return []
+
+    from anima_server.services.agent.transcript_archive import decrypt_transcript
+
+    transcript_path = sorted(candidates)[-1]
+    try:
+        messages = decrypt_transcript(
+            transcript_path,
+            dek=get_active_dek(user_id, "conversations"),
+            thread_id=thread_id,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to inspect archived transcript image assets for thread %s",
+            thread_id,
+            exc_info=True,
+        )
+        return []
+
+    candidate_asset_ids: list[int] = []
+    seen: set[int] = set()
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        raw_attachments = message.get("attachments")
+        if not isinstance(raw_attachments, list):
+            continue
+        for attachment in raw_attachments:
+            if not isinstance(attachment, dict):
+                continue
+            _append_candidate_asset_id(
+                candidate_asset_ids,
+                seen,
+                attachment.get("assetId"),
+            )
+    return candidate_asset_ids
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isdecimal():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
 
 
 def _delete_orphaned_transient_asset(

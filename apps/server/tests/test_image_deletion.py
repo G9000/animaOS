@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.indexing import index_image_asset
 from anima_server.services.images.store import register_image_asset, resolve_image_storage_path
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 pytest_plugins = ("conftest_runtime",)
 
@@ -323,6 +324,74 @@ def test_delete_thread_with_image_cleanup_removes_orphaned_transient_asset(
     assert not path.exists()
     assert runtime_db.get(RuntimeImageAsset, asset.id) is None
     assert runtime_db.get(RuntimeThread, message.thread_id) is None
+
+
+def test_delete_thread_with_image_cleanup_uses_archive_after_message_pruning(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.deletion import delete_thread_with_image_cleanup
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    asset, message, attachment_id, path = _linked_image(runtime_db, user_id=7)
+    asset_id = asset.id
+    thread_id = message.thread_id
+    storage_path = asset.storage_path
+    thread = runtime_db.get(RuntimeThread, thread_id)
+    assert thread is not None
+    thread.status = "closed"
+    thread.is_archived = True
+
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir()
+    (transcripts_dir / f"2026-01-01_thread-{thread_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "content": "archived screenshot",
+                "ts": "2026-01-01T00:00:00+00:00",
+                "seq": 1,
+                "attachments": [
+                    {
+                        "id": attachment_id,
+                        "kind": "image",
+                        "mimeType": "image/png",
+                        "filename": "screen.png",
+                        "assetId": asset_id,
+                        "storagePath": storage_path,
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime_db.execute(
+        delete(RuntimeImageMessageLink).where(
+            RuntimeImageMessageLink.message_id == message.id
+        )
+    )
+    runtime_db.execute(delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id))
+    runtime_db.commit()
+
+    result = delete_thread_with_image_cleanup(
+        runtime_db,
+        user_id=7,
+        thread_id=thread_id,
+    )
+
+    assert result.deleted is True
+    assert result.assets_deleted == [asset_id]
+    assert result.files_deleted == [str(path)]
+    assert not path.exists()
+    assert runtime_db.get(RuntimeImageAsset, asset_id) is None
+    assert runtime_db.scalar(select(func.count(RuntimeImageAnnotation.id))) == 0
+    assert runtime_db.scalar(
+        select(func.count(RuntimeEmbedding.id)).where(
+            RuntimeEmbedding.source_type == "image_annotation"
+        )
+    ) == 0
 
 
 def test_delete_thread_with_image_cleanup_keeps_retained_asset(
