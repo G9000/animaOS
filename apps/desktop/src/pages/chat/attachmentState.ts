@@ -33,17 +33,15 @@ export function removeMatchingAttachmentsFromMessages(
       ? attachments.filter((attachment) => !predicate(attachment))
       : attachments;
     const pills = message.pills ?? [];
-    const nextPills =
-      isInScope || scope.kind === "all_messages"
-        ? pills.filter(
-            (pill) =>
-              !isMatchingImageSourcePill(
-                pill,
-                removedAttachmentIds,
-                removedAssetIds,
-              ),
-          )
-        : pills;
+    const canMatchAssetRefs = isInScope || scope.kind === "all_messages";
+    const nextPills = pills.filter(
+      (pill) =>
+        !isMatchingImageSourcePill(
+          pill,
+          removedAttachmentIds,
+          canMatchAssetRefs ? removedAssetIds : EMPTY_ASSET_IDS,
+        ),
+    );
 
     if (
       nextAttachments.length === attachments.length &&
@@ -59,6 +57,8 @@ export function removeMatchingAttachmentsFromMessages(
     };
   });
 }
+
+const EMPTY_ASSET_IDS = new Set<number>();
 
 function isMessageInRemovalScope(
   message: ChatMessage,
