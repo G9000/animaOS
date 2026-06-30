@@ -1370,6 +1370,50 @@ async def test_user_profile_api_lists_corrects_and_retracts_fields(
 
 
 @pytest.mark.asyncio
+async def test_user_profile_api_returns_400_for_blank_correction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _profile_service()
+    from anima_server.api.routes import consciousness
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        consciousness,
+        "require_unlocked_user",
+        lambda request, user_id: None,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Product manager",
+            evidence_text="I work as a product manager",
+        )
+        field_id = field.id
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await consciousness.correct_user_profile_field(
+                user_id=user.id,
+                field_id=field_id,
+                payload=consciousness.UserProfileCorrectionRequest(
+                    value="   ",
+                    confidence=0.95,
+                    evidenceText="blank correction",
+                ),
+                request=object(),
+                db=db,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Profile value cannot be empty"
+
+
+@pytest.mark.asyncio
 async def test_llm_extraction_parses_profile_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     from anima_server.config import settings
     from anima_server.services.agent.consolidation import extract_memories_via_llm

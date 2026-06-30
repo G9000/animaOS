@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 01:53 MYT
+- Updated: 2026-07-01 02:13 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -56,6 +56,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 01:17 MYT - Addressed additional PR #71 review feedback by deferring profile self-link restore during vault import and dropping claim-evidence profile FKs that cannot be valid without exporting claim evidence.
 - 2026-07-01 01:35 MYT - Addressed additional PR #71 review feedback by explicitly deleting profile evidence before deleting profile fields during user-initiated forget.
 - 2026-07-01 01:53 MYT - Addressed additional PR #71 review feedback by timestamp-guarding claim reconciliation so older claims do not supersede newer non-claim profile updates.
+- 2026-07-01 02:13 MYT - Addressed additional PR #71 review feedback by returning HTTP 400 for blank profile correction payloads instead of treating the existing field as missing.
 
 ## Validation
 
@@ -189,6 +190,10 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately -q` - 5 passed, 5 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 29 passed, 25 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - PR #71 review regression failed before fix because blank profile corrections returned 404 instead of 400.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_lists_corrects_and_retracts_fields apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 30 passed, 26 warnings.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py
