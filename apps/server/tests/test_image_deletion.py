@@ -99,6 +99,41 @@ def _linked_image(
     return stored.asset, message, attachment_id, path
 
 
+def _write_archived_image_transcript(
+    tmp_path: Path,
+    *,
+    thread_id: int,
+    attachment_id: str,
+    asset_id: int,
+    storage_path: str,
+    filename: str = "screen.png",
+) -> None:
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir(exist_ok=True)
+    (transcripts_dir / f"2026-01-01_thread-{thread_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "content": "archived screenshot",
+                "ts": "2026-01-01T00:00:00+00:00",
+                "seq": 1,
+                "attachments": [
+                    {
+                        "id": attachment_id,
+                        "kind": "image",
+                        "mimeType": "image/png",
+                        "filename": filename,
+                        "assetId": asset_id,
+                        "storagePath": storage_path,
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_forget_image_asset_removes_links_annotations_embeddings_row_and_file(
     runtime_db,
     tmp_path: Path,
@@ -392,6 +427,76 @@ def test_delete_thread_with_image_cleanup_uses_archive_after_message_pruning(
             RuntimeEmbedding.source_type == "image_annotation"
         )
     ) == 0
+
+
+def test_delete_thread_with_image_cleanup_keeps_asset_referenced_by_other_pruned_archive(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.deletion import delete_thread_with_image_cleanup
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    first_asset, first_message, first_attachment_id, path = _linked_image(
+        runtime_db,
+        user_id=7,
+        byte_suffix=b"shared",
+    )
+    second_asset, second_message, second_attachment_id, second_path = _linked_image(
+        runtime_db,
+        user_id=7,
+        byte_suffix=b"shared",
+        upload_context="Second archived screenshot.",
+    )
+    assert first_asset.id == second_asset.id
+    assert path == second_path
+    asset_id = first_asset.id
+    storage_path = first_asset.storage_path
+    first_thread_id = first_message.thread_id
+    second_thread_id = second_message.thread_id
+    for thread_id in (first_thread_id, second_thread_id):
+        thread = runtime_db.get(RuntimeThread, thread_id)
+        assert thread is not None
+        thread.status = "closed"
+        thread.is_archived = True
+
+    _write_archived_image_transcript(
+        tmp_path,
+        thread_id=first_thread_id,
+        attachment_id=first_attachment_id,
+        asset_id=asset_id,
+        storage_path=storage_path,
+    )
+    _write_archived_image_transcript(
+        tmp_path,
+        thread_id=second_thread_id,
+        attachment_id=second_attachment_id,
+        asset_id=asset_id,
+        storage_path=storage_path,
+    )
+    runtime_db.execute(
+        delete(RuntimeImageMessageLink).where(RuntimeImageMessageLink.user_id == 7)
+    )
+    runtime_db.execute(
+        delete(RuntimeMessage).where(
+            RuntimeMessage.thread_id.in_([first_thread_id, second_thread_id])
+        )
+    )
+    runtime_db.commit()
+
+    result = delete_thread_with_image_cleanup(
+        runtime_db,
+        user_id=7,
+        thread_id=first_thread_id,
+    )
+
+    assert result.deleted is True
+    assert result.assets_deleted == []
+    assert result.files_deleted == []
+    assert path.exists()
+    assert runtime_db.get(RuntimeImageAsset, asset_id) is not None
+    assert runtime_db.get(RuntimeThread, first_thread_id) is None
+    assert runtime_db.get(RuntimeThread, second_thread_id) is not None
 
 
 def test_delete_thread_with_image_cleanup_keeps_retained_asset(
