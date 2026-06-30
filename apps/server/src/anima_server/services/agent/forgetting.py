@@ -322,7 +322,7 @@ def forget_memory(
             )
         ).all()
     )
-    _retract_profile_fields_for_forget(
+    _delete_profile_fields_for_forget(
         db,
         user_id=user_id,
         source_memory_ids=chain_ids,
@@ -372,7 +372,7 @@ def forget_memory(
     return result
 
 
-def _retract_profile_fields_for_forget(
+def _delete_profile_fields_for_forget(
     db: Session,
     *,
     user_id: int,
@@ -380,47 +380,62 @@ def _retract_profile_fields_for_forget(
     source_evidence_ids: list[int],
     source_claim_evidence_ids: list[int],
 ) -> int:
-    criteria = [
+    field_criteria = [
         UserProfileField.source_memory_id.in_(source_memory_ids),
+    ]
+    evidence_criteria = [
         UserProfileFieldEvidence.source_memory_id.in_(source_memory_ids),
     ]
     if source_evidence_ids:
-        criteria.extend(
-            [
-                UserProfileField.source_evidence_id.in_(source_evidence_ids),
-                UserProfileFieldEvidence.source_evidence_id.in_(source_evidence_ids),
-            ]
+        field_criteria.append(UserProfileField.source_evidence_id.in_(source_evidence_ids))
+        evidence_criteria.append(
+            UserProfileFieldEvidence.source_evidence_id.in_(source_evidence_ids)
         )
     if source_claim_evidence_ids:
-        criteria.extend(
-            [
-                UserProfileField.source_claim_evidence_id.in_(source_claim_evidence_ids),
-                UserProfileFieldEvidence.source_claim_evidence_id.in_(
-                    source_claim_evidence_ids,
-                ),
-            ]
+        field_criteria.append(
+            UserProfileField.source_claim_evidence_id.in_(source_claim_evidence_ids)
+        )
+        evidence_criteria.append(
+            UserProfileFieldEvidence.source_claim_evidence_id.in_(
+                source_claim_evidence_ids,
+            )
         )
 
-    fields = list(
+    evidence_field_ids = list(
         db.scalars(
-            select(UserProfileField)
-            .outerjoin(UserProfileFieldEvidence)
-            .where(
-                UserProfileField.user_id == user_id,
-                UserProfileField.status == "active",
-                or_(*criteria),
+            select(UserProfileFieldEvidence.profile_field_id).where(
+                UserProfileFieldEvidence.user_id == user_id,
+                or_(*evidence_criteria),
             )
-            .distinct()
         ).all()
     )
+    field_ids = set(evidence_field_ids)
+    field_ids.update(
+        db.scalars(
+            select(UserProfileField.id).where(
+                UserProfileField.user_id == user_id,
+                or_(*field_criteria),
+            )
+        ).all()
+    )
+    if not field_ids:
+        return 0
 
-    now = datetime.now(UTC)
-    for profile_field in fields:
-        profile_field.status = "retracted"
-        profile_field.updated_at = now
-    if fields:
-        db.flush()
-    return len(fields)
+    ids = list(field_ids)
+    db.execute(
+        delete(UserProfileFieldEvidence).where(
+            UserProfileFieldEvidence.user_id == user_id,
+            UserProfileFieldEvidence.profile_field_id.in_(ids),
+        )
+    )
+    deleted = db.execute(
+        delete(UserProfileField).where(
+            UserProfileField.user_id == user_id,
+            UserProfileField.id.in_(ids),
+        )
+    )
+    db.flush()
+    return int(deleted.rowcount or 0)
 
 
 def _schedule_forget_external_cleanup_after_commit(

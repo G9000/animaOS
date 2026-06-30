@@ -133,7 +133,7 @@ def test_memory_delete_removes_item_evidence() -> None:
         assert remaining is None
 
 
-def test_forget_endpoint_invalidates_companion_after_profile_retraction(
+def test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server.services.agent.user_profile import (

@@ -301,9 +301,9 @@ def test_reconcile_profile_from_claims_tracks_claim_evidence_separately() -> Non
     assert evidence.source_claim_evidence_id == claim_evidence.id
 
 
-def test_forget_memory_retracts_profile_fields_sourced_from_claim_chain() -> None:
+def test_forget_memory_deletes_profile_fields_sourced_from_claim_chain() -> None:
     service = _profile_service()
-    from anima_server.models import MemoryItem, UserProfileField
+    from anima_server.models import MemoryItem, UserProfileField, UserProfileFieldEvidence
     from anima_server.services.agent.forgetting import forget_memory
 
     with _db_session() as db:
@@ -333,14 +333,23 @@ def test_forget_memory_retracts_profile_fields_sourced_from_claim_chain() -> Non
         service.reconcile_profile_from_claims(db, user_id=user.id)
         field = service.list_profile_fields(db, user_id=user.id)[0]
         field_id = field.id
+        evidence_id = field.evidence[0].id
 
         result = forget_memory(db, memory_id=item.id, user_id=user.id)
         active_after_forget = service.list_profile_fields(db, user_id=user.id)
+        history_after_forget = service.list_profile_fields(
+            db,
+            user_id=user.id,
+            include_history=True,
+        )
         forgotten_field = db.get(UserProfileField, field_id)
+        forgotten_evidence = db.get(UserProfileFieldEvidence, evidence_id)
 
     assert result.items_forgotten == 1
     assert active_after_forget == []
-    assert forgotten_field.status == "retracted"
+    assert history_after_forget == []
+    assert forgotten_field is None
+    assert forgotten_evidence is None
 
 
 @pytest.mark.asyncio
