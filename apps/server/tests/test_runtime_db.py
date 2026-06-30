@@ -262,9 +262,11 @@ def test_user_profile_migration_sets_source_fks_null_on_delete(
     assert ondelete_for(fields_fks, constrained_column="source_evidence_id") == "SET NULL"
     assert ondelete_for(fields_fks, constrained_column="source_claim_evidence_id") == "SET NULL"
     assert ondelete_for(fields_fks, constrained_column="superseded_by_id") == "SET NULL"
+    assert ondelete_for(fields_fks, constrained_column="user_id") == "CASCADE"
     assert ondelete_for(evidence_fks, constrained_column="source_memory_id") == "SET NULL"
     assert ondelete_for(evidence_fks, constrained_column="source_evidence_id") == "SET NULL"
     assert ondelete_for(evidence_fks, constrained_column="source_claim_evidence_id") == "SET NULL"
+    assert ondelete_for(evidence_fks, constrained_column="user_id") == "CASCADE"
 
 
 def test_legacy_soul_database_migration_repairs_existing_kg_columns(

@@ -145,6 +145,12 @@ def upsert_profile_field(
             db.flush()
             return existing
 
+        if _preserve_user_corrected_profile_field(
+            existing=existing,
+            incoming_source_kind=source_kind,
+        ):
+            return existing
+
     field = UserProfileField(
         user_id=user_id,
         category=normalized_category,
@@ -189,6 +195,16 @@ def upsert_profile_field(
     )
     db.flush()
     return field
+
+
+def _preserve_user_corrected_profile_field(
+    *,
+    existing: UserProfileField,
+    incoming_source_kind: str,
+) -> bool:
+    if existing.source_kind != "user_correction":
+        return False
+    return incoming_source_kind not in {"user_correction"}
 
 
 def correct_profile_field(

@@ -174,6 +174,61 @@ def test_upsert_profile_field_supersedes_and_preserves_evidence() -> None:
     assert corrected_confidence == 1.0
 
 
+def test_upsert_profile_field_preserves_user_correction_from_auto_update() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        extracted = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Designer",
+            confidence=0.7,
+            evidence_text="I work as a designer",
+            source_kind="profile_llm",
+        )
+        corrected = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Engineer",
+            confidence=1.0,
+            evidence_text="Actually, I work as an engineer",
+            source_kind="user_correction",
+        )
+
+        stale = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Designer",
+            confidence=0.9,
+            evidence_text="older extraction said designer",
+            source_kind="profile_llm",
+        )
+        active = service.list_profile_fields(db, user_id=user.id)
+        history = service.list_profile_fields(db, user_id=user.id, include_history=True)
+        active_value = df(
+            user.id,
+            active[0].value_text,
+            table="user_profile_fields",
+            field="value_text",
+        )
+        corrected_evidence_count = len(corrected.evidence)
+
+    assert stale.id == corrected.id
+    assert extracted.status == "superseded"
+    assert active_value == "Engineer"
+    assert [(field.id, field.status) for field in history] == [
+        (corrected.id, "active"),
+        (extracted.id, "superseded"),
+    ]
+    assert corrected_evidence_count == 1
+
+
 def test_render_profile_prompt_block_is_grouped_and_deterministic() -> None:
     service = _profile_service()
     with _db_session() as db:

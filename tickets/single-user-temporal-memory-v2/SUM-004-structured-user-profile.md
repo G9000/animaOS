@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 16:50 MYT
+- Updated: 2026-06-30 17:03 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -46,6 +46,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 13:58 MYT - Addressed additional PR #71 review feedback by preserving profile fields that still have surviving evidence after one source memory is forgotten.
 - 2026-06-30 14:41 MYT - Addressed additional PR #71 review feedback by deleting runtime-message-only profile fields when their source memory is forgotten and setting the profile self-FK to `ON DELETE SET NULL` in the migration.
 - 2026-06-30 16:50 MYT - Addressed additional PR #71 review feedback by narrowing runtime-message profile forget cleanup so unrelated profile fields from the same turn are preserved.
+- 2026-06-30 17:03 MYT - Addressed additional PR #71 review feedback by preserving user-corrected profile fields from conflicting automatic updates and setting profile `user_id` FKs to `ON DELETE CASCADE` in the migration.
 
 ## Validation
 
@@ -116,6 +117,14 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_unrelated_profile_field_from_same_turn -q` - PR #71 review regression failed before fix because runtime-message fallback deleted an unrelated profile field from the same turn.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_unrelated_profile_field_from_same_turn apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 2 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 39 passed, 14 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_preserves_user_correction_from_auto_update -q` - PR #71 review regression failed before fix because automatic profile updates could supersede a user correction.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - PR #71 review regression failed before fix because profile `user_id` FKs had no migration-level `ON DELETE CASCADE`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_preserves_user_correction_from_auto_update -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 40 passed, 15 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `git diff --check` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
