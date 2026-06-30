@@ -103,6 +103,31 @@ def test_failed_turn_cleanup_keeps_reused_asset_file(
     assert path.exists()
 
 
+def test_reused_image_asset_keeps_per_upload_filename(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    first = prepare_chat_attachments(
+        user_id=7,
+        attachments=[_attachment("first.png")],
+        runtime_db=runtime_db,
+    )
+    reused = prepare_chat_attachments(
+        user_id=7,
+        attachments=[_attachment("../second final.png")],
+        runtime_db=runtime_db,
+    )
+
+    assert first[0].asset_id == reused[0].asset_id
+    assert first[0].filename == "first.png"
+    assert reused[0].filename == "second final.png"
+    asset = runtime_db.get(RuntimeImageAsset, first[0].asset_id)
+    assert asset is not None
+    assert asset.filename == "first.png"
+
+
 def test_persisted_user_message_creates_image_asset_links(
     runtime_db,
     tmp_path: Path,

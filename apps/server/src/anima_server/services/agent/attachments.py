@@ -86,7 +86,7 @@ def prepare_chat_attachments(
                     path=str(stored_asset.path),
                     asset_id=stored_asset.asset.id,
                     storage_path=stored_asset.asset.storage_path,
-                    filename=stored_asset.asset.filename,
+                    filename=filename,
                     size_bytes=stored_asset.asset.size_bytes,
                     sha256=stored_asset.asset.sha256,
                     retention_state=stored_asset.asset.retention_state,
