@@ -1400,6 +1400,8 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from anima_server.services.agent.thread_manager import get_thread_messages_for_display
+
     class FailingRunner:
         async def invoke(self, *args, **kwargs) -> AgentResult:
             del args, kwargs
@@ -1444,6 +1446,14 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
                 .filter(RuntimeMessage.role == "user")
                 .one()
             )
+            thread = runtime_session.query(RuntimeThread).one()
+            display_messages = get_thread_messages_for_display(
+                runtime_session,
+                thread=thread,
+                user_id=user.id,
+                transcripts_dir=tmp_path / "transcripts",
+                dek=None,
+            )
             annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
             image_link_count = runtime_session.query(RuntimeImageMessageLink).count()
             image_asset_count = runtime_session.query(RuntimeImageAsset).count()
@@ -1459,6 +1469,7 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
     assert user_msg.is_in_context is False
     assert image_link_count == 0
     assert image_asset_count == 0
+    assert display_messages[0]["attachments"] == []
     assert annotation_count == 0
     assert embedding_count == 0
 

@@ -84,6 +84,7 @@ from anima_server.services.agent.sequencing import (
     reserve_message_sequences,
 )
 from anima_server.services.agent.state import (
+    ATTACHMENTS_CONTENT_KEY,
     AgentCitation,
     AgentContextFragment,
     AgentResult,
@@ -2085,17 +2086,26 @@ def _remove_failed_turn_image_links(
     *,
     user_msg: RuntimeMessage,
 ) -> None:
-    image_asset_ids = set(
-        runtime_db.scalars(
-            select(RuntimeImageMessageLink.image_asset_id).where(
+    link_rows = list(
+        runtime_db.execute(
+            select(
+                RuntimeImageMessageLink.attachment_id,
+                RuntimeImageMessageLink.image_asset_id,
+            ).where(
                 RuntimeImageMessageLink.user_id == user_msg.user_id,
                 RuntimeImageMessageLink.message_id == user_msg.id,
             )
         ).all()
     )
+    image_asset_ids = {image_asset_id for _attachment_id, image_asset_id in link_rows}
     if not image_asset_ids:
         return
 
+    _remove_failed_turn_attachment_metadata(
+        user_msg,
+        attachment_ids={attachment_id for attachment_id, _image_asset_id in link_rows},
+        image_asset_ids=image_asset_ids,
+    )
     runtime_db.execute(
         delete(RuntimeImageMessageLink).where(
             RuntimeImageMessageLink.user_id == user_msg.user_id,
@@ -2112,6 +2122,54 @@ def _remove_failed_turn_image_links(
             user_id=user_msg.user_id,
             image_asset_id=image_asset_id,
         )
+
+
+def _remove_failed_turn_attachment_metadata(
+    user_msg: RuntimeMessage,
+    *,
+    attachment_ids: set[str],
+    image_asset_ids: set[int],
+) -> None:
+    content_json = user_msg.content_json
+    if not isinstance(content_json, dict):
+        return
+    raw_attachments = content_json.get(ATTACHMENTS_CONTENT_KEY)
+    if not isinstance(raw_attachments, list):
+        return
+
+    filtered_attachments = [
+        attachment
+        for attachment in raw_attachments
+        if not _is_failed_turn_attachment(
+            attachment,
+            attachment_ids=attachment_ids,
+            image_asset_ids=image_asset_ids,
+        )
+    ]
+    if len(filtered_attachments) == len(raw_attachments):
+        return
+
+    next_content_json = dict(content_json)
+    if filtered_attachments:
+        next_content_json[ATTACHMENTS_CONTENT_KEY] = filtered_attachments
+    else:
+        next_content_json.pop(ATTACHMENTS_CONTENT_KEY, None)
+    user_msg.content_json = next_content_json or None
+
+
+def _is_failed_turn_attachment(
+    attachment: object,
+    *,
+    attachment_ids: set[str],
+    image_asset_ids: set[int],
+) -> bool:
+    if not isinstance(attachment, dict):
+        return False
+    attachment_id = attachment.get("id")
+    if isinstance(attachment_id, str) and attachment_id in attachment_ids:
+        return True
+    asset_id = attachment.get("assetId")
+    return isinstance(asset_id, int) and asset_id in image_asset_ids
 
 
 def _persist_approval_checkpoint(
