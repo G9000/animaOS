@@ -36,6 +36,7 @@ import {
 } from "../../lib/preferences";
 import {
   type AttachmentRemovalScope,
+  removeImageAttachmentAfterDelete,
   removeMatchingAttachmentsFromMessages,
 } from "./attachmentState";
 
@@ -749,16 +750,22 @@ export default function Chat() {
   const handleRemoveImageAttachment = useCallback(
     async (messageId: number, attachment: ChatAttachment) => {
       try {
-        await api.images.removeFromMessage(messageId, attachment.id);
-        removeAttachmentFromMessages(
-          { kind: "single_message", messageId },
-          (candidate) => candidate.id === attachment.id,
+        const result = await api.images.removeFromMessage(
+          messageId,
+          attachment.id,
+        );
+        setMessages((prev) =>
+          removeImageAttachmentAfterDelete(prev, {
+            messageId,
+            attachment,
+            result,
+          }),
         );
       } catch {
         setError("Failed to remove image from chat.");
       }
     },
-    [removeAttachmentFromMessages],
+    [],
   );
 
   const handleForgetImageAttachment = useCallback(

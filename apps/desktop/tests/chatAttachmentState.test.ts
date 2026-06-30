@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage } from "@anima/api-client";
-import { removeMatchingAttachmentsFromMessages } from "../src/pages/chat/attachmentState";
+import {
+  removeImageAttachmentAfterDelete,
+  removeMatchingAttachmentsFromMessages,
+} from "../src/pages/chat/attachmentState";
 
 function message(
   id: number,
@@ -151,6 +154,53 @@ describe("removeMatchingAttachmentsFromMessages", () => {
     ]);
     expect(next[3].pills).toEqual([
       { kind: "image_source", label: "asset.png", ref: "image:10" },
+    ]);
+  });
+
+  test("removes asset-level pills everywhere when deleting the final transient link", () => {
+    const removedAttachment = {
+      id: "first",
+      kind: "image" as const,
+      mimeType: "image/png",
+      assetId: 10,
+      url: "/api/images/10",
+    };
+    const messages = [
+      message(1, [removedAttachment]),
+      {
+        ...message(2, []),
+        role: "assistant",
+        pills: [
+          { kind: "image_source", label: "asset.png", ref: "image:10" },
+          { kind: "document_source", label: "Plan", ref: 44 },
+        ],
+      },
+      message(3, [
+        {
+          id: "other-asset",
+          kind: "image",
+          mimeType: "image/png",
+          assetId: 11,
+          url: "/api/images/11",
+        },
+      ]),
+    ];
+
+    const next = removeImageAttachmentAfterDelete(messages, {
+      messageId: 1,
+      attachment: removedAttachment,
+      result: {
+        imageAssetId: 10,
+        assetDeleted: true,
+      },
+    });
+
+    expect(next[0].attachments).toEqual([]);
+    expect(next[1].pills).toEqual([
+      { kind: "document_source", label: "Plan", ref: 44 },
+    ]);
+    expect(next[2].attachments?.map((attachment) => attachment.id)).toEqual([
+      "other-asset",
     ]);
   });
 });

@@ -4,7 +4,38 @@ export type AttachmentRemovalScope =
   | { kind: "single_message"; messageId: number }
   | { kind: "all_messages" };
 
+export type ImageAttachmentDeleteResult = {
+  imageAssetId: number | null;
+  assetDeleted: boolean;
+};
+
 type ChatPill = NonNullable<ChatMessage["pills"]>[number];
+
+export function removeImageAttachmentAfterDelete(
+  messages: ChatMessage[],
+  options: {
+    messageId: number;
+    attachment: ChatAttachment;
+    result: ImageAttachmentDeleteResult;
+  },
+): ChatMessage[] {
+  const removedAssetId = options.result.assetDeleted
+    ? options.result.imageAssetId ?? options.attachment.assetId ?? null
+    : null;
+  if (removedAssetId != null) {
+    return removeMatchingAttachmentsFromMessages(
+      messages,
+      { kind: "all_messages" },
+      (attachment) => attachment.assetId === removedAssetId,
+    );
+  }
+
+  return removeMatchingAttachmentsFromMessages(
+    messages,
+    { kind: "single_message", messageId: options.messageId },
+    (attachment) => attachment.id === options.attachment.id,
+  );
+}
 
 export function removeMatchingAttachmentsFromMessages(
   messages: ChatMessage[],
