@@ -39,7 +39,7 @@ async def forget_single_memory(
         db,
         memory_id=memory_id,
         user_id=user_id,
-        runtime_db_factory=get_runtime_session_factory(),
+        runtime_db_factory=_get_runtime_session_factory_or_none(),
     )
     db.commit()
     _invalidate_companion_memory(user_id)
@@ -93,3 +93,10 @@ def _invalidate_companion_memory(user_id: int) -> None:
             companion.invalidate_memory()
     except Exception:
         pass
+
+
+def _get_runtime_session_factory_or_none():
+    try:
+        return get_runtime_session_factory()
+    except Exception:
+        return None

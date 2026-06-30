@@ -647,7 +647,7 @@ def _profile_mapping_for_claim(claim: MemoryClaim) -> tuple[str, str] | None:
             return "identity", slot
         if slot in {"occupation", "employer"}:
             return "work", slot
-        return "identity", slot
+        return None
     if namespace == "preference":
         return "preferences", slot
     if namespace == "goal":

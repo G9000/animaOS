@@ -399,6 +399,25 @@ def test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields() ->
     assert has_claim_evidence
 
 
+def test_reconcile_profile_from_claims_skips_unmapped_fact_claims() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="visited Kyoto in 2024",
+            category="fact",
+            evidence_text="I visited Kyoto in 2024",
+        )
+
+        reconciled = service.reconcile_profile_from_claims(db, user_id=user.id)
+        active = service.list_profile_fields(db, user_id=user.id)
+
+    assert reconciled == 0
+    assert active == []
+
+
 def test_reconcile_profile_from_claims_is_idempotent_for_same_claim() -> None:
     service = _profile_service()
     with _db_session() as db:

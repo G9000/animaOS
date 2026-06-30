@@ -191,6 +191,41 @@ def test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup(
             assert list_profile_fields(db, user_id=user_id) == []
 
 
+def test_forget_endpoint_succeeds_without_runtime_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_runtime_factory():
+        raise RuntimeError("runtime database is unavailable")
+
+    monkeypatch.setattr(
+        "anima_server.api.routes.forgetting.get_runtime_session_factory",
+        missing_runtime_factory,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Keeps local-only forgetting", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+
+        resp = client.delete(
+            f"/api/memories/{user_id}/{item_id}/forget",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["forgotten"] is True
+        with get_user_session_factory(user_id)() as db:
+            assert db.get(MemoryItem, item_id) is None
+
+
 def test_memory_create_records_item_evidence() -> None:
     with managed_test_client("anima-memory-test-") as client:
         reg = _register_user(client)
