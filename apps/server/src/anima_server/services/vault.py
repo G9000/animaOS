@@ -949,12 +949,19 @@ def restore_database_snapshot(
                 )
             )
 
+        restored_profile_field_ids: set[int] = set()
+        profile_superseded_links: list[tuple[int, int]] = []
         for record in user_profile_fields_payload:
             if not isinstance(record, dict):
                 continue
+            profile_field_id = int(record["id"])
+            superseded_by_id = coerce_optional_int(record.get("superseded_by_id"))
+            restored_profile_field_ids.add(profile_field_id)
+            if superseded_by_id is not None:
+                profile_superseded_links.append((profile_field_id, superseded_by_id))
             db.add(
                 UserProfileField(
-                    id=int(record["id"]),
+                    id=profile_field_id,
                     user_id=int(record["user_id"]),
                     category=str(record["category"]),
                     key=str(record["key"]),
@@ -964,10 +971,8 @@ def restore_database_snapshot(
                     source_kind=str(record.get("source_kind", "extraction")),
                     source_memory_id=coerce_optional_int(record.get("source_memory_id")),
                     source_evidence_id=coerce_optional_int(record.get("source_evidence_id")),
-                    source_claim_evidence_id=coerce_optional_int(
-                        record.get("source_claim_evidence_id")
-                    ),
-                    superseded_by_id=coerce_optional_int(record.get("superseded_by_id")),
+                    source_claim_evidence_id=None,
+                    superseded_by_id=None,
                     first_observed_at=parse_optional_datetime(
                         record.get("first_observed_at")
                     ),
@@ -976,6 +981,18 @@ def restore_database_snapshot(
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
             )
+
+        db.flush()
+
+        # Claim evidence is not part of vault snapshots, so those FKs cannot be
+        # restored safely. Profile self-links can be backfilled once every
+        # profile row from the snapshot exists.
+        for profile_field_id, superseded_by_id in profile_superseded_links:
+            if superseded_by_id not in restored_profile_field_ids:
+                continue
+            profile_field = db.get(UserProfileField, profile_field_id)
+            if profile_field is not None:
+                profile_field.superseded_by_id = superseded_by_id
 
         db.flush()
 
@@ -990,9 +1007,7 @@ def restore_database_snapshot(
                     source_kind=str(record.get("source_kind", "extraction")),
                     source_memory_id=coerce_optional_int(record.get("source_memory_id")),
                     source_evidence_id=coerce_optional_int(record.get("source_evidence_id")),
-                    source_claim_evidence_id=coerce_optional_int(
-                        record.get("source_claim_evidence_id")
-                    ),
+                    source_claim_evidence_id=None,
                     runtime_thread_id=coerce_optional_int(record.get("runtime_thread_id")),
                     runtime_message_id=coerce_optional_int(record.get("runtime_message_id")),
                     evidence_text=str(record.get("evidence_text", "")),

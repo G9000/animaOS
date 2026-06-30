@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 00:54 MYT
+- Updated: 2026-07-01 01:17 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -53,6 +53,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 18:23 MYT - Addressed additional PR #71 review feedback by recomputing profile observation bounds after partial evidence deletion and requiring stronger runtime-message matches for same-turn profile cleanup.
 - 2026-06-30 18:44 MYT - Addressed additional PR #71 review feedback by preserving structured profile fields/evidence in vault exports and keeping profile retractions sticky against automated upserts.
 - 2026-07-01 00:54 MYT - Addressed additional PR #71 review feedback by not counting claim reconciliation when user corrections block stale claims and deduping source-less claim reconciliation evidence.
+- 2026-07-01 01:17 MYT - Addressed additional PR #71 review feedback by deferring profile self-link restore during vault import and dropping claim-evidence profile FKs that cannot be valid without exporting claim evidence.
 
 ## Validation
 
@@ -167,6 +168,13 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim -q` - PR #71 review regressions failed before fix because stale user-corrected claims still counted as reconciled and source-less claims appended duplicate reconciliation evidence.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim -q` - 2 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 27 passed, 23 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks -q` - PR #71 review regression failed before fix with a SQLite FK violation because profile rows restored `superseded_by_id` before all profile rows existed and restored non-exported claim evidence FKs.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_user_profile_fields apps/server/tests/test_vault.py::test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks -q` - 2 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py apps/server/tests/test_user_profile.py -q` - 47 passed, 23 warnings.
   - `git diff --check` - passed with CRLF warnings only.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
