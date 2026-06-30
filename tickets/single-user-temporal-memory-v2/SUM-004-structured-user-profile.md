@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 18:23 MYT
+- Updated: 2026-06-30 18:44 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -51,6 +51,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 17:35 MYT - Addressed additional PR #71 review feedback by canonicalizing structured profile keys and preserving same-value user corrections from later automatic updates.
 - 2026-06-30 18:00 MYT - Addressed additional PR #71 review feedback by skipping unmapped generic fact claims during profile reconciliation and keeping forget API deletion working when the runtime DB is unavailable.
 - 2026-06-30 18:23 MYT - Addressed additional PR #71 review feedback by recomputing profile observation bounds after partial evidence deletion and requiring stronger runtime-message matches for same-turn profile cleanup.
+- 2026-06-30 18:44 MYT - Addressed additional PR #71 review feedback by preserving structured profile fields/evidence in vault exports and keeping profile retractions sticky against automated upserts.
 
 ## Validation
 
@@ -156,6 +157,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `git diff --check` - passed with CRLF warnings only.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_user_profile_fields apps/server/tests/test_user_profile.py::test_retracted_profile_field_blocks_automatic_recreation -q` - PR #71 review regressions failed before fix because vault snapshots dropped structured profile tables and automatic upserts recreated retracted profile fields.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_user_profile_fields apps/server/tests/test_user_profile.py::test_retracted_profile_field_blocks_automatic_recreation -q` - 2 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py apps/server/tests/test_user_profile.py -q` - 44 passed, 21 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py
@@ -177,6 +184,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - apps/server/tests/test_dashboard_api.py
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_user_profile.py
+  - apps/server/tests/test_vault.py
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-004-structured-user-profile.md
 - Notes:

@@ -117,6 +117,15 @@ def upsert_profile_field(
         category=normalized_category,
         key=normalized_key,
     )
+    if existing is None and _should_preserve_retracted_profile_field(source_kind):
+        retracted = _get_latest_retracted_profile_field(
+            db,
+            user_id=user_id,
+            category=normalized_category,
+            key=normalized_key,
+        )
+        if retracted is not None:
+            return retracted
 
     if existing is not None:
         existing_value = df(
@@ -207,6 +216,15 @@ def _preserve_user_corrected_profile_field(
     if existing.source_kind != "user_correction":
         return False
     return incoming_source_kind not in {"user_correction"}
+
+
+def _should_preserve_retracted_profile_field(source_kind: str) -> bool:
+    return source_kind in {
+        "claim_reconciliation",
+        "extraction",
+        "llm",
+        "reflection",
+    } or source_kind.startswith("profile_")
 
 
 def correct_profile_field(
@@ -576,6 +594,25 @@ def _get_active_profile_field(
             UserProfileField.category == category,
             UserProfileField.key == key,
             UserProfileField.status == "active",
+        )
+        .order_by(UserProfileField.updated_at.desc(), UserProfileField.id.desc())
+    )
+
+
+def _get_latest_retracted_profile_field(
+    db: Session,
+    *,
+    user_id: int,
+    category: str,
+    key: str,
+) -> UserProfileField | None:
+    return db.scalar(
+        select(UserProfileField)
+        .where(
+            UserProfileField.user_id == user_id,
+            UserProfileField.category == category,
+            UserProfileField.key == key,
+            UserProfileField.status == "retracted",
         )
         .order_by(UserProfileField.updated_at.desc(), UserProfileField.id.desc())
     )

@@ -322,6 +322,44 @@ def test_upsert_profile_field_marks_same_value_user_correction() -> None:
     assert evidence_count == 2
 
 
+def test_retracted_profile_field_blocks_automatic_recreation() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Designer",
+            evidence_text="I work as a designer",
+            source_kind="profile_llm",
+        )
+
+        retracted = service.retract_profile_field(
+            db,
+            user_id=user.id,
+            field_id=field.id,
+        )
+        recreated = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Designer",
+            evidence_text="older automatic extraction repeated designer",
+            source_kind="profile_llm",
+        )
+        active = service.list_profile_fields(db, user_id=user.id)
+        history = service.list_profile_fields(db, user_id=user.id, include_history=True)
+
+    assert retracted.status == "retracted"
+    assert recreated.id == field.id
+    assert recreated.status == "retracted"
+    assert active == []
+    assert [profile_field.id for profile_field in history] == [field.id]
+
+
 def test_render_profile_prompt_block_is_grouped_and_deterministic() -> None:
     service = _profile_service()
     with _db_session() as db:
