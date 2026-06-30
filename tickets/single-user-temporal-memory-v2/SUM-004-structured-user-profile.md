@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 18:00 MYT
+- Updated: 2026-06-30 18:23 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -50,6 +50,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 17:21 MYT - Addressed additional PR #71 review feedback by rejecting pending profile update candidates tied to forgotten source memories and parsing profile-only LLM extraction responses.
 - 2026-06-30 17:35 MYT - Addressed additional PR #71 review feedback by canonicalizing structured profile keys and preserving same-value user corrections from later automatic updates.
 - 2026-06-30 18:00 MYT - Addressed additional PR #71 review feedback by skipping unmapped generic fact claims during profile reconciliation and keeping forget API deletion working when the runtime DB is unavailable.
+- 2026-06-30 18:23 MYT - Addressed additional PR #71 review feedback by recomputing profile observation bounds after partial evidence deletion and requiring stronger runtime-message matches for same-turn profile cleanup.
 
 ## Validation
 
@@ -148,6 +149,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 25 passed, 19 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn -q` - PR #71 review regressions failed before fix because partial profile-evidence forget left stale observation bounds and one shared long token could delete/reject unrelated same-turn profile updates.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn -q` - 3 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 26 passed, 20 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py

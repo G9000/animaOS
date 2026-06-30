@@ -483,20 +483,28 @@ def _delete_profile_fields_for_forget(
             surviving_query = surviving_query.where(
                 ~UserProfileFieldEvidence.id.in_(matching_ids)
             )
-        surviving_evidence = db.scalar(
-            surviving_query.order_by(UserProfileFieldEvidence.id.desc())
+        surviving_evidence_rows = list(
+            db.scalars(surviving_query.order_by(UserProfileFieldEvidence.id.desc())).all()
         )
-        if surviving_evidence is None:
+        if not surviving_evidence_rows:
             db.delete(field)
             deleted_count += 1
             continue
 
+        surviving_evidence = surviving_evidence_rows[0]
         for evidence in matching_evidence_by_field.get(field_id, []):
             db.delete(evidence)
+        observed_values = [
+            evidence.observed_at
+            for evidence in surviving_evidence_rows
+            if evidence.observed_at is not None
+        ]
         field.source_kind = surviving_evidence.source_kind
         field.source_memory_id = surviving_evidence.source_memory_id
         field.source_evidence_id = surviving_evidence.source_evidence_id
         field.source_claim_evidence_id = surviving_evidence.source_claim_evidence_id
+        field.first_observed_at = min(observed_values) if observed_values else None
+        field.last_observed_at = max(observed_values) if observed_values else None
         field.updated_at = now
     db.flush()
     return deleted_count
@@ -604,7 +612,15 @@ def _runtime_profile_evidence_matches_context(
             memory_category=context.memory_category,
         ):
             continue
-        if any(_texts_are_related(context.content_text, text) for text in profile_texts):
+        if any(
+            _texts_are_related(
+                context.content_text,
+                text,
+                profile_category=field.category,
+                profile_key=field.key,
+            )
+            for text in profile_texts
+        ):
             return True
     return False
 
@@ -626,20 +642,47 @@ def _profile_category_can_derive_from_memory_category(
     return profile_category in allowed
 
 
-def _texts_are_related(source: str, target: str) -> bool:
+def _texts_are_related(
+    source: str,
+    target: str,
+    *,
+    profile_category: str = "",
+    profile_key: str = "",
+) -> bool:
     source_text = _normalize_relation_text(source)
     target_text = _normalize_relation_text(target)
     if not source_text or not target_text:
         return False
-    if source_text in target_text or target_text in source_text:
-        return True
 
-    shared = _meaningful_relation_tokens(source_text) & _meaningful_relation_tokens(
-        target_text
-    )
+    source_tokens = _meaningful_relation_tokens(source_text)
+    target_tokens = _meaningful_relation_tokens(target_text)
+    shared = source_tokens & target_tokens
     if len(shared) >= 2:
         return True
-    return any(token.isdigit() or len(token) >= 5 for token in shared)
+    if (
+        shared
+        and (source_text in target_text or target_text in source_text)
+        and len(source_tokens) >= 2
+        and len(target_tokens) >= 2
+    ):
+        return True
+    if any(token.isdigit() or len(token) >= 5 for token in shared):
+        return _profile_metadata_supports_relation(
+            source_tokens,
+            profile_category=profile_category,
+            profile_key=profile_key,
+        )
+    return False
+
+
+def _profile_metadata_supports_relation(
+    source_tokens: set[str],
+    *,
+    profile_category: str,
+    profile_key: str,
+) -> bool:
+    metadata_tokens = _meaningful_relation_tokens(f"{profile_category} {profile_key}")
+    return bool(source_tokens & metadata_tokens)
 
 
 _RELATION_TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -648,10 +691,15 @@ _RELATION_STOP_WORDS = {
     "an",
     "and",
     "as",
+    "am",
+    "for",
     "i",
+    "in",
     "im",
     "is",
     "my",
+    "of",
+    "on",
     "the",
     "to",
 }
@@ -806,7 +854,15 @@ def _runtime_profile_candidate_matches_context(
             memory_category=context.memory_category,
         ):
             continue
-        if any(_texts_are_related(context.content_text, text) for text in profile_texts):
+        if any(
+            _texts_are_related(
+                context.content_text,
+                text,
+                profile_category=profile_category,
+                profile_key=str(getattr(candidate, "key", "") or ""),
+            )
+            for text in profile_texts
+        ):
             return True
     return False
 

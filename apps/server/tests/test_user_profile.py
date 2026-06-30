@@ -526,6 +526,8 @@ def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None
 
     with _db_session() as db:
         user = _make_user(db)
+        first_observed = datetime(2026, 1, 1, tzinfo=UTC)
+        second_observed = datetime(2026, 1, 5, tzinfo=UTC)
         first_item = MemoryItem(
             user_id=user.id,
             content=ef(
@@ -586,6 +588,7 @@ def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None
             source_kind="explicit_save",
             source_memory_id=first_item.id,
             source_evidence_id=first_evidence.id,
+            observed_at=first_observed,
         )
         field = service.upsert_profile_field(
             db,
@@ -597,6 +600,7 @@ def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None
             source_kind="explicit_save",
             source_memory_id=second_item.id,
             source_evidence_id=second_evidence.id,
+            observed_at=second_observed,
         )
         field_id = field.id
         first_profile_evidence_id = db.scalar(
@@ -619,6 +623,10 @@ def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None
     assert remaining_field.status == "active"
     assert remaining_field.source_memory_id == second_item.id
     assert remaining_field.source_evidence_id == second_evidence.id
+    assert remaining_field.first_observed_at is not None
+    assert remaining_field.last_observed_at is not None
+    assert remaining_field.first_observed_at.replace(tzinfo=UTC) == second_observed
+    assert remaining_field.last_observed_at.replace(tzinfo=UTC) == second_observed
     assert len(remaining_evidence) == 1
     assert remaining_evidence[0].source_memory_id == second_item.id
     assert remaining_evidence[0].source_evidence_id == second_evidence.id
@@ -749,6 +757,63 @@ def test_forget_memory_preserves_unrelated_profile_field_from_same_turn() -> Non
     assert runtime_message_id == 102
 
 
+def test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token() -> None:
+    service = _profile_service()
+    from anima_server.models import MemoryItem, MemoryItemEvidence
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as founder of AnimaOS",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        memory_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=item.id,
+            source_kind="llm",
+            runtime_message_id=303,
+            evidence_text=ef(
+                user.id,
+                "I work as founder of AnimaOS",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add(memory_evidence)
+        db.flush()
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="active_projects",
+            key="active_project",
+            value="AnimaOS",
+            confidence=0.9,
+            evidence_text="AnimaOS is an active project",
+            source_kind="profile_llm",
+            runtime_message_id=303,
+        )
+        field_id = field.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=user.id)
+        fields = service.list_profile_fields(db, user_id=user.id)
+        evidence_count = len(fields[0].evidence) if fields else 0
+
+    assert result.items_forgotten == 1
+    assert [profile_field.id for profile_field in fields] == [field_id]
+    assert evidence_count == 1
+
+
 def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> None:
     service = _profile_service()
     from anima_server.models import MemoryItem, MemoryItemEvidence
@@ -765,7 +830,7 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
                 user_id=user_id,
                 content=ef(
                     user_id,
-                    "works as a founder",
+                    "works as founder of AnimaOS",
                     table="memory_items",
                     field="content",
                 ),
@@ -783,7 +848,7 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
                     runtime_message_id=501,
                     evidence_text=ef(
                         user_id,
-                        "I work as a founder",
+                        "I work as founder of AnimaOS",
                         table="memory_item_evidence",
                         field="evidence_text",
                     ),
@@ -799,7 +864,16 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
                 category="work",
                 key="role",
                 value="Founder",
-                evidence_text="I work as a founder",
+                evidence_text="I work as founder of AnimaOS",
+                source_message_ids=[501],
+            )
+            shared_token = service.create_profile_update_candidate(
+                runtime_db,
+                user_id=user_id,
+                category="active_projects",
+                key="active_project",
+                value="AnimaOS",
+                evidence_text="AnimaOS is an active project",
                 source_message_ids=[501],
             )
             unrelated = service.create_profile_update_candidate(
@@ -813,6 +887,7 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
             )
             runtime_db.commit()
             pending_id = pending.id
+            shared_token_id = shared_token.id
             unrelated_id = unrelated.id
 
         with soul_factory() as db:
@@ -833,10 +908,15 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
                 runtime_db,
                 candidate_id=unrelated_id,
             )
+            shared_token_candidate = service.get_profile_update_candidate(
+                runtime_db,
+                candidate_id=shared_token_id,
+            )
 
     assert result.items_forgotten == 1
     assert rejected_candidate.status == "rejected"
     assert rejected_candidate.processed_at is not None
+    assert shared_token_candidate.status == "extracted"
     assert untouched_candidate.status == "extracted"
 
 
