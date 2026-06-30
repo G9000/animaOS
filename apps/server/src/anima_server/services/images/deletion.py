@@ -413,6 +413,7 @@ def _delete_orphaned_transient_asset(
     if link_count > 0:
         return False, False
     if _archived_image_asset_reference_exists(
+        runtime_db,
         user_id=user_id,
         image_asset_id=image_asset_id,
         ignored_thread_id=ignored_archive_thread_id,
@@ -427,6 +428,7 @@ def _delete_orphaned_transient_asset(
 
 
 def _archived_image_asset_reference_exists(
+    runtime_db: Session,
     *,
     user_id: int,
     image_asset_id: int,
@@ -440,6 +442,12 @@ def _archived_image_asset_reference_exists(
     for thread_id, transcript_path in _iter_archived_transcripts(transcripts_dir):
         if ignored_thread_id is not None and thread_id == ignored_thread_id:
             continue
+        if not _runtime_thread_exists(
+            runtime_db,
+            user_id=user_id,
+            thread_id=thread_id,
+        ):
+            continue
         asset_ids = _archived_transcript_image_asset_ids(
             user_id=user_id,
             thread_id=thread_id,
@@ -449,6 +457,21 @@ def _archived_image_asset_reference_exists(
         if image_asset_id in asset_ids:
             return True
     return False
+
+
+def _runtime_thread_exists(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+) -> bool:
+    thread_id = runtime_db.scalar(
+        select(RuntimeThread.id).where(
+            RuntimeThread.id == thread_id,
+            RuntimeThread.user_id == user_id,
+        )
+    )
+    return thread_id is not None
 
 
 def _iter_archived_transcripts(transcripts_dir: Path) -> list[tuple[int, Path]]:
