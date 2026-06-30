@@ -519,6 +519,44 @@ def test_reconcile_profile_from_claims_does_not_count_user_correction_skip() -> 
     assert evidence_count == 1
 
 
+def test_reconcile_profile_from_claims_preserves_newer_profile_llm_update() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        older_claim = upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a product manager",
+            category="fact",
+            evidence_text="Earlier memory said product manager",
+        )
+        assert older_claim is not None
+        older_observed = datetime(2026, 1, 1, tzinfo=UTC)
+        newer_observed = datetime(2026, 2, 1, tzinfo=UTC)
+        older_claim.updated_at = older_observed
+        for evidence in older_claim.evidence:
+            evidence.created_at = older_observed
+        promoted = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="Systems designer",
+            evidence_text="Latest profile extraction said systems designer",
+            source_kind="profile_llm",
+            observed_at=newer_observed,
+        )
+
+        reconciled = service.reconcile_profile_from_claims(db, user_id=user.id)
+        active = service.list_profile_fields(db, user_id=user.id)
+        evidence_count = len(active[0].evidence)
+
+    assert reconciled == 0
+    assert [profile_field.id for profile_field in active] == [promoted.id]
+    assert active[0].source_kind == "profile_llm"
+    assert evidence_count == 1
+
+
 def test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim() -> None:
     service = _profile_service()
     with _db_session() as db:

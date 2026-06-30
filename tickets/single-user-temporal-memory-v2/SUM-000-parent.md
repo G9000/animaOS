@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 01:35 MYT
+- Updated: 2026-07-01 01:53 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -107,6 +107,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 00:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim reconciliation counts and source-less claim dedupe, then reran red/green regressions, the user profile suite, lint, diff, and build.
 - 2026-07-01 01:17 MYT - `SUM-004` addressed additional PR #71 feedback for vault restore ordering and missing claim-evidence FKs, then reran red/green regression, vault/profile suites, lint, diff, and build.
 - 2026-07-01 01:35 MYT - `SUM-004` addressed additional PR #71 feedback for explicit profile-evidence deletion during forget cleanup, then reran red/green regression, related forget tests, user profile suite, and forget endpoint checks.
+- 2026-07-01 01:53 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer non-claim profile updates during claim reconciliation, then reran red/green regression, reconciliation cluster, and the user profile suite.
 
 ## Validation
 
@@ -248,3 +249,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 PR #70 self-supersession fix excludes explicitly superseded/evolved relation IDs from duplicate-active lookup so same-triple corrections create a new active interval.
   - SUM-004 PR #71 vault restore fix inserts structured profile rows without unresolved profile/claim provenance FKs, then backfills only in-snapshot profile self-links after all profile rows exist.
   - SUM-004 PR #71 forget cleanup fix deletes profile evidence rows explicitly before deleting the profile field so SQLite soul DBs without FK cascade enforcement do not retain orphaned evidence.
+  - SUM-004 PR #71 claim reconciliation fix compares active profile timestamps against claim provenance timestamps so older claims cannot supersede newer non-claim profile updates.

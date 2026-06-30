@@ -364,6 +364,11 @@ def reconcile_profile_from_claims(
             value=value,
             source_claim_evidence_id=source_claim_evidence_id,
             source_memory_id=claim.memory_item_id,
+            claim_observed_at=(
+                claim_evidence.created_at
+                if claim_evidence is not None
+                else claim.updated_at
+            ),
         ):
             continue
 
@@ -706,6 +711,7 @@ def _profile_claim_already_reconciled(
     value: str,
     source_claim_evidence_id: int | None,
     source_memory_id: int | None,
+    claim_observed_at: datetime | None,
 ) -> bool:
     active = _get_active_profile_field(
         db,
@@ -714,6 +720,21 @@ def _profile_claim_already_reconciled(
         key=key,
     )
     if active is not None and active.source_kind == "user_correction":
+        active_value = df(
+            user_id,
+            active.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        )
+        if active_value.strip().casefold() != value.strip().casefold():
+            return True
+
+    if (
+        active is not None
+        and active.source_kind != "claim_reconciliation"
+        and _profile_datetime(active.last_observed_at or active.updated_at)
+        >= _profile_datetime(claim_observed_at)
+    ):
         active_value = df(
             user_id,
             active.value_text,
@@ -763,6 +784,14 @@ def _profile_claim_already_reconciled(
             return existing is not None
 
     return False
+
+
+def _profile_datetime(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _latest_claim_evidence(

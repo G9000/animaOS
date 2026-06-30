@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 01:35 MYT
+- Updated: 2026-07-01 01:53 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -55,6 +55,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 00:54 MYT - Addressed additional PR #71 review feedback by not counting claim reconciliation when user corrections block stale claims and deduping source-less claim reconciliation evidence.
 - 2026-07-01 01:17 MYT - Addressed additional PR #71 review feedback by deferring profile self-link restore during vault import and dropping claim-evidence profile FKs that cannot be valid without exporting claim evidence.
 - 2026-07-01 01:35 MYT - Addressed additional PR #71 review feedback by explicitly deleting profile evidence before deleting profile fields during user-initiated forget.
+- 2026-07-01 01:53 MYT - Addressed additional PR #71 review feedback by timestamp-guarding claim reconciliation so older claims do not supersede newer non-claim profile updates.
 
 ## Validation
 
@@ -184,6 +185,10 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 4 passed, 4 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 28 passed, 24 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 2 passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - PR #71 review regression failed before fix because an older active claim superseded a newer `profile_llm` field for the same profile key.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately -q` - 5 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 29 passed, 25 warnings.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py
