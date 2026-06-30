@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import User
-from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
+from anima_server.models.runtime import (
+    RuntimeImageAnnotation,
+    RuntimeMessage,
+    RuntimeRun,
+    RuntimeStep,
+    RuntimeThread,
+)
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.schemas.chat import ChatRequestAttachment
 from anima_server.services.agent import list_agent_history, run_agent
 from anima_server.services.agent import service as agent_service
@@ -1345,6 +1352,70 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
 
     assert run.status == "failed"
     assert message.is_in_context is False
+
+
+@pytest.mark.asyncio
+async def test_failed_image_turn_does_not_leave_active_image_annotations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingRunner:
+        async def invoke(self, *args, **kwargs) -> AgentResult:
+            del args, kwargs
+            raise RuntimeError("provider failed")
+
+    agent_service.invalidate_agent_runtime_cache()
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: FailingRunner())
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="failed.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="failed-image-turn",
+                password_hash="not-used",
+                display_name="Failed Image Turn",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            with pytest.raises(RuntimeError, match="provider failed"):
+                await run_agent(
+                    "what is this failed image?",
+                    user.id,
+                    soul_session,
+                    runtime_session,
+                    attachments=[attachment],
+                )
+
+            run = runtime_session.query(RuntimeRun).one()
+            user_msg = (
+                runtime_session.query(RuntimeMessage)
+                .filter(RuntimeMessage.role == "user")
+                .one()
+            )
+            annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
+            embedding_count = (
+                runtime_session.query(RuntimeEmbedding)
+                .filter(RuntimeEmbedding.source_type == "image_annotation")
+                .count()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert run.status == "failed"
+    assert user_msg.is_in_context is False
+    assert annotation_count == 0
+    assert embedding_count == 0
 
 
 def test_should_retry_after_compaction_only_before_tools_executed(

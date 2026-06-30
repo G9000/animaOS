@@ -88,6 +88,7 @@ from anima_server.services.agent.state import (
     StoredMessage,
     attach_serialized_pills,
     deserialize_agent_retrieval,
+    deserialize_stored_attachments,
     extract_stored_pills,
     extract_stored_retrieval,
     serialize_agent_retrieval,
@@ -501,6 +502,8 @@ async def _approve_or_deny_turn_locked(
         ),
     )
     runtime_db.commit()
+    _index_run_user_image_attachments_inline(runtime_db, user_id=user_id, run=run)
+    runtime_db.commit()
     _refresh_companion_history(
         user_id=user_id,
         runtime_db=runtime_db,
@@ -815,6 +818,13 @@ async def _execute_agent_turn_locked(
             exc=exc,
         )
         raise
+    _index_image_attachments_inline(
+        runtime_db,
+        user_id=user_id,
+        user_message=user_message,
+        attachments=turn_ctx.attachments,
+    )
+    runtime_db.commit()
     _refresh_companion_history(
         user_id=user_id,
         runtime_db=runtime_db,
@@ -1019,12 +1029,6 @@ async def _prepare_turn_context(
                 user_id=user_id,
                 document_ids=document_ids,
             ),
-        )
-        _index_image_attachments_inline(
-            runtime_db,
-            user_id=user_id,
-            user_message=user_message,
-            attachments=prepared_attachments,
         )
         conversation_turn_count = count_messages_by_role(
             runtime_db, thread.id, "user")
@@ -1984,6 +1988,33 @@ def _index_image_attachments_inline(
         )
     except Exception:
         logger.debug("Inline image annotation indexing failed", exc_info=True)
+
+
+def _index_run_user_image_attachments_inline(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    run: RuntimeRun,
+) -> None:
+    user_message = runtime_db.scalar(
+        select(RuntimeMessage)
+        .where(
+            RuntimeMessage.run_id == run.id,
+            RuntimeMessage.user_id == user_id,
+            RuntimeMessage.role == "user",
+        )
+        .order_by(RuntimeMessage.sequence_id, RuntimeMessage.id)
+        .limit(1)
+    )
+    if user_message is None:
+        return
+
+    _index_image_attachments_inline(
+        runtime_db,
+        user_id=user_id,
+        user_message=user_message.content_text or "",
+        attachments=deserialize_stored_attachments(user_message.content_json),
+    )
 
 
 def _refresh_companion_history(
