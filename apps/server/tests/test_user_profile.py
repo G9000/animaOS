@@ -229,6 +229,45 @@ def test_upsert_profile_field_preserves_user_correction_from_auto_update() -> No
     assert corrected_evidence_count == 1
 
 
+def test_upsert_profile_field_keeps_newer_observed_time_for_same_value() -> None:
+    service = _profile_service()
+    with _db_session() as db:
+        user = _make_user(db)
+        newer_observed = datetime(2026, 2, 1, tzinfo=UTC)
+        older_observed = datetime(2026, 1, 1, tzinfo=UTC)
+        original = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Systems designer",
+            confidence=0.8,
+            evidence_text="Latest profile extraction said systems designer",
+            source_kind="profile_llm",
+            observed_at=newer_observed,
+        )
+
+        repeated = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Systems designer",
+            confidence=0.9,
+            evidence_text="Older retry also said systems designer",
+            source_kind="profile_llm",
+            observed_at=older_observed,
+        )
+        active = service.list_profile_fields(db, user_id=user.id)
+        active_observed = active[0].last_observed_at
+        evidence_count = len(active[0].evidence)
+
+    assert repeated.id == original.id
+    assert active_observed is not None
+    assert active_observed.replace(tzinfo=UTC) == newer_observed
+    assert evidence_count == 2
+
+
 def test_upsert_profile_field_canonicalizes_key_case() -> None:
     service = _profile_service()
     with _db_session() as db:

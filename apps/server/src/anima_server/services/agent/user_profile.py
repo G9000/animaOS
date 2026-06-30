@@ -138,7 +138,8 @@ def upsert_profile_field(
             existing.confidence = max(float(existing.confidence), confidence)
             if source_kind == "user_correction":
                 existing.source_kind = "user_correction"
-            existing.last_observed_at = observed
+            if _profile_datetime(observed) > _profile_datetime(existing.last_observed_at):
+                existing.last_observed_at = observed
             existing.updated_at = now
             _add_profile_evidence(
                 db,

@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 02:55 MYT
+- Updated: 2026-07-01 03:15 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -59,6 +59,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 02:13 MYT - Addressed additional PR #71 review feedback by returning HTTP 400 for blank profile correction payloads instead of treating the existing field as missing.
 - 2026-07-01 02:34 MYT - Addressed additional PR #71 review feedback by preserving profile update candidate timestamps during promotion so older retryable candidates cannot supersede newer profile fields.
 - 2026-07-01 02:55 MYT - Addressed additional PR #71 review feedback by deleting single-token runtime-message profile facts during forget cleanup and scoping sourceless claim reconciliation idempotency to the target profile field.
+- 2026-07-01 03:15 MYT - Addressed additional PR #71 review feedback by preserving newer same-value profile observation timestamps and adding an explicit tier-0 prompt budget policy for the `user_profile` block.
 
 ## Validation
 
@@ -207,6 +208,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `git diff --check` - passed with CRLF warnings only.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_keeps_newer_observed_time_for_same_value apps/server/tests/test_prompt_budget.py::TestBlockPriority::test_user_profile_keeps_identity_priority_under_tight_budget -q` - PR #71 review regressions failed before fix because same-value upserts moved `last_observed_at` backwards and `user_profile` used the default tier-3 prompt-budget policy.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_keeps_newer_observed_time_for_same_value apps/server/tests/test_prompt_budget.py::TestBlockPriority::test_user_profile_keeps_identity_priority_under_tight_budget -q` - 2 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_prompt_budget.py -q` - 45 passed, 30 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py
@@ -218,6 +225,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - apps/server/src/anima_server/services/agent/consolidation.py
   - apps/server/src/anima_server/services/agent/forgetting.py
   - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/sleep_tasks.py
   - apps/server/src/anima_server/services/agent/soul_writer.py
   - apps/server/src/anima_server/services/agent/user_profile.py
@@ -226,6 +234,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - apps/server/tests/test_agent_consolidation.py
   - apps/server/tests/test_agent_episodes.py
   - apps/server/tests/test_dashboard_api.py
+  - apps/server/tests/test_prompt_budget.py
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_user_profile.py
   - apps/server/tests/test_vault.py
