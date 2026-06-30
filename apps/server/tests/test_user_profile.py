@@ -352,6 +352,112 @@ def test_forget_memory_deletes_profile_fields_sourced_from_claim_chain() -> None
     assert forgotten_evidence is None
 
 
+def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None:
+    service = _profile_service()
+    from anima_server.models import MemoryItem, MemoryItemEvidence, UserProfileFieldEvidence
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        first_item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as a designer",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        second_item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "still works as a designer",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add_all([first_item, second_item])
+        db.flush()
+        first_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=first_item.id,
+            source_kind="explicit_save",
+            evidence_text=ef(
+                user.id,
+                "works as a designer",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        second_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=second_item.id,
+            source_kind="explicit_save",
+            evidence_text=ef(
+                user.id,
+                "still works as a designer",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add_all([first_evidence, second_evidence])
+        db.flush()
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="designer",
+            evidence_text="works as a designer",
+            source_kind="explicit_save",
+            source_memory_id=first_item.id,
+            source_evidence_id=first_evidence.id,
+        )
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="designer",
+            evidence_text="still works as a designer",
+            source_kind="explicit_save",
+            source_memory_id=second_item.id,
+            source_evidence_id=second_evidence.id,
+        )
+        field_id = field.id
+        first_profile_evidence_id = db.scalar(
+            select(UserProfileFieldEvidence.id).where(
+                UserProfileFieldEvidence.source_evidence_id == first_evidence.id,
+            )
+        )
+
+        result = forget_memory(db, memory_id=first_item.id, user_id=user.id)
+        fields = service.list_profile_fields(db, user_id=user.id, include_history=True)
+        remaining_field = fields[0]
+        remaining_evidence = list(remaining_field.evidence)
+        removed_profile_evidence = db.get(
+            UserProfileFieldEvidence,
+            first_profile_evidence_id,
+        )
+
+    assert result.items_forgotten == 1
+    assert [profile_field.id for profile_field in fields] == [field_id]
+    assert remaining_field.status == "active"
+    assert remaining_field.source_memory_id == second_item.id
+    assert remaining_field.source_evidence_id == second_evidence.id
+    assert len(remaining_evidence) == 1
+    assert remaining_evidence[0].source_memory_id == second_item.id
+    assert remaining_evidence[0].source_evidence_id == second_evidence.id
+    assert removed_profile_evidence is None
+
+
 @pytest.mark.asyncio
 async def test_sleep_tasks_reconciles_claims_to_profile_fields(
     monkeypatch: pytest.MonkeyPatch,

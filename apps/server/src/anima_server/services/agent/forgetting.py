@@ -387,7 +387,9 @@ def _delete_profile_fields_for_forget(
         UserProfileFieldEvidence.source_memory_id.in_(source_memory_ids),
     ]
     if source_evidence_ids:
-        field_criteria.append(UserProfileField.source_evidence_id.in_(source_evidence_ids))
+        field_criteria.append(
+            UserProfileField.source_evidence_id.in_(source_evidence_ids)
+        )
         evidence_criteria.append(
             UserProfileFieldEvidence.source_evidence_id.in_(source_evidence_ids)
         )
@@ -401,15 +403,20 @@ def _delete_profile_fields_for_forget(
             )
         )
 
-    evidence_field_ids = list(
+    matching_evidence = list(
         db.scalars(
-            select(UserProfileFieldEvidence.profile_field_id).where(
+            select(UserProfileFieldEvidence).where(
                 UserProfileFieldEvidence.user_id == user_id,
                 or_(*evidence_criteria),
             )
         ).all()
     )
-    field_ids = set(evidence_field_ids)
+    matching_evidence_by_field: dict[int, list[UserProfileFieldEvidence]] = {}
+    for evidence in matching_evidence:
+        matching_evidence_by_field.setdefault(evidence.profile_field_id, []).append(
+            evidence
+        )
+    field_ids = set(matching_evidence_by_field)
     field_ids.update(
         db.scalars(
             select(UserProfileField.id).where(
@@ -421,21 +428,40 @@ def _delete_profile_fields_for_forget(
     if not field_ids:
         return 0
 
-    ids = list(field_ids)
-    db.execute(
-        delete(UserProfileFieldEvidence).where(
+    now = datetime.now(UTC)
+    deleted_count = 0
+    for field_id in sorted(field_ids):
+        field = db.get(UserProfileField, field_id)
+        if field is None or field.user_id != user_id:
+            continue
+        matching_ids = [
+            evidence.id for evidence in matching_evidence_by_field.get(field_id, [])
+        ]
+        surviving_query = select(UserProfileFieldEvidence).where(
             UserProfileFieldEvidence.user_id == user_id,
-            UserProfileFieldEvidence.profile_field_id.in_(ids),
+            UserProfileFieldEvidence.profile_field_id == field.id,
         )
-    )
-    deleted = db.execute(
-        delete(UserProfileField).where(
-            UserProfileField.user_id == user_id,
-            UserProfileField.id.in_(ids),
+        if matching_ids:
+            surviving_query = surviving_query.where(
+                ~UserProfileFieldEvidence.id.in_(matching_ids)
+            )
+        surviving_evidence = db.scalar(
+            surviving_query.order_by(UserProfileFieldEvidence.id.desc())
         )
-    )
+        if surviving_evidence is None:
+            db.delete(field)
+            deleted_count += 1
+            continue
+
+        for evidence in matching_evidence_by_field.get(field_id, []):
+            db.delete(evidence)
+        field.source_kind = surviving_evidence.source_kind
+        field.source_memory_id = surviving_evidence.source_memory_id
+        field.source_evidence_id = surviving_evidence.source_evidence_id
+        field.source_claim_evidence_id = surviving_evidence.source_claim_evidence_id
+        field.updated_at = now
     db.flush()
-    return int(deleted.rowcount or 0)
+    return deleted_count
 
 
 def _schedule_forget_external_cleanup_after_commit(

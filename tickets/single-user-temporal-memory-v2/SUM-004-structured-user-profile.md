@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 13:35 MYT
+- Updated: 2026-06-30 13:58 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -43,6 +43,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 12:54 MYT - Addressed additional PR #71 review feedback by moving claim evidence provenance into a claim-specific FK column and retracting profile fields sourced from memories during user-initiated forget.
 - 2026-06-30 13:21 MYT - Addressed additional PR #71 review feedback by invalidating the companion memory cache after the forget endpoint commits profile-field retractions.
 - 2026-06-30 13:35 MYT - Addressed additional PR #71 review feedback by hard-deleting profile fields/evidence tied to forgotten memories and adding structured profile tables to eval reset cleanup.
+- 2026-06-30 13:58 MYT - Addressed additional PR #71 review feedback by preserving profile fields that still have surviving evidence after one source memory is forgotten.
 
 ## Validation
 
@@ -87,6 +88,12 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed after import-order cleanup.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1716 passed, 1 skipped, 272 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence -q` - PR #71 review regression failed before fix because forgetting one source memory deleted a profile field still supported by a second evidence row.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_eval_harness.py::test_reset_eval_user_state_purges_soul_and_runtime_rows -q` - 37 passed, 12 warnings.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_agent_consolidation.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_memory_api.py` - 45 passed, 15 warnings.
   - `bun install` - installed workspace dependencies in the isolated worktree after the first full lint attempt showed missing desktop packages.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed.

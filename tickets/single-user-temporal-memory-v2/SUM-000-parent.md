@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 13:35 MYT
+- Updated: 2026-06-30 13:58 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -95,6 +95,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 12:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim-specific profile provenance and profile retraction during user-initiated forget, then reran focused, lint, build, and full backend validation.
 - 2026-06-30 13:21 MYT - `SUM-004` addressed additional PR #71 feedback for companion memory invalidation after user-initiated forget retracts sourced profile fields, then reran focused, lint, diff, and build validation.
 - 2026-06-30 13:35 MYT - `SUM-004` addressed additional PR #71 feedback for hard-deleting forgotten profile evidence and clearing structured profile state during eval reset, then reran red/green regressions and related suites.
+- 2026-06-30 13:58 MYT - `SUM-004` addressed additional PR #71 feedback for preserving profile fields with surviving evidence after a partial source forget, then reran red/green regressions and related suites.
 
 ## Validation
 
