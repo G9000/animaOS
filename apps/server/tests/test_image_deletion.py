@@ -163,6 +163,63 @@ def test_forget_image_asset_removes_matching_image_source_pills(
     }
 
 
+@pytest.mark.asyncio
+async def test_forget_image_asset_endpoint_invalidates_user_companion_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.api.routes import images as image_routes
+    from anima_server.services.images.deletion import ForgetImageResult
+    from anima_server.services.sessions import unlock_session_store
+    from starlette.requests import Request
+
+    events: list[object] = []
+
+    class FakeRuntimeDb:
+        def commit(self) -> None:
+            events.append("commit")
+
+    def fake_forget_image_asset(*args: object, **kwargs: object) -> ForgetImageResult:
+        assert kwargs["user_id"] == 42
+        assert kwargs["image_asset_id"] == 99
+        events.append("forget")
+        return ForgetImageResult(forgotten=True, image_asset_id=99, file_deleted=True)
+
+    def fake_invalidate_companion(user_id: int) -> None:
+        events.append(("invalidate", user_id))
+
+    monkeypatch.setattr(image_routes, "forget_image_asset", fake_forget_image_asset)
+    monkeypatch.setattr(
+        image_routes,
+        "invalidate_companion",
+        fake_invalidate_companion,
+        raising=False,
+    )
+
+    token = unlock_session_store.create(42, {"memories": b"unit-test-dek"})
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-anima-unlock", token.encode("utf-8"))],
+        }
+    )
+
+    try:
+        response = await image_routes.forget_image_asset_endpoint(
+            99,
+            request,
+            runtime_db=FakeRuntimeDb(),
+        )
+    finally:
+        unlock_session_store.revoke(token)
+
+    assert response == {
+        "status": "forgotten",
+        "imageAssetId": 99,
+        "fileDeleted": True,
+    }
+    assert events == ["forget", "commit", ("invalidate", 42)]
+
+
 def test_remove_message_image_link_updates_message_but_keeps_reused_asset(
     runtime_db,
     tmp_path: Path,
@@ -198,6 +255,50 @@ def test_remove_message_image_link_updates_message_but_keeps_reused_asset(
     assert runtime_db.scalar(select(func.count(RuntimeImageMessageLink.id))) == 1
     refreshed_message = runtime_db.get(RuntimeMessage, first_message.id)
     assert refreshed_message.content_json == {"attachments": []}
+
+
+def test_remove_message_image_link_removes_matching_image_source_pills(
+    runtime_db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.deletion import remove_message_image_link
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    asset, message, attachment_id, _path = _linked_image(runtime_db, user_id=7)
+    assistant = RuntimeMessage(
+        thread_id=message.thread_id,
+        user_id=7,
+        sequence_id=2,
+        role="assistant",
+        content_text="I used the image.",
+        content_json={
+            "pills": [
+                {"kind": "image_source", "label": "screen.png", "ref": attachment_id},
+                {
+                    "kind": "image_source",
+                    "label": "screen.png",
+                    "ref": f"image:{asset.id}",
+                },
+                {"kind": "document_source", "label": "Plan", "ref": 44},
+            ]
+        },
+    )
+    runtime_db.add(assistant)
+    runtime_db.flush()
+
+    result = remove_message_image_link(
+        runtime_db,
+        user_id=7,
+        message_id=message.id,
+        attachment_id=attachment_id,
+    )
+
+    assert result.removed is True
+    assert result.asset_deleted is True
+    assert runtime_db.get(RuntimeMessage, assistant.id).content_json == {
+        "pills": [{"kind": "document_source", "label": "Plan", "ref": 44}]
+    }
 
 
 def test_delete_thread_with_image_cleanup_removes_orphaned_transient_asset(

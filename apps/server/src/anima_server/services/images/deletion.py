@@ -68,7 +68,9 @@ def forget_image_asset(
             )
         ).all()
     )
-    linked_attachment_ids = {link.attachment_id for link, _message in linked_messages}
+    linked_attachment_ids = {
+        link.attachment_id for link, _message in linked_messages if link.attachment_id
+    }
     for link, message in linked_messages:
         _remove_image_asset_metadata(
             message,
@@ -137,6 +139,12 @@ def remove_message_image_link(
 
     image_asset_id = link.image_asset_id
     _remove_attachment_metadata(message, attachment_id)
+    _remove_image_source_pills(
+        runtime_db,
+        user_id=user_id,
+        image_asset_id=None,
+        attachment_ids={attachment_id},
+    )
     runtime_db.delete(link)
     runtime_db.flush()
     deleted, file_deleted = _delete_orphaned_transient_asset(
@@ -324,7 +332,7 @@ def _remove_image_source_pills(
     runtime_db: Session,
     *,
     user_id: int,
-    image_asset_id: int,
+    image_asset_id: int | None,
     attachment_ids: set[str],
 ) -> None:
     messages = list(
@@ -358,14 +366,16 @@ def _remove_image_source_pills(
 def _is_matching_image_source_pill(
     pill: object,
     *,
-    image_asset_id: int,
+    image_asset_id: int | None,
     attachment_ids: set[str],
 ) -> bool:
     if not isinstance(pill, dict) or pill.get("kind") != "image_source":
         return False
     ref = pill.get("ref")
     return (
-        ref == image_asset_id
-        or ref == f"image:{image_asset_id}"
+        (
+            image_asset_id is not None
+            and (ref == image_asset_id or ref == f"image:{image_asset_id}")
+        )
         or (isinstance(ref, str) and ref in attachment_ids)
     )

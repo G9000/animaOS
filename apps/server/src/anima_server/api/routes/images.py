@@ -11,6 +11,7 @@ from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import RuntimeImageAsset
 from anima_server.schemas.images import ImageRetentionUpdate
+from anima_server.services.agent.companion import invalidate_companion
 from anima_server.services.images.deletion import (
     forget_image_asset,
     remove_message_image_link,
@@ -38,6 +39,7 @@ async def remove_message_image_attachment(
     if not result.removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image link not found")
     runtime_db.commit()
+    invalidate_companion(unlock_session.user_id)
     return {
         "status": "removed",
         "imageAssetId": result.image_asset_id,
@@ -77,6 +79,7 @@ async def forget_image_asset_endpoint(
     if not result.forgotten:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
     runtime_db.commit()
+    invalidate_companion(unlock_session.user_id)
     return {
         "status": "forgotten",
         "imageAssetId": image_asset_id,
