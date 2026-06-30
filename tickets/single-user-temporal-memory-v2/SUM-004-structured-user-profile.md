@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 02:13 MYT
+- Updated: 2026-07-01 02:34 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -57,6 +57,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 01:35 MYT - Addressed additional PR #71 review feedback by explicitly deleting profile evidence before deleting profile fields during user-initiated forget.
 - 2026-07-01 01:53 MYT - Addressed additional PR #71 review feedback by timestamp-guarding claim reconciliation so older claims do not supersede newer non-claim profile updates.
 - 2026-07-01 02:13 MYT - Addressed additional PR #71 review feedback by returning HTTP 400 for blank profile correction payloads instead of treating the existing field as missing.
+- 2026-07-01 02:34 MYT - Addressed additional PR #71 review feedback by preserving profile update candidate timestamps during promotion so older retryable candidates cannot supersede newer profile fields.
 
 ## Validation
 
@@ -194,6 +195,10 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_lists_corrects_and_retracts_fields apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - 2 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 30 passed, 26 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field -q` - PR #71 review regression failed before fix because retrying an older failed profile candidate superseded a newer active profile field.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_promotes_profile_update_candidates apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field apps/server/tests/test_user_profile.py::test_profile_update_candidate_can_be_reextracted_after_promotion apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - 4 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 31 passed, 27 warnings.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py

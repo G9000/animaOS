@@ -156,6 +156,13 @@ def upsert_profile_field(
             db.flush()
             return existing
 
+        if _preserve_newer_profile_field(
+            existing=existing,
+            incoming_source_kind=source_kind,
+            observed_at=observed,
+        ):
+            return existing
+
         if _preserve_user_corrected_profile_field(
             existing=existing,
             incoming_source_kind=source_kind,
@@ -216,6 +223,18 @@ def _preserve_user_corrected_profile_field(
     if existing.source_kind != "user_correction":
         return False
     return incoming_source_kind not in {"user_correction"}
+
+
+def _preserve_newer_profile_field(
+    *,
+    existing: UserProfileField,
+    incoming_source_kind: str,
+    observed_at: datetime,
+) -> bool:
+    if incoming_source_kind == "user_correction":
+        return False
+    existing_observed = existing.last_observed_at or existing.updated_at
+    return _profile_datetime(existing_observed) > _profile_datetime(observed_at)
 
 
 def _should_preserve_retracted_profile_field(source_kind: str) -> bool:
@@ -585,6 +604,7 @@ def promote_profile_update_candidate(
         evidence_text=candidate.evidence_text or candidate.value,
         source_kind=f"profile_{candidate.source}",
         runtime_message_id=source_message_ids[-1] if source_message_ids else None,
+        observed_at=candidate.created_at,
     )
 
 

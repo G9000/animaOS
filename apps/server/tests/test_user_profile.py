@@ -1557,6 +1557,74 @@ async def test_soul_writer_promotes_profile_update_candidates() -> None:
     assert evidence_count == 1
 
 
+@pytest.mark.asyncio
+async def test_soul_writer_profile_retry_preserves_newer_profile_field() -> None:
+    service = _profile_service()
+    from anima_server.services.agent.soul_writer import run_soul_writer
+
+    older_observed = datetime(2026, 1, 1, tzinfo=UTC)
+    newer_observed = datetime(2026, 2, 1, tzinfo=UTC)
+    with _soul_session_factory() as soul_factory, _runtime_session_factory() as runtime_session_factory:
+        with soul_factory() as db:
+            user = _make_user(db)
+            user_id = user.id
+            service.upsert_profile_field(
+                db,
+                user_id=user_id,
+                category="work",
+                key="role",
+                value="Systems designer",
+                evidence_text="Later profile extraction said systems designer",
+                source_kind="profile_llm",
+                observed_at=newer_observed,
+            )
+            db.commit()
+
+        with runtime_session_factory() as runtime_db:
+            candidate = service.create_profile_update_candidate(
+                runtime_db,
+                user_id=user_id,
+                category="work",
+                key="role",
+                value="Product manager",
+                confidence=0.9,
+                evidence_text="Earlier profile extraction said product manager",
+                source_message_ids=[101],
+            )
+            candidate.status = "failed"
+            candidate.retry_count = 1
+            candidate.created_at = older_observed
+            runtime_db.commit()
+            candidate_id = candidate.id
+
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_session_factory,
+        )
+
+        with runtime_session_factory() as runtime_db:
+            promoted_candidate = service.get_profile_update_candidate(
+                runtime_db,
+                candidate_id=candidate_id,
+            )
+        with soul_factory() as db:
+            fields = service.list_profile_fields(db, user_id=user_id)
+            active_value = df(
+                user_id,
+                fields[0].value_text,
+                table="user_profile_fields",
+                field="value_text",
+            )
+            evidence_count = len(fields[0].evidence)
+
+    assert result.profile_updates_promoted == 1
+    assert promoted_candidate.status == "promoted"
+    assert [(field.category, field.key) for field in fields] == [("work", "role")]
+    assert active_value == "Systems designer"
+    assert evidence_count == 1
+
+
 def test_profile_update_candidate_can_be_reextracted_after_promotion() -> None:
     service = _profile_service()
     with _runtime_session_factory() as runtime_session_factory, runtime_session_factory() as runtime_db:
