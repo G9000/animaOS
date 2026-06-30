@@ -523,6 +523,65 @@ def test_forget_memory_deletes_profile_field_sourced_by_runtime_message() -> Non
     assert forgotten_evidence is None
 
 
+def test_forget_memory_preserves_unrelated_profile_field_from_same_turn() -> None:
+    service = _profile_service()
+    from anima_server.models import MemoryItem, MemoryItemEvidence
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "likes cats",
+                table="memory_items",
+                field="content",
+            ),
+            category="preference",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        memory_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=item.id,
+            source_kind="llm",
+            runtime_message_ids_json=[101, 102],
+            evidence_text=ef(
+                user.id,
+                "I like cats",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add(memory_evidence)
+        db.flush()
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Engineer",
+            confidence=0.9,
+            evidence_text="I work as an engineer",
+            source_kind="profile_llm",
+            runtime_message_id=102,
+        )
+        field_id = field.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=user.id)
+        fields = service.list_profile_fields(db, user_id=user.id)
+        evidence_count = len(fields[0].evidence)
+        runtime_message_id = fields[0].evidence[0].runtime_message_id
+
+    assert result.items_forgotten == 1
+    assert [profile_field.id for profile_field in fields] == [field_id]
+    assert evidence_count == 1
+    assert runtime_message_id == 102
+
+
 @pytest.mark.asyncio
 async def test_sleep_tasks_reconciles_claims_to_profile_fields(
     monkeypatch: pytest.MonkeyPatch,

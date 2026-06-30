@@ -9,6 +9,7 @@ Three mechanisms:
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -67,6 +68,15 @@ class ForgetResult:
     items_forgotten: int = 0
     derived_refs_affected: int = 0
     audit_log_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProfileForgetContext:
+    """Runtime-message fallback context for profile cleanup."""
+
+    message_ids: tuple[int, ...]
+    memory_category: str
+    content_text: str
 
 
 @dataclass(slots=True)
@@ -323,12 +333,13 @@ def forget_memory(
         ).all()
     )
     memory_evidence_ids = [evidence.id for evidence in memory_evidence]
-    runtime_message_ids = sorted(
-        {
-            message_id
-            for evidence in memory_evidence
-            for message_id in _runtime_message_ids_for_memory_evidence(evidence)
-        }
+    evidence_by_item_id: dict[int, list[MemoryItemEvidence]] = {}
+    for evidence in memory_evidence:
+        evidence_by_item_id.setdefault(evidence.memory_item_id, []).append(evidence)
+    runtime_contexts = _runtime_profile_forget_contexts(
+        user_id=user_id,
+        chain_items=chain_items,
+        evidence_by_item_id=evidence_by_item_id,
     )
     _delete_profile_fields_for_forget(
         db,
@@ -336,7 +347,7 @@ def forget_memory(
         source_memory_ids=chain_ids,
         source_evidence_ids=memory_evidence_ids,
         source_claim_evidence_ids=claim_evidence_ids,
-        runtime_message_ids=runtime_message_ids,
+        runtime_contexts=runtime_contexts,
     )
     for claim in all_claims:
         db.execute(
@@ -388,7 +399,7 @@ def _delete_profile_fields_for_forget(
     source_memory_ids: list[int],
     source_evidence_ids: list[int],
     source_claim_evidence_ids: list[int],
-    runtime_message_ids: list[int],
+    runtime_contexts: list[RuntimeProfileForgetContext],
 ) -> int:
     field_criteria = [
         UserProfileField.source_memory_id.in_(source_memory_ids),
@@ -412,11 +423,6 @@ def _delete_profile_fields_for_forget(
                 source_claim_evidence_ids,
             )
         )
-    if runtime_message_ids:
-        evidence_criteria.append(
-            UserProfileFieldEvidence.runtime_message_id.in_(runtime_message_ids)
-        )
-
     matching_evidence = list(
         db.scalars(
             select(UserProfileFieldEvidence).where(
@@ -425,6 +431,16 @@ def _delete_profile_fields_for_forget(
             )
         ).all()
     )
+    seen_evidence_ids = {evidence.id for evidence in matching_evidence}
+    for evidence in _matching_runtime_profile_evidence(
+        db,
+        user_id=user_id,
+        runtime_contexts=runtime_contexts,
+    ):
+        if evidence.id in seen_evidence_ids:
+            continue
+        matching_evidence.append(evidence)
+        seen_evidence_ids.add(evidence.id)
     matching_evidence_by_field: dict[int, list[UserProfileFieldEvidence]] = {}
     for evidence in matching_evidence:
         matching_evidence_by_field.setdefault(evidence.profile_field_id, []).append(
@@ -476,6 +492,177 @@ def _delete_profile_fields_for_forget(
         field.updated_at = now
     db.flush()
     return deleted_count
+
+
+def _runtime_profile_forget_contexts(
+    *,
+    user_id: int,
+    chain_items: list[MemoryItem],
+    evidence_by_item_id: dict[int, list[MemoryItemEvidence]],
+) -> list[RuntimeProfileForgetContext]:
+    contexts: list[RuntimeProfileForgetContext] = []
+    for item in chain_items:
+        message_ids = sorted(
+            {
+                message_id
+                for evidence in evidence_by_item_id.get(item.id, [])
+                for message_id in _runtime_message_ids_for_memory_evidence(evidence)
+            }
+        )
+        if not message_ids:
+            continue
+        content_text = df(
+            user_id,
+            item.content,
+            table="memory_items",
+            field="content",
+        ).strip()
+        if not content_text:
+            continue
+        contexts.append(
+            RuntimeProfileForgetContext(
+                message_ids=tuple(message_ids),
+                memory_category=item.category,
+                content_text=content_text,
+            )
+        )
+    return contexts
+
+
+def _matching_runtime_profile_evidence(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_contexts: list[RuntimeProfileForgetContext],
+) -> list[UserProfileFieldEvidence]:
+    contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
+    for context in runtime_contexts:
+        for message_id in context.message_ids:
+            contexts_by_message_id.setdefault(message_id, []).append(context)
+    if not contexts_by_message_id:
+        return []
+
+    candidates = list(
+        db.scalars(
+            select(UserProfileFieldEvidence).where(
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.runtime_message_id.in_(
+                    sorted(contexts_by_message_id)
+                ),
+            )
+        ).all()
+    )
+    matched: list[UserProfileFieldEvidence] = []
+    for evidence in candidates:
+        if evidence.runtime_message_id is None:
+            continue
+        field = db.get(UserProfileField, evidence.profile_field_id)
+        if field is None or field.user_id != user_id:
+            continue
+        if _runtime_profile_evidence_matches_context(
+            user_id=user_id,
+            field=field,
+            evidence=evidence,
+            contexts=contexts_by_message_id.get(evidence.runtime_message_id, []),
+        ):
+            matched.append(evidence)
+    return matched
+
+
+def _runtime_profile_evidence_matches_context(
+    *,
+    user_id: int,
+    field: UserProfileField,
+    evidence: UserProfileFieldEvidence,
+    contexts: list[RuntimeProfileForgetContext],
+) -> bool:
+    profile_texts = [
+        df(
+            user_id,
+            field.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        ),
+        df(
+            user_id,
+            evidence.evidence_text,
+            table="user_profile_field_evidence",
+            field="evidence_text",
+        ),
+    ]
+    for context in contexts:
+        if not _profile_category_can_derive_from_memory_category(
+            profile_category=field.category,
+            memory_category=context.memory_category,
+        ):
+            continue
+        if any(_texts_are_related(context.content_text, text) for text in profile_texts):
+            return True
+    return False
+
+
+def _profile_category_can_derive_from_memory_category(
+    *,
+    profile_category: str,
+    memory_category: str,
+) -> bool:
+    category_map = {
+        "preference": {"preferences"},
+        "goal": {"goals"},
+        "relationship": {"relationships"},
+        "focus": {"active_projects"},
+    }
+    allowed = category_map.get(memory_category)
+    if allowed is None:
+        return True
+    return profile_category in allowed
+
+
+def _texts_are_related(source: str, target: str) -> bool:
+    source_text = _normalize_relation_text(source)
+    target_text = _normalize_relation_text(target)
+    if not source_text or not target_text:
+        return False
+    if source_text in target_text or target_text in source_text:
+        return True
+
+    shared = _meaningful_relation_tokens(source_text) & _meaningful_relation_tokens(
+        target_text
+    )
+    if len(shared) >= 2:
+        return True
+    return any(token.isdigit() or len(token) >= 5 for token in shared)
+
+
+_RELATION_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_RELATION_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "i",
+    "im",
+    "is",
+    "my",
+    "the",
+    "to",
+}
+
+
+def _normalize_relation_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.casefold()).strip()
+
+
+def _meaningful_relation_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in _RELATION_TOKEN_RE.findall(text):
+        normalized = token
+        if len(normalized) > 3 and normalized.endswith("s"):
+            normalized = normalized[:-1]
+        if normalized in _RELATION_STOP_WORDS:
+            continue
+        tokens.add(normalized)
+    return tokens
 
 
 def _runtime_message_ids_for_memory_evidence(evidence: MemoryItemEvidence) -> list[int]:
