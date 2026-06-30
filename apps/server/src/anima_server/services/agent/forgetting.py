@@ -314,13 +314,21 @@ def forget_memory(
         if claim_ids
         else []
     )
-    memory_evidence_ids = list(
+    memory_evidence = list(
         db.scalars(
-            select(MemoryItemEvidence.id).where(
+            select(MemoryItemEvidence).where(
                 MemoryItemEvidence.user_id == user_id,
                 MemoryItemEvidence.memory_item_id.in_(chain_ids),
             )
         ).all()
+    )
+    memory_evidence_ids = [evidence.id for evidence in memory_evidence]
+    runtime_message_ids = sorted(
+        {
+            message_id
+            for evidence in memory_evidence
+            for message_id in _runtime_message_ids_for_memory_evidence(evidence)
+        }
     )
     _delete_profile_fields_for_forget(
         db,
@@ -328,6 +336,7 @@ def forget_memory(
         source_memory_ids=chain_ids,
         source_evidence_ids=memory_evidence_ids,
         source_claim_evidence_ids=claim_evidence_ids,
+        runtime_message_ids=runtime_message_ids,
     )
     for claim in all_claims:
         db.execute(
@@ -379,6 +388,7 @@ def _delete_profile_fields_for_forget(
     source_memory_ids: list[int],
     source_evidence_ids: list[int],
     source_claim_evidence_ids: list[int],
+    runtime_message_ids: list[int],
 ) -> int:
     field_criteria = [
         UserProfileField.source_memory_id.in_(source_memory_ids),
@@ -401,6 +411,10 @@ def _delete_profile_fields_for_forget(
             UserProfileFieldEvidence.source_claim_evidence_id.in_(
                 source_claim_evidence_ids,
             )
+        )
+    if runtime_message_ids:
+        evidence_criteria.append(
+            UserProfileFieldEvidence.runtime_message_id.in_(runtime_message_ids)
         )
 
     matching_evidence = list(
@@ -462,6 +476,17 @@ def _delete_profile_fields_for_forget(
         field.updated_at = now
     db.flush()
     return deleted_count
+
+
+def _runtime_message_ids_for_memory_evidence(evidence: MemoryItemEvidence) -> list[int]:
+    ids: list[int] = []
+    if evidence.runtime_message_id is not None:
+        ids.append(int(evidence.runtime_message_id))
+    for raw_id in evidence.runtime_message_ids_json or []:
+        if raw_id is None:
+            continue
+        ids.append(int(raw_id))
+    return ids
 
 
 def _schedule_forget_external_cleanup_after_commit(

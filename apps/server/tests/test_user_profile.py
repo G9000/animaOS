@@ -458,6 +458,71 @@ def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None
     assert removed_profile_evidence is None
 
 
+def test_forget_memory_deletes_profile_field_sourced_by_runtime_message() -> None:
+    service = _profile_service()
+    from anima_server.models import (
+        MemoryItem,
+        MemoryItemEvidence,
+        UserProfileField,
+        UserProfileFieldEvidence,
+    )
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as a founder",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        memory_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=item.id,
+            source_kind="llm",
+            runtime_message_id=202,
+            evidence_text=ef(
+                user.id,
+                "I am the founder building AnimaOS",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add(memory_evidence)
+        db.flush()
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="role",
+            value="Founder building AnimaOS",
+            confidence=0.9,
+            evidence_text="I am the founder building AnimaOS",
+            source_kind="profile_llm",
+            runtime_message_id=202,
+        )
+        field_id = field.id
+        profile_evidence_id = field.evidence[0].id
+
+        result = forget_memory(db, memory_id=item.id, user_id=user.id)
+        active_after_forget = service.list_profile_fields(db, user_id=user.id)
+        forgotten_field = db.get(UserProfileField, field_id)
+        forgotten_evidence = db.get(UserProfileFieldEvidence, profile_evidence_id)
+
+    assert result.items_forgotten == 1
+    assert active_after_forget == []
+    assert forgotten_field is None
+    assert forgotten_evidence is None
+
+
 @pytest.mark.asyncio
 async def test_sleep_tasks_reconciles_claims_to_profile_fields(
     monkeypatch: pytest.MonkeyPatch,

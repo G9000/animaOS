@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 13:58 MYT
+- Updated: 2026-06-30 14:41 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -44,6 +44,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-06-30 13:21 MYT - Addressed additional PR #71 review feedback by invalidating the companion memory cache after the forget endpoint commits profile-field retractions.
 - 2026-06-30 13:35 MYT - Addressed additional PR #71 review feedback by hard-deleting profile fields/evidence tied to forgotten memories and adding structured profile tables to eval reset cleanup.
 - 2026-06-30 13:58 MYT - Addressed additional PR #71 review feedback by preserving profile fields that still have surviving evidence after one source memory is forgotten.
+- 2026-06-30 14:41 MYT - Addressed additional PR #71 review feedback by deleting runtime-message-only profile fields when their source memory is forgotten and setting the profile self-FK to `ON DELETE SET NULL` in the migration.
 
 ## Validation
 
@@ -103,6 +104,14 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_legacy_kg_migration_downgrade_tolerates_missing_constraints` - 1 passed after updating the SUM-003 downgrade test to target `20260626_0002` explicitly.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1709 passed, 1 skipped, 268 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - PR #71 review regression failed before fix because a runtime-message-only profile field survived forgetting its source memory.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - PR #71 review regression failed before fix because `superseded_by_id` had no migration-level `ON DELETE SET NULL`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 38 passed, 13 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py

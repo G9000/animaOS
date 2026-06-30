@@ -88,7 +88,11 @@ def upgrade() -> None:
                 ["memory_items.id"],
                 ondelete="SET NULL",
             ),
-            sa.ForeignKeyConstraint(["superseded_by_id"], ["user_profile_fields.id"]),
+            sa.ForeignKeyConstraint(
+                ["superseded_by_id"],
+                ["user_profile_fields.id"],
+                ondelete="SET NULL",
+            ),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
             sa.PrimaryKeyConstraint("id"),
         )
