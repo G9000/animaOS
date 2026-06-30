@@ -17,6 +17,7 @@ from anima_server.models.runtime import (
     RuntimeThread,
 )
 from anima_server.services.agent.state import (
+    StoredAttachment,
     attach_serialized_attachments,
     attach_serialized_retrieval,
     deserialize_stored_attachments,
@@ -295,6 +296,11 @@ def _bulk_insert_archived_history(
             if isinstance(raw_attachments, list)
             else ()
         )
+        attachments = _filter_rehydratable_image_attachments(
+            db,
+            user_id=user_id,
+            attachments=attachments,
+        )
         if not content and (
             role == "assistant" or (role == "user" and not attachments)
         ):
@@ -326,6 +332,35 @@ def _bulk_insert_archived_history(
         inserted_count += 1
     thread.next_message_sequence = max_seq + inserted_count
     db.flush()
+
+
+def _filter_rehydratable_image_attachments(
+    db: Session,
+    *,
+    user_id: int,
+    attachments: tuple[StoredAttachment, ...],
+) -> tuple[StoredAttachment, ...]:
+    asset_ids = {
+        attachment.asset_id
+        for attachment in attachments
+        if attachment.asset_id is not None
+    }
+    if not asset_ids:
+        return attachments
+
+    existing_asset_ids = set(
+        db.scalars(
+            select(RuntimeImageAsset.id).where(
+                RuntimeImageAsset.user_id == user_id,
+                RuntimeImageAsset.id.in_(asset_ids),
+            )
+        ).all()
+    )
+    return tuple(
+        attachment
+        for attachment in attachments
+        if attachment.asset_id is None or attachment.asset_id in existing_asset_ids
+    )
 
 
 def _link_archived_image_attachments(
