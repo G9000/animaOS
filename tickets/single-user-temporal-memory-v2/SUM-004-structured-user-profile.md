@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 02:34 MYT
+- Updated: 2026-07-01 02:55 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -58,6 +58,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 01:53 MYT - Addressed additional PR #71 review feedback by timestamp-guarding claim reconciliation so older claims do not supersede newer non-claim profile updates.
 - 2026-07-01 02:13 MYT - Addressed additional PR #71 review feedback by returning HTTP 400 for blank profile correction payloads instead of treating the existing field as missing.
 - 2026-07-01 02:34 MYT - Addressed additional PR #71 review feedback by preserving profile update candidate timestamps during promotion so older retryable candidates cannot supersede newer profile fields.
+- 2026-07-01 02:55 MYT - Addressed additional PR #71 review feedback by deleting single-token runtime-message profile facts during forget cleanup and scoping sourceless claim reconciliation idempotency to the target profile field.
 
 ## Validation
 
@@ -199,6 +200,13 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field -q` - 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_promotes_profile_update_candidates apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field apps/server/tests/test_user_profile.py::test_profile_update_candidate_can_be_reextracted_after_promotion apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - 4 passed, 3 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 31 passed, 27 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field apps/server/tests/test_user_profile.py::test_forget_memory_deletes_single_token_profile_field_from_runtime_message -q` - PR #71 review regressions failed before fix because sourceless claims from the same memory collapsed to one profile field and single-token runtime-message profile facts survived source-memory forget cleanup.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field apps/server/tests/test_user_profile.py::test_forget_memory_deletes_single_token_profile_field_from_runtime_message -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message apps/server/tests/test_user_profile.py::test_forget_memory_deletes_single_token_profile_field_from_runtime_message apps/server/tests/test_user_profile.py::test_forget_memory_preserves_unrelated_profile_field_from_same_turn apps/server/tests/test_user_profile.py::test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn -q` - 8 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 33 passed, 29 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
   - apps/server/alembic_runtime/versions/018_profile_update_candidates.py

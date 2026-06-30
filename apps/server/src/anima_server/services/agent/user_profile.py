@@ -776,10 +776,18 @@ def _profile_claim_already_reconciled(
 
     if source_memory_id is not None:
         existing = db.scalar(
-            select(UserProfileFieldEvidence.id).where(
+            select(UserProfileFieldEvidence.id)
+            .join(
+                UserProfileField,
+                UserProfileField.id == UserProfileFieldEvidence.profile_field_id,
+            )
+            .where(
                 UserProfileFieldEvidence.user_id == user_id,
                 UserProfileFieldEvidence.source_kind == "claim_reconciliation",
                 UserProfileFieldEvidence.source_memory_id == source_memory_id,
+                UserProfileField.user_id == user_id,
+                UserProfileField.category == category,
+                UserProfileField.key == key,
             )
         )
         return existing is not None

@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 02:34 MYT
+- Updated: 2026-07-01 02:55 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -110,6 +110,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 01:53 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer non-claim profile updates during claim reconciliation, then reran red/green regression, reconciliation cluster, and the user profile suite.
 - 2026-07-01 02:13 MYT - `SUM-004` addressed additional PR #71 feedback for returning 400 on blank profile correction payloads, then reran red/green regression, profile API checks, and the user profile suite.
 - 2026-07-01 02:34 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer profile fields when retrying older failed profile candidates, then reran red/green regression, profile promotion checks, and the user profile suite.
+- 2026-07-01 02:55 MYT - `SUM-004` addressed additional PR #71 feedback for single-token runtime-message profile forget cleanup and field-scoped sourceless claim reconciliation, then reran red/green regressions, related forget/reconciliation checks, the user profile suite, lint, diff, and build.
 
 ## Validation
 
@@ -254,3 +255,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 claim reconciliation fix compares active profile timestamps against claim provenance timestamps so older claims cannot supersede newer non-claim profile updates.
   - SUM-004 PR #71 profile API fix maps blank correction values to HTTP 400 while preserving 404 for missing active profile fields.
   - SUM-004 PR #71 profile candidate retry fix passes candidate creation time into promotion and preserves newer profile fields from older automatic updates.
+  - SUM-004 PR #71 forget/reconciliation fix deletes single-token runtime-message profile facts only when profile metadata supports the relation and scopes sourceless source-memory reconciliation evidence to the target profile field.

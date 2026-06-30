@@ -676,9 +676,14 @@ def _texts_are_related(
         shared
         and (source_text in target_text or target_text in source_text)
         and len(source_tokens) >= 2
-        and len(target_tokens) >= 2
     ):
-        return True
+        if len(target_tokens) >= 2:
+            return True
+        return _profile_metadata_supports_relation(
+            source_tokens,
+            profile_category=profile_category,
+            profile_key=profile_key,
+        )
     if any(token.isdigit() or len(token) >= 5 for token in shared):
         return _profile_metadata_supports_relation(
             source_tokens,
@@ -695,10 +700,25 @@ def _profile_metadata_supports_relation(
     profile_key: str,
 ) -> bool:
     metadata_tokens = _meaningful_relation_tokens(f"{profile_category} {profile_key}")
+    metadata_tokens.update(
+        _PROFILE_RELATION_SOURCE_ALIASES.get((profile_category, profile_key), set())
+    )
     return bool(source_tokens & metadata_tokens)
 
 
 _RELATION_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_PROFILE_RELATION_SOURCE_ALIASES: dict[tuple[str, str], set[str]] = {
+    ("identity", "location"): {
+        "based",
+        "live",
+        "lives",
+        "living",
+        "located",
+        "location",
+        "reside",
+        "resides",
+    },
+}
 _RELATION_STOP_WORDS = {
     "a",
     "an",

@@ -579,6 +579,60 @@ def test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim() -> N
     assert evidence_count == 1
 
 
+def test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field() -> None:
+    service = _profile_service()
+    from anima_server.models import MemoryItem
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as a product manager and likes concise answers",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="works as a product manager",
+            category="fact",
+            memory_item_id=item.id,
+            evidence_text=None,
+        )
+        upsert_claim(
+            db,
+            user_id=user.id,
+            content="likes concise answers",
+            category="preference",
+            memory_item_id=item.id,
+            evidence_text=None,
+        )
+
+        reconciled = service.reconcile_profile_from_claims(db, user_id=user.id)
+        second_count = service.reconcile_profile_from_claims(db, user_id=user.id)
+        active = service.list_profile_fields(db, user_id=user.id)
+        profile = {(field.category, field.key): field for field in active}
+        evidence_counts = {
+            profile_key: len(field.evidence) for profile_key, field in profile.items()
+        }
+
+    assert reconciled == 2
+    assert second_count == 0
+    assert set(profile) == {("work", "occupation"), ("preferences", "likes")}
+    assert evidence_counts == {
+        ("work", "occupation"): 1,
+        ("preferences", "likes"): 1,
+    }
+
+
 def test_reconcile_profile_from_claims_tracks_claim_evidence_separately() -> None:
     service = _profile_service()
     with _db_session() as db:
@@ -893,6 +947,71 @@ def test_forget_memory_deletes_profile_field_sourced_by_runtime_message() -> Non
             evidence_text="I am the founder building AnimaOS",
             source_kind="profile_llm",
             runtime_message_id=202,
+        )
+        field_id = field.id
+        profile_evidence_id = field.evidence[0].id
+
+        result = forget_memory(db, memory_id=item.id, user_id=user.id)
+        active_after_forget = service.list_profile_fields(db, user_id=user.id)
+        forgotten_field = db.get(UserProfileField, field_id)
+        forgotten_evidence = db.get(UserProfileFieldEvidence, profile_evidence_id)
+
+    assert result.items_forgotten == 1
+    assert active_after_forget == []
+    assert forgotten_field is None
+    assert forgotten_evidence is None
+
+
+def test_forget_memory_deletes_single_token_profile_field_from_runtime_message() -> None:
+    service = _profile_service()
+    from anima_server.models import (
+        MemoryItem,
+        MemoryItemEvidence,
+        UserProfileField,
+        UserProfileFieldEvidence,
+    )
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "lives in Paris",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add(item)
+        db.flush()
+        memory_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=item.id,
+            source_kind="llm",
+            runtime_message_id=203,
+            evidence_text=ef(
+                user.id,
+                "I live in Paris",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add(memory_evidence)
+        db.flush()
+        field = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="identity",
+            key="location",
+            value="Paris",
+            confidence=0.9,
+            evidence_text="Paris",
+            source_kind="profile_llm",
+            runtime_message_id=203,
         )
         field_id = field.id
         profile_evidence_id = field.evidence[0].id
