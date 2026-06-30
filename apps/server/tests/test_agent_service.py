@@ -12,6 +12,7 @@ from anima_server.db.base import Base
 from anima_server.models import User
 from anima_server.models.runtime import (
     RuntimeImageAnnotation,
+    RuntimeImageAsset,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
@@ -1416,6 +1417,73 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
     assert user_msg.is_in_context is False
     assert annotation_count == 0
     assert embedding_count == 0
+
+
+def test_inline_image_indexing_rolls_back_partial_rows_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_after_partial_flush(
+        runtime_db: Session,
+        *,
+        user_id: int,
+        image_asset_ids: list[int],
+        upload_context: str,
+    ) -> None:
+        runtime_db.add(
+            RuntimeImageAnnotation(
+                user_id=user_id,
+                image_asset_id=image_asset_ids[0],
+                annotation_kind="upload_context",
+                content_text=upload_context,
+                content_hash=RuntimeImageAnnotation.compute_content_hash(upload_context),
+                status="active",
+            )
+        )
+        runtime_db.flush()
+        raise RuntimeError("indexing failed after flush")
+
+    from anima_server.services.images import indexing as indexing_module
+
+    monkeypatch.setattr(
+        indexing_module,
+        "index_image_attachments_for_message",
+        fail_after_partial_flush,
+    )
+
+    with runtime_db_session() as runtime_session:
+        asset = RuntimeImageAsset(
+            user_id=7,
+            filename="partial.png",
+            mime_type="image/png",
+            storage_path="users/7/media/images/aa/partial.png",
+            sha256="a" * 64,
+            size_bytes=len(PNG_BYTES),
+            retention_state="active",
+        )
+        runtime_session.add(asset)
+        runtime_session.flush()
+
+        agent_service._index_image_attachments_inline(
+            runtime_session,
+            user_id=7,
+            user_message="partial indexing should not persist",
+            attachments=(
+                agent_service.StoredAttachment(
+                    id="partial",
+                    kind="image",
+                    mime_type="image/png",
+                    path="unused",
+                    storage_path=asset.storage_path,
+                    asset_id=asset.id,
+                    retention_state="active",
+                ),
+            ),
+        )
+        runtime_session.commit()
+
+        annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
+
+    assert annotation_count == 0
 
 
 def test_should_retry_after_compaction_only_before_tools_executed(

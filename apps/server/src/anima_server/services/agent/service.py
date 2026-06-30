@@ -1980,12 +1980,13 @@ def _index_image_attachments_inline(
     try:
         from anima_server.services.images.indexing import index_image_attachments_for_message
 
-        index_image_attachments_for_message(
-            runtime_db,
-            user_id=user_id,
-            image_asset_ids=image_asset_ids,
-            upload_context=user_message,
-        )
+        with runtime_db.begin_nested():
+            index_image_attachments_for_message(
+                runtime_db,
+                user_id=user_id,
+                image_asset_ids=image_asset_ids,
+                upload_context=user_message,
+            )
     except Exception:
         logger.debug("Inline image annotation indexing failed", exc_info=True)
 
