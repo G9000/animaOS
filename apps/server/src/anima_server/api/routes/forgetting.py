@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
+from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models import MemoryItem
 from anima_server.services.agent.forgetting import forget_by_topic, forget_memory
 from anima_server.services.data_crypto import df
@@ -34,7 +35,12 @@ async def forget_single_memory(
             detail="Memory item not found",
         )
 
-    result = forget_memory(db, memory_id=memory_id, user_id=user_id)
+    result = forget_memory(
+        db,
+        memory_id=memory_id,
+        user_id=user_id,
+        runtime_db_factory=get_runtime_session_factory(),
+    )
     db.commit()
     _invalidate_companion_memory(user_id)
 

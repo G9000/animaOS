@@ -637,6 +637,97 @@ def test_forget_memory_preserves_unrelated_profile_field_from_same_turn() -> Non
     assert runtime_message_id == 102
 
 
+def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> None:
+    service = _profile_service()
+    from anima_server.models import MemoryItem, MemoryItemEvidence
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with (
+        _soul_session_factory() as soul_factory,
+        _runtime_session_factory() as runtime_session_factory,
+    ):
+        with soul_factory() as db:
+            user = _make_user(db)
+            user_id = user.id
+            item = MemoryItem(
+                user_id=user_id,
+                content=ef(
+                    user_id,
+                    "works as a founder",
+                    table="memory_items",
+                    field="content",
+                ),
+                category="fact",
+                importance=3,
+                source="test",
+            )
+            db.add(item)
+            db.flush()
+            db.add(
+                MemoryItemEvidence(
+                    user_id=user_id,
+                    memory_item_id=item.id,
+                    source_kind="llm",
+                    runtime_message_id=501,
+                    evidence_text=ef(
+                        user_id,
+                        "I work as a founder",
+                        table="memory_item_evidence",
+                        field="evidence_text",
+                    ),
+                )
+            )
+            db.commit()
+            item_id = item.id
+
+        with runtime_session_factory() as runtime_db:
+            pending = service.create_profile_update_candidate(
+                runtime_db,
+                user_id=user_id,
+                category="work",
+                key="role",
+                value="Founder",
+                evidence_text="I work as a founder",
+                source_message_ids=[501],
+            )
+            unrelated = service.create_profile_update_candidate(
+                runtime_db,
+                user_id=user_id,
+                category="preferences",
+                key="likes",
+                value="Cats",
+                evidence_text="I like cats",
+                source_message_ids=[501],
+            )
+            runtime_db.commit()
+            pending_id = pending.id
+            unrelated_id = unrelated.id
+
+        with soul_factory() as db:
+            result = forget_memory(
+                db,
+                memory_id=item_id,
+                user_id=user_id,
+                runtime_db_factory=runtime_session_factory,
+            )
+            db.commit()
+
+        with runtime_session_factory() as runtime_db:
+            rejected_candidate = service.get_profile_update_candidate(
+                runtime_db,
+                candidate_id=pending_id,
+            )
+            untouched_candidate = service.get_profile_update_candidate(
+                runtime_db,
+                candidate_id=unrelated_id,
+            )
+
+    assert result.items_forgotten == 1
+    assert rejected_candidate.status == "rejected"
+    assert rejected_candidate.processed_at is not None
+    assert untouched_candidate.status == "extracted"
+
+
 @pytest.mark.asyncio
 async def test_sleep_tasks_reconciles_claims_to_profile_fields(
     monkeypatch: pytest.MonkeyPatch,
@@ -916,6 +1007,53 @@ async def test_llm_extraction_parses_profile_updates(monkeypatch: pytest.MonkeyP
     )
 
     assert result.memories[0]["content"] == "Works as a founder"
+    assert result.profile_updates == [
+        {
+            "category": "work",
+            "key": "role",
+            "value": "Founder building AnimaOS",
+            "confidence": 0.86,
+            "evidence_quote": "I am the founder building AnimaOS",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_llm_extraction_parses_profile_updates_without_memories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent.consolidation import extract_memories_via_llm
+
+    async def _fake_call_llm_for_text(*_args, **_kwargs) -> str:
+        return json.dumps(
+            {
+                "memories": None,
+                "profile_updates": [
+                    {
+                        "category": "work",
+                        "key": "role",
+                        "value": "Founder building AnimaOS",
+                        "confidence": 0.86,
+                        "evidence_quote": "I am the founder building AnimaOS",
+                    }
+                ],
+                "emotion": None,
+            }
+        )
+
+    monkeypatch.setattr(settings, "agent_provider", "openrouter")
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm_json.call_llm_for_text",
+        _fake_call_llm_for_text,
+    )
+
+    result = await extract_memories_via_llm(
+        user_message="I am the founder building AnimaOS",
+        assistant_response="Got it.",
+    )
+
+    assert result.memories == []
     assert result.profile_updates == [
         {
             "category": "work",

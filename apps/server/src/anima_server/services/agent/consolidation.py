@@ -142,15 +142,15 @@ async def extract_memories_via_llm(
             memories = obj.get("memories", [])
             if isinstance(memories, list):
                 result.memories = [m for m in memories if isinstance(m, dict)]
-                profile_updates = obj.get("profile_updates", [])
-                if isinstance(profile_updates, list):
-                    result.profile_updates = [
-                        update for update in profile_updates if isinstance(update, dict)
-                    ]
-                emotion = obj.get("emotion")
-                if emotion and isinstance(emotion, dict):
-                    result.emotion = emotion
-                return result
+            profile_updates = obj.get("profile_updates", [])
+            if isinstance(profile_updates, list):
+                result.profile_updates = [
+                    update for update in profile_updates if isinstance(update, dict)
+                ]
+            emotion = obj.get("emotion")
+            if emotion and isinstance(emotion, dict):
+                result.emotion = emotion
+            return result
 
         # Fallback: try as plain array (backward compat)
         result.memories = _parse_json_array(content)

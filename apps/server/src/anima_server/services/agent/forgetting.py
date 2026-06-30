@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -258,6 +259,7 @@ def forget_memory(
     memory_id: int,
     user_id: int,
     trigger: str = "user_request",
+    runtime_db_factory: Callable[[], Session] | None = None,
 ) -> ForgetResult:
     """Hard-delete a memory item with full cleanup.
 
@@ -348,6 +350,12 @@ def forget_memory(
         source_evidence_ids=memory_evidence_ids,
         source_claim_evidence_ids=claim_evidence_ids,
         runtime_contexts=runtime_contexts,
+    )
+    _schedule_profile_candidate_rejection_after_commit(
+        db,
+        user_id=user_id,
+        runtime_contexts=runtime_contexts,
+        runtime_db_factory=runtime_db_factory,
     )
     for claim in all_claims:
         db.execute(
@@ -674,6 +682,133 @@ def _runtime_message_ids_for_memory_evidence(evidence: MemoryItemEvidence) -> li
             continue
         ids.append(int(raw_id))
     return ids
+
+
+def _schedule_profile_candidate_rejection_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_contexts: list[RuntimeProfileForgetContext],
+    runtime_db_factory: Callable[[], Session] | None,
+) -> None:
+    if runtime_db_factory is None:
+        return
+    message_ids = tuple(
+        sorted(
+            {
+                message_id
+                for context in runtime_contexts
+                for message_id in context.message_ids
+            }
+        )
+    )
+    if not message_ids:
+        return
+
+    contexts = tuple(runtime_contexts)
+
+    def _cleanup(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        try:
+            with runtime_db_factory() as runtime_db:
+                _reject_profile_candidates_for_forget_contexts(
+                    runtime_db,
+                    user_id=user_id,
+                    runtime_contexts=list(contexts),
+                )
+                runtime_db.commit()
+        except Exception:
+            logger.debug(
+                "Profile candidate rejection failed for messages %s",
+                message_ids,
+                exc_info=True,
+            )
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _cleanup)
+
+    event.listen(db, "after_commit", _cleanup, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
+
+
+def _reject_profile_candidates_for_forget_contexts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    runtime_contexts: list[RuntimeProfileForgetContext],
+) -> int:
+    from anima_server.models.runtime_memory import ProfileUpdateCandidate
+
+    contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
+    for context in runtime_contexts:
+        for message_id in context.message_ids:
+            contexts_by_message_id.setdefault(message_id, []).append(context)
+    if not contexts_by_message_id:
+        return 0
+
+    candidates = list(
+        runtime_db.scalars(
+            select(ProfileUpdateCandidate).where(
+                ProfileUpdateCandidate.user_id == user_id,
+                ProfileUpdateCandidate.status.in_(["extracted", "queued", "failed"]),
+            )
+        ).all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for candidate in candidates:
+        matched_contexts = [
+            context
+            for message_id in _source_message_ids_for_profile_candidate(candidate)
+            for context in contexts_by_message_id.get(message_id, [])
+        ]
+        if not matched_contexts:
+            continue
+        if not _runtime_profile_candidate_matches_context(
+            candidate=candidate,
+            contexts=matched_contexts,
+        ):
+            continue
+        candidate.status = "rejected"
+        candidate.last_error = "Source memory forgotten before profile promotion"
+        candidate.processed_at = now
+        rejected += 1
+    if rejected:
+        runtime_db.flush()
+    return rejected
+
+
+def _source_message_ids_for_profile_candidate(candidate: object) -> list[int]:
+    ids: list[int] = []
+    for raw_id in getattr(candidate, "source_message_ids", None) or []:
+        if raw_id is None:
+            continue
+        ids.append(int(raw_id))
+    return ids
+
+
+def _runtime_profile_candidate_matches_context(
+    *,
+    candidate: object,
+    contexts: list[RuntimeProfileForgetContext],
+) -> bool:
+    profile_category = str(getattr(candidate, "category", "") or "")
+    profile_texts = [
+        str(getattr(candidate, "value", "") or ""),
+        str(getattr(candidate, "evidence_text", "") or ""),
+    ]
+    for context in contexts:
+        if not _profile_category_can_derive_from_memory_category(
+            profile_category=profile_category,
+            memory_category=context.memory_category,
+        ):
+            continue
+        if any(_texts_are_related(context.content_text, text) for text in profile_texts):
+            return True
+    return False
 
 
 def _schedule_forget_external_cleanup_after_commit(
