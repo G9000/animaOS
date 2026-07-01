@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 20:45 MYT
+- Updated: 2026-07-01 21:04 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -132,6 +132,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 20:16 MYT - `SUM-005` addressed PR #72 Codex rereview comment for preserving Rust semantic index lookup when route memory-category filters are present.
 - 2026-07-01 20:31 MYT - `SUM-005` addressed PR #72 Codex rereview comment for backfilling partial category-filtered Rust semantic hits through the category-aware vector-store fallback.
 - 2026-07-01 20:45 MYT - `SUM-005` addressed PR #72 Codex rereview comment for emitting streaming `run_started` before semantic retrieval-router setup can block startup.
+- 2026-07-01 21:04 MYT - `SUM-005` addressed PR #72 Codex rereview comment for routing fallback taste-preference questions to preference lookup.
 
 ## Validation
 
@@ -319,6 +320,13 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 stream-startup fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 stream-startup fix build: passed with existing Vite chunk-size warning.
   - `git diff --check` - SUM-005 PR #72 stream-startup diff check passed with CRLF normalization warnings only.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_taste_preference_questions_route_to_preference_lookup -q` - SUM-005 PR #72 taste-preference fallback regression failed before fix because taste-shaped `would I like` and `might I like` questions routed to `general_recall`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_taste_preference_questions_route_to_preference_lookup apps/server/tests/test_retrieval_router.py::test_family_friendly_recommendation_routes_to_preference_lookup apps/server/tests/test_retrieval_router.py::test_project_recommendation_routes_to_project_continuity apps/server/tests/test_retrieval_router.py::test_generic_who_favorite_question_routes_to_preference_lookup -q` - SUM-005 PR #72 taste-preference regression cluster: 6 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - SUM-005 retrieval router suite: 37 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_agent_service.py::test_streaming_run_started_emits_before_turn_context_assembly apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_backfills_partial_category_filtered_rust_results apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 PR #72 taste-preference focused suite: 67 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 taste-preference fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 taste-preference fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-005 PR #72 taste-preference fix diff check passed with CRLF normalization warnings only.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -399,3 +407,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-005 semantic router scope correction makes the live agent path call the configured LLM router first, records `decisionSource`, `confidence`, `language`, and `fallbackReason`, and keeps deterministic routing as the scaffold/test, invalid-output, low-confidence, or invocation-error fallback.
   - SUM-005 PR #72 Rust semantic index fix keeps category-filtered semantic retrieval on the Rust memory vector index first, filters Rust hits by canonical memory category, and uses category-aware vector-store search to backfill partial Rust results up to the requested limit.
   - SUM-005 PR #72 stream-startup fix emits `run_started` immediately after the run row is committed, before semantic routing and retrieval setup, so streaming clients receive a cancellable run id even when router LLM calls are slow.
+  - SUM-005 PR #72 taste-preference fallback fix routes taste-shaped `might like`, `might I like`, and `would I like` questions to preference lookup without broadening generic `would like` requests.

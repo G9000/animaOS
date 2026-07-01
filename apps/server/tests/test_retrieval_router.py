@@ -171,6 +171,20 @@ def test_family_friendly_recommendation_routes_to_preference_lookup() -> None:
     assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
 
 
+@pytest.mark.parametrize(
+    "turn",
+    [
+        "Would I like Thai tonight?",
+        "What restaurant might I like?",
+        "What would I like for dinner?",
+    ],
+)
+def test_taste_preference_questions_route_to_preference_lookup(turn: str) -> None:
+    plan = plan_retrieval(turn)
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
 def test_instead_of_preference_phrase_routes_to_preference_lookup() -> None:
     plan = plan_retrieval("Can you recommend coffee instead of tea?")
 
