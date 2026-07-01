@@ -150,6 +150,7 @@ async def run_soul_writer(
         result.ops_processed > 0
         or result.candidates_promoted > 0
         or result.profile_updates_promoted > 0
+        or result.candidates_reinforced > 0
     ):
         try:
             from anima_server.services.agent.companion import get_companion
@@ -792,6 +793,9 @@ def _process_candidate(
                 from anima_server.services.agent.memory_salience import (
                     merge_salience_into_item,
                 )
+                from anima_server.services.agent.memory_store import (
+                    invalidate_memory_retrieval_indexes,
+                )
                 from anima_server.services.agent.provenance import (
                     add_candidate_memory_item_evidence,
                 )
@@ -804,6 +808,7 @@ def _process_candidate(
                     memory_item=old_item,
                 )
                 soul_db.commit()
+                invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
 
             candidate.status = "promoted"
             candidate.processed_at = now

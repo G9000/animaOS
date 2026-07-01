@@ -296,6 +296,10 @@ def merge_salience_into_item(
     item.relationship_proximity = merged.relationship_proximity
     item.evidence_strength = merged.evidence_strength
     item.updated_at = datetime.now(UTC)
+    if hasattr(item, "heat"):
+        from anima_server.services.agent.heat_scoring import compute_heat_for_item
+
+        item.heat = compute_heat_for_item(item)
     return merged
 
 
