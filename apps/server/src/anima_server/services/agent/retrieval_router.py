@@ -134,35 +134,13 @@ def _classify_route(query: str) -> RetrievalRoute:
     if _has_relationship_cue(lowered, query):
         return RetrievalRoute.RELATIONSHIP_CONTEXT
 
-    if _has_any(
-        lowered,
-        (
-            "prefer",
-            "usually like",
-            "do i like",
-            "favorite",
-            "favourite",
-            "recommend",
-            "recommendation",
-        ),
-    ):
+    if _has_project_continuity_cue(lowered) and not _has_taste_preference_cue(lowered):
+        return RetrievalRoute.PROJECT_CONTINUITY
+
+    if _has_preference_cue(lowered):
         return RetrievalRoute.PREFERENCE_LOOKUP
 
-    if _has_any(
-        lowered,
-        (
-            "leave off",
-            "left off",
-            "current status",
-            "where did we",
-            "project",
-            "ticket",
-            "sum-",
-            "prd",
-            "roadmap",
-            "milestone",
-        ),
-    ):
+    if _has_project_continuity_cue(lowered):
         return RetrievalRoute.PROJECT_CONTINUITY
 
     if _has_any(
@@ -445,8 +423,12 @@ def _has_foresight_cue(text: str) -> bool:
 
 
 def _has_relationship_cue(text: str, query: str) -> bool:
-    if _has_any(text, ("connected to", "relationship", "who is", "who ")):
+    if _has_any(text, ("connected to", "relationship")):
         return _has_named_entity_hint(query) or _has_relationship_role_query(text)
+    if _has_relationship_role_query(text):
+        return True
+    if _has_relationship_identity_query(text):
+        return True
     return _has_relationship_role_target(text)
 
 
@@ -467,6 +449,85 @@ def _has_relationship_role_query(text: str) -> bool:
             r"(?:partner|friend|family|coworker|colleague)s?\b",
             text,
         )
+    )
+
+
+def _has_relationship_identity_query(text: str) -> bool:
+    direct = re.search(
+        r"\bwho\s+(?:is|are)\s+(?P<target>[\w-]+(?:\s+[\w-]+){0,2})\s*\??$",
+        text,
+    )
+    if direct and _is_bare_relationship_target(direct.group("target")):
+        return True
+
+    embedded = re.search(
+        r"\bwho\s+(?P<target>[\w-]+(?:\s+[\w-]+){0,2})\s+(?:is|are)\b",
+        text,
+    )
+    return bool(embedded and _is_bare_relationship_target(embedded.group("target")))
+
+
+def _is_bare_relationship_target(target: str) -> bool:
+    tokens = [token.casefold() for token in re.findall(r"\b[\w-]{2,}\b", target)]
+    return bool(tokens) and tokens[0] not in {
+        "a",
+        "an",
+        "her",
+        "his",
+        "my",
+        "our",
+        "the",
+        "their",
+        "your",
+    }
+
+
+def _has_project_continuity_cue(text: str) -> bool:
+    return _has_any(
+        text,
+        (
+            "leave off",
+            "left off",
+            "current status",
+            "where did we",
+            "project",
+            "ticket",
+            "sum-",
+            "prd",
+            "roadmap",
+            "milestone",
+        ),
+    )
+
+
+def _has_preference_cue(text: str) -> bool:
+    return _has_any(
+        text,
+        (
+            "prefer",
+            "usually like",
+            "do i like",
+            "favorite",
+            "favourite",
+            "recommend",
+            "recommendation",
+        ),
+    )
+
+
+def _has_taste_preference_cue(text: str) -> bool:
+    return _has_any(
+        text,
+        (
+            "prefer",
+            "usually like",
+            "do i like",
+            "favorite",
+            "favourite",
+            "might like",
+            "would like",
+            "would i like",
+        ),
     )
 
 

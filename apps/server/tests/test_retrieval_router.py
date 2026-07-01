@@ -152,6 +152,18 @@ def test_project_continuity_plan_prioritizes_active_projects() -> None:
     assert RetrievalSource.TRANSCRIPTS in plan.source_names
 
 
+def test_project_recommendation_routes_to_project_continuity() -> None:
+    plan = plan_retrieval("Can you recommend an approach for the SUM-005 PRD?")
+
+    assert plan.route is RetrievalRoute.PROJECT_CONTINUITY
+
+
+def test_generic_who_favorite_question_routes_to_preference_lookup() -> None:
+    plan = plan_retrieval("Who did I say was my favorite author?")
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
 def test_future_and_procedural_sources_are_explicit_until_storage_exists() -> None:
     foresight = plan_retrieval("What did I promise to send Alex next Tuesday?")
     procedural = plan_retrieval("What did you learn about handling my release checklist?")

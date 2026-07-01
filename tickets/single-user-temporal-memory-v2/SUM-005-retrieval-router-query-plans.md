@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 16:32 MYT
+- Updated: 2026-07-01 18:43 MYT
 - Started: 2026-07-01 14:00 MYT
 - Completed: 2026-07-01 14:19 MYT
 
@@ -47,6 +47,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
 - 2026-07-01 16:01 MYT - Addressed PR #72 Codex rereview comment for matching `due` as a word-boundary foresight cue so preference words like "fondue" do not route to foresight.
 - 2026-07-01 16:18 MYT - Addressed PR #72 Codex rereview comment for requiring structural relationship cues or explicit possessive role targets before relationship routing, preserving family-friendly recommendations as preference lookups.
 - 2026-07-01 16:32 MYT - Addressed PR #72 Codex rereview comment for keeping "feeling like" preference phrasing out of emotional routing while preserving explicit emotional cues.
+- 2026-07-01 18:43 MYT - Addressed PR #72 Codex rereview comments for deferring preference routing on project/work recommendations and restricting generic `who` questions to relationship-shaped identity or role lookups.
 
 ## Validation
 
@@ -99,6 +100,12 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - PR #72 feeling-like focused suite: 54 passed, 5 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 feeling-like fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 feeling-like fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_project_recommendation_routes_to_project_continuity apps/server/tests/test_retrieval_router.py::test_generic_who_favorite_question_routes_to_preference_lookup -q` - PR #72 project-recommendation/who-query regressions failed before fix because project recommendations routed to preference lookup and generic favorite `who` questions routed to relationship context.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_project_recommendation_routes_to_project_continuity apps/server/tests/test_retrieval_router.py::test_generic_who_favorite_question_routes_to_preference_lookup -q` - PR #72 project-recommendation/who-query regressions: 2 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - retrieval router suite: 29 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - PR #72 project-recommendation/who-query focused suite: 56 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 project-recommendation/who-query fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 project-recommendation/who-query fix build: passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/src/anima_server/schemas/chat.py
   - apps/server/src/anima_server/services/agent/bm25_index.py
@@ -129,3 +136,4 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - The foresight `due` cue now uses word-boundary matching so preference terms containing the substring, such as "fondue", stay on preference lookup.
   - Relationship routing now requires structural relationship wording or explicit possessive role targets, so family-friendly recommendations keep preference-scoped retrieval.
   - The emotional `feel`/`feeling` cue now excludes the "feeling like" preference idiom unless another explicit emotional term is present.
+  - Project/work artifact cues now outrank recommendation wording unless the turn is explicitly about personal taste, and generic `who` questions only reach relationship routing when they ask for a simple identity or relationship role.
