@@ -160,6 +160,7 @@ def compute_heat_for_item(
     superseded: bool | None = None,
 ) -> float:
     ref_count = getattr(item, "reference_count", 0) or 0
+    evidence_strength = getattr(item, "evidence_strength", None)
     is_superseded = (
         getattr(item, "superseded_by", None) is not None
         if superseded is None
@@ -177,7 +178,7 @@ def compute_heat_for_item(
         decay_class=getattr(item, "decay_class", None),
         emotional_salience=float(getattr(item, "emotional_salience", 0.0) or 0.0),
         relationship_proximity=float(getattr(item, "relationship_proximity", 0.0) or 0.0),
-        evidence_strength=float(getattr(item, "evidence_strength", 0.8) or 0.8),
+        evidence_strength=0.8 if evidence_strength is None else float(evidence_strength),
     )
 
 
