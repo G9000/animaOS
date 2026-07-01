@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +43,7 @@ def create_memory_candidate(
     source_message_ids: list[int] | None = None,
     extraction_model: str | None = None,
     tags: list[str] | None = None,
+    salience: dict[str, Any] | None = None,
 ) -> MemoryCandidate | None:
     """Create a candidate with hash-based dedup. Returns None on duplicate."""
     if category not in _VALID_CATEGORIES:
@@ -53,6 +55,14 @@ def create_memory_candidate(
     importance = max(1, min(5, importance))
 
     content_hash = compute_content_hash(user_id, category, importance_source, content)
+    from anima_server.services.agent.memory_salience import normalize_salience_payload
+
+    salience_json = normalize_salience_payload(
+        salience,
+        content=content,
+        category=category,
+        importance=importance,
+    )
 
     # Explicit dedup check — works on both PG (with partial unique index) and SQLite.
     existing = runtime_db.scalar(
@@ -77,6 +87,7 @@ def create_memory_candidate(
         source_message_ids=source_message_ids,
         extraction_model=extraction_model,
         tags_json=tags,
+        salience_json=salience_json,
     )
     try:
         with runtime_db.begin_nested():
