@@ -14,6 +14,7 @@ from anima_server.models import MemoryItem, MemoryItemTag
 from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.embedding_integrity import check_embedding
 from anima_server.services.agent.memory_salience import (
+    SoftEvolution,
     STABILITY_EVOLVING,
     detect_soft_evolution,
     item_salience,
@@ -485,44 +486,18 @@ def store_memory_item(
             incoming_salience=salience,
         )
         if evolution is not None:
-            if dry_run:
-                return MemoryWriteResult(
-                    action="evolved",
-                    matched_item=analysis.matched_item,
-                    reason=evolution.reason,
-                )
-            item = MemoryItem(
+            return _create_evolved_memory_item(
+                db,
                 user_id=user_id,
-                content=ef(user_id, cleaned_content, table="memory_items", field="content"),
+                content=cleaned_content,
                 category=category,
                 importance=importance,
                 source=source,
-                evolves_from_item_id=analysis.matched_item.id,
-                evolution_kind=evolution.kind,
-                **memory_salience_model_kwargs(
-                    salience,
-                    content=cleaned_content,
-                    category=category,
-                    importance=importance,
-                ),
-            )
-            item.stability_class = STABILITY_EVOLVING
-            analysis.matched_item.stability_class = STABILITY_EVOLVING
-            analysis.matched_item.updated_at = datetime.now(UTC)
-            db.add(item)
-            db.flush()
-            if tags:
-                _sync_tags(db, item=item, user_id=user_id, tags=tags)
-            _schedule_memory_retrieval_upsert_after_commit(
-                db,
-                user_id=user_id,
-                payload=_memory_item_retrieval_index_payload(item),
-            )
-            return MemoryWriteResult(
-                action="evolved",
-                item=item,
                 matched_item=analysis.matched_item,
-                reason=evolution.reason,
+                evolution=evolution,
+                salience=salience,
+                tags=tags,
+                dry_run=dry_run,
             )
         if dry_run:
             return MemoryWriteResult(
@@ -552,6 +527,33 @@ def store_memory_item(
             matched_item=analysis.matched_item,
             reason=analysis.reason,
         )
+
+    if analysis.action == "similar" and category == "relationship":
+        matched_item = _most_similar_memory_item(
+            user_id=user_id,
+            content=cleaned_content,
+            items=analysis.similar_items,
+        )
+        if matched_item is not None:
+            evolution = detect_soft_evolution(
+                category=category,
+                existing_salience=item_salience(matched_item),
+                incoming_salience=salience,
+            )
+            if evolution is not None:
+                return _create_evolved_memory_item(
+                    db,
+                    user_id=user_id,
+                    content=cleaned_content,
+                    category=category,
+                    importance=importance,
+                    source=source,
+                    matched_item=matched_item,
+                    evolution=evolution,
+                    salience=salience,
+                    tags=tags,
+                    dry_run=dry_run,
+                )
 
     if analysis.action == "similar" and defer_on_similar:
         return MemoryWriteResult(
@@ -601,6 +603,79 @@ def store_memory_item(
         item=item,
         similar_items=analysis.similar_items,
         reason=analysis.reason,
+    )
+
+
+def _create_evolved_memory_item(
+    db: Session,
+    *,
+    user_id: int,
+    content: str,
+    category: str,
+    importance: int,
+    source: str,
+    matched_item: MemoryItem,
+    evolution: SoftEvolution,
+    salience: dict[str, object] | None,
+    tags: list[str] | None,
+    dry_run: bool,
+) -> MemoryWriteResult:
+    if dry_run:
+        return MemoryWriteResult(
+            action="evolved",
+            matched_item=matched_item,
+            reason=evolution.reason,
+        )
+
+    item = MemoryItem(
+        user_id=user_id,
+        content=ef(user_id, content, table="memory_items", field="content"),
+        category=category,
+        importance=importance,
+        source=source,
+        evolves_from_item_id=matched_item.id,
+        evolution_kind=evolution.kind,
+        **memory_salience_model_kwargs(
+            salience,
+            content=content,
+            category=category,
+            importance=importance,
+        ),
+    )
+    item.stability_class = STABILITY_EVOLVING
+    matched_item.stability_class = STABILITY_EVOLVING
+    matched_item.updated_at = datetime.now(UTC)
+    db.add(item)
+    db.flush()
+    if tags:
+        _sync_tags(db, item=item, user_id=user_id, tags=tags)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
+    return MemoryWriteResult(
+        action="evolved",
+        item=item,
+        matched_item=matched_item,
+        reason=evolution.reason,
+    )
+
+
+def _most_similar_memory_item(
+    *,
+    user_id: int,
+    content: str,
+    items: tuple[MemoryItem, ...],
+) -> MemoryItem | None:
+    if not items:
+        return None
+    return max(
+        items,
+        key=lambda item: _similarity(
+            df(user_id, item.content, table="memory_items", field="content"),
+            content,
+        ),
     )
 
 

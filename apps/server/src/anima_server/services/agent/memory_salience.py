@@ -488,7 +488,9 @@ def _has_explicit_salience_signal(
         return True
     if not isinstance(value, Mapping):
         return False
-    if value.get("salience_source") == "explicit":
+    if "salience_source" in value:
+        if value.get("salience_source") != "explicit":
+            return False
         fields = value.get("salience_signal_fields")
         return isinstance(fields, list) and len(fields) > 0
     return bool(set(value) & _SALIENCE_SIGNAL_FIELDS)
