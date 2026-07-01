@@ -1488,6 +1488,68 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
     assert message.is_in_context is False
 
 
+@pytest.mark.asyncio
+async def test_streaming_run_started_emits_before_turn_context_assembly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming clients should learn the run id before slow retrieval setup."""
+    runner = RecordingRunner()
+    assemble_started = asyncio.Event()
+    release_assemble = asyncio.Event()
+    events: asyncio.Queue[agent_service.AgentStreamEvent] = asyncio.Queue()
+
+    async def slow_assemble(**kwargs: object) -> agent_service._TurnContext:
+        del kwargs
+        assemble_started.set()
+        await release_assemble.wait()
+        return agent_service._TurnContext(
+            history=[],
+            conversation_turn_count=1,
+            memory_blocks=(),
+        )
+
+    async def emit(event: agent_service.AgentStreamEvent) -> None:
+        await events.put(event)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_assemble_turn_context", slow_assemble)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stream-startup",
+            password_hash="not-used",
+            display_name="Stream Startup",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        task = asyncio.create_task(
+            agent_service._execute_agent_turn_locked(
+                "hello",
+                user.id,
+                soul_session,
+                runtime_session,
+                event_callback=emit,
+            )
+        )
+        try:
+            await asyncio.wait_for(assemble_started.wait(), timeout=1)
+            first_event = await asyncio.wait_for(events.get(), timeout=0.1)
+            release_assemble.set()
+            result = await asyncio.wait_for(task, timeout=1)
+        finally:
+            release_assemble.set()
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+    assert first_event.event == "run_started"
+    assert first_event.data["runId"] == 1
+    assert result.response == "Reply to: hello"
+
+
 def test_should_retry_after_compaction_only_before_tools_executed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 20:31 MYT
+- Updated: 2026-07-01 20:45 MYT
 - Started: 2026-07-01 14:00 MYT
 - Completed: 2026-07-01 14:19 MYT
 
@@ -55,6 +55,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
 - 2026-07-01 19:58 MYT - Completed validation for semantic router scope correction and updated PRD/ticket artifacts.
 - 2026-07-01 20:16 MYT - Addressed PR #72 Codex rereview comment for preserving Rust semantic index lookup when route memory-category filters are present.
 - 2026-07-01 20:31 MYT - Addressed PR #72 Codex rereview comment for backfilling partial category-filtered Rust semantic hits through the category-aware vector-store fallback.
+- 2026-07-01 20:45 MYT - Addressed PR #72 Codex rereview comment for emitting streaming `run_started` before semantic retrieval-router setup can block startup.
 
 ## Validation
 
@@ -139,6 +140,13 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 partial Rust-hit fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 partial Rust-hit fix build: passed with existing Vite chunk-size warning.
   - `git diff --check` - PR #72 partial Rust-hit fix diff check passed with CRLF normalization warnings only.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_streaming_run_started_emits_before_turn_context_assembly -q` - PR #72 stream-startup regression failed before fix because no `run_started` event emitted while turn-context assembly was blocked.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_streaming_run_started_emits_before_turn_context_assembly -q` - PR #72 stream-startup regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_streaming_run_started_emits_before_turn_context_assembly apps/server/tests/test_agent_service.py::test_stage1_failure_marks_run_failed_and_evicts_user_message apps/server/tests/test_agent_service.py::test_cancelled_agent_task_marks_running_run_cancelled apps/server/tests/test_chat.py::test_chat_stream_returns_sse_events apps/server/tests/test_chat.py::test_chat_stream_ollama_emits_live_chunks apps/server/tests/test_cancellation.py::test_cancel_mid_stream apps/server/tests/test_cancellation.py::test_stalled_stream_times_out apps/server/tests/test_cancellation.py::test_cancel_wakes_stalled_stream -q` - PR #72 stream/cancellation cluster: 8 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_agent_service.py::test_streaming_run_started_emits_before_turn_context_assembly apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_backfills_partial_category_filtered_rust_results apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - PR #72 stream-startup focused suite: 64 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 stream-startup fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 stream-startup fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #72 stream-startup fix diff check passed with CRLF normalization warnings only.
 - Changed paths:
   - apps/server/src/anima_server/config.py
   - apps/server/src/anima_server/schemas/chat.py
@@ -176,3 +184,4 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `Instead` no longer acts as a standalone contradiction cue inside comparative preference phrasing, and `next` only routes to foresight for concrete temporal phrases such as `next Friday` or `next week`.
   - Live retrieval routing now uses the configured LLM semantic classifier first, records `decisionSource`, `confidence`, `language`, and `fallbackReason` in traces, and falls back to deterministic routing for scaffold/test mode, malformed output, low confidence, or LLM invocation failures.
   - Category-filtered semantic retrieval now attempts the Rust memory vector index first with an expanded candidate pool, filters Rust hits by canonical memory category, and uses category-aware vector-store search to backfill partial Rust results up to the requested limit.
+  - Streaming turns now emit `run_started` immediately after the run row is committed, before semantic routing and retrieval setup, so clients receive a cancellable run id even when router LLM calls are slow.

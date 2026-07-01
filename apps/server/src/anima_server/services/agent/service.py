@@ -706,12 +706,6 @@ async def _execute_agent_turn_locked(
         today_context=today_context,
     )
 
-    # The run row is committed; tell streaming clients the id so they can
-    # cancel mid-turn.
-    if event_callback is not None:
-        await event_callback(
-            build_run_started_event(run_id=run.id, thread_id=thread.id))
-
     # Stage 1b: Proactive context management — compact before the LLM call
     # if estimated context usage already exceeds the threshold.
     try:
@@ -1043,6 +1037,12 @@ async def _prepare_turn_context(
     runtime_db.commit()
 
     try:
+        # Emit the committed run id before query-dependent retrieval work.
+        # Semantic routing can involve a provider call, and streaming clients
+        # need this id early so a slow setup path remains cancellable.
+        if event_callback is not None:
+            await event_callback(
+                build_run_started_event(run_id=run.id, thread_id=thread.id))
         turn_ctx = await _assemble_turn_context(
             user_message=user_message,
             user_id=user_id,
