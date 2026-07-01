@@ -13,13 +13,6 @@ Return a JSON object with two fields:
 - "content": concise statement (e.g. "Works as a software engineer")
 - "category": one of "fact", "preference", "goal", "relationship"
 - "importance": 1-5 (5 = identity-defining like name/age/occupation, 1 = casual mention)
-- "salience": object with:
-  - "memory_class": identity, life_event, relationship, active_project, casual, transient, or emotional_pattern
-  - "emotional_salience": 0.0-1.0
-  - "stability_class": stable, evolving, or temporary
-  - "decay_class": anchored, slow, standard, fast, or ephemeral
-  - "relationship_proximity": 0.0-1.0
-  - "evidence_strength": 0.0-1.0
 
 "emotion": detect the user's emotional tone (or null if nothing notable):
 - "emotion": primary emotion (frustrated, excited, anxious, calm, stressed, relieved, curious, disappointed, or null)
@@ -32,9 +25,6 @@ Rules for memories:
 - Extract what the user explicitly stated or clearly implied
 - Also extract observations from the agent's inner reasoning (e.g. "User seems stressed about deadline" → "Currently stressed about work deadline")
 - Do not fabricate — only extract what is supported by the text
-- Use anchored/slow decay for identity, grief, trauma, major life events, and close relationships
-- Use fast/ephemeral decay for transient states unless repeated emotional evidence suggests a pattern
-- Use evidence_strength to reflect how directly the conversation supports the memory
 - Use empty array [] if nothing worth remembering
 
 Rules for emotion:

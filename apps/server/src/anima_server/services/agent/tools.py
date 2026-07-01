@@ -1166,7 +1166,6 @@ def consolidate_pending_memory() -> str:
     total_candidate_work = (
         result.candidates_promoted
         + result.candidates_rejected
-        + result.candidates_reinforced
         + result.candidates_superseded
         + result.candidates_failed
     )
@@ -1177,7 +1176,6 @@ def consolidate_pending_memory() -> str:
         "Soul Writer finished. "
         f"Ops processed={result.ops_processed}, skipped={result.ops_skipped}, failed={result.ops_failed}; "
         f"candidates promoted={result.candidates_promoted}, rejected={result.candidates_rejected}, "
-        f"reinforced={result.candidates_reinforced}, "
         f"superseded={result.candidates_superseded}, failed={result.candidates_failed}; "
         f"remaining pending ops={remaining_pending}."
     )
