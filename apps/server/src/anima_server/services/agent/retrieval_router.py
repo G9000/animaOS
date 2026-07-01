@@ -125,23 +125,7 @@ def _classify_route(query: str) -> RetrievalRoute:
     ):
         return RetrievalRoute.PROCEDURAL_SKILL_RECALL
 
-    if _has_any(
-        lowered,
-        (
-            "feel ",
-            "feeling",
-            "overwhelmed",
-            "alone",
-            "rejected",
-            "scared",
-            "anxious",
-            "sad",
-            "stressed",
-            "breakup",
-            "grief",
-            "hurt",
-        ),
-    ):
+    if _has_emotional_support_cue(lowered):
         return RetrievalRoute.EMOTIONAL_SUPPORT
 
     if _has_any(
@@ -173,7 +157,7 @@ def _classify_route(query: str) -> RetrievalRoute:
             "coworker",
             "colleague",
         ),
-    ) and _has_named_entity_hint(query):
+    ) and (_has_named_entity_hint(query) or _has_relationship_role_query(lowered)):
         return RetrievalRoute.RELATIONSHIP_CONTEXT
 
     if _has_any(
@@ -447,6 +431,38 @@ def _planned(
 
 def _has_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
+
+
+def _has_emotional_support_cue(text: str) -> bool:
+    return (
+        ("feel " in text and not re.search(r"\bfeel\s+like\b", text))
+        or _has_any(
+            text,
+            (
+                "feeling",
+                "overwhelmed",
+                "alone",
+                "rejected",
+                "scared",
+                "anxious",
+                "sad",
+                "stressed",
+                "breakup",
+                "grief",
+                "hurt",
+            ),
+        )
+    )
+
+
+def _has_relationship_role_query(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bwho\s+(?:is|are)\s+(?:my|our|your|their|the)\s+"
+            r"(?:partner|friend|family|coworker|colleague)s?\b",
+            text,
+        )
+    )
 
 
 def _has_named_entity_hint(query: str) -> bool:

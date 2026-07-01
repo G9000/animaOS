@@ -59,6 +59,28 @@ def test_emotional_support_takes_precedence_over_generic_need_to() -> None:
     assert plan.route is RetrievalRoute.EMOTIONAL_SUPPORT
 
 
+def test_feel_like_preference_phrase_routes_as_preference_lookup() -> None:
+    plan = plan_retrieval("I feel like Thai tonight; what do I usually like?")
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
+@pytest.mark.parametrize(
+    "turn",
+    [
+        "who is my partner?",
+        "who is my friend?",
+        "who is my family?",
+    ],
+)
+def test_role_only_relationship_questions_route_to_relationship_context(
+    turn: str,
+) -> None:
+    plan = plan_retrieval(turn)
+
+    assert plan.route is RetrievalRoute.RELATIONSHIP_CONTEXT
+
+
 @pytest.mark.parametrize(
     ("turn", "expected_route"),
     [
