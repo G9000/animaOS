@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 15:05 MYT
+- Updated: 2026-07-01 15:23 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -119,6 +119,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 14:19 MYT - `SUM-005` completed with deterministic retrieval routing, query-plan traces, prompt/tool guidance updates, focused validation, lint, build, full backend tests, Alembic current check, and health smoke.
 - 2026-07-01 14:51 MYT - `SUM-005` addressed PR #72 Codex review comments for response-schema query plan visibility, emotional-route precedence, and lowercase relationship targets.
 - 2026-07-01 15:05 MYT - `SUM-005` addressed PR #72 Codex rereview comment for applying route memory category filters to live hybrid retrieval and injected context fragments.
+- 2026-07-01 15:23 MYT - `SUM-005` addressed PR #72 Codex rereview comment for applying memory category filters before semantic/BM25 candidate limits truncate route-matching memories.
 
 ## Validation
 
@@ -237,6 +238,12 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories -q` - SUM-005 PR #72 rereview focused suite: 40 passed, 4 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 rereview fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 rereview fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit -q` - SUM-005 PR #72 capped-pool regression failed before fix because an unfiltered top-1 fact displaced a matching preference.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 PR #72 capped-pool regression failed before fix because BM25 did not accept category-filtered search.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 PR #72 capped-pool focused suite: 42 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py apps/server/tests/test_bm25_index.py -q` - SUM-005 hybrid/BM25 suite: 68 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 capped-pool fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 capped-pool fix build: passed with existing Vite chunk-size warning.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -251,6 +258,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_vault.py
   - apps/server/src/anima_server/schemas/chat.py
+  - apps/server/src/anima_server/services/agent/bm25_index.py
   - apps/server/src/anima_server/services/agent/embeddings.py
   - apps/server/src/anima_server/services/agent/retrieval_router.py
   - apps/server/src/anima_server/services/agent/service.py
@@ -259,6 +267,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/src/anima_server/services/agent/tools.py
   - apps/server/tests/test_chat.py
   - apps/server/tests/test_agent_service.py
+  - apps/server/tests/test_bm25_index.py
   - apps/server/tests/test_hybrid_retrieval.py
   - apps/server/tests/test_retrieval_router.py
   - apps/server/tests/test_search_long_memory_tool.py
@@ -301,3 +310,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-005 represents foresight, experiences, and skills as planned query-plan sources with `available=false` until later storage tickets implement those durable source types.
   - SUM-005 PR #72 review fix preserves `queryPlan` through chat response schemas/client types, prioritizes emotional cues before broad future-commitment phrasing, and treats lowercase relationship targets as relationship-context lookups.
   - SUM-005 PR #72 rereview fix applies route `memory_categories` filters to hybrid retrieval and rechecks them before adaptive filtering so injected context matches the trace scope.
+  - SUM-005 PR #72 capped-pool fix applies category filters inside semantic vector search and BM25 document selection before per-leg candidate limits are applied.

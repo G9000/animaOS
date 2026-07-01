@@ -510,40 +510,82 @@ def _semantic_ranked_ids(
     query_embedding: list[float],
     limit: int,
     similarity_threshold: float,
+    categories: Sequence[str] | None = None,
     runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
-    rust_ranked = _semantic_ranked_ids_via_rust(
-        db=db,
-        user_id=user_id,
-        query_embedding=query_embedding,
-        limit=limit,
-    )
-    if rust_ranked:
-        return [
-            (item_id, similarity)
-            for item_id, similarity in rust_ranked
-            if similarity >= similarity_threshold
-        ]
+    category_filter = _normalize_category_filter(categories)
+    if not category_filter:
+        rust_ranked = _semantic_ranked_ids_via_rust(
+            db=db,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+        )
+        if rust_ranked:
+            return [
+                (item_id, similarity)
+                for item_id, similarity in rust_ranked
+                if similarity >= similarity_threshold
+            ]
 
     from anima_server.services.agent.vector_store import search_similar
 
     try:
-        vs_results = search_similar(
-            user_id,
-            query_embedding=query_embedding,
-            limit=limit,
-            db=db,
-            runtime_db=runtime_db,
-        )
+        if category_filter:
+            vs_results = []
+            for category in category_filter:
+                vs_results.extend(
+                    search_similar(
+                        user_id,
+                        query_embedding=query_embedding,
+                        limit=limit,
+                        category=category,
+                        db=db,
+                        runtime_db=runtime_db,
+                    )
+                )
+        else:
+            vs_results = search_similar(
+                user_id,
+                query_embedding=query_embedding,
+                limit=limit,
+                db=db,
+                runtime_db=runtime_db,
+            )
     except Exception:
         logger.debug("Semantic search failed in hybrid_search")
         return []
 
+    ranked_by_id: dict[int, float] = {}
+    for result in vs_results:
+        item_id = int(result["id"])
+        similarity = float(result["similarity"])
+        if similarity < similarity_threshold:
+            continue
+        ranked_by_id[item_id] = max(similarity, ranked_by_id.get(item_id, similarity))
+
     return [
-        (int(result["id"]), float(result["similarity"]))
-        for result in vs_results
-        if float(result["similarity"]) >= similarity_threshold
+        (item_id, similarity)
+        for item_id, similarity in sorted(
+            ranked_by_id.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:limit]
     ]
+
+
+def _normalize_category_filter(categories: Sequence[str] | None) -> tuple[str, ...]:
+    return (
+        tuple(
+            dict.fromkeys(
+                category.strip()
+                for category in categories
+                if isinstance(category, str) and category.strip()
+            )
+        )
+        if categories
+        else ()
+    )
 
 
 def _semantic_ranked_ids_via_rust(
@@ -1099,15 +1141,8 @@ async def hybrid_search(
     - items: list of (MemoryItem, rrf_score) sorted by relevance
     - query_embedding: the embedding vector for reuse in query-aware blocks
     """
-    category_filter = (
-        {
-            category.strip()
-            for category in categories
-            if isinstance(category, str) and category.strip()
-        }
-        if categories
-        else None
-    )
+    category_filter = _normalize_category_filter(categories)
+    category_filter_set = set(category_filter)
 
     # If tags are given, pre-fetch the allowed item IDs
     allowed_ids: set[int] | None = None
@@ -1140,6 +1175,7 @@ async def hybrid_search(
             query_embedding=query_embedding,
             limit=limit,
             similarity_threshold=similarity_threshold,
+            categories=category_filter,
             runtime_db=runtime_db,
         )
 
@@ -1154,6 +1190,7 @@ async def hybrid_search(
             limit=limit,
             db=db,
             runtime_db=runtime_db,
+            categories=category_filter,
         )
     except Exception:
         logger.debug("BM25 keyword search failed in hybrid_search")
@@ -1189,7 +1226,7 @@ async def hybrid_search(
             if allowed_ids is not None and item_id not in allowed_ids:
                 continue
             item = items_by_id[item_id]
-            if category_filter and item.category not in category_filter:
+            if category_filter_set and item.category not in category_filter_set:
                 continue
             # Respect passive forgetting: skip items that have been scored
             # (heat > 0) but decayed below the visibility floor.

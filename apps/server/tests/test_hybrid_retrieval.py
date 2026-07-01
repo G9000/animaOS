@@ -1111,6 +1111,81 @@ class TestHybridSearchIntegration:
             assert [item.id for item, _score in result.items] == [preference_item.id]
 
     @pytest.mark.asyncio
+    async def test_hybrid_search_applies_category_filters_before_candidate_limit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Category filters should not lose matches behind unfiltered top hits."""
+        from anima_server.services.agent import embeddings as embeddings_module
+        from anima_server.services.agent.embeddings import hybrid_search
+        from anima_server.services.agent.vector_store import upsert_memory
+
+        with _db_session() as db:
+            user = _make_user(db)
+            fact_item = _make_item(
+                db,
+                user.id,
+                "the user ships backend coffee services",
+                category="fact",
+                embedding=[1.0, 0.0, 0.0],
+            )
+            preference_item = _make_item(
+                db,
+                user.id,
+                "the user prefers black coffee before late coding sessions",
+                category="preference",
+                embedding=[0.8, 0.2, 0.0],
+            )
+            upsert_memory(
+                user.id,
+                item_id=fact_item.id,
+                content=fact_item.content,
+                embedding=[1.0, 0.0, 0.0],
+                category="fact",
+                importance=3,
+                db=db,
+            )
+            upsert_memory(
+                user.id,
+                item_id=preference_item.id,
+                content=preference_item.content,
+                embedding=[0.8, 0.2, 0.0],
+                category="preference",
+                importance=4,
+                db=db,
+            )
+            db.commit()
+
+            async def mock_embed(text: str) -> list[float] | None:
+                return [1.0, 0.0, 0.0]
+
+            monkeypatch.setattr(
+                embeddings_module,
+                "generate_embedding",
+                mock_embed,
+            )
+            monkeypatch.setattr(
+                embeddings_module,
+                "_semantic_ranked_ids_via_rust",
+                lambda **kwargs: None,
+            )
+            monkeypatch.setattr(
+                "anima_server.services.agent.bm25_index.bm25_search",
+                lambda *args, **kwargs: [],
+            )
+
+            result = await hybrid_search(
+                db,
+                user_id=user.id,
+                query="coffee preference",
+                limit=1,
+                categories=["preference"],
+                similarity_threshold=0.0,
+            )
+
+            assert [item.id for item, _score in result.items] == [preference_item.id]
+
+    @pytest.mark.asyncio
     async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(self):
         """The live hybrid path should use the Rust memory index when it is clean."""
         from anima_server.services import anima_core_retrieval as retrieval_module
