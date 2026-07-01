@@ -409,11 +409,10 @@ def _has_any(text: str, needles: tuple[str, ...]) -> bool:
 
 def _has_emotional_support_cue(text: str) -> bool:
     return (
-        ("feel " in text and not re.search(r"\bfeel\s+like\b", text))
+        bool(re.search(r"\bfeel(?:ing)?\s+(?!like\b)", text))
         or _has_any(
             text,
             (
-                "feeling",
                 "overwhelmed",
                 "alone",
                 "rejected",

@@ -65,6 +65,12 @@ def test_feel_like_preference_phrase_routes_as_preference_lookup() -> None:
     assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
 
 
+def test_feeling_like_preference_phrase_routes_as_preference_lookup() -> None:
+    plan = plan_retrieval("I'm feeling like Thai tonight; what do I usually like?")
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
 @pytest.mark.parametrize(
     "turn",
     [
