@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -78,24 +77,15 @@ def create_memory_candidate(
     )
     if existing is not None:
         if existing.status == "promoted":
-            existing.content = content.strip()
-            existing.importance = importance
-            existing.source = source
-            existing.supersedes_item_id = supersedes_item_id
-            existing.source_message_ids = source_message_ids
-            existing.extraction_model = extraction_model
-            existing.tags_json = tags
-            existing.salience_json = salience_json
-            existing.created_at = datetime.now(UTC)
-            existing.status = "queued"
-            existing.processed_at = None
+            existing.status = "superseded"
+            runtime_db.flush()
         else:
             existing.salience_json = _merge_candidate_salience(
                 existing.salience_json,
                 salience_json,
             )
-        runtime_db.flush()
-        return None
+            runtime_db.flush()
+            return None
 
     candidate = MemoryCandidate(
         user_id=user_id,
