@@ -514,19 +514,22 @@ def _semantic_ranked_ids(
     runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
     category_filter = _normalize_category_filter(categories)
-    if not category_filter:
-        rust_ranked = _semantic_ranked_ids_via_rust(
-            db=db,
-            user_id=user_id,
-            query_embedding=query_embedding,
+    rust_ranked = _semantic_ranked_ids_via_rust(
+        db=db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        limit=_semantic_rust_candidate_limit(limit, category_filter),
+    )
+    if rust_ranked:
+        rust_filtered = _filter_semantic_ranked_ids_by_category(
+            db,
+            rust_ranked,
+            category_filter=category_filter,
+            similarity_threshold=similarity_threshold,
             limit=limit,
         )
-        if rust_ranked:
-            return [
-                (item_id, similarity)
-                for item_id, similarity in rust_ranked
-                if similarity >= similarity_threshold
-            ]
+        if rust_filtered or not category_filter:
+            return rust_filtered
 
     from anima_server.services.agent.vector_store import search_similar
 
@@ -572,6 +575,48 @@ def _semantic_ranked_ids(
             reverse=True,
         )[:limit]
     ]
+
+
+def _semantic_rust_candidate_limit(limit: int, category_filter: Sequence[str]) -> int:
+    if not category_filter:
+        return limit
+    expanded = max(limit * 10, 100)
+    return max(limit, min(expanded, 500))
+
+
+def _filter_semantic_ranked_ids_by_category(
+    db: Session,
+    ranked: Sequence[tuple[int, float]],
+    *,
+    category_filter: Sequence[str],
+    similarity_threshold: float,
+    limit: int,
+) -> list[tuple[int, float]]:
+    thresholded = [
+        (item_id, similarity)
+        for item_id, similarity in ranked
+        if similarity >= similarity_threshold
+    ]
+    if not category_filter:
+        return thresholded[:limit]
+
+    candidate_ids = [item_id for item_id, _similarity in thresholded]
+    if not candidate_ids:
+        return []
+
+    allowed_ids = set(
+        db.scalars(
+            select(MemoryItem.id).where(
+                MemoryItem.id.in_(candidate_ids),
+                MemoryItem.category.in_(tuple(category_filter)),
+            )
+        ).all()
+    )
+    return [
+        (item_id, similarity)
+        for item_id, similarity in thresholded
+        if item_id in allowed_ids
+    ][:limit]
 
 
 def _normalize_category_filter(categories: Sequence[str] | None) -> tuple[str, ...]:

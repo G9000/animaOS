@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 19:58 MYT
+- Updated: 2026-07-01 20:16 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -129,6 +129,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 19:21 MYT - `SUM-005` addressed PR #72 Codex rereview comments for narrowing `instead` contradiction routing and keeping generic `next` project-step prompts out of foresight routing.
 - 2026-07-01 19:56 MYT - `SUM-005` scope corrected to LLM-first semantic retrieval routing with schema validation, deterministic fallback, multilingual/slang regression coverage, and router decision-source traces.
 - 2026-07-01 19:58 MYT - `SUM-005` semantic router scope correction validated with router, focused service/retrieval suite, lint, build, and diff checks.
+- 2026-07-01 20:16 MYT - `SUM-005` addressed PR #72 Codex rereview comment for preserving Rust semantic index lookup when route memory-category filters are present.
 
 ## Validation
 
@@ -295,6 +296,13 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 semantic router lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 semantic router build: passed with existing Vite chunk-size warning.
   - `git diff --check` - SUM-005 semantic router diff check passed with CRLF normalization warnings only.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters -q` - SUM-005 PR #72 Rust semantic index regression failed before fix because filtered semantic retrieval skipped the Rust index and returned no category-matching hits.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories -q` - SUM-005 PR #72 Rust semantic index regressions: 3 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 PR #72 Rust semantic index focused suite: 62 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py apps/server/tests/test_bm25_index.py -q` - SUM-005 hybrid/BM25 suite: 69 passed, 19 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 Rust semantic index fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 Rust semantic index fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-005 PR #72 Rust semantic index diff check passed with CRLF normalization warnings only.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -373,3 +381,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-005 PR #72 project-recommendation/who-query fix lets project/work artifact cues outrank recommendation wording unless the turn is explicitly about personal taste, and restricts generic `who` routing to simple identity or relationship-role queries.
   - SUM-005 PR #72 instead/next fix removes standalone `instead` from contradiction routing and narrows `next` foresight routing to concrete temporal phrases such as `next Friday` or `next week`.
   - SUM-005 semantic router scope correction makes the live agent path call the configured LLM router first, records `decisionSource`, `confidence`, `language`, and `fallbackReason`, and keeps deterministic routing as the scaffold/test, invalid-output, low-confidence, or invocation-error fallback.
+  - SUM-005 PR #72 Rust semantic index fix keeps category-filtered semantic retrieval on the Rust memory vector index first, filters Rust hits by canonical memory category, and only falls back to vector-store search when Rust has no usable filtered hits.

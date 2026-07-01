@@ -1186,6 +1186,75 @@ class TestHybridSearchIntegration:
             assert [item.id for item, _score in result.items] == [preference_item.id]
 
     @pytest.mark.asyncio
+    async def test_hybrid_search_uses_rust_semantic_index_with_category_filters(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Filtered routes should preserve Rust semantic lookup, then filter by category."""
+        from anima_server.services.agent import embeddings as embeddings_module
+        from anima_server.services.agent.embeddings import hybrid_search
+
+        with _db_session() as db:
+            user = _make_user(db)
+            fact_item = _make_item(
+                db,
+                user.id,
+                "the user ships backend coffee services",
+                category="fact",
+            )
+            preference_item = _make_item(
+                db,
+                user.id,
+                "the user likes espresso before late coding sessions",
+                category="preference",
+            )
+            db.commit()
+
+            rust_calls: list[dict[str, object]] = []
+
+            async def mock_embed(text: str) -> list[float] | None:
+                return [1.0, 0.0, 0.0]
+
+            def fake_rust_semantic(**kwargs: object) -> list[tuple[int, float]]:
+                rust_calls.append(kwargs)
+                return [(fact_item.id, 0.99), (preference_item.id, 0.97)]
+
+            monkeypatch.setattr(
+                embeddings_module,
+                "generate_embedding",
+                mock_embed,
+            )
+            monkeypatch.setattr(
+                embeddings_module,
+                "_semantic_ranked_ids_via_rust",
+                fake_rust_semantic,
+            )
+            monkeypatch.setattr(
+                "anima_server.services.agent.vector_store.search_similar",
+                lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("filtered semantic search should use rust first")
+                ),
+            )
+            monkeypatch.setattr(
+                "anima_server.services.agent.bm25_index.bm25_search",
+                lambda *args, **kwargs: [],
+            )
+
+            result = await hybrid_search(
+                db,
+                user_id=user.id,
+                query="coffee preference",
+                limit=1,
+                categories=["preference"],
+                similarity_threshold=0.0,
+                runtime_db=db,
+            )
+
+            assert [item.id for item, _score in result.items] == [preference_item.id]
+            assert rust_calls
+            assert rust_calls[0]["limit"] > 1
+
+    @pytest.mark.asyncio
     async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(self):
         """The live hybrid path should use the Rust memory index when it is clean."""
         from anima_server.services import anima_core_retrieval as retrieval_module
