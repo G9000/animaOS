@@ -56,6 +56,9 @@ class MemoryCandidate(RuntimeBase):
     tags_json: Mapped[list[str] | None] = mapped_column(
         SA_JSON().with_variant(ARRAY(String(100)), "postgresql"), nullable=True
     )
+    salience_json: Mapped[dict[str, object] | None] = mapped_column(
+        SA_JSON().with_variant(JSON, "postgresql"), nullable=True
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="extracted")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

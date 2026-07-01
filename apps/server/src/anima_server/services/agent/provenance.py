@@ -114,7 +114,7 @@ def add_candidate_memory_item_evidence(
         source_created_at=primary.created_at if primary is not None else candidate.created_at,
         confidence=_candidate_confidence(candidate),
         extractor=candidate.extraction_model or candidate.source,
-        metadata={"candidate_id": int(candidate.id)} if candidate.id is not None else None,
+        metadata=_candidate_metadata(candidate),
     )
 
 
@@ -339,3 +339,12 @@ def _candidate_confidence(candidate: MemoryCandidate) -> float:
     if candidate.source == "regex":
         return 0.7
     return 0.8
+
+
+def _candidate_metadata(candidate: MemoryCandidate) -> dict[str, object] | None:
+    metadata: dict[str, object] = {}
+    if candidate.id is not None:
+        metadata["candidate_id"] = int(candidate.id)
+    if candidate.salience_json:
+        metadata["salience"] = candidate.salience_json
+    return metadata or None
