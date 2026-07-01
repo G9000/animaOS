@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from anima_server.services.images.capabilities import ImageProcessingCapabilitie
 from anima_server.services.images.indexing import index_image_asset
 from anima_server.services.images.store import register_image_asset
 from conftest_runtime import runtime_db_session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -161,6 +162,59 @@ def _create_indexed_image(
     return stored.asset.id, message, attachment_id
 
 
+def _link_image_to_new_message(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    image_asset_id: int,
+    thread_id: int | None = None,
+    attachment_id: str | None = None,
+    created_at: datetime | None = None,
+) -> tuple[RuntimeMessage, str]:
+    if thread_id is None:
+        thread = RuntimeThread(user_id=user_id, status="active")
+        runtime_db.add(thread)
+        runtime_db.flush()
+        thread_id = thread.id
+
+    if attachment_id is None:
+        attachment_id = (
+            f"img_{user_id}_{image_asset_id}_{created_at or datetime.now():%Y%m%d%H%M%S%f}"
+        )
+
+    max_sequence_id = runtime_db.scalar(
+        select(func.max(RuntimeMessage.sequence_id)).where(
+            RuntimeMessage.thread_id == thread_id
+        )
+    )
+    sequence_id = int(max_sequence_id or 0) + 1
+
+    message = RuntimeMessage(
+        thread_id=thread_id,
+        user_id=user_id,
+        sequence_id=int(sequence_id),
+        role="user",
+        content_text="Follow-up image share.",
+        content_json={"attachments": []},
+    )
+    if created_at is not None:
+        message.created_at = created_at
+    runtime_db.add(message)
+    runtime_db.flush()
+
+    runtime_db.add(
+        RuntimeImageMessageLink(
+            user_id=user_id,
+            message_id=message.id,
+            image_asset_id=image_asset_id,
+            attachment_id=attachment_id,
+            created_at=created_at,
+        )
+    )
+    runtime_db.flush()
+    return message, attachment_id
+
+
 def test_search_image_annotations_includes_source_attachment_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -195,6 +249,57 @@ def test_search_image_annotations_includes_source_attachment_metadata(
     assert result.attachment_id == attachment_id
     assert result.attachment_url == f"/api/chat/messages/{message.id}/attachments/{attachment_id}"
     assert "Alpha invoice" in result.snippet
+
+
+def test_search_image_annotations_includes_related_sources_for_duplicate_image_shares(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.rag import search_image_annotations
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    with runtime_db_session() as runtime_db:
+        asset_id, message, attachment_id = _create_indexed_image(
+            runtime_db,
+            tmp_path,
+            user_id=7,
+            upload_context="Alpha invoice screenshot with the final total.",
+            filename="alpha-invoice.png",
+            byte_suffix=b"alpha",
+        )
+        followup_message, followup_attachment = _link_image_to_new_message(
+            runtime_db,
+            user_id=7,
+            image_asset_id=asset_id,
+            attachment_id="img_7_followup",
+            created_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+        results = search_image_annotations(
+            runtime_db,
+            user_id=7,
+            query="invoice total",
+            embedding_fn=lambda text: _embedding(1.0, 0.0),
+            limit=5,
+        )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.image_asset_id == asset_id
+    assert result.source_message_id == followup_message.id
+    assert result.source_thread_id == followup_message.thread_id
+    assert result.attachment_id == followup_attachment
+    assert (
+        result.attachment_url
+        == f"/api/chat/messages/{followup_message.id}/attachments/{followup_attachment}"
+    )
+    assert len(result.related_sources) == 2
+    assert {source.attachment_id for source in result.related_sources} == {
+        attachment_id,
+        followup_attachment,
+    }
+    assert result.related_sources[0].message_id == followup_message.id
+    assert result.related_sources[1].message_id == message.id
 
 
 def test_search_image_annotations_by_embedding_skips_non_positive_matches(
@@ -316,6 +421,51 @@ def test_turn_memory_blocks_include_bounded_relevant_images_and_skip_deleted(
     assert "/api/chat/messages/" in block.value
 
 
+def test_turn_memory_blocks_include_related_source_counts_for_duplicate_image_shares(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.memory_blocks import build_turn_memory_blocks
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    with _db_session() as db, runtime_db_session() as runtime_db:
+        user = _create_user(db)
+        runtime_thread = RuntimeThread(user_id=user.id, status="active")
+        runtime_db.add(runtime_thread)
+        runtime_db.flush()
+        asset_id, _, _ = _create_indexed_image(
+            runtime_db,
+            tmp_path,
+            user_id=user.id,
+            upload_context="Alpha invoice screenshot with final total.",
+            filename="alpha.png",
+            byte_suffix=b"alpha",
+        )
+        _link_image_to_new_message(
+            runtime_db,
+            user_id=user.id,
+            image_asset_id=asset_id,
+            attachment_id="img_followup",
+            thread_id=runtime_thread.id,
+            created_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+        blocks = build_turn_memory_blocks(
+            db,
+            user_id=user.id,
+            thread_id=runtime_thread.id,
+            query="invoice",
+            query_embedding=_embedding(1.0, 0.0),
+            runtime_db=runtime_db,
+        )
+
+    block = next(block for block in blocks if block.label == "relevant_images")
+    assert block.value.count("- image:") == 1
+    assert "alpha.png" in block.value
+    assert "related_sources=1" in block.value
+    assert "attachment=" in block.value
+
+
 def test_search_images_tool_returns_bounded_image_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -369,3 +519,55 @@ def test_search_images_tool_returns_bounded_image_sources(
     assert "message=" in result
     assert "/api/chat/messages/" in result
     assert "beta.png" not in result
+
+
+def test_search_images_tool_includes_related_sources_for_duplicate_shares(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+    from anima_server.services.agent.tools import get_core_tools, search_images
+
+    async def fake_generate_embedding(text: str) -> list[float]:
+        assert text == "invoice"
+        return _embedding(1.0, 0.0)
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(embeddings, "generate_embedding", fake_generate_embedding)
+    with _db_session() as db, runtime_db_session() as runtime_db:
+        user = _create_user(db, username="image-tool-duplicates")
+        asset_id, _, _ = _create_indexed_image(
+            runtime_db,
+            tmp_path,
+            user_id=user.id,
+            upload_context="Alpha invoice screenshot with final total.",
+            filename="alpha.png",
+            byte_suffix=b"alpha",
+        )
+        _link_image_to_new_message(
+            runtime_db,
+            user_id=user.id,
+            image_asset_id=asset_id,
+            attachment_id="img_followup_tool",
+            created_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+        set_tool_context(
+            ToolContext(
+                db=db,
+                runtime_db=runtime_db,
+                user_id=user.id,
+                thread_id=1,
+            )
+        )
+        try:
+            result = search_images(query="invoice", limit="5")
+        finally:
+            clear_tool_context()
+
+    tool_names = [getattr(tool, "name", None) or tool.__name__ for tool in get_core_tools()]
+    assert "search_images" in tool_names
+    assert "Found 1 image memory match" in result
+    assert "related_sources=1" in result
+    assert "related:" in result
+    assert "img_followup_tool" in result

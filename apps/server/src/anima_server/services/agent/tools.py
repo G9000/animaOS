@@ -963,6 +963,10 @@ def search_images(query: str, limit: str = "5") -> str:
         ]
         source_text = "; ".join(part for part in source_parts if part)
         source_suffix = f"; {source_text}" if source_text else ""
+        if len(result.related_sources) > 1:
+            source_suffix = (
+                f"{source_suffix}; related_sources={len(result.related_sources) - 1}"
+            )
         snippet = " ".join(result.snippet.split())
         if len(snippet) > 220:
             snippet = snippet[:219].rstrip() + "..."
@@ -970,6 +974,22 @@ def search_images(query: str, limit: str = "5") -> str:
             f"- image:{result.image_asset_id} {label} "
             f"({result.mime_type}; score={result.similarity:.2f}{source_suffix}): {snippet}"
         )
+        if len(result.related_sources) > 1:
+            related_lines: list[str] = []
+            for source in result.related_sources[1:4]:
+                parts = [
+                    f"thread={source.thread_id}" if source.thread_id is not None else None,
+                    f"message={source.message_id}" if source.message_id is not None else None,
+                    f"attachment={source.attachment_id}" if source.attachment_id else None,
+                    f"url={source.attachment_url}" if source.attachment_url else None,
+                ]
+                related_lines.append(
+                    "    "
+                    + "; ".join(part for part in parts if part)
+                )
+            if related_lines:
+                lines.append("  related:")
+                lines.extend(f"  {line}" for line in related_lines)
     return "\n".join(lines)
 
 

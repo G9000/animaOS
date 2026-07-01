@@ -325,6 +325,9 @@ def build_image_memory_block(
         ]
         source_text = "; ".join(part for part in source_parts if part)
         source_suffix = f"; {source_text}" if source_text else ""
+        if len(result.related_sources) > 1:
+            related_source_count = len(result.related_sources) - 1
+            source_suffix = f"{source_suffix}; related_sources={related_source_count}"
         snippet = _compact_image_snippet(result.snippet)
         lines.append(
             f"- image:{result.image_asset_id} {label} "
