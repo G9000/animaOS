@@ -448,9 +448,6 @@ async def run_background_extraction(
                                 importance_source="llm",
                                 source="llm",
                                 source_message_ids=source_message_ids,
-                                salience=item.get("salience")
-                                if isinstance(item.get("salience"), dict)
-                                else None,
                             )
                         llm_count = len(llm_result.memories)
 

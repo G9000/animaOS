@@ -204,68 +204,6 @@ def test_create_memory_candidate_dedup(pg_session: Session) -> None:
     assert c2 is None  # rejected by dedup check
 
 
-def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
-    pg_session: Session,
-) -> None:
-    from anima_server.services.agent.candidate_ops import create_memory_candidate
-
-    first = create_memory_candidate(
-        pg_session,
-        user_id=1,
-        content="likes cats",
-        category="preference",
-        source="llm",
-        source_message_ids=[10],
-        extraction_model="old-model",
-        tags=["old"],
-        salience={
-            "memory_class": "casual",
-            "emotional_salience": 0.1,
-            "stability_class": "stable",
-            "evidence_strength": 0.6,
-        },
-    )
-    assert first is not None
-    first.status = "promoted"
-    pg_session.flush()
-
-    duplicate = create_memory_candidate(
-        pg_session,
-        user_id=1,
-        content="likes cats",
-        category="preference",
-        importance=4,
-        source="tool",
-        source_message_ids=[20],
-        extraction_model="new-model",
-        tags=["new"],
-        salience={
-            "memory_class": "emotional_pattern",
-            "emotional_salience": 0.8,
-            "stability_class": "evolving",
-            "evidence_strength": 0.9,
-        },
-    )
-
-    assert duplicate is not None
-    pg_session.refresh(first)
-    assert first.status == "superseded"
-    assert first.source == "llm"
-    assert first.source_message_ids == [10]
-    assert first.extraction_model == "old-model"
-    assert first.tags_json == ["old"]
-    assert duplicate.status == "extracted"
-    assert duplicate.salience_json is not None
-    assert duplicate.salience_json["memory_class"] == "emotional_pattern"
-    assert duplicate.salience_json["emotional_salience"] == 0.8
-    assert duplicate.salience_json["salience_source"] == "explicit"
-    assert duplicate.importance == 4
-    assert duplicate.source == "tool"
-    assert duplicate.source_message_ids == [20]
-    assert duplicate.extraction_model == "new-model"
-    assert duplicate.tags_json == ["new"]
-
-
 def test_correction_and_extraction_not_deduped(pg_session: Session) -> None:
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 

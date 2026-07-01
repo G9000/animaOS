@@ -272,18 +272,6 @@ async def run_sleeptime_agents(
         try:
             rid = await _issue_background_task(
                 user_id=user_id,
-                task_type="memory_evolution_scan",
-                task_fn=_task_memory_evolution_scan,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Memory evolution scan task failed")
-
-        try:
-            rid = await _issue_background_task(
-                user_id=user_id,
                 task_type="profile_synthesis",
                 task_fn=_task_profile_synthesis,
                 db_factory=db_factory,
@@ -489,20 +477,6 @@ async def _task_profile_synthesis(
 
     merged = await synthesize_profile(user_id=user_id, db_factory=db_factory)
     return {"merged": merged}
-
-
-async def _task_memory_evolution_scan(
-    *,
-    user_id: int,
-    db_factory: Callable[..., object] | None = None,
-) -> dict:
-    """Surface linked and possible soft memory evolution during sleep time."""
-    from anima_server.db.session import SessionLocal
-    from anima_server.services.agent.memory_salience import surface_memory_drift
-
-    factory = db_factory or SessionLocal
-    with factory() as db:
-        return surface_memory_drift(db, user_id=user_id)
 
 
 async def _task_deep_monologue(

@@ -185,8 +185,6 @@ class MemoryItem(Base):
     __table_args__ = (
         Index("ix_memory_items_user_category_active", "user_id", "category", "superseded_by"),
         Index("ix_memory_items_user_heat", "user_id", "heat"),
-        Index("ix_memory_items_user_decay_class", "user_id", "decay_class"),
-        Index("ix_memory_items_user_evolves_from", "user_id", "evolves_from_item_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -234,47 +232,6 @@ class MemoryItem(Base):
         JSON,
         nullable=True,
     )
-    memory_class: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        default="casual",
-        server_default=text("'casual'"),
-    )
-    emotional_salience: Mapped[float] = mapped_column(
-        Float,
-        nullable=False,
-        default=0.0,
-        server_default=text("0.0"),
-    )
-    stability_class: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        default="stable",
-        server_default=text("'stable'"),
-    )
-    decay_class: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        default="standard",
-        server_default=text("'standard'"),
-    )
-    relationship_proximity: Mapped[float] = mapped_column(
-        Float,
-        nullable=False,
-        default=0.0,
-        server_default=text("0.0"),
-    )
-    evidence_strength: Mapped[float] = mapped_column(
-        Float,
-        nullable=False,
-        default=0.8,
-        server_default=text("0.8"),
-    )
-    evolves_from_item_id: Mapped[int | None] = mapped_column(
-        ForeignKey("memory_items.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    evolution_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     heat: Mapped[float] = mapped_column(
         Float,
         nullable=False,
