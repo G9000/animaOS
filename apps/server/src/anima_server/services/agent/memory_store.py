@@ -467,6 +467,7 @@ def store_memory_item(
     if analysis.action == "duplicate":
         if not dry_run and analysis.matched_item is not None and salience is not None:
             merge_salience_into_item(analysis.matched_item, salience)
+            invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
         return MemoryWriteResult(
             action="duplicate",
             matched_item=analysis.matched_item,

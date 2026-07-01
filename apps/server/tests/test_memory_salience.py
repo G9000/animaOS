@@ -86,6 +86,40 @@ def test_repeated_low_grade_emotional_signals_accumulate_salience() -> None:
     assert merged.evidence_strength > first["evidence_strength"]
 
 
+def test_salience_reinforcement_recomputes_persisted_heat() -> None:
+    from anima_server.services.agent.memory_salience import merge_salience_into_item
+
+    class Item:
+        memory_class = "casual"
+        emotional_salience = 0.0
+        stability_class = "temporary"
+        decay_class = "fast"
+        relationship_proximity = 0.0
+        evidence_strength = 0.5
+        importance = 1
+        reference_count = 0
+        last_referenced_at = None
+        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+        superseded_by = None
+        heat = 0.001
+
+    item = Item()
+
+    merge_salience_into_item(
+        item,
+        {
+            "memory_class": "identity",
+            "emotional_salience": 1.0,
+            "stability_class": "stable",
+            "decay_class": "anchored",
+            "relationship_proximity": 0.0,
+            "evidence_strength": 1.0,
+        },
+    )
+
+    assert item.heat > 0.001
+
+
 def test_soft_preference_drift_uses_structured_salience_signal() -> None:
     from anima_server.services.agent.memory_salience import detect_soft_evolution
 
