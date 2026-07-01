@@ -59,6 +59,30 @@ def test_emotional_support_takes_precedence_over_generic_need_to() -> None:
     assert plan.route is RetrievalRoute.EMOTIONAL_SUPPORT
 
 
+@pytest.mark.parametrize(
+    ("turn", "expected_route"),
+    [
+        ("I need to know what coffee I prefer.", RetrievalRoute.PREFERENCE_LOOKUP),
+        ("I need to remember who Maya is.", RetrievalRoute.RELATIONSHIP_CONTEXT),
+        ("I need to know where we left off on SUM-005.", RetrievalRoute.PROJECT_CONTINUITY),
+        ("I need to remember what I said about Kyoto.", RetrievalRoute.FACTUAL_RECALL),
+    ],
+)
+def test_generic_need_to_recall_does_not_force_foresight(
+    turn: str,
+    expected_route: RetrievalRoute,
+) -> None:
+    plan = plan_retrieval(turn)
+
+    assert plan.route is expected_route
+
+
+def test_need_to_with_future_commitment_remains_foresight() -> None:
+    plan = plan_retrieval("I need to finish the SUM-005 follow-up tomorrow.")
+
+    assert plan.route is RetrievalRoute.FORESIGHT_RECALL
+
+
 def test_emotional_support_plan_prioritizes_relationship_and_episode_context() -> None:
     plan = plan_retrieval("I am scared Maya is pulling away and I feel rejected.")
 

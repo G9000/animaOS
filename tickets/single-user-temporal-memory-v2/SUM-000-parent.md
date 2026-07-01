@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 15:23 MYT
+- Updated: 2026-07-01 15:39 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -120,6 +120,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 14:51 MYT - `SUM-005` addressed PR #72 Codex review comments for response-schema query plan visibility, emotional-route precedence, and lowercase relationship targets.
 - 2026-07-01 15:05 MYT - `SUM-005` addressed PR #72 Codex rereview comment for applying route memory category filters to live hybrid retrieval and injected context fragments.
 - 2026-07-01 15:23 MYT - `SUM-005` addressed PR #72 Codex rereview comment for applying memory category filters before semantic/BM25 candidate limits truncate route-matching memories.
+- 2026-07-01 15:39 MYT - `SUM-005` addressed PR #72 Codex rereview comment for keeping generic "I need to know/remember" recall out of foresight routing while preserving explicit future commitments.
 
 ## Validation
 
@@ -244,6 +245,10 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py apps/server/tests/test_bm25_index.py -q` - SUM-005 hybrid/BM25 suite: 68 passed, 18 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 capped-pool fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 capped-pool fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_generic_need_to_recall_does_not_force_foresight apps/server/tests/test_retrieval_router.py::test_need_to_with_future_commitment_remains_foresight -q` - SUM-005 PR #72 generic need-to regression failed before fix because ordinary recall turns routed to foresight.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 PR #72 generic need-to focused suite: 47 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 generic need-to fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 generic need-to fix build: passed with existing Vite chunk-size warning.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -311,3 +316,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-005 PR #72 review fix preserves `queryPlan` through chat response schemas/client types, prioritizes emotional cues before broad future-commitment phrasing, and treats lowercase relationship targets as relationship-context lookups.
   - SUM-005 PR #72 rereview fix applies route `memory_categories` filters to hybrid retrieval and rechecks them before adaptive filtering so injected context matches the trace scope.
   - SUM-005 PR #72 capped-pool fix applies category filters inside semantic vector search and BM25 document selection before per-leg candidate limits are applied.
+  - SUM-005 PR #72 generic need-to fix keeps ordinary "I need to know/remember" recall on preference/relationship/project/factual routes while explicit temporal or commitment cues still route to foresight.

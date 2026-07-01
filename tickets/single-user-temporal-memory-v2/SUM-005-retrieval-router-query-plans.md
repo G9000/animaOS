@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 15:23 MYT
+- Updated: 2026-07-01 15:39 MYT
 - Started: 2026-07-01 14:00 MYT
 - Completed: 2026-07-01 14:19 MYT
 
@@ -42,6 +42,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
 - 2026-07-01 14:51 MYT - Addressed PR #72 Codex review comments for response-schema query plan visibility, emotional-route precedence, and lowercase relationship targets.
 - 2026-07-01 15:05 MYT - Addressed PR #72 Codex rereview comment for applying route memory category filters to live hybrid retrieval and injected context fragments.
 - 2026-07-01 15:23 MYT - Addressed PR #72 Codex rereview comment for applying memory category filters before semantic/BM25 candidate limits truncate route-matching memories.
+- 2026-07-01 15:39 MYT - Addressed PR #72 Codex rereview comment for keeping generic "I need to know/remember" recall out of foresight routing while preserving explicit future commitments.
 
 ## Validation
 
@@ -69,6 +70,11 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py apps/server/tests/test_bm25_index.py -q` - hybrid/BM25 suite: 68 passed, 18 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 capped-pool fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 capped-pool fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_generic_need_to_recall_does_not_force_foresight apps/server/tests/test_retrieval_router.py::test_need_to_with_future_commitment_remains_foresight -q` - PR #72 generic need-to regression failed before fix because ordinary recall turns routed to foresight.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py::test_generic_need_to_recall_does_not_force_foresight apps/server/tests/test_retrieval_router.py::test_need_to_with_future_commitment_remains_foresight -q` - PR #72 generic need-to regressions: 5 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - PR #72 generic need-to focused suite: 47 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 generic need-to fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 generic need-to fix build: passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/src/anima_server/schemas/chat.py
   - apps/server/src/anima_server/services/agent/bm25_index.py
@@ -94,3 +100,4 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `queryPlan` is now preserved through normal chat/history/approval response schemas and client-facing retrieval trace types.
   - Route `memory_categories` filters are now applied to `hybrid_search` and enforced again before adaptive filtering/citation construction so trace scope and injected context match.
   - Category-filtered hybrid retrieval now applies the filter inside semantic vector search and BM25 document selection before per-leg candidate limits are applied.
+  - Generic "I need to know/remember" recall turns no longer force foresight routing; explicit temporal/commitment cues still do.
