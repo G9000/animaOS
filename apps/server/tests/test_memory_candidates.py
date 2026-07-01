@@ -247,18 +247,23 @@ def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
         },
     )
 
-    assert duplicate is None
+    assert duplicate is not None
     pg_session.refresh(first)
-    assert first.status == "queued"
-    assert first.salience_json is not None
-    assert first.salience_json["memory_class"] == "emotional_pattern"
-    assert first.salience_json["emotional_salience"] == 0.8
-    assert first.salience_json["salience_source"] == "explicit"
-    assert first.importance == 4
-    assert first.source == "tool"
-    assert first.source_message_ids == [20]
-    assert first.extraction_model == "new-model"
-    assert first.tags_json == ["new"]
+    assert first.status == "superseded"
+    assert first.source == "llm"
+    assert first.source_message_ids == [10]
+    assert first.extraction_model == "old-model"
+    assert first.tags_json == ["old"]
+    assert duplicate.status == "extracted"
+    assert duplicate.salience_json is not None
+    assert duplicate.salience_json["memory_class"] == "emotional_pattern"
+    assert duplicate.salience_json["emotional_salience"] == 0.8
+    assert duplicate.salience_json["salience_source"] == "explicit"
+    assert duplicate.importance == 4
+    assert duplicate.source == "tool"
+    assert duplicate.source_message_ids == [20]
+    assert duplicate.extraction_model == "new-model"
+    assert duplicate.tags_json == ["new"]
 
 
 def test_correction_and_extraction_not_deduped(pg_session: Session) -> None:
