@@ -922,7 +922,11 @@ def restore_database_snapshot(
                     stability_class=str(record.get("stability_class", "stable")),
                     decay_class=str(record.get("decay_class", "standard")),
                     relationship_proximity=float(record.get("relationship_proximity") or 0.0),
-                    evidence_strength=float(record.get("evidence_strength") or 0.8),
+                    evidence_strength=float(
+                        0.8
+                        if record.get("evidence_strength") is None
+                        else record.get("evidence_strength")
+                    ),
                     evolves_from_item_id=coerce_optional_int(record.get("evolves_from_item_id")),
                     evolution_kind=coerce_optional_str(record.get("evolution_kind")),
                     created_at=parse_optional_datetime(record.get("created_at")),
