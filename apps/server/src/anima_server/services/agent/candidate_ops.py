@@ -10,6 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime_memory import MemoryCandidate
+from anima_server.services.agent.memory_salience import (
+    merge_salience,
+    serialize_memory_salience,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +70,20 @@ def create_memory_candidate(
 
     # Explicit dedup check — works on both PG (with partial unique index) and SQLite.
     existing = runtime_db.scalar(
-        select(MemoryCandidate.id).where(
+        select(MemoryCandidate).where(
             MemoryCandidate.content_hash == content_hash,
             MemoryCandidate.status.not_in(["rejected", "superseded", "failed"]),
         )
     )
     if existing is not None:
+        existing.salience_json = _merge_candidate_salience(
+            existing.salience_json,
+            salience_json,
+        )
+        if existing.status == "promoted":
+            existing.status = "queued"
+            existing.processed_at = None
+        runtime_db.flush()
         return None
 
     candidate = MemoryCandidate(
@@ -96,6 +108,32 @@ def create_memory_candidate(
         return candidate
     except IntegrityError:
         return None
+
+
+def _merge_candidate_salience(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, object]:
+    merged = serialize_memory_salience(merge_salience(existing, incoming))
+    existing_fields = _explicit_signal_fields(existing)
+    incoming_fields = _explicit_signal_fields(incoming)
+    signal_fields = sorted(existing_fields | incoming_fields)
+    if signal_fields:
+        merged["salience_source"] = "explicit"
+        merged["salience_signal_fields"] = signal_fields
+    else:
+        merged["salience_source"] = "inferred"
+        merged["salience_signal_fields"] = []
+    return merged
+
+
+def _explicit_signal_fields(value: dict[str, Any] | None) -> set[str]:
+    if not isinstance(value, dict) or value.get("salience_source") != "explicit":
+        return set()
+    fields = value.get("salience_signal_fields")
+    if not isinstance(fields, list):
+        return set()
+    return {str(field) for field in fields}
 
 
 def count_eligible_candidates(runtime_db: Session, user_id: int, max_retry: int = 3) -> int:
