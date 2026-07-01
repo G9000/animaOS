@@ -17,6 +17,13 @@ class MessagePill(BaseModel):
     kind: str = Field(min_length=1, max_length=32)
     label: str = Field(min_length=1, max_length=64)
     ref: str | int | None = None
+    url: str | None = Field(default=None, max_length=512)
+    mimeType: str | None = Field(default=None, max_length=128)
+    assetId: int | None = Field(default=None, ge=1)
+    messageId: int | None = Field(default=None, ge=1)
+    threadId: int | None = Field(default=None, ge=1)
+    attachmentId: str | None = Field(default=None, max_length=128)
+    relatedCount: int | None = Field(default=None, ge=0)
 
 
 class ChatContextMessage(BaseModel):

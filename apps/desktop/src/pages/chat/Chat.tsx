@@ -175,6 +175,29 @@ function buildAssistantSourcePills({
   return pills.length > 0 ? pills : undefined;
 }
 
+function imageSourcePillAttachments(pills?: ChatMessage["pills"]): ChatAttachment[] {
+  if (!pills || pills.length === 0) return [];
+  const seen = new Set<string>();
+  const attachments: ChatAttachment[] = [];
+
+  for (const pill of pills) {
+    if (pill.kind !== "image_source" || !pill.url) continue;
+    const key = `${pill.url}:${pill.attachmentId ?? pill.ref ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    attachments.push({
+      id: pill.attachmentId ?? String(pill.ref ?? key),
+      kind: "image",
+      mimeType: pill.mimeType ?? "image/png",
+      filename: pill.label,
+      assetId: pill.assetId ?? null,
+      url: pill.url,
+    });
+  }
+
+  return attachments;
+}
+
 function isPdfFile(file: File): boolean {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 }
@@ -268,7 +291,7 @@ function ChatImageAttachments({
 }) {
   if (!attachments || attachments.length === 0) return null;
   return (
-    <div className="mb-2 flex flex-wrap gap-1.5">
+    <div className="not-prose mb-2 flex flex-wrap gap-1.5">
       {attachments.map((attachment) => (
         <AttachmentImage
           key={attachment.id}
@@ -1197,6 +1220,9 @@ export default function Chat() {
     return (
       <div className="prose prose-invert prose-sm md:prose-base max-w-none">
         <MessagePills pills={message?.pills} />
+        <ChatImageAttachments
+          attachments={imageSourcePillAttachments(message?.pills)}
+        />
         <ReactMarkdown
           rehypePlugins={[rehypeHighlight]}
           components={{

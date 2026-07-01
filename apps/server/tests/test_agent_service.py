@@ -131,6 +131,10 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+def _embedding(x: float, y: float = 0.0) -> list[float]:
+    return [x, y, *([0.0] * 766)]
+
+
 @contextmanager
 def _soul_db_session() -> Generator[Session, None, None]:
     """Soul DB session (for User model)."""
@@ -923,6 +927,139 @@ async def test_run_agent_persists_image_source_pill_on_assistant_reply(
     assert pills[0]["label"] == "pixel.png"
     assert isinstance(pills[0]["ref"], str)
     assert pills[0]["ref"].startswith("img_")
+
+
+@pytest.mark.asyncio
+async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+    from anima_server.services.agent.state import extract_stored_pills
+
+    async def fake_generate_embedding(_text: str) -> list[float]:
+        return _embedding(1.0, 0.0)
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(embeddings, "generate_embedding", fake_generate_embedding)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="recalled-image-pills",
+                password_hash="not-used",
+                display_name="Recalled Image Pills",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            thread = RuntimeThread(user_id=user.id, status="active")
+            runtime_session.add(thread)
+            runtime_session.flush()
+            asset = RuntimeImageAsset(
+                user_id=user.id,
+                filename="talia.png",
+                mime_type="image/png",
+                storage_path="users/1/media/images/talia.png",
+                sha256="c" * 64,
+                size_bytes=len(PNG_BYTES),
+                status="indexed",
+            )
+            runtime_session.add(asset)
+            runtime_session.flush()
+            source_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user.id,
+                sequence_id=1,
+                role="user",
+                content_text="Talia Yung reference image.",
+                content_json={
+                    "attachments": [
+                        {
+                            "id": "img_talia",
+                            "kind": "image",
+                            "mimeType": "image/png",
+                            "filename": "talia.png",
+                            "assetId": asset.id,
+                            "storagePath": asset.storage_path,
+                            "sizeBytes": asset.size_bytes,
+                            "sha256": asset.sha256,
+                        }
+                    ]
+                },
+            )
+            runtime_session.add(source_message)
+            runtime_session.flush()
+            runtime_session.add(
+                RuntimeImageMessageLink(
+                    user_id=user.id,
+                    message_id=source_message.id,
+                    image_asset_id=asset.id,
+                    attachment_id="img_talia",
+                )
+            )
+            annotation_text = "Talia Yung reference image with pastel pink hair."
+            annotation = RuntimeImageAnnotation(
+                user_id=user.id,
+                image_asset_id=asset.id,
+                annotation_kind="upload_context",
+                content_text=annotation_text,
+                content_hash=RuntimeImageAnnotation.compute_content_hash(
+                    annotation_text
+                ),
+                status="active",
+            )
+            runtime_session.add(annotation)
+            runtime_session.flush()
+            annotation_embedding = _embedding(1.0, 0.0)
+            runtime_session.add(
+                RuntimeEmbedding(
+                    user_id=user.id,
+                    source_type="image_annotation",
+                    source_id=annotation.id,
+                    content_hash=annotation.content_hash,
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
+                        annotation_embedding
+                    ),
+                    embedding=annotation_embedding,
+                    content_preview=annotation_text,
+                )
+            )
+            thread.next_message_sequence = 2
+
+            await run_agent(
+                "do you remember her picture?",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    labels = [label for label, _value in runner.requests[0]["memory_blocks"]]
+    assert "relevant_images" in labels
+    pills = extract_stored_pills(messages[-1].content_json)
+    assert pills == [
+        {
+            "kind": "image_source",
+            "label": "talia.png",
+            "ref": f"image:{asset.id}",
+            "assetId": asset.id,
+            "mimeType": "image/png",
+            "url": f"/api/chat/messages/{source_message.id}/attachments/img_talia",
+            "messageId": source_message.id,
+            "threadId": thread.id,
+            "attachmentId": "img_talia",
+        }
+    ]
 
 
 @pytest.mark.asyncio

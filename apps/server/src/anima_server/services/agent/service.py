@@ -133,6 +133,7 @@ _cached_runner: AgentRuntime | None = None
 
 _background_tasks: set[asyncio.Task[Any]] = set()
 _DOCUMENT_PILL_KINDS = frozenset({"document_attachment", "document_source"})
+_MAX_RECALLED_IMAGE_SOURCE_PILLS = 3
 
 
 def normalize_document_only_user_message(
@@ -872,6 +873,7 @@ class _TurnContext:
     retrieval: AgentRetrievalTrace | None = None
     has_document_context: bool = False
     document_source_pills: tuple[dict[str, object], ...] = ()
+    recalled_image_source_pills: tuple[dict[str, object], ...] = ()
 
 
 async def _consolidate_displaced_threads(
@@ -1283,6 +1285,7 @@ async def _assemble_turn_context(
             document_ids=effective_document_ids,
             kind="document_source",
         )
+        recalled_image_source_pills = ()
     else:
         # Static identity blocks come from the companion cache (version-counter
         # invalidated); only the query-ranked and volatile blocks are rebuilt
@@ -1303,6 +1306,11 @@ async def _assemble_turn_context(
         if today_context_block is not None:
             memory_blocks = (*memory_blocks, today_context_block)
         document_source_pills = ()
+        recalled_image_source_pills = _build_recalled_image_source_pills(
+            runtime_db,
+            user_id=user_id,
+            query_embedding=query_embedding,
+        )
 
     # Feedback signals (best-effort)
     try:
@@ -1354,6 +1362,7 @@ async def _assemble_turn_context(
         retrieval=retrieval_trace,
         has_document_context=document_context_block is not None,
         document_source_pills=document_source_pills,
+        recalled_image_source_pills=recalled_image_source_pills,
     )
 
 
@@ -1460,6 +1469,58 @@ def _build_user_message_document_pills(
     )
 
 
+def _build_recalled_image_source_pills(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    query_embedding: Sequence[float] | None,
+    limit: int = _MAX_RECALLED_IMAGE_SOURCE_PILLS,
+) -> tuple[dict[str, object], ...]:
+    if not query_embedding or limit <= 0:
+        return ()
+
+    try:
+        from anima_server.services.images.rag import (
+            search_image_annotations_by_embedding,
+        )
+
+        results = search_image_annotations_by_embedding(
+            runtime_db,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+        )
+    except Exception:
+        logger.debug("Image source pill recall failed for user %s", user_id, exc_info=True)
+        return ()
+
+    pills: list[dict[str, object]] = []
+    seen_assets: set[int] = set()
+    for result in results:
+        if result.image_asset_id in seen_assets or not result.attachment_url:
+            continue
+        seen_assets.add(result.image_asset_id)
+        pill: dict[str, object] = {
+            "kind": "image_source",
+            "label": _truncate_pill_label(result.filename or f"image-{result.image_asset_id}"),
+            "ref": f"image:{result.image_asset_id}",
+            "assetId": result.image_asset_id,
+            "mimeType": result.mime_type,
+            "url": result.attachment_url,
+        }
+        if result.source_message_id is not None:
+            pill["messageId"] = result.source_message_id
+        if result.source_thread_id is not None:
+            pill["threadId"] = result.source_thread_id
+        if result.attachment_id:
+            pill["attachmentId"] = result.attachment_id
+        if len(result.related_sources) > 1:
+            pill["relatedCount"] = len(result.related_sources)
+        pills.append(pill)
+
+    return tuple(pills)
+
+
 def _build_assistant_source_pills(
     turn_ctx: _TurnContext,
 ) -> tuple[dict[str, object], ...]:
@@ -1479,6 +1540,7 @@ def _build_assistant_source_pills(
                 "ref": attachment.id,
             }
         )
+    pills.extend(turn_ctx.recalled_image_source_pills)
     return tuple(pills)
 
 

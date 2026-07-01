@@ -6,6 +6,13 @@ export interface MessagePill {
   kind: string;
   label: string;
   ref?: string | number | null;
+  url?: string | null;
+  mimeType?: string | null;
+  assetId?: number | null;
+  messageId?: number | null;
+  threadId?: number | null;
+  attachmentId?: string | null;
+  relatedCount?: number | null;
 }
 
 export interface ChatMessage {
