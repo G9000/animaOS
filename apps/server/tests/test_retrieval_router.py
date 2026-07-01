@@ -93,6 +93,12 @@ def test_family_friendly_recommendation_routes_to_preference_lookup() -> None:
     assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
 
 
+def test_instead_of_preference_phrase_routes_to_preference_lookup() -> None:
+    plan = plan_retrieval("Can you recommend coffee instead of tea?")
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
 @pytest.mark.parametrize(
     ("turn", "expected_route"),
     [
@@ -154,6 +160,12 @@ def test_project_continuity_plan_prioritizes_active_projects() -> None:
 
 def test_project_recommendation_routes_to_project_continuity() -> None:
     plan = plan_retrieval("Can you recommend an approach for the SUM-005 PRD?")
+
+    assert plan.route is RetrievalRoute.PROJECT_CONTINUITY
+
+
+def test_next_project_step_routes_to_project_continuity() -> None:
+    plan = plan_retrieval("What should we do next on SUM-005?")
 
     assert plan.route is RetrievalRoute.PROJECT_CONTINUITY
 

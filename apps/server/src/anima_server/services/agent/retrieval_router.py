@@ -94,20 +94,7 @@ def _normalize_query(turn: str) -> str:
 def _classify_route(query: str) -> RetrievalRoute:
     lowered = query.casefold()
 
-    if _has_any(
-        lowered,
-        (
-            "actually",
-            "correction",
-            "correct that",
-            "not anymore",
-            "no longer",
-            "instead",
-            "i joined",
-            "i moved to",
-            "i changed",
-        ),
-    ):
+    if _has_contradiction_update_cue(lowered):
         return RetrievalRoute.CONTRADICTION_UPDATE
 
     if _has_any(
@@ -385,6 +372,22 @@ def _has_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
 
 
+def _has_contradiction_update_cue(text: str) -> bool:
+    return _has_any(
+        text,
+        (
+            "actually",
+            "correction",
+            "correct that",
+            "not anymore",
+            "no longer",
+            "i joined",
+            "i moved to",
+            "i changed",
+        ),
+    )
+
+
 def _has_emotional_support_cue(text: str) -> bool:
     return (
         bool(re.search(r"\bfeel(?:ing)?\s+(?!like\b)", text))
@@ -410,7 +413,6 @@ def _has_foresight_cue(text: str) -> bool:
     return _has_any(
         text,
         (
-            "next ",
             "tomorrow",
             "later today",
             "remind me",
@@ -419,6 +421,13 @@ def _has_foresight_cue(text: str) -> bool:
             "i said i would",
             "deadline",
         ),
+    ) or bool(
+        re.search(
+            r"\bnext\s+"
+            r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+            r"week|weekend|month|year)\b",
+            text,
+        )
     ) or bool(re.search(r"\bdue\b", text))
 
 
