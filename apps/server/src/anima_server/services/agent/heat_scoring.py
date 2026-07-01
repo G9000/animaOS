@@ -76,6 +76,10 @@ def compute_heat(
     created_at: datetime | None = None,
     tau_hours: float = RECENCY_TAU_HOURS,
     superseded: bool = False,
+    decay_class: str | None = None,
+    emotional_salience: float = 0.0,
+    relationship_proximity: float = 0.0,
+    evidence_strength: float = 0.8,
 ) -> float:
     """Compute heat: H = alpha*access + beta*depth + gamma*recency + delta*importance.
 
@@ -88,12 +92,33 @@ def compute_heat(
     exempt from the importance floor so they can fully decay.
     """
     ref_now = now or datetime.now(UTC)
+    from anima_server.services.agent.memory_salience import (
+        DECAY_STANDARD,
+        apply_decay_class_to_tau,
+        salience_heat_floor_multiplier,
+    )
+
+    effective_decay_class = (decay_class or DECAY_STANDARD).strip().lower()
+    tau_hours = apply_decay_class_to_tau(tau_hours, effective_decay_class)
     floor = 0.0 if superseded else importance_heat_floor(importance)
+    if floor > 0.0:
+        floor *= salience_heat_floor_multiplier(
+            emotional_salience=emotional_salience,
+            relationship_proximity=relationship_proximity,
+            evidence_strength=evidence_strength,
+        )
     recency = 0.0
     recency_ref = last_accessed_at or created_at
+    uses_salience_adjustments = (
+        effective_decay_class != DECAY_STANDARD
+        or emotional_salience > 0.0
+        or relationship_proximity > 0.0
+        or abs(evidence_strength - 0.8) > 1e-9
+    )
     if (
         recency_ref is not None
         and tau_hours == RECENCY_TAU_HOURS
+        and not uses_salience_adjustments
         and anima_core_bindings.rust_compute_heat is not None
         and float(importance).is_integer()
         and 0 <= int(importance) <= MAX_IMPORTANCE
@@ -127,6 +152,35 @@ def compute_heat(
     return max(heat, floor)
 
 
+def compute_heat_for_item(
+    item: Any,
+    *,
+    now: datetime | None = None,
+    tau_hours: float = RECENCY_TAU_HOURS,
+    superseded: bool | None = None,
+) -> float:
+    ref_count = getattr(item, "reference_count", 0) or 0
+    is_superseded = (
+        getattr(item, "superseded_by", None) is not None
+        if superseded is None
+        else superseded
+    )
+    return compute_heat(
+        access_count=ref_count,
+        interaction_depth=ref_count,
+        last_accessed_at=getattr(item, "last_referenced_at", None),
+        importance=float(getattr(item, "importance", 3) or 3),
+        now=now,
+        created_at=getattr(item, "created_at", None),
+        tau_hours=tau_hours,
+        superseded=is_superseded,
+        decay_class=getattr(item, "decay_class", None),
+        emotional_salience=float(getattr(item, "emotional_salience", 0.0) or 0.0),
+        relationship_proximity=float(getattr(item, "relationship_proximity", 0.0) or 0.0),
+        evidence_strength=float(getattr(item, "evidence_strength", 0.8) or 0.8),
+    )
+
+
 def update_heat_on_access(
     db: Session,
     items: list[Any],
@@ -140,15 +194,7 @@ def update_heat_on_access(
     """
     ref_now = now or datetime.now(UTC)
     for item in items:
-        ref_count = item.reference_count or 0
-        item.heat = compute_heat(
-            access_count=ref_count,
-            interaction_depth=ref_count,  # proxied by ref_count in v1
-            last_accessed_at=item.last_referenced_at,
-            importance=float(item.importance),
-            now=ref_now,
-            created_at=item.created_at,
-        )
+        item.heat = compute_heat_for_item(item, now=ref_now)
     db.flush()
 
 
@@ -177,19 +223,14 @@ def decay_all_heat(
     )
 
     for item in items:
-        ref_count = item.reference_count or 0
         # Superseded items decay 3x faster (lower tau)
         superseded = item.superseded_by is not None
         tau = RECENCY_TAU_HOURS
         if superseded:
             tau = RECENCY_TAU_HOURS / SUPERSEDED_DECAY_MULTIPLIER
-        item.heat = compute_heat(
-            access_count=ref_count,
-            interaction_depth=ref_count,
-            last_accessed_at=item.last_referenced_at,
-            importance=float(item.importance),
+        item.heat = compute_heat_for_item(
+            item,
             now=ref_now,
-            created_at=item.created_at,
             tau_hours=tau,
             superseded=superseded,
         )
