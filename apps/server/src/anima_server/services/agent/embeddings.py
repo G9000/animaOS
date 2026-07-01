@@ -18,6 +18,7 @@ import math
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import Lock
@@ -1077,6 +1078,7 @@ async def hybrid_search(
     similarity_threshold: float = 0.25,
     semantic_weight: float = 0.5,
     keyword_weight: float = 0.5,
+    categories: Sequence[str] | None = None,
     tags: list[str] | None = None,
     tag_match_mode: str = "any",
     runtime_db: Session | None = None,
@@ -1084,8 +1086,9 @@ async def hybrid_search(
 ) -> HybridSearchResult:
     """Combined semantic + keyword search over memory items using RRF merge.
 
-    When *tags* is provided, post-filters results to only include items
-    that match the given tags (using "any" or "all" match mode).
+    When *categories* is provided, filters results to memory items in those
+    categories. When *tags* is provided, post-filters results to only include
+    items that match the given tags (using "any" or "all" match mode).
 
     With ``recency_heat_blend=True`` the final scores additionally factor
     in item recency and heat (used by the automatic per-turn retrieval,
@@ -1096,6 +1099,16 @@ async def hybrid_search(
     - items: list of (MemoryItem, rrf_score) sorted by relevance
     - query_embedding: the embedding vector for reuse in query-aware blocks
     """
+    category_filter = (
+        {
+            category.strip()
+            for category in categories
+            if isinstance(category, str) and category.strip()
+        }
+        if categories
+        else None
+    )
+
     # If tags are given, pre-fetch the allowed item IDs
     allowed_ids: set[int] | None = None
     if tags:
@@ -1160,14 +1173,13 @@ async def hybrid_search(
     # walking the ranking. Early candidates may be missing, tag-filtered, or
     # below the heat floor; later valid candidates should still backfill.
     merged_ids = [item_id for item_id, _ in merged]
-    items_by_id = (
-        {
-            item.id: item
-            for item in db.scalars(select(MemoryItem).where(MemoryItem.id.in_(merged_ids))).all()
-        }
-        if merged_ids
-        else {}
-    )
+    if merged_ids:
+        items_query = select(MemoryItem).where(MemoryItem.id.in_(merged_ids))
+        if category_filter:
+            items_query = items_query.where(MemoryItem.category.in_(category_filter))
+        items_by_id = {item.id: item for item in db.scalars(items_query).all()}
+    else:
+        items_by_id = {}
 
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
@@ -1177,6 +1189,8 @@ async def hybrid_search(
             if allowed_ids is not None and item_id not in allowed_ids:
                 continue
             item = items_by_id[item_id]
+            if category_filter and item.category not in category_filter:
+                continue
             # Respect passive forgetting: skip items that have been scored
             # (heat > 0) but decayed below the visibility floor.
             if item.heat not in (None, 0.0) and item.heat < HEAT_VISIBILITY_FLOOR:

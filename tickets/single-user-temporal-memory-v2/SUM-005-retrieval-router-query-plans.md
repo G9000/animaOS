@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 14:51 MYT
+- Updated: 2026-07-01 15:05 MYT
 - Started: 2026-07-01 14:00 MYT
 - Completed: 2026-07-01 14:19 MYT
 
@@ -40,6 +40,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
 - 2026-07-01 14:00 MYT - Added deterministic retrieval query plans, serializable retrieval traces, route-specific hybrid search limits, and recall guidance updates.
 - 2026-07-01 14:19 MYT - Completed validation and marked ticket done.
 - 2026-07-01 14:51 MYT - Addressed PR #72 Codex review comments for response-schema query plan visibility, emotional-route precedence, and lowercase relationship targets.
+- 2026-07-01 15:05 MYT - Addressed PR #72 Codex rereview comment for applying route memory category filters to live hybrid retrieval and injected context fragments.
 
 ## Validation
 
@@ -56,8 +57,14 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval -q` - PR #72 review focused suite: 38 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 review fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 review fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters -q` - PR #72 rereview regression failed before fix because preference routes still injected both `fact` and `preference` fragments.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories -q` - PR #72 rereview regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories -q` - PR #72 rereview focused suite: 40 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 rereview fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 rereview fix build: passed with existing Vite chunk-size warning.
 - Changed paths:
   - apps/server/src/anima_server/schemas/chat.py
+  - apps/server/src/anima_server/services/agent/embeddings.py
   - apps/server/src/anima_server/services/agent/retrieval_router.py
   - apps/server/src/anima_server/services/agent/service.py
   - apps/server/src/anima_server/services/agent/state.py
@@ -65,6 +72,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - apps/server/src/anima_server/services/agent/tools.py
   - apps/server/tests/test_chat.py
   - apps/server/tests/test_agent_service.py
+  - apps/server/tests/test_hybrid_retrieval.py
   - apps/server/tests/test_retrieval_router.py
   - apps/server/tests/test_search_long_memory_tool.py
   - packages/api-client/src/types.ts
@@ -75,3 +83,4 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - Foresight, experiences, and skills are represented as explicit planned query-plan sources with `available=false` until later storage tickets provide durable source implementations.
   - Existing stream payload shape is preserved when a retrieval trace has no router query plan.
   - `queryPlan` is now preserved through normal chat/history/approval response schemas and client-facing retrieval trace types.
+  - Route `memory_categories` filters are now applied to `hybrid_search` and enforced again before adaptive filtering/citation construction so trace scope and injected context match.
