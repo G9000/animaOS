@@ -112,6 +112,69 @@ def _repair_legacy_kg_schema(connection: Connection) -> None:
         )
 
 
+def _repair_legacy_memory_schema(connection: Connection) -> None:
+    """Add current memory columns to legacy SQLite tables stamped past migrations."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    memory_columns = _sqlite_column_names(connection, "memory_items")
+    if not memory_columns:
+        return
+
+    for column_name, ddl in (
+        (
+            "memory_class",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN memory_class VARCHAR(32) NOT NULL DEFAULT 'casual'",
+        ),
+        (
+            "emotional_salience",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
+        ),
+        (
+            "stability_class",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN stability_class VARCHAR(32) NOT NULL DEFAULT 'stable'",
+        ),
+        (
+            "decay_class",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN decay_class VARCHAR(32) NOT NULL DEFAULT 'standard'",
+        ),
+        (
+            "relationship_proximity",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
+        ),
+        (
+            "evidence_strength",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
+        ),
+        (
+            "evolves_from_item_id",
+            "ALTER TABLE memory_items ADD COLUMN evolves_from_item_id INTEGER",
+        ),
+        (
+            "evolution_kind",
+            "ALTER TABLE memory_items ADD COLUMN evolution_kind VARCHAR(32)",
+        ),
+    ):
+        if column_name not in memory_columns:
+            connection.exec_driver_sql(ddl)
+            memory_columns.add(column_name)
+
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_memory_items_user_decay_class "
+        "ON memory_items (user_id, decay_class)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_memory_items_user_evolves_from "
+        "ON memory_items (user_id, evolves_from_item_id)"
+    )
+
+
 def _make_engine(database_url: str | None = None) -> Engine:
     url = database_url or settings.database_url
     ensure_database_directory(url)
@@ -342,6 +405,8 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
         if has_app_tables and not has_alembic:
             # Legacy DB created by create_all — stamp at head so Alembic
             # considers it up-to-date (columns were already added manually).
+            _repair_legacy_memory_schema(connection)
+            _repair_legacy_kg_schema(connection)
             command.stamp(cfg, "head")
             logger.info("Stamped legacy database at Alembic head.")
         else:
@@ -357,6 +422,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             from anima_server.models import Base
 
             Base.metadata.create_all(bind=connection)
+            _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
