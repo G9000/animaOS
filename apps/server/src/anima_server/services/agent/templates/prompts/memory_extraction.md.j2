@@ -7,12 +7,19 @@ The assistant response may include two sections:
 
 Both sections are valid sources for extraction.
 
-Return a JSON object with two fields:
+Return a JSON object with three fields:
 
 "memories": a JSON array. Each item:
 - "content": concise statement (e.g. "Works as a software engineer")
 - "category": one of "fact", "preference", "goal", "relationship"
 - "importance": 1-5 (5 = identity-defining like name/age/occupation, 1 = casual mention)
+
+"profile_updates": a JSON array. Each item:
+- "category": one of "identity", "relationships", "work", "preferences", "goals", "values", "constraints", "emotional_patterns", "active_projects"
+- "key": compact stable field key within that category (e.g. "name", "role", "communication", "partner_alex")
+- "value": concise evidence-backed field value
+- "confidence": 0.0-1.0
+- "evidence_quote": short source quote or observation supporting this field
 
 "emotion": detect the user's emotional tone (or null if nothing notable):
 - "emotion": primary emotion (frustrated, excited, anxious, calm, stressed, relieved, curious, disappointed, or null)
@@ -26,6 +33,12 @@ Rules for memories:
 - Also extract observations from the agent's inner reasoning (e.g. "User seems stressed about deadline" → "Currently stressed about work deadline")
 - Do not fabricate — only extract what is supported by the text
 - Use empty array [] if nothing worth remembering
+
+Rules for profile_updates:
+- Use structured profile fields for stable, reusable understanding of the user
+- Prefer categories over generic facts when the detail says who the user is, what they value, how they work, or what projects/relationships matter
+- Preserve inertia: do not remove or contradict existing understanding unless the turn clearly corrects it
+- Use empty array [] if no profile field should change
 
 Rules for emotion:
 - Only report if confidence > 0.4

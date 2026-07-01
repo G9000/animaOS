@@ -12,11 +12,13 @@ from anima_server.models import KGEntity, KGRelation
 from anima_server.services.agent.knowledge_graph import (
     graph_context_for_query,
     normalize_entity_name,
+    resolve_entities_by_name_or_aliases,
     search_graph,
 )
 from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
+_CURRENT_RELATION_STATUS = "active"
 
 
 @router.get("/{user_id}/overview")
@@ -33,7 +35,13 @@ async def get_graph_overview(
     )
 
     relation_count = (
-        db.scalar(select(func.count(KGRelation.id)).where(KGRelation.user_id == user_id)) or 0
+        db.scalar(
+            select(func.count(KGRelation.id)).where(
+                KGRelation.user_id == user_id,
+                KGRelation.status == _CURRENT_RELATION_STATUS,
+            )
+        )
+        or 0
     )
 
     # Get entity type distribution
@@ -65,7 +73,10 @@ async def get_graph_overview(
     relation_types = {}
     for row in db.execute(
         select(KGRelation.relation_type, func.count(KGRelation.id))
-        .where(KGRelation.user_id == user_id)
+        .where(
+            KGRelation.user_id == user_id,
+            KGRelation.status == _CURRENT_RELATION_STATUS,
+        )
         .group_by(KGRelation.relation_type)
     ):
         relation_types[row[0]] = row[1]
@@ -154,6 +165,7 @@ async def get_entity(
             select(KGRelation).where(
                 KGRelation.user_id == user_id,
                 KGRelation.source_id == entity_id,
+                KGRelation.status == _CURRENT_RELATION_STATUS,
             )
         ).all()
     )
@@ -162,6 +174,7 @@ async def get_entity(
             select(KGRelation).where(
                 KGRelation.user_id == user_id,
                 KGRelation.destination_id == entity_id,
+                KGRelation.status == _CURRENT_RELATION_STATUS,
             )
         ).all()
     )
@@ -229,22 +242,25 @@ async def list_relations(
     user_id: int,
     request: Request,
     entity_id: int | None = Query(default=None),
-    type: str | None = Query(default=None),
+    relation_type: str | None = Query(default=None, alias="type"),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """List relations with optional filtering."""
     require_unlocked_user(request, user_id)
 
-    query = select(KGRelation).where(KGRelation.user_id == user_id)
+    query = select(KGRelation).where(
+        KGRelation.user_id == user_id,
+        KGRelation.status == _CURRENT_RELATION_STATUS,
+    )
 
     if entity_id:
         query = query.where(
             (KGRelation.source_id == entity_id) | (KGRelation.destination_id == entity_id)
         )
 
-    if type:
-        query = query.where(KGRelation.relation_type == type)
+    if relation_type:
+        query = query.where(KGRelation.relation_type == relation_type)
 
     relations = list(db.scalars(query.order_by(KGRelation.mentions.desc()).limit(limit)).all())
 
@@ -309,6 +325,11 @@ async def search_graph_endpoint(
             )
         ).all()
     )
+    seen_matching_ids = {entity.id for entity in matching}
+    for entity in resolve_entities_by_name_or_aliases(db, user_id=user_id, names=[q]):
+        if entity.id not in seen_matching_ids:
+            matching.append(entity)
+            seen_matching_ids.add(entity.id)
 
     if not matching:
         return {"entities": [], "paths": []}

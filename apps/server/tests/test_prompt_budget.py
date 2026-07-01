@@ -105,6 +105,41 @@ class TestBoundaryTruncation:
 
 
 class TestBlockPriority:
+    def test_user_profile_keeps_identity_priority_under_tight_budget(self) -> None:
+        blocks = [
+            MemoryBlock(
+                label="goals",
+                description="Goals",
+                value="g" * 50,
+            ),
+            MemoryBlock(
+                label="user_profile",
+                description="Structured user profile",
+                value="u" * 60,
+            ),
+        ]
+
+        plan = plan_prompt_budget(
+            blocks,
+            budget=BudgetConfig(
+                total_budget=100,
+                tier_0_budget=60,
+                tier_1_budget=0,
+                tier_2_budget=0,
+                tier_3_budget=50,
+            ),
+        )
+
+        labels = [block.label for block in plan.blocks]
+        user_profile_decision = next(
+            decision
+            for decision in plan.trace.decisions
+            if decision.label == "user_profile"
+        )
+        assert "user_profile" in labels
+        assert user_profile_decision.tier == 0
+        assert user_profile_decision.status == "kept"
+
     def test_document_context_precedes_personal_memory_blocks(self) -> None:
         blocks = [
             MemoryBlock(

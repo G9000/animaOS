@@ -19,6 +19,8 @@ from anima_server.models.agent_runtime import (
     MemoryItemEvidence,
     MemoryItemTag,
     MemoryVector,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
 from anima_server.models.consciousness import (
     AgentProfile,
@@ -98,5 +100,7 @@ __all__ = [
     "TelegramLink",
     "User",
     "UserKey",
+    "UserProfileField",
+    "UserProfileFieldEvidence",
     "WorkingContext",
 ]

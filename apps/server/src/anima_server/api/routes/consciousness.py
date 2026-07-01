@@ -68,6 +68,48 @@ class PendingMemoryConsolidationResponse(BaseModel):
     remainingPendingOps: int
 
 
+class UserProfileEvidenceResponse(BaseModel):
+    id: int
+    sourceKind: str
+    sourceMemoryId: int | None = None
+    sourceEvidenceId: int | None = None
+    sourceClaimEvidenceId: int | None = None
+    runtimeThreadId: int | None = None
+    runtimeMessageId: int | None = None
+    evidenceText: str
+    observedAt: str | None = None
+    createdAt: str | None = None
+
+
+class UserProfileFieldResponse(BaseModel):
+    id: int
+    category: str
+    key: str
+    value: str
+    confidence: float
+    status: str
+    sourceKind: str
+    sourceMemoryId: int | None = None
+    sourceEvidenceId: int | None = None
+    sourceClaimEvidenceId: int | None = None
+    supersededById: int | None = None
+    firstObservedAt: str | None = None
+    lastObservedAt: str | None = None
+    updatedAt: str | None = None
+    evidence: list[UserProfileEvidenceResponse]
+
+
+class UserProfileResponse(BaseModel):
+    userId: int
+    fields: list[UserProfileFieldResponse]
+
+
+class UserProfileCorrectionRequest(BaseModel):
+    value: str
+    confidence: float = 1.0
+    evidenceText: str = "user correction"
+
+
 class SelfModelUpdateRequest(BaseModel):
     content: str
     allowIdentityOverride: bool = False
@@ -203,6 +245,61 @@ def _list_pending_ops(runtime_db: Session | None, *, user_id: int) -> list[dict[
         _pending_op_dict(op=op)
         for op in get_pending_ops(runtime_db, user_id=user_id)
     ]
+
+
+def _profile_field_response(*, user_id: int, field) -> UserProfileFieldResponse:
+    return UserProfileFieldResponse(
+        id=field.id,
+        category=field.category,
+        key=field.key,
+        value=df(
+            user_id,
+            field.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        ),
+        confidence=field.confidence,
+        status=field.status,
+        sourceKind=field.source_kind,
+        sourceMemoryId=field.source_memory_id,
+        sourceEvidenceId=field.source_evidence_id,
+        sourceClaimEvidenceId=field.source_claim_evidence_id,
+        supersededById=field.superseded_by_id,
+        firstObservedAt=_iso_seconds(field.first_observed_at),
+        lastObservedAt=_iso_seconds(field.last_observed_at),
+        updatedAt=_iso_seconds(field.updated_at),
+        evidence=[
+            UserProfileEvidenceResponse(
+                id=evidence.id,
+                sourceKind=evidence.source_kind,
+                sourceMemoryId=evidence.source_memory_id,
+                sourceEvidenceId=evidence.source_evidence_id,
+                sourceClaimEvidenceId=evidence.source_claim_evidence_id,
+                runtimeThreadId=evidence.runtime_thread_id,
+                runtimeMessageId=evidence.runtime_message_id,
+                evidenceText=df(
+                    user_id,
+                    evidence.evidence_text,
+                    table="user_profile_field_evidence",
+                    field="evidence_text",
+                ),
+                observedAt=_iso_seconds(evidence.observed_at),
+                createdAt=_iso_seconds(evidence.created_at),
+            )
+            for evidence in field.evidence
+        ],
+    )
+
+
+def _invalidate_companion_memory(user_id: int) -> None:
+    try:
+        from anima_server.services.agent.companion import get_companion
+
+        companion = get_companion(user_id)
+        if companion is not None:
+            companion.invalidate_memory()
+    except Exception:
+        pass
 
 
 # --- Self-Model Endpoints ---
@@ -355,6 +452,110 @@ async def consolidate_pending_memory_ops(
         opsFailed=result.ops_failed,
         remainingPendingOps=remaining,
     )
+
+
+@router.get("/{user_id}/user-profile", response_model=UserProfileResponse)
+async def get_user_profile(
+    user_id: int,
+    request: Request,
+    include_history: bool = Query(default=False, alias="includeHistory"),
+    category: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> UserProfileResponse:
+    """List structured user profile fields and their evidence."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.user_profile import list_profile_fields
+
+    try:
+        fields = list_profile_fields(
+            db,
+            user_id=user_id,
+            include_history=include_history,
+            category=category,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return UserProfileResponse(
+        userId=user_id,
+        fields=[
+            _profile_field_response(user_id=user_id, field=field)
+            for field in fields
+        ],
+    )
+
+
+@router.patch(
+    "/{user_id}/user-profile/{field_id}",
+    response_model=UserProfileFieldResponse,
+)
+async def correct_user_profile_field(
+    user_id: int,
+    field_id: int,
+    payload: UserProfileCorrectionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> UserProfileFieldResponse:
+    """Correct a structured user profile field while preserving history."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.user_profile import correct_profile_field
+
+    try:
+        field = correct_profile_field(
+            db,
+            user_id=user_id,
+            field_id=field_id,
+            value=payload.value,
+            confidence=payload.confidence,
+            evidence_text=payload.evidenceText,
+        )
+    except ValueError as exc:
+        if str(exc) == "Profile value cannot be empty":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    db.commit()
+    _invalidate_companion_memory(user_id)
+    return _profile_field_response(user_id=user_id, field=field)
+
+
+@router.delete(
+    "/{user_id}/user-profile/{field_id}",
+    response_model=UserProfileFieldResponse,
+)
+async def retract_user_profile_field(
+    user_id: int,
+    field_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> UserProfileFieldResponse:
+    """Retract an active structured user profile field."""
+    require_unlocked_user(request, user_id)
+
+    from anima_server.services.agent.user_profile import retract_profile_field
+
+    try:
+        field = retract_profile_field(db, user_id=user_id, field_id=field_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    db.commit()
+    _invalidate_companion_memory(user_id)
+    return _profile_field_response(user_id=user_id, field=field)
 
 
 @router.get("/{user_id}/self-model/{section}")

@@ -224,6 +224,71 @@ async def test_run_background_extraction_attaches_source_ids_to_llm_candidates(
 
 
 @pytest.mark.asyncio
+async def test_run_background_extraction_stores_profile_update_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.models.runtime_memory import ProfileUpdateCandidate
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            profile_updates=[
+                {
+                    "category": "work",
+                    "key": "role",
+                    "value": "Founder building AnimaOS",
+                    "confidence": 0.9,
+                    "evidence_quote": "I am the founder building AnimaOS",
+                }
+            ]
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="I am the founder building AnimaOS.",
+                assistant_response="I will remember that.",
+                runtime_db_factory=rt_factory,
+                source_message_ids=[301, 302],
+                trigger_soul_writer=False,
+            )
+
+            with rt_factory() as rt_db:
+                candidate = rt_db.scalar(
+                    select(ProfileUpdateCandidate).where(
+                        ProfileUpdateCandidate.user_id == 1
+                    )
+                )
+
+        assert candidate is not None
+        assert candidate.category == "work"
+        assert candidate.key == "role"
+        assert candidate.value == "Founder building AnimaOS"
+        assert candidate.confidence == 0.9
+        assert candidate.evidence_text == "I am the founder building AnimaOS"
+        assert candidate.source_message_ids == [301, 302]
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
 async def test_run_background_extraction_ignores_incomplete_emotion_payload(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
