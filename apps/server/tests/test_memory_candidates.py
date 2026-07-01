@@ -215,6 +215,9 @@ def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
         content="likes cats",
         category="preference",
         source="llm",
+        source_message_ids=[10],
+        extraction_model="old-model",
+        tags=["old"],
         salience={
             "memory_class": "casual",
             "emotional_salience": 0.1,
@@ -231,7 +234,11 @@ def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
         user_id=1,
         content="likes cats",
         category="preference",
-        source="llm",
+        importance=4,
+        source="tool",
+        source_message_ids=[20],
+        extraction_model="new-model",
+        tags=["new"],
         salience={
             "memory_class": "emotional_pattern",
             "emotional_salience": 0.8,
@@ -245,8 +252,13 @@ def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
     assert first.status == "queued"
     assert first.salience_json is not None
     assert first.salience_json["memory_class"] == "emotional_pattern"
-    assert first.salience_json["emotional_salience"] > 0.1
+    assert first.salience_json["emotional_salience"] == 0.8
     assert first.salience_json["salience_source"] == "explicit"
+    assert first.importance == 4
+    assert first.source == "tool"
+    assert first.source_message_ids == [20]
+    assert first.extraction_model == "new-model"
+    assert first.tags_json == ["new"]
 
 
 def test_correction_and_extraction_not_deduped(pg_session: Session) -> None:
