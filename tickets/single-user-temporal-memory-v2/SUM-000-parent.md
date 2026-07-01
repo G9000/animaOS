@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 13:18 MYT
+- Updated: 2026-07-01 14:19 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-002` | Evidence baseline and episode quality | `done` | `SUM-001` |
 | `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
 | `SUM-004` | Structured user profile | `done` | `SUM-002` |
-| `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
+| `SUM-005` | Retrieval router and query plans | `done` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `backlog` | `SUM-005`, `SUM-006` |
 | `SUM-008` | Foresight signals | `backlog` | `SUM-002` |
@@ -58,6 +58,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
 - `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
 - `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
+- `SUM-005` - Retrieval router and query plans (completed 2026-07-01 14:19 MYT)
 
 ## Activity Log
 
@@ -114,6 +115,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 03:15 MYT - `SUM-004` addressed additional PR #71 feedback for same-value profile observation timestamps and `user_profile` prompt-budget priority, then reran red/green regressions, profile/prompt-budget suites, lint, diff, and build.
 - 2026-07-01 03:33 MYT - `SUM-004` addressed additional PR #71 feedback for line-boundary structured-profile prompt truncation, then reran red/green regression, the user profile suite, lint, diff, and build.
 - 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
+- 2026-07-01 14:00 MYT - `SUM-005` claimed by Codex on stacked branch `codex/sum-005-retrieval-router-query-plans-stacked`, based on `codex/sum-004-structured-user-profile`.
+- 2026-07-01 14:19 MYT - `SUM-005` completed with deterministic retrieval routing, query-plan traces, prompt/tool guidance updates, focused validation, lint, build, full backend tests, Alembic current check, and health smoke.
 
 ## Validation
 
@@ -217,6 +220,13 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `bun run build` - SUM-003 PR #70 self-supersession build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 self-supersession full backend suite: 1699 passed, 1 skipped, 261 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 self-supersession health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - SUM-005 red test failed before implementation because `retrieval_router` did not exist.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_memory_scored_retrieval.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_user_profile.py -q` - SUM-005 focused suite: 138 passed, 86 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-005 full backend suite: first reruns exposed stream/prompt compatibility regressions, final rerun passed: 1757 passed, 1 skipped, 294 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run db:server:current` - SUM-005 Alembic current check: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-005 health smoke for `GET /health`: 200 ok.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -230,6 +240,15 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_knowledge_graph.py
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_vault.py
+  - apps/server/src/anima_server/services/agent/retrieval_router.py
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/agent/state.py
+  - apps/server/src/anima_server/services/agent/templates/system_prompt.md.j2
+  - apps/server/src/anima_server/services/agent/tools.py
+  - apps/server/tests/test_agent_service.py
+  - apps/server/tests/test_retrieval_router.py
+  - apps/server/tests/test_search_long_memory_tool.py
+  - tickets/single-user-temporal-memory-v2/SUM-005-retrieval-router-query-plans.md
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
   - SUM-002 did not require schema migration.
@@ -262,3 +281,5 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 profile/budget fix keeps same-value upserts from moving `last_observed_at` backwards and gives `user_profile` an explicit tier-0 prompt-budget policy.
   - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
   - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
+  - SUM-005 adds deterministic intent routes for factual recall, emotional support, relationship context, project continuity, preferences, foresight, contradiction updates, procedural memory, and general recall.
+  - SUM-005 represents foresight, experiences, and skills as planned query-plan sources with `available=false` until later storage tickets implement those durable source types.

@@ -1007,6 +1007,65 @@ async def test_run_agent_does_not_run_hidden_wide_evidence_retrieval(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_attaches_retrieval_router_trace_without_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.embeddings import HybridSearchResult
+    from anima_server.services.agent.state import serialize_agent_retrieval
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    hybrid_calls: list[dict[str, object]] = []
+
+    async def fake_hybrid_search(*args: object, **kwargs: object) -> HybridSearchResult:
+        del args
+        hybrid_calls.append(kwargs)
+        return HybridSearchResult(items=[], query_embedding=None)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "anima_server.services.agent.embeddings.hybrid_search",
+        fake_hybrid_search,
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="router-trace",
+                password_hash="not-used",
+                display_name="Router Trace",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            result = await run_agent(
+                "Where did we leave off on the SUM-005 retrieval router?",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert result.retrieval is not None
+    payload = serialize_agent_retrieval(result.retrieval)
+    assert payload is not None
+    assert payload["retriever"] == "hybrid"
+    assert payload["stats"]["returned"] == 0
+    assert payload["queryPlan"]["route"] == "project_continuity"
+    assert hybrid_calls[0]["limit"] == 12
+    assert messages[-1].content_json["retrieval"]["queryPlan"]["route"] == (
+        "project_continuity"
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_agent_reloads_thread_scoped_memory_on_thread_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

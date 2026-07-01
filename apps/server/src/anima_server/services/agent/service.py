@@ -1137,6 +1137,27 @@ async def _assemble_turn_context(
     semantic_results: list[tuple[int, str, float]] | None = None
     retrieval_trace: AgentRetrievalTrace | None = None
     query_embedding: list[float] | None = None
+    query_plan: dict[str, object] | None = None
+    retrieval_plan = None
+
+    try:
+        from anima_server.services.agent.retrieval_router import (
+            RetrievalSource,
+            plan_retrieval,
+        )
+
+        retrieval_plan = plan_retrieval(user_message)
+        query_plan = retrieval_plan.to_trace()
+        memory_source_plan = retrieval_plan.source_for(RetrievalSource.MEMORY_ITEMS)
+        memory_search_limit = memory_source_plan.limit if memory_source_plan else 15
+    except Exception:
+        memory_search_limit = 15
+        logger.debug(
+            "Retrieval router failed for user %s thread %s",
+            user_id,
+            thread.id,
+            exc_info=True,
+        )
 
     try:
         from anima_server.services.agent.embeddings import (
@@ -1150,7 +1171,7 @@ async def _assemble_turn_context(
             db,
             user_id=user_id,
             query=user_message,
-            limit=15,
+            limit=memory_search_limit,
             similarity_threshold=0.25,
             runtime_db=runtime_db,
             recency_heat_blend=True,
@@ -1207,6 +1228,7 @@ async def _assemble_turn_context(
                 retriever="hybrid",
                 citations=tuple(citations),
                 context_fragments=tuple(context_fragments),
+                query_plan=query_plan,
                 stats=AgentRetrievalStats(
                     retrieval_ms=round(retrieval_ms, 3),
                     total_considered=adaptive_result.stats.total_considered,
@@ -1218,6 +1240,17 @@ async def _assemble_turn_context(
                     triggered_by=adaptive_result.stats.triggered_by,
                 ),
             )
+        else:
+            retrieval_trace = AgentRetrievalTrace(
+                retriever="hybrid",
+                query_plan=query_plan,
+                stats=AgentRetrievalStats(
+                    retrieval_ms=round(retrieval_ms, 3),
+                    total_considered=0,
+                    returned=0,
+                    triggered_by="no_results",
+                ),
+            )
     except Exception:
         logger.debug(
             "Hybrid retrieval failed for user %s thread %s",
@@ -1225,6 +1258,12 @@ async def _assemble_turn_context(
             thread.id,
             exc_info=True,
         )
+        if query_plan is not None:
+            retrieval_trace = AgentRetrievalTrace(
+                retriever="hybrid",
+                query_plan=query_plan,
+                stats=AgentRetrievalStats(triggered_by="retrieval_failed"),
+            )
 
     effective_document_ids = _resolve_turn_document_ids(
         runtime_db,

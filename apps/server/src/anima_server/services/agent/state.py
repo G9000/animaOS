@@ -101,6 +101,7 @@ class AgentRetrievalTrace:
     citations: tuple[AgentCitation, ...] = field(default_factory=tuple)
     context_fragments: tuple[AgentContextFragment, ...] = field(default_factory=tuple)
     stats: AgentRetrievalStats | None = None
+    query_plan: dict[str, object] | None = None
 
 
 def serialize_agent_retrieval(
@@ -144,12 +145,15 @@ def serialize_agent_retrieval(
             "triggeredBy": retrieval.stats.triggered_by,
         }
 
-    return {
+    payload: dict[str, object] = {
         "retriever": retrieval.retriever,
         "citations": citations,
         "contextFragments": context_fragments,
         "stats": stats_payload,
     }
+    if retrieval.query_plan is not None:
+        payload["queryPlan"] = retrieval.query_plan
+    return payload
 
 
 def attach_serialized_retrieval(
@@ -331,6 +335,11 @@ def deserialize_agent_retrieval(
         citations=tuple(citations),
         context_fragments=tuple(context_fragments),
         stats=_deserialize_agent_retrieval_stats(payload.get("stats")),
+        query_plan=(
+            payload.get("queryPlan")
+            if isinstance(payload.get("queryPlan"), dict)
+            else None
+        ),
     )
 
 

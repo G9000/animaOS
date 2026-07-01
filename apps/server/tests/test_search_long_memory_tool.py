@@ -94,3 +94,12 @@ def test_search_long_memory_registered_as_core_tool() -> None:
     tool_names = [getattr(tool, "name", None) or tool.__name__ for tool in get_core_tools()]
 
     assert "search_long_memory" in tool_names
+
+
+def test_search_long_memory_guidance_matches_router_modes() -> None:
+    guidance = search_long_memory.__doc__ or ""
+
+    assert "factual recall" in guidance
+    assert "project continuity" in guidance
+    assert "preference lookup" in guidance
+    assert "recall_transcript" in guidance
