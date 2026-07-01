@@ -218,3 +218,38 @@ class TestRustBackedKeywordSearch:
 
         assert hits
         assert hits[0][0] == 42
+
+    def test_bm25_search_applies_categories_before_candidate_limit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        loader_calls: list[tuple[str, ...] | None] = []
+
+        def fake_load_canonical_documents(user_id, db, *, categories=None):
+            del user_id, db
+            loader_calls.append(categories)
+            return [(2, "user prefers black coffee")]
+
+        monkeypatch.setattr(
+            bm25_module,
+            "_search_memory_index_via_rust",
+            lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("category-filtered search should not use unfiltered rust")
+            ),
+        )
+        monkeypatch.setattr(
+            bm25_module,
+            "_load_canonical_memory_documents",
+            fake_load_canonical_documents,
+        )
+
+        hits = bm25_module.bm25_search(
+            7,
+            query="coffee",
+            limit=1,
+            db=MagicMock(),
+            categories=["preference"],
+        )
+
+        assert loader_calls == [("preference",)]
+        assert [item_id for item_id, _score in hits] == [2]

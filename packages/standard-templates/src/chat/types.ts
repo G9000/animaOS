@@ -62,11 +62,30 @@ export interface RetrievalStats {
   triggeredBy: string;
 }
 
+export interface RetrievalSourcePlan {
+  source: string;
+  query: string;
+  mode: string;
+  limit: number;
+  weight?: number;
+  filters?: Record<string, unknown>;
+  available?: boolean;
+  reason?: string;
+}
+
+export interface RetrievalQueryPlan {
+  route: string;
+  query: string;
+  rationale?: string;
+  sources: RetrievalSourcePlan[];
+}
+
 export interface RetrievalTrace {
   retriever: string;
   citations: RetrievalCitation[];
   contextFragments: RetrievalContextFragment[];
   stats?: RetrievalStats | null;
+  queryPlan?: RetrievalQueryPlan | null;
 }
 
 export interface ChatAttachment {

@@ -48,6 +48,13 @@ def _compile_biginteger_sqlite(type_: BigInteger, compiler: object, **kw: object
 
 
 @pytest.fixture(autouse=True)
+def _disable_semantic_router_for_unit_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_retrieval_router_mode", "fallback")
+
+
+@pytest.fixture(autouse=True)
 def _init_runtime_engine_for_tests() -> Generator[None, None, None]:
     """Auto-init the runtime module globals so get_runtime_session_factory() works.
 

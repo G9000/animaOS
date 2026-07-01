@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import MemoryItem, User
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.schemas.chat import ChatRequestAttachment
 from anima_server.services.agent import list_agent_history, run_agent
@@ -1007,6 +1007,147 @@ async def test_run_agent_does_not_run_hidden_wide_evidence_retrieval(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_attaches_retrieval_router_trace_without_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.embeddings import HybridSearchResult
+    from anima_server.services.agent.state import serialize_agent_retrieval
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    hybrid_calls: list[dict[str, object]] = []
+
+    async def fake_hybrid_search(*args: object, **kwargs: object) -> HybridSearchResult:
+        del args
+        hybrid_calls.append(kwargs)
+        return HybridSearchResult(items=[], query_embedding=None)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "anima_server.services.agent.embeddings.hybrid_search",
+        fake_hybrid_search,
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="router-trace",
+                password_hash="not-used",
+                display_name="Router Trace",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            result = await run_agent(
+                "Where did we leave off on the SUM-005 retrieval router?",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert result.retrieval is not None
+    payload = serialize_agent_retrieval(result.retrieval)
+    assert payload is not None
+    assert payload["retriever"] == "hybrid"
+    assert payload["stats"]["returned"] == 0
+    assert payload["queryPlan"]["route"] == "project_continuity"
+    assert hybrid_calls[0]["limit"] == 12
+    assert messages[-1].content_json["retrieval"]["queryPlan"]["route"] == (
+        "project_continuity"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_applies_retrieval_router_memory_category_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.embeddings import HybridSearchResult
+    from anima_server.services.agent.state import serialize_agent_retrieval
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    hybrid_calls: list[dict[str, object]] = []
+    search_items: list[tuple[MemoryItem, float]] = []
+
+    async def fake_hybrid_search(*args: object, **kwargs: object) -> HybridSearchResult:
+        del args
+        hybrid_calls.append(kwargs)
+        return HybridSearchResult(items=search_items, query_embedding=None)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "anima_server.services.agent.embeddings.hybrid_search",
+        fake_hybrid_search,
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="router-category-filter",
+                password_hash="not-used",
+                display_name="Router Category Filter",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            fact_item = MemoryItem(
+                user_id=user.id,
+                content="The user ships backend tickets on Wednesdays.",
+                category="fact",
+                importance=3,
+                source="test",
+            )
+            preference_item = MemoryItem(
+                user_id=user.id,
+                content="The user prefers black coffee before late coding sessions.",
+                category="preference",
+                importance=4,
+                source="test",
+            )
+            soul_session.add_all([fact_item, preference_item])
+            soul_session.flush()
+            search_items.extend([(fact_item, 0.93), (preference_item, 0.91)])
+
+            result = await run_agent(
+                "What coffee do I usually prefer before late coding sessions?",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    assert result.retrieval is not None
+    payload = serialize_agent_retrieval(result.retrieval)
+    assert payload is not None
+    assert payload["queryPlan"]["route"] == "preference_lookup"
+    memory_source = next(
+        source
+        for source in payload["queryPlan"]["sources"]
+        if source["source"] == "memory_items"
+    )
+    assert memory_source["filters"]["memory_categories"] == ["preference"]
+    assert hybrid_calls[0]["limit"] == 10
+    assert hybrid_calls[0]["categories"] == ["preference"]
+    assert [fragment.category for fragment in result.retrieval.context_fragments] == [
+        "preference"
+    ]
+    assert [fragment["category"] for fragment in payload["contextFragments"]] == [
+        "preference"
+    ]
+    assert "black coffee" in result.retrieval.context_fragments[0].text
+
+
+@pytest.mark.asyncio
 async def test_run_agent_reloads_thread_scoped_memory_on_thread_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1345,6 +1486,68 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
 
     assert run.status == "failed"
     assert message.is_in_context is False
+
+
+@pytest.mark.asyncio
+async def test_streaming_run_started_emits_before_turn_context_assembly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming clients should learn the run id before slow retrieval setup."""
+    runner = RecordingRunner()
+    assemble_started = asyncio.Event()
+    release_assemble = asyncio.Event()
+    events: asyncio.Queue[agent_service.AgentStreamEvent] = asyncio.Queue()
+
+    async def slow_assemble(**kwargs: object) -> agent_service._TurnContext:
+        del kwargs
+        assemble_started.set()
+        await release_assemble.wait()
+        return agent_service._TurnContext(
+            history=[],
+            conversation_turn_count=1,
+            memory_blocks=(),
+        )
+
+    async def emit(event: agent_service.AgentStreamEvent) -> None:
+        await events.put(event)
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_assemble_turn_context", slow_assemble)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stream-startup",
+            password_hash="not-used",
+            display_name="Stream Startup",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        task = asyncio.create_task(
+            agent_service._execute_agent_turn_locked(
+                "hello",
+                user.id,
+                soul_session,
+                runtime_session,
+                event_callback=emit,
+            )
+        )
+        try:
+            await asyncio.wait_for(assemble_started.wait(), timeout=1)
+            first_event = await asyncio.wait_for(events.get(), timeout=0.1)
+            release_assemble.set()
+            result = await asyncio.wait_for(task, timeout=1)
+        finally:
+            release_assemble.set()
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+    assert first_event.event == "run_started"
+    assert first_event.data["runId"] == 1
+    assert result.response == "Reply to: hello"
 
 
 def test_should_retry_after_compaction_only_before_tools_executed(

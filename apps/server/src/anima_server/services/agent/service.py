@@ -128,6 +128,24 @@ _background_tasks: set[asyncio.Task[Any]] = set()
 _DOCUMENT_PILL_KINDS = frozenset({"document_attachment", "document_source"})
 
 
+def _coerce_memory_category_filter(value: object) -> tuple[str, ...] | None:
+    if isinstance(value, str):
+        raw_categories: Sequence[object] = (value,)
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        raw_categories = value
+    else:
+        return None
+
+    categories = tuple(
+        dict.fromkeys(
+            category.strip()
+            for category in raw_categories
+            if isinstance(category, str) and category.strip()
+        )
+    )
+    return categories or None
+
+
 def normalize_document_only_user_message(
     user_message: str,
     document_ids: Sequence[int],
@@ -688,12 +706,6 @@ async def _execute_agent_turn_locked(
         today_context=today_context,
     )
 
-    # The run row is committed; tell streaming clients the id so they can
-    # cancel mid-turn.
-    if event_callback is not None:
-        await event_callback(
-            build_run_started_event(run_id=run.id, thread_id=thread.id))
-
     # Stage 1b: Proactive context management — compact before the LLM call
     # if estimated context usage already exceeds the threshold.
     try:
@@ -1025,6 +1037,12 @@ async def _prepare_turn_context(
     runtime_db.commit()
 
     try:
+        # Emit the committed run id before query-dependent retrieval work.
+        # Semantic routing can involve a provider call, and streaming clients
+        # need this id early so a slow setup path remains cancellable.
+        if event_callback is not None:
+            await event_callback(
+                build_run_started_event(run_id=run.id, thread_id=thread.id))
         turn_ctx = await _assemble_turn_context(
             user_message=user_message,
             user_id=user_id,
@@ -1137,6 +1155,32 @@ async def _assemble_turn_context(
     semantic_results: list[tuple[int, str, float]] | None = None
     retrieval_trace: AgentRetrievalTrace | None = None
     query_embedding: list[float] | None = None
+    query_plan: dict[str, object] | None = None
+    retrieval_plan = None
+    memory_category_filter: tuple[str, ...] | None = None
+
+    try:
+        from anima_server.services.agent.retrieval_router import (
+            RetrievalSource,
+            plan_retrieval_semantic,
+        )
+
+        retrieval_plan = await plan_retrieval_semantic(user_message)
+        query_plan = retrieval_plan.to_trace()
+        memory_source_plan = retrieval_plan.source_for(RetrievalSource.MEMORY_ITEMS)
+        memory_search_limit = memory_source_plan.limit if memory_source_plan else 15
+        if memory_source_plan is not None:
+            memory_category_filter = _coerce_memory_category_filter(
+                memory_source_plan.filters.get("memory_categories")
+            )
+    except Exception:
+        memory_search_limit = 15
+        logger.debug(
+            "Retrieval router failed for user %s thread %s",
+            user_id,
+            thread.id,
+            exc_info=True,
+        )
 
     try:
         from anima_server.services.agent.embeddings import (
@@ -1150,7 +1194,8 @@ async def _assemble_turn_context(
             db,
             user_id=user_id,
             query=user_message,
-            limit=15,
+            limit=memory_search_limit,
+            categories=list(memory_category_filter) if memory_category_filter else None,
             similarity_threshold=0.25,
             runtime_db=runtime_db,
             recency_heat_blend=True,
@@ -1158,9 +1203,17 @@ async def _assemble_turn_context(
         retrieval_ms = (time.monotonic() - retrieval_started) * 1000.0
         if query_embedding is None:
             query_embedding = search_result.query_embedding
-        if search_result.items:
+        search_items = search_result.items
+        if memory_category_filter:
+            allowed_categories = set(memory_category_filter)
+            search_items = [
+                (item, score)
+                for item, score in search_items
+                if item.category in allowed_categories
+            ]
+        if search_items:
             adaptive_result = adaptive_filter_with_stats(
-                search_result.items,
+                search_items,
                 config=AdaptiveRetrievalConfig.combined(
                     max_results=12,
                     min_results=3,
@@ -1207,6 +1260,7 @@ async def _assemble_turn_context(
                 retriever="hybrid",
                 citations=tuple(citations),
                 context_fragments=tuple(context_fragments),
+                query_plan=query_plan,
                 stats=AgentRetrievalStats(
                     retrieval_ms=round(retrieval_ms, 3),
                     total_considered=adaptive_result.stats.total_considered,
@@ -1218,6 +1272,17 @@ async def _assemble_turn_context(
                     triggered_by=adaptive_result.stats.triggered_by,
                 ),
             )
+        else:
+            retrieval_trace = AgentRetrievalTrace(
+                retriever="hybrid",
+                query_plan=query_plan,
+                stats=AgentRetrievalStats(
+                    retrieval_ms=round(retrieval_ms, 3),
+                    total_considered=0,
+                    returned=0,
+                    triggered_by="no_results",
+                ),
+            )
     except Exception:
         logger.debug(
             "Hybrid retrieval failed for user %s thread %s",
@@ -1225,6 +1290,12 @@ async def _assemble_turn_context(
             thread.id,
             exc_info=True,
         )
+        if query_plan is not None:
+            retrieval_trace = AgentRetrievalTrace(
+                retriever="hybrid",
+                query_plan=query_plan,
+                stats=AgentRetrievalStats(triggered_by="retrieval_failed"),
+            )
 
     effective_document_ids = _resolve_turn_document_ids(
         runtime_db,

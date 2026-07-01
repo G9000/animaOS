@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from threading import Lock
 
 from rank_bm25 import BM25Okapi
@@ -25,6 +26,20 @@ logger = logging.getLogger(__name__)
 def _tokenize(text: str) -> list[str]:
     """Unicode-aware lexical tokenization for degraded BM25 fallback."""
     return unicode_lexical_tokens(text, min_word_chars=1)
+
+
+def _normalize_category_filter(categories: Sequence[str] | None) -> tuple[str, ...]:
+    return (
+        tuple(
+            dict.fromkeys(
+                category.strip()
+                for category in categories
+                if isinstance(category, str) and category.strip()
+            )
+        )
+        if categories
+        else ()
+    )
 
 
 class BM25Index:
@@ -169,20 +184,29 @@ def get_or_build_index(
     return index
 
 
-def _load_canonical_memory_documents(user_id: int, db: Session) -> list[tuple[int, str]]:
+def _load_canonical_memory_documents(
+    user_id: int,
+    db: Session,
+    *,
+    categories: Sequence[str] | None = None,
+) -> list[tuple[int, str]]:
     try:
         from anima_server.models import MemoryItem
         from anima_server.services.data_crypto import df
 
+        category_filter = _normalize_category_filter(categories)
+        query = (
+            select(MemoryItem)
+            .where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.superseded_by.is_(None),
+            )
+            .order_by(MemoryItem.created_at.desc())
+        )
+        if category_filter:
+            query = query.where(MemoryItem.category.in_(category_filter))
         items = list(
-            db.scalars(
-                select(MemoryItem)
-                .where(
-                    MemoryItem.user_id == user_id,
-                    MemoryItem.superseded_by.is_(None),
-                )
-                .order_by(MemoryItem.created_at.desc())
-            ).all()
+            db.scalars(query).all()
         )
     except Exception:
         return []
@@ -202,6 +226,7 @@ def _load_canonical_memory_documents(user_id: int, db: Session) -> list[tuple[in
 def _load_runtime_embedding_documents(
     user_id: int,
     *,
+    categories: Sequence[str] | None = None,
     runtime_db: Session | None = None,
 ) -> list[tuple[int, str]]:
     from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -214,11 +239,18 @@ def _load_runtime_embedding_documents(
         owned_runtime_db = get_runtime_session_factory()()
         active_runtime_db = owned_runtime_db
     try:
+        category_filter = _normalize_category_filter(categories)
+        query = select(
+            RuntimeEmbedding.source_id,
+            RuntimeEmbedding.content_preview,
+        ).where(
+            RuntimeEmbedding.user_id == user_id,
+            RuntimeEmbedding.source_type == "memory_item",
+        )
+        if category_filter:
+            query = query.where(RuntimeEmbedding.category.in_(category_filter))
         rows = active_runtime_db.execute(
-            select(RuntimeEmbedding.source_id, RuntimeEmbedding.content_preview).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "memory_item",
-            )
+            query
         ).all()
         docs = [(row[0], row[1]) for row in rows]
     finally:
@@ -246,8 +278,27 @@ def bm25_search(
     limit: int = 20,
     db: Session,
     runtime_db: Session | None = None,
+    categories: Sequence[str] | None = None,
 ) -> list[tuple[int, float]]:
     """Search using BM25. Returns (item_id, score) pairs ranked descending."""
+    category_filter = _normalize_category_filter(categories)
+    if category_filter:
+        docs = _load_canonical_memory_documents(
+            user_id,
+            db,
+            categories=category_filter,
+        )
+        if not docs:
+            with contextlib.suppress(Exception):
+                docs = _load_runtime_embedding_documents(
+                    user_id,
+                    categories=category_filter,
+                    runtime_db=runtime_db,
+                )
+        index = BM25Index()
+        index.build(docs)
+        return index.search(query, limit=limit)
+
     rust_hits = _search_memory_index_via_rust(
         user_id=user_id,
         query=query,

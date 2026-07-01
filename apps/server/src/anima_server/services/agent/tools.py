@@ -869,8 +869,11 @@ def recall_memory(
 def search_long_memory(query: str, mode: str = "aggregate") -> str:
     """Search long-term memory across sessions for compact evidence.
 
-    Use this when the user asks for counts, latest values, temporal ordering,
-    or preference-driven recommendations that are not already in visible memory.
+    Use this for router-style factual recall, project continuity, or
+    preference lookup when the answer needs cross-session evidence that is not
+    already in visible memory. Also use it for counts, latest values, temporal
+    ordering, or preference-driven recommendations.
+    Use recall_transcript(query, days_back=0) for exact archived wording.
     Pick mode="aggregate", "latest_update", "temporal", or "preference".
     """
     import asyncio

@@ -399,6 +399,11 @@ async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None
                     cutoff_ratio=1.0,
                     triggered_by="adaptive_ratio",
                 ),
+                query_plan={
+                    "route": "project_continuity",
+                    "query": "hello",
+                    "sources": [{"source": "memory_items", "mode": "hybrid_project"}],
+                },
             ),
         )
 
@@ -459,6 +464,11 @@ async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None
         "cutoffRatio": 1.0,
         "triggeredBy": "adaptive_ratio",
     }
+    assert payload["retrieval"]["queryPlan"] == {
+        "route": "project_continuity",
+        "query": "hello",
+        "sources": [{"source": "memory_items", "mode": "hybrid_project"}],
+    }
 
 
 @pytest.mark.asyncio
@@ -504,6 +514,13 @@ async def test_chat_history_returns_persisted_retrieval_metadata(monkeypatch) ->
                             "topScore": 0.91,
                             "cutoffRatio": 1.0,
                             "triggeredBy": "adaptive_ratio",
+                        },
+                        "queryPlan": {
+                            "route": "project_continuity",
+                            "query": "hello",
+                            "sources": [
+                                {"source": "memory_items", "mode": "hybrid_project"}
+                            ],
                         },
                     }
                 },
@@ -569,6 +586,11 @@ async def test_chat_history_returns_persisted_retrieval_metadata(monkeypatch) ->
                     "topScore": 0.91,
                     "cutoffRatio": 1.0,
                     "triggeredBy": "adaptive_ratio",
+                },
+                "queryPlan": {
+                    "route": "project_continuity",
+                    "query": "hello",
+                    "sources": [{"source": "memory_items", "mode": "hybrid_project"}],
                 },
             },
             "attachments": [],
