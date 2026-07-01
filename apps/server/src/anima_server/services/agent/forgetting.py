@@ -500,6 +500,12 @@ def _delete_profile_fields_for_forget(
                 evidence_to_delete[evidence.id] = evidence
             for evidence in evidence_to_delete.values():
                 db.delete(evidence)
+            _restore_previous_profile_field_before_delete(
+                db,
+                user_id=user_id,
+                replacement_field=field,
+                now=now,
+            )
             db.delete(field)
             deleted_count += 1
             continue
@@ -521,6 +527,45 @@ def _delete_profile_fields_for_forget(
         field.updated_at = now
     db.flush()
     return deleted_count
+
+
+def _restore_previous_profile_field_before_delete(
+    db: Session,
+    *,
+    user_id: int,
+    replacement_field: UserProfileField,
+    now: datetime,
+) -> None:
+    previous_fields = list(
+        db.scalars(
+            select(UserProfileField)
+            .where(
+                UserProfileField.user_id == user_id,
+                UserProfileField.category == replacement_field.category,
+                UserProfileField.key == replacement_field.key,
+                UserProfileField.superseded_by_id == replacement_field.id,
+            )
+            .order_by(UserProfileField.updated_at.desc(), UserProfileField.id.desc())
+        ).all()
+    )
+    restored = False
+    for previous in previous_fields:
+        previous.superseded_by_id = None
+        if restored or previous.status != "superseded":
+            continue
+        has_surviving_evidence = db.scalar(
+            select(UserProfileFieldEvidence.id)
+            .where(
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.profile_field_id == previous.id,
+            )
+            .limit(1)
+        )
+        if has_surviving_evidence is None:
+            continue
+        previous.status = "active"
+        previous.updated_at = now
+        restored = True
 
 
 def _runtime_profile_forget_contexts(

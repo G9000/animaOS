@@ -967,6 +967,145 @@ def test_forget_memory_preserves_profile_field_with_surviving_evidence() -> None
     assert removed_profile_evidence is None
 
 
+def test_forget_memory_restores_previous_profile_field_when_replacement_forgotten() -> None:
+    service = _profile_service()
+    from anima_server.models import (
+        MemoryItem,
+        MemoryItemEvidence,
+        UserProfileField,
+        UserProfileFieldEvidence,
+    )
+    from anima_server.services.agent.forgetting import forget_memory
+
+    with _db_session() as db:
+        user = _make_user(db)
+        first_observed = datetime(2026, 1, 1, tzinfo=UTC)
+        second_observed = datetime(2026, 1, 5, tzinfo=UTC)
+        first_item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as a designer",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        second_item = MemoryItem(
+            user_id=user.id,
+            content=ef(
+                user.id,
+                "works as an engineer",
+                table="memory_items",
+                field="content",
+            ),
+            category="fact",
+            importance=3,
+            source="test",
+        )
+        db.add_all([first_item, second_item])
+        db.flush()
+        first_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=first_item.id,
+            source_kind="explicit_save",
+            evidence_text=ef(
+                user.id,
+                "works as a designer",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        second_evidence = MemoryItemEvidence(
+            user_id=user.id,
+            memory_item_id=second_item.id,
+            source_kind="explicit_save",
+            evidence_text=ef(
+                user.id,
+                "works as an engineer",
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+        )
+        db.add_all([first_evidence, second_evidence])
+        db.flush()
+        previous = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="designer",
+            evidence_text="works as a designer",
+            source_kind="explicit_save",
+            source_memory_id=first_item.id,
+            source_evidence_id=first_evidence.id,
+            observed_at=first_observed,
+        )
+        replacement = service.upsert_profile_field(
+            db,
+            user_id=user.id,
+            category="work",
+            key="occupation",
+            value="engineer",
+            evidence_text="works as an engineer",
+            source_kind="explicit_save",
+            source_memory_id=second_item.id,
+            source_evidence_id=second_evidence.id,
+            observed_at=second_observed,
+        )
+        previous_field_id = previous.id
+        replacement_field_id = replacement.id
+        replacement_profile_evidence_id = db.scalar(
+            select(UserProfileFieldEvidence.id).where(
+                UserProfileFieldEvidence.source_evidence_id == second_evidence.id,
+            )
+        )
+        assert replacement_profile_evidence_id is not None
+        assert previous.status == "superseded"
+        assert previous.superseded_by_id == replacement_field_id
+
+        result = forget_memory(db, memory_id=second_item.id, user_id=user.id)
+        active_after_forget = service.list_profile_fields(db, user_id=user.id)
+        history_after_forget = service.list_profile_fields(
+            db,
+            user_id=user.id,
+            include_history=True,
+        )
+        restored_previous = db.get(UserProfileField, previous_field_id)
+        forgotten_replacement = db.get(UserProfileField, replacement_field_id)
+        forgotten_replacement_evidence = db.get(
+            UserProfileFieldEvidence,
+            replacement_profile_evidence_id,
+        )
+        remaining_previous_evidence_ids = list(
+            db.scalars(
+                select(UserProfileFieldEvidence.source_evidence_id).where(
+                    UserProfileFieldEvidence.profile_field_id == previous_field_id,
+                )
+            ).all()
+        )
+
+    assert result.items_forgotten == 1
+    assert [field.id for field in active_after_forget] == [previous_field_id]
+    assert [field.id for field in history_after_forget] == [previous_field_id]
+    assert restored_previous is not None
+    assert restored_previous.status == "active"
+    assert restored_previous.superseded_by_id is None
+    assert df(
+        user.id,
+        restored_previous.value_text,
+        table="user_profile_fields",
+        field="value_text",
+    ) == "designer"
+    assert restored_previous.source_memory_id == first_item.id
+    assert restored_previous.source_evidence_id == first_evidence.id
+    assert forgotten_replacement is None
+    assert forgotten_replacement_evidence is None
+    assert remaining_previous_evidence_ids == [first_evidence.id]
+
+
 def test_forget_memory_deletes_profile_field_sourced_by_runtime_message() -> None:
     service = _profile_service()
     from anima_server.models import (

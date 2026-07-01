@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 03:33 MYT
+- Updated: 2026-07-01 13:18 MYT
 - Started: 2026-06-30 05:34 MYT
 - Completed: 2026-06-30 05:47 MYT
 
@@ -61,6 +61,7 @@ Create an evidence-backed structured user profile that can be rendered compactly
 - 2026-07-01 02:55 MYT - Addressed additional PR #71 review feedback by deleting single-token runtime-message profile facts during forget cleanup and scoping sourceless claim reconciliation idempotency to the target profile field.
 - 2026-07-01 03:15 MYT - Addressed additional PR #71 review feedback by preserving newer same-value profile observation timestamps and adding an explicit tier-0 prompt budget policy for the `user_profile` block.
 - 2026-07-01 03:33 MYT - Addressed additional PR #71 review feedback by truncating rendered structured-profile prompt blocks at line boundaries instead of cutting profile fields mid-line.
+- 2026-07-01 13:18 MYT - Addressed additional PR #71 review feedback by restoring the prior superseded profile field when forgetting only its active replacement evidence.
 
 ## Validation
 
@@ -218,6 +219,13 @@ Create an evidence-backed structured user profile that can be rendered compactly
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_render_profile_prompt_block_truncates_at_line_boundary -q` - PR #71 review regression failed before fix because the rendered profile block returned a partial `- pronouns: they` field line.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_render_profile_prompt_block_truncates_at_line_boundary -q` - 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 35 passed, 31 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_restores_previous_profile_field_when_replacement_forgotten -q` - PR #71 review regression failed before fix because forgetting the active replacement left the prior profile field superseded and no active value was returned.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_restores_previous_profile_field_when_replacement_forgotten -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_restores_previous_profile_field_when_replacement_forgotten apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 4 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 36 passed, 32 warnings.
   - `git diff --check` - passed with CRLF warnings only.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.

@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 03:33 MYT
+- Updated: 2026-07-01 13:18 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -113,6 +113,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 02:55 MYT - `SUM-004` addressed additional PR #71 feedback for single-token runtime-message profile forget cleanup and field-scoped sourceless claim reconciliation, then reran red/green regressions, related forget/reconciliation checks, the user profile suite, lint, diff, and build.
 - 2026-07-01 03:15 MYT - `SUM-004` addressed additional PR #71 feedback for same-value profile observation timestamps and `user_profile` prompt-budget priority, then reran red/green regressions, profile/prompt-budget suites, lint, diff, and build.
 - 2026-07-01 03:33 MYT - `SUM-004` addressed additional PR #71 feedback for line-boundary structured-profile prompt truncation, then reran red/green regression, the user profile suite, lint, diff, and build.
+- 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
 
 ## Validation
 
@@ -260,3 +261,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 forget/reconciliation fix deletes single-token runtime-message profile facts only when profile metadata supports the relation and scopes sourceless source-memory reconciliation evidence to the target profile field.
   - SUM-004 PR #71 profile/budget fix keeps same-value upserts from moving `last_observed_at` backwards and gives `user_profile` an explicit tier-0 prompt-budget policy.
   - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
+  - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
