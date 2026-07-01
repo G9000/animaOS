@@ -81,6 +81,12 @@ def test_role_only_relationship_questions_route_to_relationship_context(
     assert plan.route is RetrievalRoute.RELATIONSHIP_CONTEXT
 
 
+def test_family_friendly_recommendation_routes_to_preference_lookup() -> None:
+    plan = plan_retrieval("Can you recommend a family-friendly restaurant I might like?")
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
 @pytest.mark.parametrize(
     ("turn", "expected_route"),
     [

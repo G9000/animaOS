@@ -131,20 +131,7 @@ def _classify_route(query: str) -> RetrievalRoute:
     if _has_foresight_cue(lowered):
         return RetrievalRoute.FORESIGHT_RECALL
 
-    if _has_any(
-        lowered,
-        (
-            "connected to",
-            "relationship",
-            "who is",
-            "who ",
-            "partner",
-            "friend",
-            "family",
-            "coworker",
-            "colleague",
-        ),
-    ) and (_has_named_entity_hint(query) or _has_relationship_role_query(lowered)):
+    if _has_relationship_cue(lowered, query):
         return RetrievalRoute.RELATIONSHIP_CONTEXT
 
     if _has_any(
@@ -456,6 +443,22 @@ def _has_foresight_cue(text: str) -> bool:
             "deadline",
         ),
     ) or bool(re.search(r"\bdue\b", text))
+
+
+def _has_relationship_cue(text: str, query: str) -> bool:
+    if _has_any(text, ("connected to", "relationship", "who is", "who ")):
+        return _has_named_entity_hint(query) or _has_relationship_role_query(text)
+    return _has_relationship_role_target(text)
+
+
+def _has_relationship_role_target(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:my|our|your|their)\s+"
+            r"(?:partner|friend|family|coworker|colleague)s?\b",
+            text,
+        )
+    )
 
 
 def _has_relationship_role_query(text: str) -> bool:
