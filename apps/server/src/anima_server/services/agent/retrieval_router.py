@@ -128,20 +128,7 @@ def _classify_route(query: str) -> RetrievalRoute:
     if _has_emotional_support_cue(lowered):
         return RetrievalRoute.EMOTIONAL_SUPPORT
 
-    if _has_any(
-        lowered,
-        (
-            "next ",
-            "tomorrow",
-            "later today",
-            "remind me",
-            "promise",
-            "promised",
-            "i said i would",
-            "due",
-            "deadline",
-        ),
-    ):
+    if _has_foresight_cue(lowered):
         return RetrievalRoute.FORESIGHT_RECALL
 
     if _has_any(
@@ -453,6 +440,22 @@ def _has_emotional_support_cue(text: str) -> bool:
             ),
         )
     )
+
+
+def _has_foresight_cue(text: str) -> bool:
+    return _has_any(
+        text,
+        (
+            "next ",
+            "tomorrow",
+            "later today",
+            "remind me",
+            "promise",
+            "promised",
+            "i said i would",
+            "deadline",
+        ),
+    ) or bool(re.search(r"\bdue\b", text))
 
 
 def _has_relationship_role_query(text: str) -> bool:

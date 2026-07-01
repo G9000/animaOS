@@ -105,6 +105,12 @@ def test_need_to_with_future_commitment_remains_foresight() -> None:
     assert plan.route is RetrievalRoute.FORESIGHT_RECALL
 
 
+def test_due_substring_in_preference_word_does_not_route_to_foresight() -> None:
+    plan = plan_retrieval("Do I like fondue?")
+
+    assert plan.route is RetrievalRoute.PREFERENCE_LOOKUP
+
+
 def test_emotional_support_plan_prioritizes_relationship_and_episode_context() -> None:
     plan = plan_retrieval("I am scared Maya is pulling away and I feel rejected.")
 
