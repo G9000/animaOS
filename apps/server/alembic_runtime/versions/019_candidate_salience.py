@@ -1,7 +1,7 @@
 """Add salience metadata to runtime memory candidates.
 
 Revision ID: 019_candidate_salience
-Revises: 018_image_assets
+Revises: 018_profile_update_candidates
 Create Date: 2026-07-01
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "019_candidate_salience"
-down_revision = "018_image_assets"
+down_revision = "018_profile_update_candidates"
 branch_labels = None
 depends_on = None
 

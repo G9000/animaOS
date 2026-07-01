@@ -1,7 +1,7 @@
 """add memory salience and soft evolution fields
 
 Revision ID: 20260701_0003
-Revises: 20260626_0002
+Revises: 20260630_0001
 Create Date: 2026-07-01
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20260701_0003"
-down_revision = "20260626_0002"
+down_revision = "20260630_0001"
 branch_labels = None
 depends_on = None
 
