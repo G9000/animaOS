@@ -45,6 +45,20 @@ def test_relationship_route_requires_named_relationship_target() -> None:
     assert project.route is RetrievalRoute.PROJECT_CONTINUITY
 
 
+def test_relationship_route_handles_lowercase_targets() -> None:
+    direct = plan_retrieval("who is maya?")
+    connected = plan_retrieval("how is maya connected to berlin?")
+
+    assert direct.route is RetrievalRoute.RELATIONSHIP_CONTEXT
+    assert connected.route is RetrievalRoute.RELATIONSHIP_CONTEXT
+
+
+def test_emotional_support_takes_precedence_over_generic_need_to() -> None:
+    plan = plan_retrieval("I need to talk because I feel anxious about Maya.")
+
+    assert plan.route is RetrievalRoute.EMOTIONAL_SUPPORT
+
+
 def test_emotional_support_plan_prioritizes_relationship_and_episode_context() -> None:
     plan = plan_retrieval("I am scared Maya is pulling away and I feel rejected.")
 

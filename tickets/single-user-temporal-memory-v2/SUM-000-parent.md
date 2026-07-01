@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 14:19 MYT
+- Updated: 2026-07-01 14:51 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -117,6 +117,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
 - 2026-07-01 14:00 MYT - `SUM-005` claimed by Codex on stacked branch `codex/sum-005-retrieval-router-query-plans-stacked`, based on `codex/sum-004-structured-user-profile`.
 - 2026-07-01 14:19 MYT - `SUM-005` completed with deterministic retrieval routing, query-plan traces, prompt/tool guidance updates, focused validation, lint, build, full backend tests, Alembic current check, and health smoke.
+- 2026-07-01 14:51 MYT - `SUM-005` addressed PR #72 Codex review comments for response-schema query plan visibility, emotional-route precedence, and lowercase relationship targets.
 
 ## Validation
 
@@ -227,6 +228,10 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run db:server:current` - SUM-005 Alembic current check: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-005 health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py::test_chat_returns_retrieval_metadata_when_present apps/server/tests/test_chat.py::test_chat_history_returns_persisted_retrieval_metadata -q` - SUM-005 PR #72 review regressions failed before fixes with lowercase relationship routing, emotional-route precedence, and stripped `queryPlan`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval -q` - SUM-005 PR #72 review focused suite: 38 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 review fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 review fix build: passed with existing Vite chunk-size warning.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -240,14 +245,18 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_knowledge_graph.py
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_vault.py
+  - apps/server/src/anima_server/schemas/chat.py
   - apps/server/src/anima_server/services/agent/retrieval_router.py
   - apps/server/src/anima_server/services/agent/service.py
   - apps/server/src/anima_server/services/agent/state.py
   - apps/server/src/anima_server/services/agent/templates/system_prompt.md.j2
   - apps/server/src/anima_server/services/agent/tools.py
+  - apps/server/tests/test_chat.py
   - apps/server/tests/test_agent_service.py
   - apps/server/tests/test_retrieval_router.py
   - apps/server/tests/test_search_long_memory_tool.py
+  - packages/api-client/src/types.ts
+  - packages/standard-templates/src/chat/types.ts
   - tickets/single-user-temporal-memory-v2/SUM-005-retrieval-router-query-plans.md
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
@@ -283,3 +292,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
   - SUM-005 adds deterministic intent routes for factual recall, emotional support, relationship context, project continuity, preferences, foresight, contradiction updates, procedural memory, and general recall.
   - SUM-005 represents foresight, experiences, and skills as planned query-plan sources with `available=false` until later storage tickets implement those durable source types.
+  - SUM-005 PR #72 review fix preserves `queryPlan` through chat response schemas/client types, prioritizes emotional cues before broad future-commitment phrasing, and treats lowercase relationship targets as relationship-context lookups.

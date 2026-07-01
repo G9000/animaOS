@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -102,6 +102,7 @@ class RetrievalTrace(BaseModel):
     citations: list[RetrievalCitation] = Field(default_factory=list)
     contextFragments: list[RetrievalContextFragment] = Field(default_factory=list)
     stats: RetrievalStats | None = None
+    queryPlan: dict[str, Any] | None = None
 
 
 class TokenUsage(BaseModel):

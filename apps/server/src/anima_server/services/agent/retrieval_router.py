@@ -128,23 +128,6 @@ def _classify_route(query: str) -> RetrievalRoute:
     if _has_any(
         lowered,
         (
-            "next ",
-            "tomorrow",
-            "later today",
-            "remind me",
-            "promise",
-            "promised",
-            "i said i would",
-            "i need to",
-            "due",
-            "deadline",
-        ),
-    ):
-        return RetrievalRoute.FORESIGHT_RECALL
-
-    if _has_any(
-        lowered,
-        (
             "feel ",
             "feeling",
             "overwhelmed",
@@ -160,6 +143,23 @@ def _classify_route(query: str) -> RetrievalRoute:
         ),
     ):
         return RetrievalRoute.EMOTIONAL_SUPPORT
+
+    if _has_any(
+        lowered,
+        (
+            "next ",
+            "tomorrow",
+            "later today",
+            "remind me",
+            "promise",
+            "promised",
+            "i said i would",
+            "i need to",
+            "due",
+            "deadline",
+        ),
+    ):
+        return RetrievalRoute.FORESIGHT_RECALL
 
     if _has_any(
         lowered,
@@ -450,20 +450,39 @@ def _has_any(text: str, needles: tuple[str, ...]) -> bool:
 
 
 def _has_named_entity_hint(query: str) -> bool:
-    question_words = {
+    ignored_tokens = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "connected",
+        "connection",
+        "coworker",
+        "colleague",
+        "did",
+        "does",
+        "family",
+        "friend",
+        "her",
+        "his",
         "how",
+        "is",
+        "my",
+        "our",
+        "partner",
+        "relationship",
+        "the",
+        "their",
+        "to",
         "what",
         "when",
         "where",
         "which",
         "who",
         "why",
-        "does",
-        "did",
-        "is",
-        "are",
+        "your",
     }
     return any(
-        token.casefold() not in question_words
-        for token in re.findall(r"\b[A-Z][\w-]{1,}\b", query)
+        token.casefold() not in ignored_tokens
+        for token in re.findall(r"\b[\w-]{2,}\b", query)
     )
