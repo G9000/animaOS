@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 20:16 MYT
+- Updated: 2026-07-01 20:31 MYT
 - Started: 2026-07-01 14:00 MYT
 - Completed: 2026-07-01 14:19 MYT
 
@@ -54,6 +54,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
 - 2026-07-01 19:56 MYT - Updated SUM-005 scope to LLM-first semantic routing with schema validation, deterministic fallback, multilingual/slang regression coverage, and trace metadata for router decision source.
 - 2026-07-01 19:58 MYT - Completed validation for semantic router scope correction and updated PRD/ticket artifacts.
 - 2026-07-01 20:16 MYT - Addressed PR #72 Codex rereview comment for preserving Rust semantic index lookup when route memory-category filters are present.
+- 2026-07-01 20:31 MYT - Addressed PR #72 Codex rereview comment for backfilling partial category-filtered Rust semantic hits through the category-aware vector-store fallback.
 
 ## Validation
 
@@ -131,6 +132,13 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 Rust semantic index fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 Rust semantic index fix build: passed with existing Vite chunk-size warning.
   - `git diff --check` - PR #72 Rust semantic index fix diff check passed with CRLF normalization warnings only.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_backfills_partial_category_filtered_rust_results -q` - PR #72 partial Rust-hit regression failed before fix because only one category-matching Rust hit returned for a limit of two.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_backfills_partial_category_filtered_rust_results apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories -q` - PR #72 partial Rust-hit regression cluster: 4 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_semantic_index_with_category_filters apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_backfills_partial_category_filtered_rust_results apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - PR #72 partial Rust-hit focused suite: 63 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_hybrid_retrieval.py apps/server/tests/test_bm25_index.py -q` - hybrid/BM25 suite: 70 passed, 20 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 partial Rust-hit fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 partial Rust-hit fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #72 partial Rust-hit fix diff check passed with CRLF normalization warnings only.
 - Changed paths:
   - apps/server/src/anima_server/config.py
   - apps/server/src/anima_server/schemas/chat.py
@@ -167,4 +175,4 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - Project/work artifact cues now outrank recommendation wording unless the turn is explicitly about personal taste, and generic `who` questions only reach relationship routing when they ask for a simple identity or relationship role.
   - `Instead` no longer acts as a standalone contradiction cue inside comparative preference phrasing, and `next` only routes to foresight for concrete temporal phrases such as `next Friday` or `next week`.
   - Live retrieval routing now uses the configured LLM semantic classifier first, records `decisionSource`, `confidence`, `language`, and `fallbackReason` in traces, and falls back to deterministic routing for scaffold/test mode, malformed output, low confidence, or LLM invocation failures.
-  - Category-filtered semantic retrieval now attempts the Rust memory vector index first with an expanded candidate pool, filters Rust hits by canonical memory category, and only falls back to vector-store search when Rust has no usable filtered hits.
+  - Category-filtered semantic retrieval now attempts the Rust memory vector index first with an expanded candidate pool, filters Rust hits by canonical memory category, and uses category-aware vector-store search to backfill partial Rust results up to the requested limit.

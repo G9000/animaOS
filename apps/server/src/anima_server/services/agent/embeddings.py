@@ -514,6 +514,7 @@ def _semantic_ranked_ids(
     runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
     category_filter = _normalize_category_filter(categories)
+    rust_filtered: list[tuple[int, float]] = []
     rust_ranked = _semantic_ranked_ids_via_rust(
         db=db,
         user_id=user_id,
@@ -528,7 +529,7 @@ def _semantic_ranked_ids(
             similarity_threshold=similarity_threshold,
             limit=limit,
         )
-        if rust_filtered or not category_filter:
+        if not category_filter or len(rust_filtered) >= limit:
             return rust_filtered
 
     from anima_server.services.agent.vector_store import search_similar
@@ -557,7 +558,7 @@ def _semantic_ranked_ids(
             )
     except Exception:
         logger.debug("Semantic search failed in hybrid_search")
-        return []
+        return rust_filtered
 
     ranked_by_id: dict[int, float] = {}
     for result in vs_results:
@@ -567,7 +568,7 @@ def _semantic_ranked_ids(
             continue
         ranked_by_id[item_id] = max(similarity, ranked_by_id.get(item_id, similarity))
 
-    return [
+    vector_ranked = [
         (item_id, similarity)
         for item_id, similarity in sorted(
             ranked_by_id.items(),
@@ -575,6 +576,24 @@ def _semantic_ranked_ids(
             reverse=True,
         )[:limit]
     ]
+    return _backfill_semantic_ranked_ids(rust_filtered, vector_ranked, limit)
+
+
+def _backfill_semantic_ranked_ids(
+    primary: Sequence[tuple[int, float]],
+    fallback: Sequence[tuple[int, float]],
+    limit: int,
+) -> list[tuple[int, float]]:
+    ranked: list[tuple[int, float]] = []
+    seen: set[int] = set()
+    for item_id, similarity in (*primary, *fallback):
+        if item_id in seen:
+            continue
+        ranked.append((item_id, similarity))
+        seen.add(item_id)
+        if len(ranked) >= limit:
+            break
+    return ranked
 
 
 def _semantic_rust_candidate_limit(limit: int, category_filter: Sequence[str]) -> int:
