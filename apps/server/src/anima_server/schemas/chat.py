@@ -134,6 +134,7 @@ class ChatMessageAttachment(BaseModel):
     kind: Literal["image"]
     mimeType: str
     filename: str | None = None
+    sha256: str | None = None
     sizeBytes: int | None = None
     assetId: int | None = None
     retentionState: str | None = None

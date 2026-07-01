@@ -60,6 +60,8 @@ class StoredAttachment:
             payload["assetId"] = self.asset_id
         if self.size_bytes is not None:
             payload["sizeBytes"] = self.size_bytes
+        if self.sha256 is not None:
+            payload["sha256"] = self.sha256
         if self.retention_state is not None:
             payload["retentionState"] = self.retention_state
         return payload

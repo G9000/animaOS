@@ -186,6 +186,7 @@ export interface ChatAttachment {
   kind: "image";
   mimeType: string;
   filename?: string | null;
+  sha256?: string | null;
   sizeBytes?: number | null;
   assetId?: number | null;
   retentionState?: string | null;
@@ -663,6 +664,7 @@ export interface Thread {
   isArchived: boolean;
   lastMessageAt: string | null;
   createdAt: string | null;
+  initiatedBy?: "user" | "agent" | null;
 }
 
 export interface ThreadListResponse {
