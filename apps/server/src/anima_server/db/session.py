@@ -8,7 +8,7 @@ from threading import RLock
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -26,6 +26,90 @@ _user_engines: dict[str, Engine] = {}
 _migrated_databases: set[str] = set()
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic_core.ini"
+
+
+def _sqlite_column_names(connection: Connection, table_name: str) -> set[str]:
+    rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _repair_legacy_kg_schema(connection: Connection) -> None:
+    """Add current KG columns to legacy SQLite tables stamped past migrations."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    entity_columns = _sqlite_column_names(connection, "kg_entities")
+    if entity_columns:
+        for column_name, ddl in (
+            ("aliases_json", "ALTER TABLE kg_entities ADD COLUMN aliases_json JSON"),
+            ("embedding_json", "ALTER TABLE kg_entities ADD COLUMN embedding_json JSON"),
+            (
+                "embedding_checksum",
+                "ALTER TABLE kg_entities ADD COLUMN embedding_checksum VARCHAR(64)",
+            ),
+        ):
+            if column_name not in entity_columns:
+                connection.exec_driver_sql(ddl)
+                entity_columns.add(column_name)
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_kg_entities_user_type "
+            "ON kg_entities (user_id, entity_type)"
+        )
+
+    relation_columns = _sqlite_column_names(connection, "kg_relations")
+    if not relation_columns:
+        return
+
+    for column_name, ddl in (
+        ("source_memory_id", "ALTER TABLE kg_relations ADD COLUMN source_memory_id INTEGER"),
+        ("evidence_id", "ALTER TABLE kg_relations ADD COLUMN evidence_id INTEGER"),
+        ("observed_at", "ALTER TABLE kg_relations ADD COLUMN observed_at DATETIME"),
+        ("valid_from", "ALTER TABLE kg_relations ADD COLUMN valid_from DATETIME"),
+        ("valid_to", "ALTER TABLE kg_relations ADD COLUMN valid_to DATETIME"),
+        (
+            "confidence",
+            "ALTER TABLE kg_relations ADD COLUMN confidence FLOAT NOT NULL DEFAULT 1.0",
+        ),
+        (
+            "status",
+            "ALTER TABLE kg_relations ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'active'",
+        ),
+        (
+            "supersedes_relation_id",
+            "ALTER TABLE kg_relations ADD COLUMN supersedes_relation_id INTEGER",
+        ),
+        (
+            "evolves_from_relation_id",
+            "ALTER TABLE kg_relations ADD COLUMN evolves_from_relation_id INTEGER",
+        ),
+    ):
+        if column_name not in relation_columns:
+            connection.exec_driver_sql(ddl)
+            relation_columns.add(column_name)
+
+    connection.exec_driver_sql(
+        """
+        UPDATE kg_relations
+        SET
+            observed_at = COALESCE(observed_at, created_at),
+            valid_from = COALESCE(valid_from, created_at),
+            confidence = COALESCE(confidence, 1.0),
+            status = COALESCE(status, 'active')
+        """
+    )
+    for index_name, columns in (
+        ("ix_kg_relations_source", "source_id"),
+        ("ix_kg_relations_dest", "destination_id"),
+        ("ix_kg_relations_user_status", "user_id, status"),
+        ("ix_kg_relations_user_source_type", "user_id, source_id, relation_type"),
+        ("ix_kg_relations_user_observed", "user_id, observed_at"),
+        ("ix_kg_relations_evidence", "evidence_id"),
+        ("ix_kg_relations_supersedes", "supersedes_relation_id"),
+        ("ix_kg_relations_evolves_from", "evolves_from_relation_id"),
+    ):
+        connection.exec_driver_sql(
+            f"CREATE INDEX IF NOT EXISTS {index_name} ON kg_relations ({columns})"
+        )
 
 
 def _make_engine(database_url: str | None = None) -> Engine:
@@ -273,6 +357,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             from anima_server.models import Base
 
             Base.metadata.create_all(bind=connection)
+            _repair_legacy_kg_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 

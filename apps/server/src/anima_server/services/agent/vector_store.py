@@ -18,6 +18,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from anima_server.services.agent.text_processing import unicode_lexical_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,8 +41,8 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _text_similarity(query_text: str, content: str) -> float:
-    query_terms = set(query_text.lower().split())
-    content_terms = set(content.lower().split())
+    query_terms = set(unicode_lexical_tokens(query_text, min_word_chars=1))
+    content_terms = set(unicode_lexical_tokens(content, min_word_chars=1))
     if not query_terms or not content_terms:
         return 0.0
     intersection = query_terms & content_terms

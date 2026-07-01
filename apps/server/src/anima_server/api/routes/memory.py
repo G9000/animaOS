@@ -11,6 +11,9 @@ from anima_server.db import get_db
 from anima_server.models import MemoryEpisode, MemoryItem, MemoryItemEvidence
 from anima_server.schemas.memory import (
     MemoryEpisodeResponse,
+    MemoryEvidenceAuditResponse,
+    MemoryEvidenceBackfillResponse,
+    MemoryEvidenceBackfillRunResponse,
     MemoryItemCreateRequest,
     MemoryItemResponse,
     MemoryItemUpdateRequest,
@@ -24,6 +27,10 @@ from anima_server.services.agent.memory_store import (
     remove_memory_item_from_retrieval_index_by_id,
     supersede_memory_item,
     sync_memory_item_to_retrieval_index,
+)
+from anima_server.services.agent.provenance import (
+    audit_memory_item_evidence,
+    backfill_memory_item_evidence,
 )
 from anima_server.services.data_crypto import df
 
@@ -72,6 +79,26 @@ def _episode_to_response(ep: MemoryEpisode, user_id: int = 0) -> MemoryEpisodeRe
     )
 
 
+def _evidence_audit_to_response(report) -> MemoryEvidenceAuditResponse:
+    return MemoryEvidenceAuditResponse(
+        totalActive=report.total_active,
+        withEvidence=report.with_evidence,
+        missingEvidence=report.missing_evidence,
+        coverageRatio=report.coverage_ratio,
+        coveragePercent=report.coverage_percent,
+        missingItemIds=list(report.missing_item_ids or []),
+    )
+
+
+def _evidence_backfill_to_response(result) -> MemoryEvidenceBackfillResponse:
+    return MemoryEvidenceBackfillResponse(
+        scanned=result.scanned,
+        created=result.created,
+        skippedExisting=result.skipped_existing,
+        skippedEmpty=result.skipped_empty,
+    )
+
+
 @router.get("/{user_id}", response_model=MemoryOverview)
 async def get_memory_overview(
     user_id: int,
@@ -113,6 +140,40 @@ async def get_memory_overview(
         relationshipCount=counts["relationship"],
         currentFocus=focus,
         episodeCount=episode_count,
+    )
+
+
+@router.get("/{user_id}/evidence/audit", response_model=MemoryEvidenceAuditResponse)
+async def get_memory_evidence_audit(
+    user_id: int,
+    request: Request,
+    missing_limit: int = Query(default=50, ge=0, le=500),
+    db: Session = Depends(get_db),
+) -> MemoryEvidenceAuditResponse:
+    require_unlocked_user(request, user_id)
+    return _evidence_audit_to_response(
+        audit_memory_item_evidence(
+            db,
+            user_id=user_id,
+            missing_limit=missing_limit,
+        )
+    )
+
+
+@router.post("/{user_id}/evidence/backfill", response_model=MemoryEvidenceBackfillRunResponse)
+async def run_memory_evidence_backfill(
+    user_id: int,
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+) -> MemoryEvidenceBackfillRunResponse:
+    require_unlocked_user(request, user_id)
+    backfill = backfill_memory_item_evidence(db, user_id=user_id, limit=limit)
+    db.commit()
+    audit = audit_memory_item_evidence(db, user_id=user_id)
+    return MemoryEvidenceBackfillRunResponse(
+        backfill=_evidence_backfill_to_response(backfill),
+        audit=_evidence_audit_to_response(audit),
     )
 
 

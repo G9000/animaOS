@@ -32,6 +32,8 @@ from anima_server.models import (
     Task,
     User,
     UserKey,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
 from anima_server.services import anima_core_bindings
 from anima_server.services.crypto import (
@@ -114,6 +116,8 @@ _MEMORY_TABLES = frozenset(
         "memoryItemEvidence",
         "memoryItems",
         "memoryEpisodes",
+        "userProfileFields",
+        "userProfileFieldEvidence",
         "kgEntities",
         "kgRelations",
         "selfModelBlocks",
@@ -149,6 +153,8 @@ _CAPSULE_CARD_TABLES = frozenset(
         "userKeys",
         "memoryItems",
         "memoryItemEvidence",
+        "userProfileFields",
+        "userProfileFieldEvidence",
         "selfModelBlocks",
         "emotionalSignals",
     }
@@ -719,6 +725,16 @@ def export_database_snapshot(
         serialize_memory_item_evidence_record(row, deks=deks)
         for row in db.scalars(_scoped(select(MemoryItemEvidence), MemoryItemEvidence)).all()
     ]
+    user_profile_fields = [
+        serialize_user_profile_field_record(field, deks=deks)
+        for field in db.scalars(_scoped(select(UserProfileField), UserProfileField)).all()
+    ]
+    user_profile_field_evidence = [
+        serialize_user_profile_field_evidence_record(evidence, deks=deks)
+        for evidence in db.scalars(
+            _scoped(select(UserProfileFieldEvidence), UserProfileFieldEvidence)
+        ).all()
+    ]
     memory_episodes = [
         serialize_memory_episode_record(ep, deks=deks)
         for ep in db.scalars(_scoped(select(MemoryEpisode), MemoryEpisode)).all()
@@ -784,6 +800,8 @@ def export_database_snapshot(
         "userKeys": user_keys,
         "memoryItems": memory_items,
         "memoryItemEvidence": memory_item_evidence,
+        "userProfileFields": user_profile_fields,
+        "userProfileFieldEvidence": user_profile_field_evidence,
         "memoryEpisodes": memory_episodes,
         "kgEntities": kg_entities,
         "kgRelations": kg_relations,
@@ -810,6 +828,8 @@ def restore_database_snapshot(
 
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_item_evidence_payload = snapshot.get("memoryItemEvidence", [])
+    user_profile_fields_payload = snapshot.get("userProfileFields", [])
+    user_profile_field_evidence_payload = snapshot.get("userProfileFieldEvidence", [])
     memory_episodes_payload = snapshot.get("memoryEpisodes", [])
     kg_entities_payload = snapshot.get("kgEntities", [])
     kg_relations_payload = snapshot.get("kgRelations", [])
@@ -829,6 +849,8 @@ def restore_database_snapshot(
         db.query(SelfModelBlock).delete()
         db.query(KGRelation).delete()
         db.query(KGEntity).delete()
+        db.query(UserProfileFieldEvidence).delete()
+        db.query(UserProfileField).delete()
         db.query(MemoryItemEvidence).delete()
         if is_full:
             db.query(AgentStep).delete()
@@ -927,6 +949,73 @@ def restore_database_snapshot(
                 )
             )
 
+        restored_profile_field_ids: set[int] = set()
+        profile_superseded_links: list[tuple[int, int]] = []
+        for record in user_profile_fields_payload:
+            if not isinstance(record, dict):
+                continue
+            profile_field_id = int(record["id"])
+            superseded_by_id = coerce_optional_int(record.get("superseded_by_id"))
+            restored_profile_field_ids.add(profile_field_id)
+            if superseded_by_id is not None:
+                profile_superseded_links.append((profile_field_id, superseded_by_id))
+            db.add(
+                UserProfileField(
+                    id=profile_field_id,
+                    user_id=int(record["user_id"]),
+                    category=str(record["category"]),
+                    key=str(record["key"]),
+                    value_text=str(record["value_text"]),
+                    confidence=float(record.get("confidence", 0.8)),
+                    status=str(record.get("status", "active")),
+                    source_kind=str(record.get("source_kind", "extraction")),
+                    source_memory_id=coerce_optional_int(record.get("source_memory_id")),
+                    source_evidence_id=coerce_optional_int(record.get("source_evidence_id")),
+                    source_claim_evidence_id=None,
+                    superseded_by_id=None,
+                    first_observed_at=parse_optional_datetime(
+                        record.get("first_observed_at")
+                    ),
+                    last_observed_at=parse_optional_datetime(record.get("last_observed_at")),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        db.flush()
+
+        # Claim evidence is not part of vault snapshots, so those FKs cannot be
+        # restored safely. Profile self-links can be backfilled once every
+        # profile row from the snapshot exists.
+        for profile_field_id, superseded_by_id in profile_superseded_links:
+            if superseded_by_id not in restored_profile_field_ids:
+                continue
+            profile_field = db.get(UserProfileField, profile_field_id)
+            if profile_field is not None:
+                profile_field.superseded_by_id = superseded_by_id
+
+        db.flush()
+
+        for record in user_profile_field_evidence_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                UserProfileFieldEvidence(
+                    id=int(record["id"]),
+                    profile_field_id=int(record["profile_field_id"]),
+                    user_id=int(record["user_id"]),
+                    source_kind=str(record.get("source_kind", "extraction")),
+                    source_memory_id=coerce_optional_int(record.get("source_memory_id")),
+                    source_evidence_id=coerce_optional_int(record.get("source_evidence_id")),
+                    source_claim_evidence_id=None,
+                    runtime_thread_id=coerce_optional_int(record.get("runtime_thread_id")),
+                    runtime_message_id=coerce_optional_int(record.get("runtime_message_id")),
+                    evidence_text=str(record.get("evidence_text", "")),
+                    observed_at=parse_optional_datetime(record.get("observed_at")),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
         for record in kg_entities_payload:
             if not isinstance(record, dict):
                 continue
@@ -939,6 +1028,7 @@ def restore_database_snapshot(
                     entity_type=str(record.get("entity_type", "unknown")),
                     description=str(record.get("description", "")),
                     mentions=int(record.get("mentions", 1)),
+                    aliases_json=record.get("aliases_json"),
                     embedding_json=record.get("embedding_json"),
                     embedding_checksum=coerce_optional_str(record.get("embedding_checksum")),
                     created_at=parse_optional_datetime(record.get("created_at")),
@@ -960,6 +1050,18 @@ def restore_database_snapshot(
                     relation_type=str(record["relation_type"]),
                     mentions=int(record.get("mentions", 1)),
                     source_memory_id=coerce_optional_int(record.get("source_memory_id")),
+                    evidence_id=coerce_optional_int(record.get("evidence_id")),
+                    observed_at=parse_optional_datetime(record.get("observed_at")),
+                    valid_from=parse_optional_datetime(record.get("valid_from")),
+                    valid_to=parse_optional_datetime(record.get("valid_to")),
+                    confidence=float(
+                        record.get("confidence")
+                        if record.get("confidence") is not None
+                        else 1.0
+                    ),
+                    status=str(record.get("status") or "active"),
+                    supersedes_relation_id=coerce_optional_int(record.get("supersedes_relation_id")),
+                    evolves_from_relation_id=coerce_optional_int(record.get("evolves_from_relation_id")),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
@@ -1322,6 +1424,64 @@ def serialize_memory_item_evidence_record(
     }
 
 
+def serialize_user_profile_field_record(
+    field: UserProfileField,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": field.id,
+        "user_id": field.user_id,
+        "category": field.category,
+        "key": field.key,
+        "value_text": _decrypt_field_value(
+            field.value_text,
+            deks,
+            table="user_profile_fields",
+            field="value_text",
+            user_id=field.user_id,
+        ),
+        "confidence": field.confidence,
+        "status": field.status,
+        "source_kind": field.source_kind,
+        "source_memory_id": field.source_memory_id,
+        "source_evidence_id": field.source_evidence_id,
+        "source_claim_evidence_id": field.source_claim_evidence_id,
+        "superseded_by_id": field.superseded_by_id,
+        "first_observed_at": serialize_optional_datetime(field.first_observed_at),
+        "last_observed_at": serialize_optional_datetime(field.last_observed_at),
+        "created_at": serialize_optional_datetime(field.created_at),
+        "updated_at": serialize_optional_datetime(field.updated_at),
+    }
+
+
+def serialize_user_profile_field_evidence_record(
+    evidence: UserProfileFieldEvidence,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": evidence.id,
+        "profile_field_id": evidence.profile_field_id,
+        "user_id": evidence.user_id,
+        "source_kind": evidence.source_kind,
+        "source_memory_id": evidence.source_memory_id,
+        "source_evidence_id": evidence.source_evidence_id,
+        "source_claim_evidence_id": evidence.source_claim_evidence_id,
+        "runtime_thread_id": evidence.runtime_thread_id,
+        "runtime_message_id": evidence.runtime_message_id,
+        "evidence_text": _decrypt_field_value(
+            evidence.evidence_text,
+            deks,
+            table="user_profile_field_evidence",
+            field="evidence_text",
+            user_id=evidence.user_id,
+        ),
+        "observed_at": serialize_optional_datetime(evidence.observed_at),
+        "created_at": serialize_optional_datetime(evidence.created_at),
+    }
+
+
 def serialize_memory_episode_record(
     ep: MemoryEpisode,
     *,
@@ -1363,6 +1523,7 @@ def serialize_kg_entity_record(entity: KGEntity) -> dict[str, Any]:
         "entity_type": entity.entity_type,
         "description": entity.description,
         "mentions": entity.mentions,
+        "aliases_json": entity.aliases_json,
         "embedding_json": entity.embedding_json,
         "embedding_checksum": entity.embedding_checksum,
         "created_at": serialize_optional_datetime(entity.created_at),
@@ -1379,6 +1540,14 @@ def serialize_kg_relation_record(relation: KGRelation) -> dict[str, Any]:
         "relation_type": relation.relation_type,
         "mentions": relation.mentions,
         "source_memory_id": relation.source_memory_id,
+        "evidence_id": relation.evidence_id,
+        "observed_at": serialize_optional_datetime(relation.observed_at),
+        "valid_from": serialize_optional_datetime(relation.valid_from),
+        "valid_to": serialize_optional_datetime(relation.valid_to),
+        "confidence": relation.confidence,
+        "status": relation.status,
+        "supersedes_relation_id": relation.supersedes_relation_id,
+        "evolves_from_relation_id": relation.evolves_from_relation_id,
         "created_at": serialize_optional_datetime(relation.created_at),
         "updated_at": serialize_optional_datetime(relation.updated_at),
     }
@@ -1570,6 +1739,8 @@ def reset_identity_sequences(db: Session) -> None:
         "user_keys",
         "memory_items",
         "memory_item_evidence",
+        "user_profile_fields",
+        "user_profile_field_evidence",
         "memory_episodes",
         "kg_entities",
         "kg_relations",
@@ -1679,6 +1850,24 @@ def _re_encrypt_snapshot_fields(
                 evidence["evidence_text"],
                 user_id,
                 table="memory_item_evidence",
+                field="evidence_text",
+            )
+
+    for field in snapshot.get("userProfileFields", []):
+        if isinstance(field, dict) and field.get("value_text"):
+            field["value_text"] = _re_encrypt_field_value(
+                field["value_text"],
+                user_id,
+                table="user_profile_fields",
+                field="value_text",
+            )
+
+    for evidence in snapshot.get("userProfileFieldEvidence", []):
+        if isinstance(evidence, dict) and evidence.get("evidence_text"):
+            evidence["evidence_text"] = _re_encrypt_field_value(
+                evidence["evidence_text"],
+                user_id,
+                table="user_profile_field_evidence",
                 field="evidence_text",
             )
 

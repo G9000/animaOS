@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -189,8 +190,13 @@ def get_active_claims(
 
 def _content_slug(content: str, max_len: int = 60) -> str:
     """Derive a short slug from content for use in canonical keys."""
-    slug = re.sub(r"[^a-z0-9]+", "_", content.strip().lower())
-    return slug[:max_len].strip("_")
+    normalized = content.strip().casefold()
+    slug = re.sub(r"[^a-z0-9]+", "_", normalized)
+    slug = slug[:max_len].strip("_")
+    if slug:
+        return slug
+    digest = sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"u_{digest}"
 
 
 # Stricter than analyze_memory_item's 0.4 "similar" threshold because a

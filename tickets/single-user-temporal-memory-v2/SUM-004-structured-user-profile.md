@@ -1,17 +1,17 @@
 # SUM-004 - Structured user profile
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server/src/anima_server/models`, `apps/server/src/anima_server/services/agent`, `apps/server/src/anima_server/api`
 - Parent: `SUM-000`
 - Depends on: `SUM-002`
-- Owner: unassigned
+- Owner: Codex
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-27 12:40 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-01 13:18 MYT
+- Started: 2026-06-30 05:34 MYT
+- Completed: 2026-06-30 05:47 MYT
 
 ## Goal
 
@@ -36,12 +36,224 @@ Create an evidence-backed structured user profile that can be rendered compactly
 ## Activity Log
 
 - 2026-06-27 12:40 MYT - Ticket created.
+- 2026-06-30 05:34 MYT - Claimed by Codex on branch `codex/sum-004-structured-user-profile`, based on PR #70 head for `SUM-003`.
+- 2026-06-30 05:47 MYT - Completed with encrypted structured profile tables, runtime profile update candidates, LLM extraction/promoter wiring, sleep-time claim reconciliation, compact prompt block, correction/retraction API, focused tests, migration validation, lint, build, full backend tests, and health smoke.
+- 2026-06-30 12:29 MYT - Addressed PR #71 review feedback by deduplicating claim reconciliation evidence, invalidating companion memory after sleep-time profile reconciliation, and tightening deterministic test fixtures uncovered by the full backend gate.
+- 2026-06-30 12:42 MYT - Addressed additional PR #71 review feedback by setting profile source FKs to `ON DELETE SET NULL` in the Alembic revision and allowing profile update re-extraction after promoted candidates.
+- 2026-06-30 12:54 MYT - Addressed additional PR #71 review feedback by moving claim evidence provenance into a claim-specific FK column and retracting profile fields sourced from memories during user-initiated forget.
+- 2026-06-30 13:21 MYT - Addressed additional PR #71 review feedback by invalidating the companion memory cache after the forget endpoint commits profile-field retractions.
+- 2026-06-30 13:35 MYT - Addressed additional PR #71 review feedback by hard-deleting profile fields/evidence tied to forgotten memories and adding structured profile tables to eval reset cleanup.
+- 2026-06-30 13:58 MYT - Addressed additional PR #71 review feedback by preserving profile fields that still have surviving evidence after one source memory is forgotten.
+- 2026-06-30 14:41 MYT - Addressed additional PR #71 review feedback by deleting runtime-message-only profile fields when their source memory is forgotten and setting the profile self-FK to `ON DELETE SET NULL` in the migration.
+- 2026-06-30 16:50 MYT - Addressed additional PR #71 review feedback by narrowing runtime-message profile forget cleanup so unrelated profile fields from the same turn are preserved.
+- 2026-06-30 17:03 MYT - Addressed additional PR #71 review feedback by preserving user-corrected profile fields from conflicting automatic updates and setting profile `user_id` FKs to `ON DELETE CASCADE` in the migration.
+- 2026-06-30 17:21 MYT - Addressed additional PR #71 review feedback by rejecting pending profile update candidates tied to forgotten source memories and parsing profile-only LLM extraction responses.
+- 2026-06-30 17:35 MYT - Addressed additional PR #71 review feedback by canonicalizing structured profile keys and preserving same-value user corrections from later automatic updates.
+- 2026-06-30 18:00 MYT - Addressed additional PR #71 review feedback by skipping unmapped generic fact claims during profile reconciliation and keeping forget API deletion working when the runtime DB is unavailable.
+- 2026-06-30 18:23 MYT - Addressed additional PR #71 review feedback by recomputing profile observation bounds after partial evidence deletion and requiring stronger runtime-message matches for same-turn profile cleanup.
+- 2026-06-30 18:44 MYT - Addressed additional PR #71 review feedback by preserving structured profile fields/evidence in vault exports and keeping profile retractions sticky against automated upserts.
+- 2026-07-01 00:54 MYT - Addressed additional PR #71 review feedback by not counting claim reconciliation when user corrections block stale claims and deduping source-less claim reconciliation evidence.
+- 2026-07-01 01:17 MYT - Addressed additional PR #71 review feedback by deferring profile self-link restore during vault import and dropping claim-evidence profile FKs that cannot be valid without exporting claim evidence.
+- 2026-07-01 01:35 MYT - Addressed additional PR #71 review feedback by explicitly deleting profile evidence before deleting profile fields during user-initiated forget.
+- 2026-07-01 01:53 MYT - Addressed additional PR #71 review feedback by timestamp-guarding claim reconciliation so older claims do not supersede newer non-claim profile updates.
+- 2026-07-01 02:13 MYT - Addressed additional PR #71 review feedback by returning HTTP 400 for blank profile correction payloads instead of treating the existing field as missing.
+- 2026-07-01 02:34 MYT - Addressed additional PR #71 review feedback by preserving profile update candidate timestamps during promotion so older retryable candidates cannot supersede newer profile fields.
+- 2026-07-01 02:55 MYT - Addressed additional PR #71 review feedback by deleting single-token runtime-message profile facts during forget cleanup and scoping sourceless claim reconciliation idempotency to the target profile field.
+- 2026-07-01 03:15 MYT - Addressed additional PR #71 review feedback by preserving newer same-value profile observation timestamps and adding an explicit tier-0 prompt budget policy for the `user_profile` block.
+- 2026-07-01 03:33 MYT - Addressed additional PR #71 review feedback by truncating rendered structured-profile prompt blocks at line boundaries instead of cutting profile fields mid-line.
+- 2026-07-01 13:18 MYT - Addressed additional PR #71 review feedback by restoring the prior superseded profile field when forgetting only its active replacement evidence.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_same_claim apps/server/tests/test_user_profile.py::test_sleep_tasks_invalidates_companion_memory_after_profile_reconciliation` - PR #71 review regressions failed before fix because repeated reconciliation counted the same claim again and sleep reconciliation did not invalidate companion memory.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_same_claim apps/server/tests/test_user_profile.py::test_sleep_tasks_invalidates_companion_memory_after_profile_reconciliation` - 2 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_agent_consolidation.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py` - 44 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_passes_timestamp_names_and_preserves_details -q` - failed before clock-freezing fixed the aged-out 24-hour fixture, then 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_episodes.py -q` - 13 passed, 11 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_dashboard_api.py -q` - failed before proactive-notice custom-instruction tests forced scaffold mode, then 19 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1711 passed, 1 skipped, 270 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete apps/server/tests/test_user_profile.py::test_profile_update_candidate_can_be_reextracted_after_promotion -q` - PR #71 review regressions failed before fix because migration-created source FKs had no `ON DELETE SET NULL` action and promoted profile candidates blocked re-extraction.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete apps/server/tests/test_user_profile.py::test_profile_update_candidate_can_be_reextracted_after_promotion -q` - 2 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_agent_consolidation.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 46 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1713 passed, 1 skipped, 270 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - PR #71 review regressions failed before fix because claim evidence used the memory-item evidence FK and forget left source-derived profile fields active.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 3 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_agent_consolidation.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 68 passed, 19 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1715 passed, 1 skipped, 272 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup -q` - PR #71 review regression failed before fix because the forget endpoint left the companion memory cache valid after cleaning sourced profile fields.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 22 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - PR #71 review regression failed before fix because include-history profile reads still returned forgotten encrypted profile content.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_eval_harness.py::test_reset_eval_user_state_purges_soul_and_runtime_rows -q` - PR #71 review regression failed before fix because eval reset skipped `user_profile_fields`, `user_profile_field_evidence`, and `profile_update_candidates`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_eval_harness.py::test_reset_eval_user_state_purges_soul_and_runtime_rows -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_eval_harness.py::test_reset_eval_user_state_purges_soul_and_runtime_rows -q` - 36 passed, 11 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup -q` - 1 passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed after import-order cleanup.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1716 passed, 1 skipped, 272 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence -q` - PR #71 review regression failed before fix because forgetting one source memory deleted a profile field still supported by a second evidence row.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_eval_harness.py::test_reset_eval_user_state_purges_soul_and_runtime_rows -q` - 37 passed, 12 warnings.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_agent_consolidation.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_memory_api.py` - 45 passed, 15 warnings.
+  - `bun install` - installed workspace dependencies in the isolated worktree after the first full lint attempt showed missing desktop packages.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false ANIMA_DATABASE_URL=sqlite:///<temp> uv run --project apps/server alembic -c apps/server/alembic_core.ini upgrade head && uv run --project apps/server alembic -c apps/server/alembic_core.ini current` - core migration reached `20260630_0001 (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - runtime migration check stamped a temp SQLite DB at `017_document_tables`, upgraded to `018_profile_update_candidates (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_legacy_kg_migration_downgrade_tolerates_missing_constraints` - 1 passed after updating the SUM-003 downgrade test to target `20260626_0002` explicitly.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - 1709 passed, 1 skipped, 268 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - PR #71 review regression failed before fix because a runtime-message-only profile field survived forgetting its source memory.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - PR #71 review regression failed before fix because `superseded_by_id` had no migration-level `ON DELETE SET NULL`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 38 passed, 13 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_unrelated_profile_field_from_same_turn -q` - PR #71 review regression failed before fix because runtime-message fallback deleted an unrelated profile field from the same turn.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_unrelated_profile_field_from_same_turn apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 39 passed, 14 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_preserves_user_correction_from_auto_update -q` - PR #71 review regression failed before fix because automatic profile updates could supersede a user correction.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - PR #71 review regression failed before fix because profile `user_id` FKs had no migration-level `ON DELETE CASCADE`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_preserves_user_correction_from_auto_update -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py apps/server/tests/test_runtime_db.py::test_user_profile_migration_sets_source_fks_null_on_delete -q` - 40 passed, 15 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn apps/server/tests/test_user_profile.py::test_llm_extraction_parses_profile_updates_without_memories -q` - PR #71 review regressions failed before fix because `forget_memory()` could not reject pending runtime profile candidates and profile-only extraction payloads were parsed as memories.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn apps/server/tests/test_user_profile.py::test_llm_extraction_parses_profile_updates_without_memories -q` - 2 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_agent_consolidation.py::test_run_background_extraction_stores_profile_update_candidates -q` - 22 passed, 16 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_canonicalizes_key_case apps/server/tests/test_user_profile.py::test_upsert_profile_field_marks_same_value_user_correction -q` - PR #71 review regressions failed before fix because differently cased profile keys created parallel active rows and same-value user corrections remained supersedable automatic rows.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_canonicalizes_key_case apps/server/tests/test_user_profile.py::test_upsert_profile_field_marks_same_value_user_correction -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 22 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_skips_unmapped_fact_claims apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - PR #71 review regressions failed before fix because generic fact claims promoted into identity fields and forget endpoint failed before soul deletion when the runtime DB factory was unavailable.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_skips_unmapped_fact_claims apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 2 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 25 passed, 19 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `git diff --check` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn -q` - PR #71 review regressions failed before fix because partial profile-evidence forget left stale observation bounds and one shared long token could delete/reject unrelated same-turn profile updates.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn -q` - 3 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 26 passed, 20 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_user_profile_fields apps/server/tests/test_user_profile.py::test_retracted_profile_field_blocks_automatic_recreation -q` - PR #71 review regressions failed before fix because vault snapshots dropped structured profile tables and automatic upserts recreated retracted profile fields.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_user_profile_fields apps/server/tests/test_user_profile.py::test_retracted_profile_field_blocks_automatic_recreation -q` - 2 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py apps/server/tests/test_user_profile.py -q` - 44 passed, 21 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim -q` - PR #71 review regressions failed before fix because stale user-corrected claims still counted as reconciled and source-less claims appended duplicate reconciliation evidence.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 27 passed, 23 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks -q` - PR #71 review regression failed before fix with a SQLite FK violation because profile rows restored `superseded_by_id` before all profile rows existed and restored non-exported claim evidence FKs.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks -q` - 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_user_profile_fields apps/server/tests/test_vault.py::test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks -q` - 2 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py apps/server/tests/test_user_profile.py -q` - 47 passed, 23 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade -q` - PR #71 review regression failed before fix because deleting a profile field could leave orphaned profile evidence when SQLite FK cascades were not enforced.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_evidence_without_fk_cascade apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message -q` - 4 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 28 passed, 24 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_api.py::test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup apps/server/tests/test_memory_api.py::test_forget_endpoint_succeeds_without_runtime_db -q` - 2 passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - PR #71 review regression failed before fix because an older active claim superseded a newer `profile_llm` field for the same profile key.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_does_not_count_user_correction_skip apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately -q` - 5 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 29 passed, 25 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - PR #71 review regression failed before fix because blank profile corrections returned 404 instead of 400.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_user_profile_api_lists_corrects_and_retracts_fields apps/server/tests/test_user_profile.py::test_user_profile_api_returns_400_for_blank_correction -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 30 passed, 26 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field -q` - PR #71 review regression failed before fix because retrying an older failed profile candidate superseded a newer active profile field.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_soul_writer_promotes_profile_update_candidates apps/server/tests/test_user_profile.py::test_soul_writer_profile_retry_preserves_newer_profile_field apps/server/tests/test_user_profile.py::test_profile_update_candidate_can_be_reextracted_after_promotion apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_preserves_newer_profile_llm_update -q` - 4 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 31 passed, 27 warnings.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field apps/server/tests/test_user_profile.py::test_forget_memory_deletes_single_token_profile_field_from_runtime_message -q` - PR #71 review regressions failed before fix because sourceless claims from the same memory collapsed to one profile field and single-token runtime-message profile facts survived source-memory forget cleanup.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field apps/server/tests/test_user_profile.py::test_forget_memory_deletes_single_token_profile_field_from_runtime_message -q` - 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_is_idempotent_for_sourceless_claim apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_scopes_sourceless_memory_to_field apps/server/tests/test_user_profile.py::test_reconcile_profile_from_claims_tracks_claim_evidence_separately apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message apps/server/tests/test_user_profile.py::test_forget_memory_deletes_single_token_profile_field_from_runtime_message apps/server/tests/test_user_profile.py::test_forget_memory_preserves_unrelated_profile_field_from_same_turn apps/server/tests/test_user_profile.py::test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token apps/server/tests/test_user_profile.py::test_forget_memory_rejects_pending_profile_candidates_from_source_turn -q` - 8 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 33 passed, 29 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_keeps_newer_observed_time_for_same_value apps/server/tests/test_prompt_budget.py::TestBlockPriority::test_user_profile_keeps_identity_priority_under_tight_budget -q` - PR #71 review regressions failed before fix because same-value upserts moved `last_observed_at` backwards and `user_profile` used the default tier-3 prompt-budget policy.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_upsert_profile_field_keeps_newer_observed_time_for_same_value apps/server/tests/test_prompt_budget.py::TestBlockPriority::test_user_profile_keeps_identity_priority_under_tight_budget -q` - 2 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py apps/server/tests/test_prompt_budget.py -q` - 45 passed, 30 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_render_profile_prompt_block_truncates_at_line_boundary -q` - PR #71 review regression failed before fix because the rendered profile block returned a partial `- pronouns: they` field line.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_render_profile_prompt_block_truncates_at_line_boundary -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 35 passed, 31 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_restores_previous_profile_field_when_replacement_forgotten -q` - PR #71 review regression failed before fix because forgetting the active replacement left the prior profile field superseded and no active value was returned.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_restores_previous_profile_field_when_replacement_forgotten -q` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py::test_forget_memory_restores_previous_profile_field_when_replacement_forgotten apps/server/tests/test_user_profile.py::test_forget_memory_preserves_profile_field_with_surviving_evidence apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_field_sourced_by_runtime_message apps/server/tests/test_user_profile.py::test_forget_memory_deletes_profile_fields_sourced_from_claim_chain -q` - 4 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_user_profile.py -q` - 36 passed, 32 warnings.
+  - `git diff --check` - passed with CRLF warnings only.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint -- --projects=server` - passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
 - Changed paths:
-  - none
+  - apps/server/alembic_core/versions/20260630_0001_create_user_profile_fields.py
+  - apps/server/alembic_runtime/versions/018_profile_update_candidates.py
+  - apps/server/src/anima_server/api/routes/consciousness.py
+  - apps/server/src/anima_server/api/routes/forgetting.py
+  - apps/server/src/anima_server/models/__init__.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/models/runtime_memory.py
+  - apps/server/src/anima_server/services/agent/consolidation.py
+  - apps/server/src/anima_server/services/agent/forgetting.py
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/agent/soul_writer.py
+  - apps/server/src/anima_server/services/agent/user_profile.py
+  - apps/server/src/anima_server/services/data_crypto.py
+  - apps/server/src/anima_server/services/agent/templates/prompts/memory_extraction.md.j2
+  - apps/server/tests/test_agent_consolidation.py
+  - apps/server/tests/test_agent_episodes.py
+  - apps/server/tests/test_dashboard_api.py
+  - apps/server/tests/test_prompt_budget.py
+  - apps/server/tests/test_runtime_db.py
+  - apps/server/tests/test_user_profile.py
+  - apps/server/tests/test_vault.py
+  - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
+  - tickets/single-user-temporal-memory-v2/SUM-004-structured-user-profile.md
 - Notes:
-  - none
+  - Full runtime SQLite migration from base is not a valid check in this repo because earlier runtime revision `005` executes PostgreSQL `CREATE EXTENSION vector`; SUM-004 runtime validation exercised only the new `018` revision from the existing runtime head.

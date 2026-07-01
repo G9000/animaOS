@@ -1,8 +1,11 @@
 You are a memory system for {{ agent_name }}.
 Given a set of conversation turns from a single session, generate a detailed diary memory for {{ agent_name }}.
 
+Conversation timestamp: {{ conversation_timestamp }}
+
 Return a JSON object with:
 - "summary": 2-4 sentence summary that MUST include specific details: names, numbers, dates, places, and key facts mentioned. Do NOT summarize abstractly - preserve the concrete information.
+- "salient_user_details": array of 0-8 exact or near-exact excerpts from the human's messages that must survive in memory. Preserve the user's original language and wording. Do not translate these excerpts.
 - "topics": array of 1-5 short topic labels (e.g. ["work", "health", "python"])
 - "emotional_arc": brief description of the emotional flow (e.g. "curious -> satisfied", "frustrated -> relieved")
 - "significance": 1-5 integer (5 = life-changing moment, 1 = casual small talk)
@@ -11,9 +14,12 @@ Rules:
 - Write the summary from {{ agent_name }}'s point of view, like a diary memory.
 - Use first person for {{ agent_name }} ("I", "me", "my") instead of "the assistant".
 - Use {{ user_name }}'s name for the human instead of "the user" when referring to them.
+- Use the conversation timestamp to ground relative dates and time-sensitive details. If a user says a relative date such as "today", "tomorrow", "yesterday", "last week", or "next week", preserve the relative phrase and include the resolved absolute date or date range.
 - Do not use generic labels like "the user", "the assistant", "assistant", "AI", or "model" unless quoting what someone said.
 - IMPORTANT: Include specific names, numbers, and facts in the summary. "{{ user_name }} mentioned three cats: Muffin, Tappy, and Whiskers" is good. "{{ user_name }} talked about cats" is too vague.
 - If the user shares personal details (pet names, family members, preferences, dates), these MUST appear in the summary verbatim.
+- Treat multilingual conversation as normal production input. Preserve user-provided names, places, phrases, and details in their original language. Do not romanize, translate, or drop non-English details.
+- Every "salient_user_details" item must be grounded in the human's messages. Do not include inferred, translated, or assistant-only details.
 - Be detailed but not verbose - capture the concrete information, not just the themes.
 - Return valid JSON only.
 

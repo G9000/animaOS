@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,6 +16,7 @@ from anima_server.services.agent.state import (
     extract_stored_attachment_metadata,
     extract_stored_retrieval,
 )
+from anima_server.services.agent.text_processing import unicode_lexical_tokens
 from anima_server.services.crypto import decrypt_blob, encrypt_blob
 
 if TYPE_CHECKING:
@@ -214,18 +214,32 @@ def _build_sidecar(
 
 def _extract_keywords(messages: list[dict], *, max_keywords: int = 10) -> list[str]:
     words: list[str] = []
+    first_seen: dict[str, int] = {}
     for message in messages:
         if message.get("role") != "user":
             continue
         content = str(message.get("content", ""))
-        tokens = re.findall(r"[a-zA-Z]{3,}", content.lower())
-        words.extend(token for token in tokens if token not in _STOP_WORDS)
+        for word in unicode_lexical_tokens(
+            content,
+            stopwords=_STOP_WORDS,
+            min_word_chars=1,
+        ):
+            first_seen.setdefault(word, len(first_seen))
+            words.append(word)
 
     if not words:
         return []
 
     counts = Counter(words)
-    return [word for word, _count in counts.most_common(max_keywords)]
+    ranked = sorted(
+        counts,
+        key=lambda word: (
+            -counts[word],
+            len(word) == 1,
+            first_seen[word],
+        ),
+    )
+    return ranked[:max_keywords]
 
 
 def _build_summary(messages: list[dict]) -> str:

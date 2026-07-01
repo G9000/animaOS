@@ -164,12 +164,19 @@ class PromptLoader:
             messages=messages,
         )
 
-    def episode_generation(self, *, turns: str, user_name: str = "the user") -> str:
+    def episode_generation(
+        self,
+        *,
+        turns: str,
+        user_name: str = "the user",
+        conversation_timestamp: str = "unknown",
+    ) -> str:
         """Render the episode generation prompt."""
         return self.render(
             "episode_generation",
             turns=turns,
             user_name=user_name,
+            conversation_timestamp=conversation_timestamp,
         )
 
     # -----------------------------------------------------------------------
