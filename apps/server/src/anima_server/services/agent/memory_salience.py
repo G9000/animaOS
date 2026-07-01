@@ -320,7 +320,7 @@ def salience_heat_floor_multiplier(
     emotional = _bounded_float(emotional_salience)
     proximity = _bounded_float(relationship_proximity)
     evidence = _bounded_float(evidence_strength, default=0.8)
-    return 1.0 + emotional * 0.45 + proximity * 0.2 + max(0.0, evidence - 0.5) * 0.2
+    return max(0.1, 1.0 + emotional * 0.45 + proximity * 0.2 + (evidence - 0.8) * 0.2)
 
 
 def detect_soft_evolution(

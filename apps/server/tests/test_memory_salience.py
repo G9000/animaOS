@@ -29,10 +29,18 @@ def test_salience_parser_clamps_and_defaults_identity_decay() -> None:
 
 
 def test_salience_decay_keeps_identity_hotter_than_casual_observation() -> None:
-    from anima_server.services.agent.heat_scoring import compute_heat
+    from anima_server.services.agent.heat_scoring import compute_heat, importance_heat_floor
 
     now = datetime(2026, 7, 1, tzinfo=UTC)
     created_at = now - timedelta(days=30)
+
+    default_floor = compute_heat(
+        access_count=0,
+        interaction_depth=0,
+        last_accessed_at=None,
+        importance=3,
+        created_at=None,
+    )
 
     identity_heat = compute_heat(
         access_count=0,
@@ -57,7 +65,29 @@ def test_salience_decay_keeps_identity_hotter_than_casual_observation() -> None:
         evidence_strength=0.7,
     )
 
+    assert default_floor == pytest.approx(importance_heat_floor(3))
     assert identity_heat > casual_heat
+
+
+def test_item_heat_preserves_explicit_zero_evidence_strength() -> None:
+    from anima_server.services.agent.heat_scoring import compute_heat_for_item
+
+    class Item:
+        importance = 3
+        reference_count = 0
+        last_referenced_at = None
+        created_at = None
+        superseded_by = None
+        decay_class = "standard"
+        emotional_salience = 0.0
+        relationship_proximity = 0.0
+        evidence_strength: float | None = 0.0
+
+    low_evidence = Item()
+    neutral_evidence = Item()
+    neutral_evidence.evidence_strength = 0.8
+
+    assert compute_heat_for_item(low_evidence) < compute_heat_for_item(neutral_evidence)
 
 
 def test_repeated_low_grade_emotional_signals_accumulate_salience() -> None:
