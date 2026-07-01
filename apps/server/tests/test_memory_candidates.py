@@ -204,6 +204,51 @@ def test_create_memory_candidate_dedup(pg_session: Session) -> None:
     assert c2 is None  # rejected by dedup check
 
 
+def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
+    pg_session: Session,
+) -> None:
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+
+    first = create_memory_candidate(
+        pg_session,
+        user_id=1,
+        content="likes cats",
+        category="preference",
+        source="llm",
+        salience={
+            "memory_class": "casual",
+            "emotional_salience": 0.1,
+            "stability_class": "stable",
+            "evidence_strength": 0.6,
+        },
+    )
+    assert first is not None
+    first.status = "promoted"
+    pg_session.flush()
+
+    duplicate = create_memory_candidate(
+        pg_session,
+        user_id=1,
+        content="likes cats",
+        category="preference",
+        source="llm",
+        salience={
+            "memory_class": "emotional_pattern",
+            "emotional_salience": 0.8,
+            "stability_class": "evolving",
+            "evidence_strength": 0.9,
+        },
+    )
+
+    assert duplicate is None
+    pg_session.refresh(first)
+    assert first.status == "queued"
+    assert first.salience_json is not None
+    assert first.salience_json["memory_class"] == "emotional_pattern"
+    assert first.salience_json["emotional_salience"] > 0.1
+    assert first.salience_json["salience_source"] == "explicit"
+
+
 def test_correction_and_extraction_not_deduped(pg_session: Session) -> None:
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 
