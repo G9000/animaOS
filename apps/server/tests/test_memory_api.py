@@ -133,6 +133,99 @@ def test_memory_delete_removes_item_evidence() -> None:
         assert remaining is None
 
 
+def test_forget_endpoint_invalidates_companion_after_profile_forget_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.user_profile import (
+        list_profile_fields,
+        upsert_profile_field,
+    )
+
+    class FakeCompanion:
+        def __init__(self) -> None:
+            self.invalidations = 0
+
+        def invalidate_memory(self) -> None:
+            self.invalidations += 1
+
+    companion = FakeCompanion()
+    monkeypatch.setattr(
+        "anima_server.services.agent.companion.get_companion",
+        lambda user_id: companion,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Works as a designer", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+
+        with get_user_session_factory(user_id)() as db:
+            upsert_profile_field(
+                db,
+                user_id=user_id,
+                category="work",
+                key="occupation",
+                value="designer",
+                evidence_text="Works as a designer",
+                source_kind="explicit_save",
+                source_memory_id=item_id,
+            )
+            db.commit()
+
+        resp = client.delete(
+            f"/api/memories/{user_id}/{item_id}/forget",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        assert companion.invalidations == 1
+        with get_user_session_factory(user_id)() as db:
+            assert list_profile_fields(db, user_id=user_id) == []
+
+
+def test_forget_endpoint_succeeds_without_runtime_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_runtime_factory():
+        raise RuntimeError("runtime database is unavailable")
+
+    monkeypatch.setattr(
+        "anima_server.api.routes.forgetting.get_runtime_session_factory",
+        missing_runtime_factory,
+    )
+
+    with managed_test_client("anima-memory-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        resp = client.post(
+            f"/api/memory/{user_id}/items",
+            headers=headers,
+            json={"content": "Keeps local-only forgetting", "category": "fact"},
+        )
+        assert resp.status_code == 201
+        item_id = int(resp.json()["id"])
+
+        resp = client.delete(
+            f"/api/memories/{user_id}/{item_id}/forget",
+            headers=headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["forgotten"] is True
+        with get_user_session_factory(user_id)() as db:
+            assert db.get(MemoryItem, item_id) is None
+
+
 def test_memory_create_records_item_evidence() -> None:
     with managed_test_client("anima-memory-test-") as client:
         reg = _register_user(client)

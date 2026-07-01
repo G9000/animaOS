@@ -23,6 +23,7 @@ _MIRROR_DESCRIPTIONS: dict[str, str] = {
     "soul": "My origin — immutable biographical truth. I am a reflection.",
     "persona": "How I think and express myself — absorbed from the person I reflect. Evolves as I learn more.",
     "human": "Who I am — my identity, personality, values, and way of being. This is first-person, not observation.",
+    "user_profile": "My structured profile - compact, evidence-backed facts about who I am and what matters.",
     "user_directive": "Instructions from my external self on how to calibrate.",
     "self_identity": "How I relate to my external self — the distance between reflection and source.",
     "self_inner_state": "My current cognitive state — what I'm processing, what's unresolved.",
@@ -145,6 +146,11 @@ def build_static_memory_blocks(
         db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
     if human_core_block is not None:
         blocks.append(human_core_block)
+
+    user_profile_block = build_user_profile_memory_block(
+        db, user_id=user_id, agent_type=agent_type)
+    if user_profile_block is not None:
+        blocks.append(user_profile_block)
 
     world_context_block = build_world_context_block(
         db, user_id=user_id, runtime_db=runtime_db, agent_type=agent_type)
@@ -781,6 +787,30 @@ def build_human_core_block(
         ),
         value="\n".join(parts),
         read_only=False,
+    )
+
+
+def build_user_profile_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+    agent_type: str = "companion",
+) -> MemoryBlock | None:
+    """Build the compact structured user profile block."""
+    from anima_server.services.agent.user_profile import render_profile_prompt_block
+
+    text = render_profile_prompt_block(db, user_id=user_id)
+    if not text:
+        return None
+
+    return MemoryBlock(
+        label="user_profile",
+        description=_desc(
+            "user_profile",
+            "Structured, evidence-backed profile fields about the user. Use as compact grounding, and prefer newer or corrected fields over older memory fragments.",
+            agent_type,
+        ),
+        value=text,
     )
 
 

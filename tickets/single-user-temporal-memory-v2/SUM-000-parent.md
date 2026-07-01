@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-30 03:49 MYT
+- Updated: 2026-07-01 13:18 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -23,7 +23,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-001` | Baseline memory truth audit and eval probes | `done` | none |
 | `SUM-002` | Evidence baseline and episode quality | `done` | `SUM-001` |
 | `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
-| `SUM-004` | Structured user profile | `backlog` | `SUM-002` |
+| `SUM-004` | Structured user profile | `done` | `SUM-002` |
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `backlog` | `SUM-005`, `SUM-006` |
@@ -57,6 +57,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-001` - Baseline memory truth audit and eval probes (completed 2026-06-29 10:39 MYT)
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
 - `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
+- `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
 
 ## Activity Log
 
@@ -87,6 +88,32 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-06-30 03:09 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering stale-pruning candidates to active relations, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 03:32 MYT - `SUM-003` addressed PR #70 rereview feedback by guarding legacy downgrade FK drops when repaired KG tables lack constraints, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
 - 2026-06-30 03:49 MYT - `SUM-003` addressed PR #70 rereview feedback by preventing same-triple self-supersession from mutating the replacement row, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 05:34 MYT - `SUM-004` claimed by Codex on branch `codex/sum-004-structured-user-profile`, based on PR #70 head for `SUM-003`.
+- 2026-06-30 05:47 MYT - `SUM-004` completed with structured profile storage, extraction and Soul Writer promotion, sleep-time claim reconciliation, profile prompt rendering, correction API, migrations, focused validation, lint, build, full backend tests, and health smoke.
+- 2026-06-30 12:29 MYT - `SUM-004` addressed PR #71 review feedback for idempotent claim-profile reconciliation and companion memory invalidation after sleep-time profile updates, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 12:42 MYT - `SUM-004` addressed additional PR #71 feedback for profile source FK delete semantics and promoted-candidate re-extraction, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 12:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim-specific profile provenance and profile retraction during user-initiated forget, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 13:21 MYT - `SUM-004` addressed additional PR #71 feedback for companion memory invalidation after user-initiated forget retracts sourced profile fields, then reran focused, lint, diff, and build validation.
+- 2026-06-30 13:35 MYT - `SUM-004` addressed additional PR #71 feedback for hard-deleting forgotten profile evidence and clearing structured profile state during eval reset, then reran red/green regressions and related suites.
+- 2026-06-30 13:58 MYT - `SUM-004` addressed additional PR #71 feedback for preserving profile fields with surviving evidence after a partial source forget, then reran red/green regressions and related suites.
+- 2026-06-30 14:41 MYT - `SUM-004` addressed additional PR #71 feedback for runtime-message-linked profile forget cleanup and profile self-FK delete semantics, then reran red/green regressions, related suites, lint, diff, and build.
+- 2026-06-30 16:50 MYT - `SUM-004` addressed additional PR #71 feedback for preserving unrelated same-turn profile fields during runtime-message forget cleanup, then reran red/green regressions, related suites, lint, diff, and build.
+- 2026-06-30 17:03 MYT - `SUM-004` addressed additional PR #71 feedback for preserving manual profile corrections from automatic updates and cascading profile rows on user deletion, then reran red/green regressions, related suites, lint, diff, and build.
+- 2026-06-30 17:21 MYT - `SUM-004` addressed additional PR #71 feedback for rejecting pending profile candidates after source-memory forget and accepting profile-only extraction payloads, then reran red/green regressions and related profile/API tests.
+- 2026-06-30 17:35 MYT - `SUM-004` addressed additional PR #71 feedback for canonical profile keys and same-value user corrections, then reran red/green regressions and the user profile suite.
+- 2026-06-30 18:00 MYT - `SUM-004` addressed additional PR #71 feedback for skipping unmapped fact claims and preserving forget behavior without a runtime DB, then reran red/green regressions and related profile/API tests.
+- 2026-06-30 18:23 MYT - `SUM-004` addressed additional PR #71 feedback for profile observation bounds after partial forget and stricter same-turn runtime profile matching, then reran red/green regressions, related profile/API tests, lint, diff, and build.
+- 2026-06-30 18:44 MYT - `SUM-004` addressed additional PR #71 feedback for vault round-tripping structured profile rows and sticky profile retractions, then reran red/green regressions, vault/profile suites, lint, diff, and build.
+- 2026-07-01 00:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim reconciliation counts and source-less claim dedupe, then reran red/green regressions, the user profile suite, lint, diff, and build.
+- 2026-07-01 01:17 MYT - `SUM-004` addressed additional PR #71 feedback for vault restore ordering and missing claim-evidence FKs, then reran red/green regression, vault/profile suites, lint, diff, and build.
+- 2026-07-01 01:35 MYT - `SUM-004` addressed additional PR #71 feedback for explicit profile-evidence deletion during forget cleanup, then reran red/green regression, related forget tests, user profile suite, and forget endpoint checks.
+- 2026-07-01 01:53 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer non-claim profile updates during claim reconciliation, then reran red/green regression, reconciliation cluster, and the user profile suite.
+- 2026-07-01 02:13 MYT - `SUM-004` addressed additional PR #71 feedback for returning 400 on blank profile correction payloads, then reran red/green regression, profile API checks, and the user profile suite.
+- 2026-07-01 02:34 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer profile fields when retrying older failed profile candidates, then reran red/green regression, profile promotion checks, and the user profile suite.
+- 2026-07-01 02:55 MYT - `SUM-004` addressed additional PR #71 feedback for single-token runtime-message profile forget cleanup and field-scoped sourceless claim reconciliation, then reran red/green regressions, related forget/reconciliation checks, the user profile suite, lint, diff, and build.
+- 2026-07-01 03:15 MYT - `SUM-004` addressed additional PR #71 feedback for same-value profile observation timestamps and `user_profile` prompt-budget priority, then reran red/green regressions, profile/prompt-budget suites, lint, diff, and build.
+- 2026-07-01 03:33 MYT - `SUM-004` addressed additional PR #71 feedback for line-boundary structured-profile prompt truncation, then reran red/green regression, the user profile suite, lint, diff, and build.
+- 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
 
 ## Validation
 
@@ -226,3 +253,12 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-003 PR #70 active-pruning fix filters stale-pruning candidate relations to active rows so already-superseded edges are not re-presented as current facts.
   - SUM-003 PR #70 legacy downgrade fix skips FK drops for repaired legacy KG tables that were stamped at head without named constraints.
   - SUM-003 PR #70 self-supersession fix excludes explicitly superseded/evolved relation IDs from duplicate-active lookup so same-triple corrections create a new active interval.
+  - SUM-004 PR #71 vault restore fix inserts structured profile rows without unresolved profile/claim provenance FKs, then backfills only in-snapshot profile self-links after all profile rows exist.
+  - SUM-004 PR #71 forget cleanup fix deletes profile evidence rows explicitly before deleting the profile field so SQLite soul DBs without FK cascade enforcement do not retain orphaned evidence.
+  - SUM-004 PR #71 claim reconciliation fix compares active profile timestamps against claim provenance timestamps so older claims cannot supersede newer non-claim profile updates.
+  - SUM-004 PR #71 profile API fix maps blank correction values to HTTP 400 while preserving 404 for missing active profile fields.
+  - SUM-004 PR #71 profile candidate retry fix passes candidate creation time into promotion and preserves newer profile fields from older automatic updates.
+  - SUM-004 PR #71 forget/reconciliation fix deletes single-token runtime-message profile facts only when profile metadata supports the relation and scopes sourceless source-memory reconciliation evidence to the target profile field.
+  - SUM-004 PR #71 profile/budget fix keeps same-value upserts from moving `last_observed_at` backwards and gives `user_profile` an explicit tier-0 prompt-budget policy.
+  - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
+  - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.

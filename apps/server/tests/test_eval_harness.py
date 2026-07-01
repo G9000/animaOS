@@ -30,8 +30,10 @@ from anima_server.models import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
     User,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
-from anima_server.models.runtime_memory import MemoryCandidate
+from anima_server.models.runtime_memory import MemoryCandidate, ProfileUpdateCandidate
 from eval_client import HttpAnimaClient
 from run_agent_eval import build_eval_plan
 
@@ -1113,6 +1115,38 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                     ),
                 ]
             )
+            eval_profile = UserProfileField(
+                user_id=1,
+                category="work",
+                key="role",
+                value_text="Eval role",
+                status="active",
+            )
+            other_profile = UserProfileField(
+                user_id=2,
+                category="work",
+                key="role",
+                value_text="Other role",
+                status="active",
+            )
+            soul_db.add_all([eval_profile, other_profile])
+            soul_db.flush()
+            soul_db.add_all(
+                [
+                    UserProfileFieldEvidence(
+                        user_id=1,
+                        profile_field_id=eval_profile.id,
+                        source_kind="eval",
+                        evidence_text="Eval profile evidence",
+                    ),
+                    UserProfileFieldEvidence(
+                        user_id=2,
+                        profile_field_id=other_profile.id,
+                        source_kind="eval",
+                        evidence_text="Other profile evidence",
+                    ),
+                ]
+            )
 
             runtime_db.add_all(
                 [
@@ -1131,6 +1165,24 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                         category="fact",
                         source="eval",
                         content_hash="hash-2",
+                    ),
+                    ProfileUpdateCandidate(
+                        user_id=1,
+                        category="work",
+                        key="role",
+                        value="Eval profile candidate",
+                        evidence_text="Eval candidate evidence",
+                        source="eval",
+                        content_hash="profile-hash-1",
+                    ),
+                    ProfileUpdateCandidate(
+                        user_id=2,
+                        category="work",
+                        key="role",
+                        value="Other profile candidate",
+                        evidence_text="Other candidate evidence",
+                        source="eval",
+                        content_hash="profile-hash-2",
                     ),
                 ]
             )
@@ -1256,8 +1308,11 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
 
             assert deleted["memory_items"] == 1
             assert deleted["memory_item_evidence"] == 1
+            assert deleted["user_profile_fields"] == 1
+            assert deleted["user_profile_field_evidence"] == 1
             assert deleted["runtime_threads"] == 1
             assert deleted["memory_candidates"] == 1
+            assert deleted["profile_update_candidates"] == 1
             assert deleted["runtime_document_chunks"] == 1
             assert deleted["runtime_documents"] == 1
             assert deleted["runtime_workflow_checkpoints"] == 1
@@ -1268,6 +1323,14 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert soul_db.scalars(
                 select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 1)
             ).all() == []
+            assert soul_db.scalars(
+                select(UserProfileField).where(UserProfileField.user_id == 1)
+            ).all() == []
+            assert soul_db.scalars(
+                select(UserProfileFieldEvidence).where(
+                    UserProfileFieldEvidence.user_id == 1
+                )
+            ).all() == []
             assert len(
                 soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == 2)).all()
             ) == 1
@@ -1276,8 +1339,23 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                     select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 2)
                 ).all()
             ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(UserProfileField).where(UserProfileField.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(UserProfileFieldEvidence).where(
+                        UserProfileFieldEvidence.user_id == 2
+                    )
+                ).all()
+            ) == 1
             assert runtime_db.scalars(
                 select(RuntimeThread).where(RuntimeThread.user_id == 1)
+            ).all() == []
+            assert runtime_db.scalars(
+                select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == 1)
             ).all() == []
             assert runtime_db.scalars(
                 select(RuntimeDocument).where(RuntimeDocument.user_id == 1)
@@ -1296,6 +1374,13 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert len(
                 runtime_db.scalars(
                     select(RuntimeThread).where(RuntimeThread.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                runtime_db.scalars(
+                    select(ProfileUpdateCandidate).where(
+                        ProfileUpdateCandidate.user_id == 2
+                    )
                 ).all()
             ) == 1
             assert len(

@@ -102,6 +102,7 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 @dataclass(slots=True)
 class LLMExtractionResult:
     memories: list[dict[str, Any]] = field(default_factory=list)
+    profile_updates: list[dict[str, Any]] = field(default_factory=list)
     emotion: dict[str, Any] | None = None
     failed: bool = False
     error: str | None = None
@@ -141,10 +142,15 @@ async def extract_memories_via_llm(
             memories = obj.get("memories", [])
             if isinstance(memories, list):
                 result.memories = [m for m in memories if isinstance(m, dict)]
-                emotion = obj.get("emotion")
-                if emotion and isinstance(emotion, dict):
-                    result.emotion = emotion
-                return result
+            profile_updates = obj.get("profile_updates", [])
+            if isinstance(profile_updates, list):
+                result.profile_updates = [
+                    update for update in profile_updates if isinstance(update, dict)
+                ]
+            emotion = obj.get("emotion")
+            if emotion and isinstance(emotion, dict):
+                result.emotion = emotion
+            return result
 
         # Fallback: try as plain array (backward compat)
         result.memories = _parse_json_array(content)
@@ -359,6 +365,10 @@ async def run_background_extraction(
         count_eligible_candidates,
         create_memory_candidate,
     )
+    from anima_server.services.agent.user_profile import (
+        count_eligible_profile_update_candidates,
+        create_profile_update_candidates_from_payload,
+    )
 
     try:
         rt_factory = runtime_db_factory or _get_runtime_factory()
@@ -450,6 +460,12 @@ async def run_background_extraction(
                                 source_message_ids=source_message_ids,
                             )
                         llm_count = len(llm_result.memories)
+                        profile_update_count = create_profile_update_candidates_from_payload(
+                            rt_db,
+                            user_id=user_id,
+                            profile_updates=llm_result.profile_updates,
+                            source_message_ids=source_message_ids,
+                        )
 
                         emotion_payload = (
                             llm_result.emotion
@@ -484,9 +500,13 @@ async def run_background_extraction(
                             )
 
                         logger.info(
-                            "LLM extraction for user %s: %d memories extracted%s",
+                            (
+                                "LLM extraction for user %s: %d memories, "
+                                "%d profile updates extracted%s"
+                            ),
                             user_id,
                             llm_count,
+                            profile_update_count,
                             f" (emotion: {emotion_name})" if emotion_name else "",
                         )
                 except Exception:
@@ -506,8 +526,16 @@ async def run_background_extraction(
             from anima_server.services.agent.pending_ops import count_pending_ops
 
             candidate_count = count_eligible_candidates(rt_db, user_id=user_id)
+            profile_update_count = count_eligible_profile_update_candidates(
+                rt_db,
+                user_id=user_id,
+            )
             pending_count = count_pending_ops(rt_db, user_id=user_id)
-            if trigger_soul_writer and (candidate_count > 0 or pending_count > 0):
+            if trigger_soul_writer and (
+                candidate_count > 0
+                or profile_update_count > 0
+                or pending_count > 0
+            ):
                 from anima_server.services.agent.soul_writer import run_soul_writer
 
                 task = asyncio.create_task(run_soul_writer(user_id))
@@ -515,9 +543,13 @@ async def run_background_extraction(
                     _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
                 logger.info(
-                    "Triggered eager Soul Writer for user %s (%d candidates, %d pending ops)",
+                    (
+                        "Triggered eager Soul Writer for user %s "
+                        "(%d candidates, %d profile updates, %d pending ops)"
+                    ),
                     user_id,
                     candidate_count,
+                    profile_update_count,
                     pending_count,
                 )
 

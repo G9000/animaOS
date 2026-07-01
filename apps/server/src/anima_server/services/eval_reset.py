@@ -35,6 +35,8 @@ from anima_server.models import (
     RuntimeWorkflowRun,
     SelfModelBlock,
     Task,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
 from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.runtime_consciousness import (
@@ -46,6 +48,7 @@ from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
     MemoryRetrievalFeedback,
+    ProfileUpdateCandidate,
     PromotionJournal,
     RuntimeSessionNote,
 )
@@ -126,6 +129,12 @@ def _reset_runtime_state(
     _delete(db, deleted, "runtime_threads", delete(RuntimeThread).where(RuntimeThread.user_id == user_id))
     _delete(db, deleted, "pending_memory_ops", delete(PendingMemoryOp).where(PendingMemoryOp.user_id == user_id))
     _delete(db, deleted, "memory_candidates", delete(MemoryCandidate).where(MemoryCandidate.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "profile_update_candidates",
+        delete(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == user_id),
+    )
     _delete(db, deleted, "promotion_journal", delete(PromotionJournal).where(PromotionJournal.user_id == user_id))
     _delete(db, deleted, "memory_access_log", delete(MemoryAccessLog).where(MemoryAccessLog.user_id == user_id))
     _delete(
@@ -169,6 +178,18 @@ def _reset_soul_state(
         deleted,
         "memory_item_evidence",
         delete(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id.in_(memory_item_ids)),
+    )
+    _delete(
+        db,
+        deleted,
+        "user_profile_field_evidence",
+        delete(UserProfileFieldEvidence).where(UserProfileFieldEvidence.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "user_profile_fields",
+        delete(UserProfileField).where(UserProfileField.user_id == user_id),
     )
     _delete(db, deleted, "kg_relations", delete(KGRelation).where(KGRelation.user_id == user_id))
     _delete(db, deleted, "kg_entities", delete(KGEntity).where(KGEntity.user_id == user_id))

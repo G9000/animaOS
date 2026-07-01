@@ -61,6 +61,7 @@ class SleepTaskResult:
     contradictions_found: int = 0
     contradictions_resolved: int = 0
     items_merged: int = 0
+    profile_fields_reconciled: int = 0
     episodes_generated: int = 0
     embeddings_backfilled: int = 0
     refs_regenerated: int = 0
@@ -139,6 +140,34 @@ async def run_sleep_tasks(
     except Exception as e:
         logger.exception("Profile synthesis failed for user %s", user_id)
         result.errors.append(f"profile_synthesis: {e}")
+
+    # 2.5. Structured profile reconciliation from active claims
+    try:
+        from anima_server.db.session import SessionLocal
+        from anima_server.services.agent.user_profile import reconcile_profile_from_claims
+
+        factory = db_factory or SessionLocal
+        with factory() as db:
+            result.profile_fields_reconciled = reconcile_profile_from_claims(
+                db,
+                user_id=user_id,
+            )
+            if result.profile_fields_reconciled > 0:
+                db.commit()
+                try:
+                    from anima_server.services.agent.companion import get_companion
+
+                    companion = get_companion(user_id)
+                    if companion is not None:
+                        companion.invalidate_memory()
+                except Exception:
+                    logger.debug(
+                        "Companion cache invalidation failed after profile reconciliation",
+                        exc_info=True,
+                    )
+    except Exception as e:
+        logger.exception("Structured profile reconciliation failed for user %s", user_id)
+        result.errors.append(f"profile_reconciliation: {e}")
 
     # 3. Episode generation
     try:
