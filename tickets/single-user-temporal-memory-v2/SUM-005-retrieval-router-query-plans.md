@@ -9,29 +9,31 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 19:21 MYT
+- Updated: 2026-07-01 19:58 MYT
 - Started: 2026-07-01 14:00 MYT
 - Completed: 2026-07-01 14:19 MYT
 
 ## Goal
 
-Route memory retrieval by user intent instead of using one generic scoring strategy for every turn.
+Route memory retrieval by user intent instead of using one generic scoring strategy for every turn. The live router should classify intent semantically through the configured LLM so multilingual, slang, and code-switched turns are not constrained by English keyword checks.
 
 ## Deliverables
 
-- `retrieval_router.py` with deterministic route labels and query plan objects.
+- `retrieval_router.py` with LLM-first semantic route labels, strict query plan objects, and deterministic fallback routing.
 - Source-specific retrieval composition for profile, graph, memory items, episodes, transcripts, foresight, experiences, and skills.
-- Trace output showing chosen route, sources, and scores.
+- Trace output showing chosen route, sources, scores, decision source, confidence, language hint, and fallback reason when used.
 - Prompt/tool guidance updates for `search_long_memory`.
-- Regression probes for route correctness.
+- Regression probes for route correctness, multilingual/slang semantic routing, and malformed/low-confidence LLM fallback.
 
 ## Acceptance
 
 - Router fixture suite reaches agreed accuracy on representative user turns.
+- LLM router output is schema-validated, uses deterministic fallback on malformed or low-confidence output, and does not call a provider in scaffold/test fallback mode.
+- Multilingual, slang, or code-switched emotional/project/preference turns can route by meaning rather than English keyword presence.
 - Emotional support queries retrieve relationship and emotional context.
 - Factual recall queries retrieve evidence-backed exact or episodic records.
 - Project continuity queries retrieve active project/profile/episode context.
-- Retrieval traces are serializable for UI/debug inspection.
+- Retrieval traces are serializable for UI/debug inspection and expose whether the route came from the LLM or fallback path.
 
 ## Activity Log
 
@@ -49,6 +51,8 @@ Route memory retrieval by user intent instead of using one generic scoring strat
 - 2026-07-01 16:32 MYT - Addressed PR #72 Codex rereview comment for keeping "feeling like" preference phrasing out of emotional routing while preserving explicit emotional cues.
 - 2026-07-01 18:43 MYT - Addressed PR #72 Codex rereview comments for deferring preference routing on project/work recommendations and restricting generic `who` questions to relationship-shaped identity or role lookups.
 - 2026-07-01 19:21 MYT - Addressed PR #72 Codex rereview comments for narrowing `instead` contradiction routing and keeping generic `next` project-step prompts out of foresight routing.
+- 2026-07-01 19:56 MYT - Updated SUM-005 scope to LLM-first semantic routing with schema validation, deterministic fallback, multilingual/slang regression coverage, and trace metadata for router decision source.
+- 2026-07-01 19:58 MYT - Completed validation for semantic router scope correction and updated PRD/ticket artifacts.
 
 ## Validation
 
@@ -113,7 +117,14 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - PR #72 instead/next focused suite: 58 passed, 5 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #72 instead/next fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #72 instead/next fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - semantic-router regression failed before implementation because `plan_retrieval_semantic` did not exist.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - semantic router suite: 34 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - semantic router focused suite: 61 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - semantic router lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - semantic router build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - passed with CRLF normalization warnings only.
 - Changed paths:
+  - apps/server/src/anima_server/config.py
   - apps/server/src/anima_server/schemas/chat.py
   - apps/server/src/anima_server/services/agent/bm25_index.py
   - apps/server/src/anima_server/services/agent/embeddings.py
@@ -123,6 +134,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - apps/server/src/anima_server/services/agent/templates/system_prompt.md.j2
   - apps/server/src/anima_server/services/agent/tools.py
   - apps/server/tests/test_chat.py
+  - apps/server/tests/conftest.py
   - apps/server/tests/test_agent_service.py
   - apps/server/tests/test_bm25_index.py
   - apps/server/tests/test_hybrid_retrieval.py
@@ -130,6 +142,7 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - apps/server/tests/test_search_long_memory_tool.py
   - packages/api-client/src/types.ts
   - packages/standard-templates/src/chat/types.ts
+  - docs/prds/memory/single-user-temporal-memory-v2.md
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-005-retrieval-router-query-plans.md
 - Notes:
@@ -145,3 +158,4 @@ Route memory retrieval by user intent instead of using one generic scoring strat
   - The emotional `feel`/`feeling` cue now excludes the "feeling like" preference idiom unless another explicit emotional term is present.
   - Project/work artifact cues now outrank recommendation wording unless the turn is explicitly about personal taste, and generic `who` questions only reach relationship routing when they ask for a simple identity or relationship role.
   - `Instead` no longer acts as a standalone contradiction cue inside comparative preference phrasing, and `next` only routes to foresight for concrete temporal phrases such as `next Friday` or `next week`.
+  - Live retrieval routing now uses the configured LLM semantic classifier first, records `decisionSource`, `confidence`, `language`, and `fallbackReason` in traces, and falls back to deterministic routing for scaffold/test mode, malformed output, low confidence, or LLM invocation failures.

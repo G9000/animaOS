@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 19:21 MYT
+- Updated: 2026-07-01 19:58 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -37,7 +37,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - Evidence-backed durable memory semantics.
 - Temporal knowledge graph relation lifecycle.
 - Structured evidence-backed user profile.
-- Intent-specific retrieval query plans.
+- LLM-first intent-specific retrieval query plans with deterministic fallback.
 - Salience-aware decay and evolution handling.
 - Cross-episode pattern synthesis.
 - Foresight signal extraction and lifecycle.
@@ -127,6 +127,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 16:32 MYT - `SUM-005` addressed PR #72 Codex rereview comment for keeping "feeling like" preference phrasing out of emotional routing while preserving explicit emotional cues.
 - 2026-07-01 18:43 MYT - `SUM-005` addressed PR #72 Codex rereview comments for deferring preference routing on project/work recommendations and restricting generic `who` questions to relationship-shaped identity or role lookups.
 - 2026-07-01 19:21 MYT - `SUM-005` addressed PR #72 Codex rereview comments for narrowing `instead` contradiction routing and keeping generic `next` project-step prompts out of foresight routing.
+- 2026-07-01 19:56 MYT - `SUM-005` scope corrected to LLM-first semantic retrieval routing with schema validation, deterministic fallback, multilingual/slang regression coverage, and router decision-source traces.
+- 2026-07-01 19:58 MYT - `SUM-005` semantic router scope correction validated with router, focused service/retrieval suite, lint, build, and diff checks.
 
 ## Validation
 
@@ -287,6 +289,12 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 PR #72 instead/next focused suite: 58 passed, 5 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 PR #72 instead/next fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 PR #72 instead/next fix build: passed with existing Vite chunk-size warning.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - SUM-005 semantic-router regression failed before implementation because `plan_retrieval_semantic` did not exist.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py -q` - SUM-005 semantic router suite: 34 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_retrieval_router.py apps/server/tests/test_chat.py apps/server/tests/test_search_long_memory_tool.py apps/server/tests/test_agent_service.py::test_run_agent_attaches_retrieval_router_trace_without_hits apps/server/tests/test_agent_service.py::test_run_agent_applies_retrieval_router_memory_category_filters apps/server/tests/test_agent_service.py::test_run_agent_does_not_run_hidden_wide_evidence_retrieval apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_filters_by_memory_categories apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_applies_category_filters_before_candidate_limit apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_applies_categories_before_candidate_limit -q` - SUM-005 semantic router focused suite: 61 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-005 semantic router lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-005 semantic router build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-005 semantic router diff check passed with CRLF normalization warnings only.
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -300,6 +308,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_knowledge_graph.py
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_vault.py
+  - apps/server/src/anima_server/config.py
   - apps/server/src/anima_server/schemas/chat.py
   - apps/server/src/anima_server/services/agent/bm25_index.py
   - apps/server/src/anima_server/services/agent/embeddings.py
@@ -309,6 +318,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/src/anima_server/services/agent/templates/system_prompt.md.j2
   - apps/server/src/anima_server/services/agent/tools.py
   - apps/server/tests/test_chat.py
+  - apps/server/tests/conftest.py
   - apps/server/tests/test_agent_service.py
   - apps/server/tests/test_bm25_index.py
   - apps/server/tests/test_hybrid_retrieval.py
@@ -316,6 +326,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_search_long_memory_tool.py
   - packages/api-client/src/types.ts
   - packages/standard-templates/src/chat/types.ts
+  - docs/prds/memory/single-user-temporal-memory-v2.md
   - tickets/single-user-temporal-memory-v2/SUM-005-retrieval-router-query-plans.md
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
@@ -349,7 +360,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 profile/budget fix keeps same-value upserts from moving `last_observed_at` backwards and gives `user_profile` an explicit tier-0 prompt-budget policy.
   - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
   - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
-  - SUM-005 adds deterministic intent routes for factual recall, emotional support, relationship context, project continuity, preferences, foresight, contradiction updates, procedural memory, and general recall.
+  - SUM-005 adds LLM-first semantic intent routes for factual recall, emotional support, relationship context, project continuity, preferences, foresight, contradiction updates, procedural memory, and general recall, with deterministic fallback when semantic routing is unavailable or invalid.
   - SUM-005 represents foresight, experiences, and skills as planned query-plan sources with `available=false` until later storage tickets implement those durable source types.
   - SUM-005 PR #72 review fix preserves `queryPlan` through chat response schemas/client types, prioritizes emotional cues before broad future-commitment phrasing, and treats lowercase relationship targets as relationship-context lookups.
   - SUM-005 PR #72 rereview fix applies route `memory_categories` filters to hybrid retrieval and rechecks them before adaptive filtering so injected context matches the trace scope.
@@ -361,3 +372,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-005 PR #72 feeling-like fix excludes the "feeling like" preference idiom from the emotional `feel`/`feeling` cue unless another explicit emotional term is present.
   - SUM-005 PR #72 project-recommendation/who-query fix lets project/work artifact cues outrank recommendation wording unless the turn is explicitly about personal taste, and restricts generic `who` routing to simple identity or relationship-role queries.
   - SUM-005 PR #72 instead/next fix removes standalone `instead` from contradiction routing and narrows `next` foresight routing to concrete temporal phrases such as `next Friday` or `next week`.
+  - SUM-005 semantic router scope correction makes the live agent path call the configured LLM router first, records `decisionSource`, `confidence`, `language`, and `fallbackReason`, and keeps deterministic routing as the scaffold/test, invalid-output, low-confidence, or invocation-error fallback.

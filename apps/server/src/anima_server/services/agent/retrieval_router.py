@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from anima_server.config import settings
 
 
 class RetrievalRoute(StrEnum):
@@ -27,6 +30,11 @@ class RetrievalSource(StrEnum):
     FORESIGHT = "foresight"
     EXPERIENCES = "experiences"
     SKILLS = "skills"
+
+
+class RetrievalRouterDecisionSource(StrEnum):
+    LLM = "llm"
+    FALLBACK = "fallback"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +67,11 @@ class RetrievalQueryPlan:
     query: str
     rationale: str
     sources: tuple[RetrievalSourcePlan, ...]
+    decision_source: RetrievalRouterDecisionSource = RetrievalRouterDecisionSource.FALLBACK
+    confidence: float | None = None
+    language: str | None = None
+    semantic_rationale: str | None = None
+    fallback_reason: str | None = None
 
     @property
     def primary_source(self) -> RetrievalSourcePlan | None:
@@ -72,12 +85,22 @@ class RetrievalQueryPlan:
         return next((plan for plan in self.sources if plan.source is source), None)
 
     def to_trace(self) -> dict[str, object]:
-        return {
+        trace: dict[str, object] = {
             "route": self.route.value,
             "query": self.query,
             "rationale": self.rationale,
+            "decisionSource": self.decision_source.value,
             "sources": [source.to_trace() for source in self.sources],
         }
+        if self.confidence is not None:
+            trace["confidence"] = self.confidence
+        if self.language:
+            trace["language"] = self.language
+        if self.semantic_rationale:
+            trace["semanticRationale"] = self.semantic_rationale
+        if self.fallback_reason:
+            trace["fallbackReason"] = self.fallback_reason
+        return trace
 
 
 def plan_retrieval(turn: str) -> RetrievalQueryPlan:
@@ -87,8 +110,146 @@ def plan_retrieval(turn: str) -> RetrievalQueryPlan:
     return _plan_for_route(route, query)
 
 
+async def plan_retrieval_semantic(
+    turn: str,
+    *,
+    client: Any | None = None,
+) -> RetrievalQueryPlan:
+    """Build an LLM-classified retrieval plan with deterministic fallback."""
+    query = _normalize_query(turn)
+    if not _semantic_router_enabled(client):
+        return _fallback_plan(query, "semantic_router_disabled")
+
+    try:
+        from anima_server.services.agent.llm_json import call_llm_for_json
+
+        parsed = await call_llm_for_json(
+            _SEMANTIC_ROUTER_SYSTEM,
+            _build_semantic_router_prompt(query),
+            client=client,
+        )
+    except Exception:
+        return _fallback_plan(query, "llm_error")
+
+    semantic_decision = _validate_semantic_decision(parsed)
+    if isinstance(semantic_decision, str):
+        return _fallback_plan(query, semantic_decision)
+
+    route, confidence, language, semantic_rationale = semantic_decision
+    return _plan_for_route(
+        route,
+        query,
+        decision_source=RetrievalRouterDecisionSource.LLM,
+        confidence=confidence,
+        language=language,
+        semantic_rationale=semantic_rationale,
+    )
+
+
 def _normalize_query(turn: str) -> str:
     return re.sub(r"\s+", " ", turn.strip())
+
+
+def _semantic_router_enabled(client: Any | None) -> bool:
+    if client is not None:
+        return True
+    if settings.agent_provider == "scaffold":
+        return False
+    return settings.agent_retrieval_router_mode == "semantic"
+
+
+def _fallback_plan(query: str, reason: str) -> RetrievalQueryPlan:
+    route = _classify_route(query)
+    return _plan_for_route(
+        route,
+        query,
+        decision_source=RetrievalRouterDecisionSource.FALLBACK,
+        fallback_reason=reason,
+    )
+
+
+SemanticDecision = tuple[RetrievalRoute, float, str | None, str | None]
+
+
+def _validate_semantic_decision(parsed: object) -> SemanticDecision | str:
+    if not isinstance(parsed, dict):
+        return "invalid_json"
+
+    route_raw = parsed.get("route")
+    if not isinstance(route_raw, str):
+        return "invalid_route"
+
+    try:
+        route = RetrievalRoute(route_raw.strip().casefold())
+    except ValueError:
+        return "invalid_route"
+
+    confidence = _coerce_confidence(parsed.get("confidence"))
+    if confidence is None:
+        return "invalid_confidence"
+    if confidence < _SEMANTIC_ROUTER_MIN_CONFIDENCE:
+        return "low_confidence"
+
+    return (
+        route,
+        confidence,
+        _coerce_optional_text(parsed.get("language"), max_length=40),
+        _coerce_optional_text(parsed.get("rationale"), max_length=240),
+    )
+
+
+def _coerce_confidence(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= confidence <= 1.0:
+        return None
+    return round(confidence, 3)
+
+
+def _coerce_optional_text(value: object, *, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"\s+", " ", value.strip())
+    if not text:
+        return None
+    return text[:max_length]
+
+
+_SEMANTIC_ROUTER_MIN_CONFIDENCE = 0.55
+
+_SEMANTIC_ROUTER_SYSTEM = """You classify one user turn for ANIMA memory retrieval.
+Return only a JSON object with these keys:
+{"route": string, "confidence": number from 0 to 1, "language": string, "rationale": string}
+
+Classify the user's intent by meaning, not by English keyword matching. Handle
+multilingual text, slang, typos, and code-switching. Use a lower confidence when
+the route is genuinely ambiguous. Do not invent facts; only classify the route."""
+
+
+def _build_semantic_router_prompt(query: str) -> str:
+    route_descriptions = "\n".join(
+        f'- "{route.value}": {_ROUTE_RATIONALES[route]}' for route in RetrievalRoute
+    )
+    return (
+        "Choose exactly one retrieval route for this user turn.\n\n"
+        "Routes:\n"
+        f"{route_descriptions}\n\n"
+        "Routing guidance:\n"
+        "- Emotional distress, reassurance, rejection, anxiety, or relational pain "
+        "routes to emotional_support, even when phrased in slang or another language.\n"
+        "- Active ticket, PRD, project status, or what-to-do-next questions route to "
+        "project_continuity unless the user asks about a real future commitment.\n"
+        "- Preference-sensitive recommendations route to preference_lookup. "
+        "Comparisons like 'instead of' are preferences unless the user is correcting memory.\n"
+        "- Corrections to stored facts or changed personal state route to contradiction_update.\n"
+        "- Learned workflows, review loops, and process memory route to procedural_skill_recall.\n"
+        "- If no specialized route fits, use general_recall.\n\n"
+        f"User turn JSON string: {json.dumps(query, ensure_ascii=False)}"
+    )
 
 
 def _classify_route(query: str) -> RetrievalRoute:
@@ -148,7 +309,16 @@ def _classify_route(query: str) -> RetrievalRoute:
     return RetrievalRoute.GENERAL_RECALL
 
 
-def _plan_for_route(route: RetrievalRoute, query: str) -> RetrievalQueryPlan:
+def _plan_for_route(
+    route: RetrievalRoute,
+    query: str,
+    *,
+    decision_source: RetrievalRouterDecisionSource = RetrievalRouterDecisionSource.FALLBACK,
+    confidence: float | None = None,
+    language: str | None = None,
+    semantic_rationale: str | None = None,
+    fallback_reason: str | None = None,
+) -> RetrievalQueryPlan:
     sources_by_route: dict[RetrievalRoute, tuple[RetrievalSourcePlan, ...]] = {
         RetrievalRoute.FACTUAL_RECALL: (
             _memory_items(query, mode="hybrid_evidence", limit=12),
@@ -270,6 +440,11 @@ def _plan_for_route(route: RetrievalRoute, query: str) -> RetrievalQueryPlan:
         query=query,
         rationale=_ROUTE_RATIONALES[route],
         sources=sources_by_route[route],
+        decision_source=decision_source,
+        confidence=confidence,
+        language=language,
+        semantic_rationale=semantic_rationale,
+        fallback_reason=fallback_reason,
     )
 
 

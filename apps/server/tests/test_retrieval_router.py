@@ -5,11 +5,27 @@ from anima_server.services.agent.retrieval_router import (
     RetrievalRoute,
     RetrievalSource,
     plan_retrieval,
+    plan_retrieval_semantic,
 )
 from anima_server.services.agent.state import (
     AgentRetrievalTrace,
     serialize_agent_retrieval,
 )
+
+
+class _FakeLLMResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeLLMClient:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls: list[object] = []
+
+    async def ainvoke(self, input: object) -> _FakeLLMResponse:
+        self.calls.append(input)
+        return _FakeLLMResponse(self.content)
 
 
 @pytest.mark.parametrize(
@@ -35,6 +51,68 @@ def test_plan_retrieval_routes_representative_turns(
     assert plan.primary_source is not None
     assert plan.to_trace()["route"] == expected_route.value
     json.dumps(plan.to_trace())
+
+
+@pytest.mark.asyncio
+async def test_plan_retrieval_semantic_uses_llm_intent_for_multilingual_slang() -> None:
+    client = _FakeLLMClient(
+        json.dumps(
+            {
+                "route": "emotional_support",
+                "confidence": 0.93,
+                "language": "ms-en",
+                "rationale": "Malay and English slang expresses anxiety about Maya.",
+            }
+        )
+    )
+
+    plan = await plan_retrieval_semantic("aku rasa anxious pasal Maya lah", client=client)
+
+    assert client.calls
+    assert plan.route is RetrievalRoute.EMOTIONAL_SUPPORT
+    trace = plan.to_trace()
+    assert trace["decisionSource"] == "llm"
+    assert trace["confidence"] == pytest.approx(0.93)
+    assert trace["language"] == "ms-en"
+    assert trace["semanticRationale"] == (
+        "Malay and English slang expresses anxiety about Maya."
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_retrieval_semantic_falls_back_on_invalid_route() -> None:
+    client = _FakeLLMClient(json.dumps({"route": "timeline", "confidence": 0.98}))
+
+    plan = await plan_retrieval_semantic(
+        "What is the current status of the SUM-005 retrieval work?",
+        client=client,
+    )
+
+    trace = plan.to_trace()
+    assert plan.route is RetrievalRoute.PROJECT_CONTINUITY
+    assert trace["decisionSource"] == "fallback"
+    assert trace["fallbackReason"] == "invalid_route"
+
+
+@pytest.mark.asyncio
+async def test_plan_retrieval_semantic_falls_back_on_low_confidence() -> None:
+    client = _FakeLLMClient(
+        json.dumps(
+            {
+                "route": "preference_lookup",
+                "confidence": 0.2,
+                "language": "en",
+                "rationale": "Too uncertain to route semantically.",
+            }
+        )
+    )
+
+    plan = await plan_retrieval_semantic("What should we do next on SUM-005?", client=client)
+
+    trace = plan.to_trace()
+    assert plan.route is RetrievalRoute.PROJECT_CONTINUITY
+    assert trace["decisionSource"] == "fallback"
+    assert trace["fallbackReason"] == "low_confidence"
 
 
 def test_relationship_route_requires_named_relationship_target() -> None:

@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     agent_retrieval_recency_weight: float = 0.2
     agent_retrieval_heat_weight: float = 0.1
     agent_retrieval_recency_tau_days: float = 14.0
+    agent_retrieval_router_mode: Literal["semantic", "fallback"] = "semantic"
     agent_session_memory_budget_chars: int = 1500
     agent_self_model_identity_budget: int = 1000
     agent_self_model_inner_state_budget: int = 800

@@ -70,7 +70,8 @@ The user profile should become a typed, evidence-backed profile with categories 
 
 ### Retrieval Intent Routing
 
-Before retrieval, the system should infer what kind of memory the current turn needs:
+Before retrieval, the system should use an LLM-assisted semantic router to infer
+what kind of memory the current turn needs:
 
 - factual recall
 - emotional support
@@ -81,7 +82,16 @@ Before retrieval, the system should infer what kind of memory the current turn n
 - contradiction or update handling
 - procedural skill recall
 
-The router should produce a query plan that combines the right sources: profile, graph, memory items, episodes, transcripts, foresight, or experience/skill memory.
+The router should classify intent by meaning, not by English keywords, so it can
+handle multilingual turns, slang, typos, and code-switching. It should emit a
+strict query plan that records the chosen route, confidence, language hint,
+decision source, fallback reason when used, and the sources to query: profile,
+graph, memory items, episodes, transcripts, foresight, or experience/skill
+memory.
+
+Deterministic routing is acceptable only as a conservative fallback when the LLM
+router is unavailable, disabled for tests/scaffold mode, malformed, or too
+uncertain.
 
 ### Salience-Aware Decay
 
@@ -115,6 +125,8 @@ Agent experiences should be extracted, clustered, and distilled into reusable sk
 5. Derived memories must point to source evidence where practical.
 6. User-facing inspection and correction remain first-class product requirements.
 7. Multi-user/group memory stays out of scope for this version.
+8. Retrieval intent routing is LLM-first, schema-validated, and must degrade to a
+   conservative deterministic fallback without blocking retrieval.
 
 ## Success Metrics
 
@@ -123,7 +135,8 @@ Agent experiences should be extracted, clustered, and distilled into reusable sk
 | Evidence coverage | At least 95 percent of active MemoryItem rows have evidence | DB audit |
 | Profile grounding | 100 percent of profile fields link to evidence | DB audit and tests |
 | Temporal graph grounding | 90 percent of active KG relations link to evidence | DB audit |
-| Intent routing quality | 90 percent correct route on deterministic fixture set | Unit/eval tests |
+| Intent routing quality | 90 percent correct route on multilingual and slang semantic eval fixtures | Unit/eval tests |
+| Router fallback reliability | 100 percent schema-invalid or low-confidence model outputs degrade to deterministic query plans | Unit tests |
 | Recall improvement | Better top-k recall than current baseline on local memory probes | Regression eval |
 | Pattern synthesis usefulness | Recurrent patterns appear after repeated evidence, not single mentions | Golden tests |
 | Conversation latency | No material increase to main turn latency from sleep-only features | Timing tests |

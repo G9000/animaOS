@@ -1162,10 +1162,10 @@ async def _assemble_turn_context(
     try:
         from anima_server.services.agent.retrieval_router import (
             RetrievalSource,
-            plan_retrieval,
+            plan_retrieval_semantic,
         )
 
-        retrieval_plan = plan_retrieval(user_message)
+        retrieval_plan = await plan_retrieval_semantic(user_message)
         query_plan = retrieval_plan.to_trace()
         memory_source_plan = retrieval_plan.source_for(RetrievalSource.MEMORY_ITEMS)
         memory_search_limit = memory_source_plan.limit if memory_source_plan else 15
