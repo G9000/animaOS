@@ -118,6 +118,45 @@ def test_episode_sampling_keeps_temporal_topic_and_salience_diversity() -> None:
     assert recent_low.id not in sampled_ids
 
 
+def test_episode_sampling_skips_stale_episodes_marked_for_regeneration() -> None:
+    from anima_server.services.agent.pattern_synthesis import sample_pattern_episodes
+
+    with _db_session() as db:
+        user = _make_user(db)
+        stale = _episode(
+            db,
+            user_id=user.id,
+            date="2026-05-01",
+            summary="Forgotten detail should not feed pattern synthesis.",
+            topics=["private"],
+            significance=5,
+        )
+        stale.needs_regeneration = True
+        active_first = _episode(
+            db,
+            user_id=user.id,
+            date="2026-05-02",
+            summary="Active episode remains eligible.",
+            topics=["active"],
+            significance=3,
+        )
+        active_second = _episode(
+            db,
+            user_id=user.id,
+            date="2026-05-03",
+            summary="Another active episode remains eligible.",
+            topics=["active"],
+            significance=2,
+        )
+        db.flush()
+
+        sampled = sample_pattern_episodes(db, user_id=user.id, limit=3)
+
+    sampled_ids = {episode.id for episode in sampled}
+    assert stale.id not in sampled_ids
+    assert sampled_ids == {active_first.id, active_second.id}
+
+
 def test_strict_parser_requires_repeated_episode_evidence() -> None:
     from anima_server.services.agent.pattern_synthesis import parse_pattern_response
 
@@ -438,3 +477,49 @@ def test_pattern_prompt_block_renders_only_high_confidence_active_patterns() -> 
     assert "Low confidence" not in block.value
     assert "Superseded" not in block.value
     assert len(block.value) <= 80
+
+
+def test_pattern_prompt_block_honors_heat_visibility_floor() -> None:
+    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+    from anima_server.services.agent.memory_blocks import build_cross_episode_patterns_block
+
+    with _db_session() as db:
+        user = _make_user(db)
+        cold = MemoryItem(
+            user_id=user.id,
+            category="pattern",
+            source="pattern_synthesis",
+            content=ef(
+                user.id,
+                "Cold pattern should stay hidden.",
+                table="memory_items",
+                field="content",
+            ),
+            importance=4,
+            memory_class="emotional_pattern",
+            evidence_strength=0.86,
+            heat=HEAT_VISIBILITY_FLOOR / 2,
+        )
+        unscored = MemoryItem(
+            user_id=user.id,
+            category="pattern",
+            source="pattern_synthesis",
+            content=ef(
+                user.id,
+                "Unscored pattern can still render.",
+                table="memory_items",
+                field="content",
+            ),
+            importance=4,
+            memory_class="emotional_pattern",
+            evidence_strength=0.82,
+            heat=0.0,
+        )
+        db.add_all([cold, unscored])
+        db.flush()
+
+        block = build_cross_episode_patterns_block(db, user_id=user.id)
+
+    assert block is not None
+    assert "Unscored pattern can still render" in block.value
+    assert "Cold pattern should stay hidden" not in block.value

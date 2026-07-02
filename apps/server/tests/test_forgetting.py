@@ -392,6 +392,44 @@ class TestForgetMemory:
 
         assert result.derived_refs_affected == 2
 
+    def test_forget_removes_pattern_memory_citing_stale_episode(self, db: Session):
+        item = _make_item(db, content="secret codename aurora")
+        episode = _make_episode(
+            db,
+            summary="User discussed secret codename aurora during launch planning.",
+        )
+        pattern = MemoryItem(
+            user_id=1,
+            category="pattern",
+            source="pattern_synthesis",
+            content="Aurora launch planning repeatedly creates pressure.",
+            importance=4,
+            evidence_strength=0.86,
+        )
+        db.add(pattern)
+        db.flush()
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=pattern.id,
+                source_kind="pattern_synthesis",
+                evidence_text="launch pressure appeared in the source episode",
+                metadata_json={
+                    "memory_source": "pattern_synthesis",
+                    "source_episode_ids": [episode.id],
+                },
+            )
+        )
+        db.flush()
+        pattern_id = pattern.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert result.derived_refs_affected == 2
+        db.refresh(episode)
+        assert episode.needs_regeneration is True
+        assert db.get(MemoryItem, pattern_id) is None
+
     def test_forget_nonexistent_memory(self, db: Session):
         result = forget_memory(db, memory_id=9999, user_id=1)
         assert result.items_forgotten == 0

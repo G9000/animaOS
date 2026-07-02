@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -45,7 +45,7 @@ SUPERSEDED_DECAY_MULTIPLIER: float = 3.0
 class DerivedReference:
     """A single derived reference found in episodes or self-model blocks."""
 
-    table: str  # "memory_episodes" or "self_model_blocks"
+    table: str  # "memory_episodes", "self_model_blocks", or "memory_items"
     record_id: int
     section: str | None = None  # for self_model_blocks: growth_log, intentions
 
@@ -56,10 +56,11 @@ class DerivedReferences:
 
     episodes: list[DerivedReference] = field(default_factory=list)
     self_model_blocks: list[DerivedReference] = field(default_factory=list)
+    pattern_items: list[DerivedReference] = field(default_factory=list)
 
     @property
     def total(self) -> int:
-        return len(self.episodes) + len(self.self_model_blocks)
+        return len(self.episodes) + len(self.self_model_blocks) + len(self.pattern_items)
 
 
 @dataclass(slots=True)
@@ -98,12 +99,14 @@ def find_derived_references(
     *,
     memory_content: str,
     user_id: int,
+    exclude_memory_item_ids: Iterable[int] | None = None,
 ) -> DerivedReferences:
     """Search for the memory's content in episodes and self-model blocks.
 
     Uses substring matching against:
     - memory_episodes.summary
     - self_model_blocks.content WHERE section IN ('growth_log', 'intentions')
+    - pattern memory items and evidence that cite stale source episodes
     """
     refs = DerivedReferences()
 
@@ -149,7 +152,97 @@ def find_derived_references(
                 )
             )
 
+    _find_pattern_references(
+        db,
+        refs=refs,
+        memory_content_lower=memory_content_lower,
+        user_id=user_id,
+        exclude_memory_item_ids=set(exclude_memory_item_ids or ()),
+    )
+
     return refs
+
+
+def _find_pattern_references(
+    db: Session,
+    *,
+    refs: DerivedReferences,
+    memory_content_lower: str,
+    user_id: int,
+    exclude_memory_item_ids: set[int],
+) -> None:
+    from anima_server.services.agent.pattern_synthesis import PATTERN_CATEGORY, PATTERN_SOURCE
+
+    stale_episode_ids = {ref.record_id for ref in refs.episodes}
+    seen_pattern_ids: set[int] = set()
+
+    def add_pattern_ref(item_id: int) -> None:
+        if item_id in exclude_memory_item_ids or item_id in seen_pattern_ids:
+            return
+        seen_pattern_ids.add(item_id)
+        refs.pattern_items.append(
+            DerivedReference(
+                table="memory_items",
+                record_id=item_id,
+                section=PATTERN_CATEGORY,
+            )
+        )
+
+    pattern_items = list(
+        db.scalars(
+            select(MemoryItem).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.category == PATTERN_CATEGORY,
+                MemoryItem.source == PATTERN_SOURCE,
+                MemoryItem.superseded_by.is_(None),
+            )
+        ).all()
+    )
+    for item in pattern_items:
+        if item.id in exclude_memory_item_ids:
+            continue
+        content = df(user_id, item.content, table="memory_items", field="content")
+        if memory_content_lower in content.lower():
+            add_pattern_ref(item.id)
+
+    pattern_evidence = list(
+        db.scalars(
+            select(MemoryItemEvidence)
+            .join(MemoryItem, MemoryItemEvidence.memory_item_id == MemoryItem.id)
+            .where(
+                MemoryItemEvidence.user_id == user_id,
+                MemoryItem.category == PATTERN_CATEGORY,
+                MemoryItem.source == PATTERN_SOURCE,
+                MemoryItem.superseded_by.is_(None),
+            )
+        ).all()
+    )
+    for evidence in pattern_evidence:
+        item_id = int(evidence.memory_item_id)
+        if item_id in exclude_memory_item_ids or item_id in seen_pattern_ids:
+            continue
+        if memory_content_lower in evidence.evidence_text.lower():
+            add_pattern_ref(item_id)
+            continue
+        if stale_episode_ids & _metadata_source_episode_ids(evidence.metadata_json):
+            add_pattern_ref(item_id)
+
+
+def _metadata_source_episode_ids(metadata: dict[str, object] | None) -> set[int]:
+    if not isinstance(metadata, dict):
+        return set()
+    raw_ids = metadata.get("source_episode_ids")
+    if not isinstance(raw_ids, list):
+        return set()
+    parsed_ids: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            parsed = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            parsed_ids.add(parsed)
+    return parsed_ids
 
 
 def redact_derived_references(
@@ -193,6 +286,13 @@ def redact_derived_references(
             )
         count += 1
 
+    for pattern_ref in refs.pattern_items:
+        item = db.get(MemoryItem, pattern_ref.record_id)
+        if item is None:
+            continue
+        db.delete(item)
+        count += 1
+
     if count > 0:
         db.flush()
     return count
@@ -226,7 +326,12 @@ def suppress_memory(
     content = df(user_id, memory.content, table="memory_items", field="content")
 
     # Find and flag derived references
-    refs = find_derived_references(db, memory_content=content, user_id=user_id)
+    refs = find_derived_references(
+        db,
+        memory_content=content,
+        user_id=user_id,
+        exclude_memory_item_ids=(memory_id, superseded_by),
+    )
     if refs.total > 0:
         result.derived_refs_flagged = redact_derived_references(
             db,
@@ -298,7 +403,12 @@ def forget_memory(
     # 2. Find and flag derived references for ALL items in the chain
     for item in chain_items:
         item_content = df(user_id, item.content, table="memory_items", field="content")
-        refs = find_derived_references(db, memory_content=item_content, user_id=user_id)
+        refs = find_derived_references(
+            db,
+            memory_content=item_content,
+            user_id=user_id,
+            exclude_memory_item_ids=chain_ids,
+        )
         if refs.total > 0:
             result.derived_refs_affected += redact_derived_references(
                 db,

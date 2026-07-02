@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryEpisode, User
@@ -1140,6 +1140,7 @@ def build_cross_episode_patterns_block(
 ) -> MemoryBlock | None:
     """Build compact pattern memories synthesized from multiple episodes."""
     from anima_server.models import MemoryItem
+    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
     from anima_server.services.agent.pattern_synthesis import PATTERN_CATEGORY, PATTERN_SOURCE
 
     patterns = db.scalars(
@@ -1150,6 +1151,11 @@ def build_cross_episode_patterns_block(
             MemoryItem.source == PATTERN_SOURCE,
             MemoryItem.superseded_by.is_(None),
             MemoryItem.evidence_strength >= confidence_threshold,
+            or_(
+                MemoryItem.heat.is_(None),
+                MemoryItem.heat == 0.0,
+                MemoryItem.heat >= HEAT_VISIBILITY_FLOOR,
+            ),
         )
         .order_by(
             MemoryItem.evidence_strength.desc(),

@@ -89,7 +89,10 @@ def sample_pattern_episodes(
     episodes = list(
         db.scalars(
             select(MemoryEpisode)
-            .where(MemoryEpisode.user_id == user_id)
+            .where(
+                MemoryEpisode.user_id == user_id,
+                MemoryEpisode.needs_regeneration.is_(False),
+            )
             .order_by(MemoryEpisode.created_at.desc(), MemoryEpisode.id.desc())
             .limit(max(limit * 8, 64))
         ).all()
