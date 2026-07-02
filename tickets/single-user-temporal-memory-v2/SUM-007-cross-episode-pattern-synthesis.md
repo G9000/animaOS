@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 01:50 MYT
+- Updated: 2026-07-03 02:01 MYT
 - Started: 2026-07-02 22:59 MYT
 - Completed: 2026-07-02 22:59 MYT
 
@@ -42,6 +42,7 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
 - 2026-07-03 01:17 MYT - Addressed Codex review feedback by decrypting episode emotional arcs before rendering pattern synthesis prompts.
 - 2026-07-03 01:30 MYT - Addressed Codex review feedback by running manual sleep episode generation before pattern synthesis and skipping near-duplicate pattern memories.
 - 2026-07-03 01:50 MYT - Addressed Codex review feedback by excluding stale episodes from pattern sampling, cleaning pattern memories during forget/suppression, and honoring the heat visibility floor in pattern prompt blocks.
+- 2026-07-03 02:01 MYT - Addressed Codex review feedback by scheduling retrieval/vector index cleanup when forget/suppression deletes derived pattern memories.
 
 ## Validation
 
@@ -78,6 +79,10 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_pattern_prompt_block_honors_heat_visibility_floor` - latest P2 regression: 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_forgetting.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py` - latest review focused suite: 59 passed, 14 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - latest review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - failed before the retrieval-index cleanup fix because the source memory id was deleted from the index but the derived pattern id was not.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - retrieval-index cleanup regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - retrieval-index cleanup focused suite: 32 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - retrieval-index cleanup lint: passed.
 - Changed paths:
   - apps/server/src/anima_server/services/agent/forgetting.py
   - apps/server/src/anima_server/services/agent/pattern_synthesis.py
@@ -102,4 +107,5 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - Similar pattern classifications are skipped instead of inserted as separate pattern memories.
   - Pattern sampling excludes episodes flagged with `needs_regeneration=True`.
   - Forget/suppression cleanup now removes derived pattern memories that cite stale source episodes or directly contain forgotten content.
+  - Deleted derived pattern memories are now scheduled for after-commit retrieval/vector index cleanup.
   - Cross-episode pattern prompt rendering now respects the same heat visibility floor used by scored retrieval.

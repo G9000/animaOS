@@ -258,6 +258,7 @@ def redact_derived_references(
     - immediate_redact: replace the citation text with '[redacted]'
     """
     count = 0
+    pattern_cleanup_ids_by_user: dict[int, list[int]] = {}
 
     for ep_ref in refs.episodes:
         episode = db.get(MemoryEpisode, ep_ref.record_id)
@@ -290,11 +291,18 @@ def redact_derived_references(
         item = db.get(MemoryItem, pattern_ref.record_id)
         if item is None:
             continue
+        pattern_cleanup_ids_by_user.setdefault(int(item.user_id), []).append(int(item.id))
         db.delete(item)
         count += 1
 
     if count > 0:
         db.flush()
+    for user_id, item_ids in pattern_cleanup_ids_by_user.items():
+        _schedule_forget_external_cleanup_after_commit(
+            db,
+            user_id=user_id,
+            item_ids=item_ids,
+        )
     return count
 
 

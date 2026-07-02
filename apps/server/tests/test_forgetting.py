@@ -392,7 +392,17 @@ class TestForgetMemory:
 
         assert result.derived_refs_affected == 2
 
-    def test_forget_removes_pattern_memory_citing_stale_episode(self, db: Session):
+    def test_forget_removes_pattern_memory_citing_stale_episode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
         item = _make_item(db, content="secret codename aurora")
         episode = _make_episode(
             db,
@@ -425,10 +435,14 @@ class TestForgetMemory:
 
         result = forget_memory(db, memory_id=item.id, user_id=1)
 
+        assert deletes == []
         assert result.derived_refs_affected == 2
         db.refresh(episode)
         assert episode.needs_regeneration is True
         assert db.get(MemoryItem, pattern_id) is None
+        db.commit()
+        deleted_record_ids = {int(call["record_id"]) for call in deletes}
+        assert deleted_record_ids == {item.id, pattern_id}
 
     def test_forget_nonexistent_memory(self, db: Session):
         result = forget_memory(db, memory_id=9999, user_id=1)
