@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 02:01 MYT
+- Updated: 2026-07-03 02:26 MYT
 - Started: 2026-07-02 22:59 MYT
 - Completed: 2026-07-02 22:59 MYT
 
@@ -43,6 +43,7 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
 - 2026-07-03 01:30 MYT - Addressed Codex review feedback by running manual sleep episode generation before pattern synthesis and skipping near-duplicate pattern memories.
 - 2026-07-03 01:50 MYT - Addressed Codex review feedback by excluding stale episodes from pattern sampling, cleaning pattern memories during forget/suppression, and honoring the heat visibility floor in pattern prompt blocks.
 - 2026-07-03 02:01 MYT - Addressed Codex review feedback by scheduling retrieval/vector index cleanup when forget/suppression deletes derived pattern memories.
+- 2026-07-03 02:26 MYT - Addressed Codex review feedback by decrypting pattern evidence before matching forgotten text during derived pattern cleanup.
 
 ## Validation
 
@@ -83,6 +84,10 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - retrieval-index cleanup regression: 1 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - retrieval-index cleanup focused suite: 32 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - retrieval-index cleanup lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - failed before the encrypted-evidence cleanup fix because encrypted pattern evidence was compared as ciphertext.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - encrypted-evidence cleanup regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - encrypted-evidence cleanup focused suite: 33 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - encrypted-evidence cleanup lint: passed.
 - Changed paths:
   - apps/server/src/anima_server/services/agent/forgetting.py
   - apps/server/src/anima_server/services/agent/pattern_synthesis.py
@@ -108,4 +113,5 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - Pattern sampling excludes episodes flagged with `needs_regeneration=True`.
   - Forget/suppression cleanup now removes derived pattern memories that cite stale source episodes or directly contain forgotten content.
   - Deleted derived pattern memories are now scheduled for after-commit retrieval/vector index cleanup.
+  - Pattern evidence text is decrypted before forget/suppression matching so encrypted evidence-only provenance can still trigger derived pattern cleanup.
   - Cross-episode pattern prompt rendering now respects the same heat visibility floor used by scored retrieval.

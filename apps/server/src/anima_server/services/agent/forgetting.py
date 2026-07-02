@@ -221,7 +221,13 @@ def _find_pattern_references(
         item_id = int(evidence.memory_item_id)
         if item_id in exclude_memory_item_ids or item_id in seen_pattern_ids:
             continue
-        if memory_content_lower in evidence.evidence_text.lower():
+        evidence_text = df(
+            user_id,
+            evidence.evidence_text,
+            table="memory_item_evidence",
+            field="evidence_text",
+        )
+        if memory_content_lower in evidence_text.lower():
             add_pattern_ref(item_id)
             continue
         if stale_episode_ids & _metadata_source_episode_ids(evidence.metadata_json):
