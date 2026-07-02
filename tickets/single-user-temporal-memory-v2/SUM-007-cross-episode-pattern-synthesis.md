@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-02 23:14 MYT
+- Updated: 2026-07-03 00:53 MYT
 - Started: 2026-07-02 22:59 MYT
 - Completed: 2026-07-02 22:59 MYT
 
@@ -37,6 +37,7 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
 - 2026-06-27 12:40 MYT - Ticket created.
 - 2026-07-02 22:59 MYT - Implemented cross-episode pattern synthesis with time/topic/salience episode sampling, strict repeated-evidence parsing, evidence-backed pattern memory storage, compact prompt rendering, and sleep-time orchestration hooks.
 - 2026-07-02 23:14 MYT - Recorded final lint/build validation and noted that the full backend suite was stopped at user request before completion.
+- 2026-07-03 00:53 MYT - Reran focused, adjacent, and full backend suites before review; full suite failed on an inherited SUM-006 migration repair regression.
 
 ## Validation
 
@@ -47,7 +48,8 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - 47 passed, 14 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed with existing Vite chunk-size warning.
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - stopped at user request before completion because it was lagging the local PC; no full-suite result recorded.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - 1 failed, 1758 passed, 1 skipped, 297 warnings. Failure: `apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables` - failed deterministically with `sqlalchemy.exc.NoSuchTableError: memory_items` in inherited migration `20260701_0003_add_memory_salience.py`.
 - Changed paths:
   - apps/server/src/anima_server/services/agent/pattern_synthesis.py
   - apps/server/src/anima_server/services/agent/templates/prompts/pattern_synthesis.md.j2
@@ -64,3 +66,4 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
   - Pattern memories use existing `MemoryItem` and `MemoryItemEvidence` storage with `category="pattern"` and `source="pattern_synthesis"`; no schema migration was required.
+  - The full-suite failure is outside the SUM-007 diff; this branch does not modify `apps/server/src/anima_server/db/session.py`, `apps/server/tests/test_runtime_db.py`, or the failing SUM-006 migration.
