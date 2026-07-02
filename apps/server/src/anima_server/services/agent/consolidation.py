@@ -103,6 +103,7 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 class LLMExtractionResult:
     memories: list[dict[str, Any]] = field(default_factory=list)
     profile_updates: list[dict[str, Any]] = field(default_factory=list)
+    foresight: list[dict[str, Any]] = field(default_factory=list)
     emotion: dict[str, Any] | None = None
     failed: bool = False
     error: str | None = None
@@ -147,6 +148,9 @@ async def extract_memories_via_llm(
                 result.profile_updates = [
                     update for update in profile_updates if isinstance(update, dict)
                 ]
+            foresight = obj.get("foresight", [])
+            if isinstance(foresight, list):
+                result.foresight = [item for item in foresight if isinstance(item, dict)]
             emotion = obj.get("emotion")
             if emotion and isinstance(emotion, dict):
                 result.emotion = emotion
@@ -412,6 +416,11 @@ async def run_background_extraction(
                     len(extracted.facts),
                     len(extracted.preferences),
                 )
+            _store_foresight_best_effort(
+                user_id=user_id,
+                user_message=user_message,
+                source_message_ids=source_message_ids,
+            )
 
             # 2. LLM extraction
             if settings.agent_provider != "scaffold":
@@ -468,6 +477,12 @@ async def run_background_extraction(
                             user_id=user_id,
                             profile_updates=llm_result.profile_updates,
                             source_message_ids=source_message_ids,
+                        )
+                        _store_foresight_best_effort(
+                            user_id=user_id,
+                            user_message=user_message,
+                            source_message_ids=source_message_ids,
+                            llm_foresight=llm_result.foresight,
                         )
 
                         emotion_payload = (
@@ -601,6 +616,62 @@ def record_memory_extraction_failure(
         )
     )
     runtime_db.flush()
+
+
+def _store_foresight_best_effort(
+    *,
+    user_id: int,
+    user_message: str,
+    source_message_ids: list[int] | None,
+    llm_foresight: list[dict[str, Any]] | None = None,
+) -> None:
+    try:
+        from anima_server.db.session import SessionLocal, get_user_session_factory, is_sqlite_mode
+        from anima_server.services.agent.foresight import (
+            mark_cancelled_from_text,
+            parse_llm_foresight_payload,
+            store_foresight_from_text,
+            upsert_foresight_signal,
+        )
+
+        observed_at = datetime.now(UTC)
+        factory = get_user_session_factory(user_id) if is_sqlite_mode() else SessionLocal
+        with factory() as soul_db:
+            count = store_foresight_from_text(
+                soul_db,
+                user_id=user_id,
+                text=user_message,
+                observed_at=observed_at,
+                source_message_ids=source_message_ids,
+            )
+            for signal in parse_llm_foresight_payload(
+                llm_foresight or (),
+                observed_at=observed_at,
+            ):
+                upsert_foresight_signal(
+                    soul_db,
+                    user_id=user_id,
+                    signal=signal,
+                    source_message_ids=source_message_ids,
+                    observed_at=observed_at,
+                )
+                count += 1
+            cancelled = mark_cancelled_from_text(
+                soul_db,
+                user_id=user_id,
+                text=user_message,
+                observed_at=observed_at,
+            )
+            if count or cancelled:
+                soul_db.commit()
+                logger.info(
+                    "Foresight extraction for user %s: %d upserted, %d cancelled",
+                    user_id,
+                    count,
+                    cancelled,
+                )
+    except Exception:
+        logger.debug("Foresight extraction skipped for user %s", user_id, exc_info=True)
 
 
 def _preview_text(value: str, *, limit: int = 240) -> str | None:

@@ -16,7 +16,14 @@ branch_labels = None
 depends_on = None
 
 
+def _has_table(table_name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(table_name)
+
+
 def upgrade() -> None:
+    if not _has_table("memory_items"):
+        return
+
     with op.batch_alter_table("memory_items") as batch_op:
         batch_op.add_column(
             sa.Column(
@@ -89,6 +96,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _has_table("memory_items"):
+        return
+
     op.drop_index("ix_memory_items_user_evolves_from", table_name="memory_items")
     op.drop_index("ix_memory_items_user_decay_class", table_name="memory_items")
 

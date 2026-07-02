@@ -2,13 +2,17 @@
 
 from anima_server.db.base import Base
 from anima_server.models.agent_runtime import (
+    AgentExperience,
     AgentMessage,
     AgentRun,
+    AgentSkill,
     AgentStep,
     AgentThread,
     BackgroundTaskRun,
     DiaryAttachment,
     DiaryEntry,
+    ExperienceClusterState,
+    ForesightSignal,
     ForgetAuditLog,
     KGEntity,
     KGRelation,
@@ -58,9 +62,11 @@ from anima_server.models.user_key import UserKey
 
 __all__ = [
     "ActiveIntention",
+    "AgentExperience",
     "AgentMessage",
     "AgentProfile",
     "AgentRun",
+    "AgentSkill",
     "AgentStep",
     "AgentThread",
     "BackgroundTaskRun",
@@ -71,6 +77,8 @@ __all__ = [
     "DiaryEntry",
     "DiscordLink",
     "EmotionalSignal",
+    "ExperienceClusterState",
+    "ForesightSignal",
     "ForgetAuditLog",
     "GrowthLogEntry",
     "IdentityBlock",

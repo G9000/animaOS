@@ -829,6 +829,7 @@ async def _execute_agent_turn_locked(
         db_factory=_build_db_factory(db),
         runtime_db_factory=_build_runtime_db_factory(),
         source_message_ids=source_message_ids,
+        source_run_id=run.id,
     )
 
     if event_callback is not None:
@@ -2221,6 +2222,7 @@ def _run_post_turn_hooks(
     db_factory: Callable[[], Session],
     runtime_db_factory: Callable[[], Session],
     source_message_ids: list[int] | None = None,
+    source_run_id: int | None = None,
 ) -> None:
     """Stage 4: Schedule background memory and reflection work."""
     # Include inner thoughts in the consolidation input so the extraction
@@ -2243,12 +2245,165 @@ def _run_post_turn_hooks(
         runtime_db_factory=runtime_db_factory,
         source_message_ids=source_message_ids,
     )
+    _schedule_agent_experience_extraction(
+        user_id=user_id,
+        thread_id=thread_id,
+        run_id=source_run_id,
+        user_message=user_message,
+        result=result,
+        db_factory=db_factory,
+    )
     schedule_reflection(
         user_id=user_id,
         thread_id=thread_id,
         db_factory=db_factory,
         runtime_db_factory=runtime_db_factory,
     )
+
+
+def _schedule_agent_experience_extraction(
+    *,
+    user_id: int,
+    thread_id: int,
+    run_id: int | None,
+    user_message: str,
+    result: AgentResult,
+    db_factory: Callable[[], Session],
+) -> None:
+    if not _should_capture_agent_experience(result):
+        return
+    _track_background_task(
+        _extract_agent_experience_in_background(
+            user_id=user_id,
+            thread_id=thread_id,
+            run_id=run_id,
+            user_message=user_message,
+            result=result,
+            db_factory=db_factory,
+        )
+    )
+
+
+def _should_capture_agent_experience(result: AgentResult) -> bool:
+    if result.stop_reason in {"cancelled", "error"}:
+        return False
+    tool_names = {
+        tool_result.name
+        for trace in result.step_traces
+        for tool_result in trace.tool_results
+        if tool_result.name != "send_message"
+    }
+    if tool_names:
+        return True
+    if len([trace for trace in result.step_traces if trace.llm_invoked]) >= 2:
+        return True
+    return len(_extract_inner_thoughts(result)) >= 200
+
+
+async def _extract_agent_experience_in_background(
+    *,
+    user_id: int,
+    thread_id: int,
+    run_id: int | None,
+    user_message: str,
+    result: AgentResult,
+    db_factory: Callable[[], Session],
+) -> None:
+    try:
+        from anima_server.services.agent.agent_experience import (
+            AgentExperienceCandidate,
+            assign_experience_to_cluster,
+            maybe_distill_skill_for_cluster,
+            store_agent_experience,
+        )
+        from anima_server.services.agent.embeddings import generate_embedding
+
+        tool_names = _experience_tool_names(result)
+        task_intent = _experience_task_intent(user_message, tool_names)
+        approach = _experience_approach(result)
+        embedding = await generate_embedding(task_intent)
+        with db_factory() as db:
+            experience = store_agent_experience(
+                db,
+                user_id=user_id,
+                candidate=AgentExperienceCandidate(
+                    task_intent=task_intent,
+                    approach=approach,
+                    quality_score=_experience_quality(result),
+                    source_thread_id=thread_id,
+                    source_run_id=run_id,
+                    tool_names=tuple(tool_names),
+                    turn_count=max(1, len(result.step_traces)),
+                    embedding=embedding,
+                ),
+            )
+            cluster_id = assign_experience_to_cluster(
+                db,
+                user_id=user_id,
+                experience=experience,
+            )
+            maybe_distill_skill_for_cluster(db, user_id=user_id, cluster_id=cluster_id)
+            db.commit()
+    except Exception:
+        logger.debug("Agent experience extraction skipped for user %s", user_id, exc_info=True)
+
+
+def _experience_tool_names(result: AgentResult) -> list[str]:
+    names: list[str] = []
+    for trace in result.step_traces:
+        for tool_result in trace.tool_results:
+            if tool_result.name == "send_message":
+                continue
+            if tool_result.name not in names:
+                names.append(tool_result.name)
+    for name in result.tools_used:
+        if name != "send_message" and name not in names:
+            names.append(name)
+    return names
+
+
+def _experience_task_intent(user_message: str, tool_names: Sequence[str]) -> str:
+    prepared = " ".join((user_message or "").split()).strip()
+    if len(prepared) > 180:
+        prepared = prepared[:177].rstrip() + "..."
+    if tool_names:
+        return f"Handle user request with {', '.join(tool_names)}: {prepared}"
+    return f"Handle multi-step user request: {prepared}"
+
+
+def _experience_approach(result: AgentResult) -> str:
+    lines: list[str] = []
+    for trace in result.step_traces:
+        if trace.reasoning_content:
+            lines.append(f"Reasoning: {trace.reasoning_content.strip()[:500]}")
+        for tool_call in trace.tool_calls:
+            lines.append(f"Tried: {tool_call.name}")
+        for tool_result in trace.tool_results:
+            outcome = "failed" if tool_result.is_error else "succeeded"
+            detail = (tool_result.output or "").strip()
+            if len(detail) > 240:
+                detail = detail[:237].rstrip() + "..."
+            lines.append(f"Result: {tool_result.name} {outcome}. {detail}".strip())
+            if tool_result.inner_thinking:
+                lines.append(f"Lesson: {tool_result.inner_thinking.strip()[:500]}")
+    if result.response:
+        lines.append(f"Outcome: {result.response.strip()[:700]}")
+    return "\n".join(lines) or "Completed the task and responded to the user."
+
+
+def _experience_quality(result: AgentResult) -> float:
+    any_error = any(
+        tool_result.is_error
+        for trace in result.step_traces
+        for tool_result in trace.tool_results
+    )
+    if any_error and result.response:
+        return 0.55
+    if any_error:
+        return 0.25
+    if result.stop_reason == "max_steps":
+        return 0.45
+    return 0.78
 
 
 def _source_message_ids_for_extraction(

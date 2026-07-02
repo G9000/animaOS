@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -344,6 +345,168 @@ class MemoryEpisode(Base):
         server_default=text("0"),
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ForesightSignal(Base):
+    """Evidence-backed future-oriented memory signal."""
+
+    __tablename__ = "foresight_signals"
+    __table_args__ = (
+        Index("ix_foresight_signals_user_status", "user_id", "status"),
+        Index("ix_foresight_signals_user_start", "user_id", "start_date"),
+        Index("ix_foresight_signals_user_thread", "user_id", "source_thread_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    relative_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    confidence: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.8,
+        server_default=text("0.8"),
+    )
+    source_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_message_ids_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AgentExperience(Base):
+    """Durable procedural memory of the agent's own problem solving."""
+
+    __tablename__ = "agent_experiences"
+    __table_args__ = (
+        Index("ix_agent_experiences_user", "user_id"),
+        Index("ix_agent_experiences_user_cluster", "user_id", "cluster_id"),
+        Index("ix_agent_experiences_user_active", "user_id", "superseded_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_intent: Mapped[str] = mapped_column(Text, nullable=False)
+    approach: Mapped[str] = mapped_column(Text, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    source_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_names_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_experiences.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ExperienceClusterState(Base):
+    """Serialized incremental centroid state for procedural experiences."""
+
+    __tablename__ = "experience_cluster_state"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_experience_cluster_state_user"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    state_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AgentSkill(Base):
+    """Distilled reusable procedure derived from clustered agent experiences."""
+
+    __tablename__ = "agent_skills"
+    __table_args__ = (
+        Index("ix_agent_skills_user_cluster", "user_id", "cluster_id"),
+        Index("ix_agent_skills_user_active", "user_id", "superseded_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    cluster_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    experience_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_refined_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_skills.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),

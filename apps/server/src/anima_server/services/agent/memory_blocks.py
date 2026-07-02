@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -33,6 +34,7 @@ _MIRROR_DESCRIPTIONS: dict[str, str] = {
     "emotional_context": "My emotional state right now.",
     "emotional_patterns": "My enduring emotional tendencies.",
     "cross_episode_patterns": "Recurring patterns noticed across multiple episodes.",
+    "foresight": "Upcoming or due events I should be aware of without treating them as task-list items.",
     "facts": "Things I know about myself.",
     "preferences": "My preferences.",
     "goals": "My goals and aspirations.",
@@ -198,6 +200,24 @@ def build_turn_memory_blocks(
     for sm_block in build_self_model_memory_blocks(db, user_id=user_id, pg_db=runtime_db, agent_type=agent_type):
         blocks.append(sm_block)
 
+    learned_skills_block = build_learned_skills_block(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        agent_type=agent_type,
+    )
+    if learned_skills_block is not None:
+        blocks.append(learned_skills_block)
+
+    past_approaches_block = build_past_approaches_block(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        agent_type=agent_type,
+    )
+    if past_approaches_block is not None:
+        blocks.append(past_approaches_block)
+
     # Emotional context (Priority 2 — momentary signals from runtime)
     emotional_block = build_emotional_context_block(
         runtime_db or db, user_id=user_id, agent_type=agent_type)
@@ -217,6 +237,14 @@ def build_turn_memory_blocks(
     )
     if cross_episode_patterns_block is not None:
         blocks.append(cross_episode_patterns_block)
+
+    foresight_block = build_foresight_memory_block(
+        db,
+        user_id=user_id,
+        agent_type=agent_type,
+    )
+    if foresight_block is not None:
+        blocks.append(foresight_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     semantic_item_ids: frozenset[int] = frozenset()
@@ -1068,6 +1096,118 @@ def build_self_model_memory_blocks(
     return result
 
 
+def build_learned_skills_block(
+    db: Session,
+    *,
+    user_id: int,
+    query_embedding: list[float] | None = None,
+    agent_type: str = "companion",
+    max_chars: int = 2000,
+) -> MemoryBlock | None:
+    """Build procedural skill memory for task-like turns."""
+    from anima_server.services.agent.agent_experience import retrieve_agent_skills
+
+    skills = retrieve_agent_skills(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        limit=2,
+    )
+    if not skills:
+        return None
+
+    sections: list[str] = []
+    for retrieved in skills:
+        skill = retrieved.skill
+        name = df(user_id, skill.name, table="agent_skills", field="name")
+        content = df(user_id, skill.content, table="agent_skills", field="content")
+        sections.append(
+            f"{name} (confidence: {skill.confidence:.2f}, "
+            f"based on {skill.experience_count} experiences, "
+            f"relevance: {retrieved.similarity:.2f})\n{content}"
+        )
+
+    value = _truncate_lines("\n\n".join(sections), max_chars)
+    if not value:
+        return None
+
+    return MemoryBlock(
+        label="learned_skills",
+        description=_desc(
+            "learned_skills",
+            "Best practices I have developed through repeated experience. Follow these unless the situation clearly calls for a different approach.",
+            agent_type,
+        ),
+        value=value,
+    )
+
+
+def build_past_approaches_block(
+    db: Session,
+    *,
+    user_id: int,
+    query_embedding: list[float] | None = None,
+    agent_type: str = "companion",
+    max_chars: int = 1500,
+) -> MemoryBlock | None:
+    """Build raw procedural experience memory when no strong skill matches."""
+    from anima_server.services.agent.agent_experience import (
+        has_matching_high_confidence_skill,
+        retrieve_agent_experiences,
+    )
+
+    if has_matching_high_confidence_skill(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+    ):
+        return None
+
+    experiences = retrieve_agent_experiences(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        limit=3,
+    )
+    if not experiences:
+        return None
+
+    lines: list[str] = []
+    for retrieved in experiences:
+        experience = retrieved.experience
+        intent = df(
+            user_id,
+            experience.task_intent,
+            table="agent_experiences",
+            field="task_intent",
+        )
+        approach = df(
+            user_id,
+            experience.approach,
+            table="agent_experiences",
+            field="approach",
+        )
+        lines.append(
+            f"- [{retrieved.similarity:.2f} relevance] {intent}\n"
+            f"  Approach: {_truncate_lines(approach, 420)}\n"
+            f"  Quality: {experience.quality_score:.2f}"
+        )
+
+    value = _truncate_lines("\n".join(lines), max_chars)
+    if not value:
+        return None
+
+    return MemoryBlock(
+        label="past_approaches",
+        description=_desc(
+            "past_approaches",
+            "How I have handled similar situations before. Use these as reference; adapt rather than copy blindly.",
+            agent_type,
+        ),
+        value=value,
+    )
+
+
 def build_emotional_context_block(
     db: Session,
     *,
@@ -1187,6 +1327,56 @@ def build_cross_episode_patterns_block(
         ),
         value=value,
     )
+
+
+def build_foresight_memory_block(
+    db: Session,
+    *,
+    user_id: int,
+    agent_type: str = "companion",
+    today: date | None = None,
+    limit: int = 8,
+    max_chars: int = 1200,
+) -> MemoryBlock | None:
+    """Build upcoming/due future-event memory from foresight signals."""
+    from anima_server.services.agent.foresight import get_prompt_foresight_signals
+
+    signals = get_prompt_foresight_signals(
+        db,
+        user_id=user_id,
+        today=today,
+        limit=limit,
+    )
+    if not signals:
+        return None
+
+    lines: list[str] = []
+    for signal in signals:
+        content = df(user_id, signal.content, table="foresight_signals", field="content")
+        when = _format_foresight_dates(signal.start_date, signal.end_date)
+        lines.append(f"- {content} ({signal.status}, {when})")
+
+    value = _truncate_lines("\n".join(lines), max_chars)
+    if not value:
+        return None
+
+    return MemoryBlock(
+        label="foresight",
+        description=_desc(
+            "foresight",
+            "Upcoming, due, or recently relevant future-oriented memories. Use for natural temporal awareness and follow-up; do not treat these as explicit tasks unless the user asks.",
+            agent_type,
+        ),
+        value=value,
+    )
+
+
+def _format_foresight_dates(start: date | None, end: date | None) -> str:
+    if start is None:
+        return "date unknown"
+    if end is None or end == start:
+        return start.isoformat()
+    return f"{start.isoformat()} to {end.isoformat()}"
 
 
 def _truncate_lines(value: str, max_chars: int) -> str:

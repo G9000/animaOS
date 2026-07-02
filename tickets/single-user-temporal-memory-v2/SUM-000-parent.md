@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 02:36 MYT
+- Updated: 2026-07-03 03:36 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -27,8 +27,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `done` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `done` | `SUM-005`, `SUM-006` |
-| `SUM-008` | Foresight signals | `backlog` | `SUM-002` |
-| `SUM-009` | Procedural experience and skill memory | `backlog` | `SUM-005` |
+| `SUM-008` | Foresight signals | `done` | `SUM-002` |
+| `SUM-009` | Procedural experience and skill memory | `done` | `SUM-005` |
 | `SUM-010` | Optional external adapter seams | `backlog` | `SUM-003`, `SUM-005` |
 
 ## Deliverables
@@ -60,6 +60,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
 - `SUM-006` - Salience-aware decay and soft evolution (completed 2026-07-01 21:18 MYT)
 - `SUM-007` - Cross-episode pattern synthesis (completed 2026-07-02 22:59 MYT)
+- `SUM-008` - Foresight signals (completed 2026-07-03 03:36 MYT)
+- `SUM-009` - Procedural experience and skill memory (completed 2026-07-03 03:36 MYT)
 
 ## Activity Log
 
@@ -127,10 +129,21 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 02:01 MYT - `SUM-007` addressed Codex review feedback by scheduling retrieval/vector index cleanup when forget/suppression deletes derived pattern memories.
 - 2026-07-03 02:26 MYT - `SUM-007` addressed Codex review feedback by decrypting pattern evidence before matching forgotten text during derived pattern cleanup.
 - 2026-07-03 02:36 MYT - `SUM-007` addressed Codex review feedback by explicitly deleting derived pattern evidence rows before deleting derived pattern items.
+- 2026-07-03 02:54 MYT - `SUM-008` and `SUM-009` claimed by Codex on branch `codex/sum-008-009-foresight-procedural`, based on PR #67 head.
+- 2026-07-03 03:36 MYT - `SUM-008` and `SUM-009` completed with foresight signals, procedural experience memory, skill distillation, prompt integration, migration compatibility repair, and full validation.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 red suite failed before implementation because `ForesightSignal` was not exported from `anima_server.models`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 red suite failed before implementation because `AgentExperience` was not exported from `anima_server.models`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 focused suite: 8 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_service.py` - SUM-008/SUM-009 adjacent suite: 64 passed, 24 warnings.
+  - `bun run db:server:heads` - SUM-008/SUM-009 migration head: `20260703_0002 (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-008/SUM-009 server lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server -- --maxfail=1 -q` - SUM-008/SUM-009 full backend suite after migration repair: 1775 passed, 1 skipped, 310 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-008/SUM-009 health smoke for `GET /health`: 200 ok.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 red suite failed before implementation with missing pattern synthesis module, block renderer, and sleep task hook.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_creates_evidence_backed_pattern_memory` - SUM-007 provenance regression failed before source evidence IDs were persisted in pattern metadata.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 focused suite: 5 passed, 3 warnings.
@@ -276,6 +289,22 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 self-supersession health smoke for `GET /health`: 200 ok.
   - not run for SUM-006 restack (verification not requested in this session)
 - Changed paths:
+  - apps/server/alembic_core/versions/20260701_0003_add_memory_salience.py
+  - apps/server/alembic_core/versions/20260703_0001_create_foresight_signals.py
+  - apps/server/alembic_core/versions/20260703_0002_create_agent_experience_memory.py
+  - apps/server/src/anima_server/models/__init__.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/services/agent/agent_experience.py
+  - apps/server/src/anima_server/services/agent/consolidation.py
+  - apps/server/src/anima_server/services/agent/foresight.py
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/tests/test_agent_experience.py
+  - apps/server/tests/test_foresight.py
+  - tickets/single-user-temporal-memory-v2/SUM-008-foresight-signals.md
+  - tickets/single-user-temporal-memory-v2/SUM-009-procedural-experience-skill-memory.md
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
@@ -311,6 +340,9 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 adds evidence-backed future event memory with deterministic relative-date extraction, lifecycle transitions, and proactive prompt rendering.
+  - SUM-009 adds agent experience memory, stable embedding-based clustering, learned skill distillation, prompt retrieval, and growth-log entries for meaningful procedural learning.
+  - SUM-008/SUM-009 validation included a narrow guard in the inherited SUM-006 salience migration so stamped legacy soul databases missing `memory_items` can reach metadata repair.
   - Parent remains `in_progress` while later child tickets are still backlog.
   - SUM-002 did not require schema migration.
   - SUM-002 episode detail preservation now appends only grounded LLM-selected salient details, not ordinary turns.
