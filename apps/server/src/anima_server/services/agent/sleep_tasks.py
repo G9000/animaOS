@@ -62,6 +62,8 @@ class SleepTaskResult:
     contradictions_resolved: int = 0
     items_merged: int = 0
     profile_fields_reconciled: int = 0
+    patterns_created: int = 0
+    patterns_updated: int = 0
     episodes_generated: int = 0
     embeddings_backfilled: int = 0
     refs_regenerated: int = 0
@@ -168,6 +170,22 @@ async def run_sleep_tasks(
     except Exception as e:
         logger.exception("Structured profile reconciliation failed for user %s", user_id)
         result.errors.append(f"profile_reconciliation: {e}")
+
+    # 2.75. Cross-episode pattern synthesis
+    try:
+        from anima_server.services.agent.pattern_synthesis import (
+            synthesize_cross_episode_patterns,
+        )
+
+        pattern_result = await synthesize_cross_episode_patterns(
+            user_id=user_id,
+            db_factory=db_factory,
+        )
+        result.patterns_created = pattern_result.created
+        result.patterns_updated = pattern_result.updated
+    except Exception as e:
+        logger.exception("Pattern synthesis failed for user %s", user_id)
+        result.errors.append(f"pattern_synthesis: {e}")
 
     # 3. Episode generation
     try:

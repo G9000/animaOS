@@ -197,9 +197,10 @@ async def run_sleeptime_agents(
     Sequential group (heat-gated, skipped if heat < threshold):
     6. Contradiction scan
     7. Profile synthesis
+    8. Pattern synthesis
 
     Time-gated:
-    8. Deep monologue (only once per 24h)
+    9. Deep monologue (only once per 24h)
 
     When force=True (inactivity timer): bypass heat gates.
     Returns list of task run IDs for tracking.
@@ -296,6 +297,18 @@ async def run_sleeptime_agents(
             run_ids.append(rid)
         except Exception:
             logger.exception("Profile synthesis task failed")
+
+        try:
+            rid = await _issue_background_task(
+                user_id=user_id,
+                task_type="pattern_synthesis",
+                task_fn=_task_pattern_synthesis,
+                db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
+            run_ids.append(rid)
+        except Exception:
+            logger.exception("Pattern synthesis task failed")
 
     # ── Time-gated: deep monologue ───────────────────────────────
 
@@ -628,6 +641,27 @@ async def _task_profile_synthesis(
 
     merged = await synthesize_profile(user_id=user_id, db_factory=db_factory)
     return {"merged": merged}
+
+
+async def _task_pattern_synthesis(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """Synthesize repeated patterns across episodes."""
+    from anima_server.services.agent.pattern_synthesis import synthesize_cross_episode_patterns
+
+    result = await synthesize_cross_episode_patterns(
+        user_id=user_id,
+        db_factory=db_factory,
+    )
+    return {
+        "sampled": result.sampled,
+        "proposed": result.proposed,
+        "created": result.created,
+        "updated": result.updated,
+        "skipped": result.skipped,
+    }
 
 
 async def _task_memory_evolution_scan(

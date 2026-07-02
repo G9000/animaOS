@@ -353,6 +353,11 @@ class TestForceMode:
                 return_value={},
             ),
             patch(
+                "anima_server.services.agent.sleep_agent._task_pattern_synthesis",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
                 "anima_server.services.agent.sleep_agent._task_deep_monologue",
                 new_callable=AsyncMock,
                 return_value={},
@@ -379,6 +384,7 @@ class TestForceMode:
         # Deep monologue respects 24h throttle (mocked True here).
         assert any("contradiction_scan" in r for r in run_ids)
         assert any("profile_synthesis" in r for r in run_ids)
+        assert any("pattern_synthesis" in r for r in run_ids)
         assert any("deep_monologue" in r for r in run_ids)
 
 

@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 21:18 MYT
+- Updated: 2026-07-02 23:14 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -26,7 +26,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-004` | Structured user profile | `done` | `SUM-002` |
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `done` | `SUM-003`, `SUM-004` |
-| `SUM-007` | Cross-episode pattern synthesis | `backlog` | `SUM-005`, `SUM-006` |
+| `SUM-007` | Cross-episode pattern synthesis | `done` | `SUM-005`, `SUM-006` |
 | `SUM-008` | Foresight signals | `backlog` | `SUM-002` |
 | `SUM-009` | Procedural experience and skill memory | `backlog` | `SUM-005` |
 | `SUM-010` | Optional external adapter seams | `backlog` | `SUM-003`, `SUM-005` |
@@ -59,6 +59,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
 - `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
 - `SUM-006` - Salience-aware decay and soft evolution (completed 2026-07-01 21:18 MYT)
+- `SUM-007` - Cross-episode pattern synthesis (completed 2026-07-02 22:59 MYT)
 
 ## Activity Log
 
@@ -116,10 +117,19 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 03:33 MYT - `SUM-004` addressed additional PR #71 feedback for line-boundary structured-profile prompt truncation, then reran red/green regression, the user profile suite, lint, diff, and build.
 - 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
 - 2026-07-01 21:18 MYT - `SUM-006` completed with salience metadata, decay-class heat scoring, soft evolution chains, duplicate-candidate salience reinforcement, and sleep-time drift surfacing.
+- 2026-07-02 22:59 MYT - `SUM-007` completed with cross-episode pattern sampling, strict repeated-evidence parsing, pattern memory provenance, compact prompt rendering, and sleep-time orchestration.
+- 2026-07-02 23:14 MYT - `SUM-007` recorded final lint/build validation and noted that the full backend suite was stopped at user request before completion.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 red suite failed before implementation with missing pattern synthesis module, block renderer, and sleep task hook.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_creates_evidence_backed_pattern_memory` - SUM-007 provenance regression failed before source evidence IDs were persisted in pattern metadata.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 focused suite: 5 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - SUM-007 adjacent suite: 47 passed, 14 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-007 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - SUM-007 full backend suite stopped at user request before completion because it was lagging the local PC; no full-suite result recorded.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
@@ -243,6 +253,16 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_memory_candidates.py
   - apps/server/tests/test_memory_salience.py
   - apps/server/tests/test_pending_memory_ops.py
+  - apps/server/src/anima_server/services/agent/pattern_synthesis.py
+  - apps/server/src/anima_server/services/agent/templates/prompts/pattern_synthesis.md.j2
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/src/anima_server/services/agent/prompt_loader.py
+  - apps/server/src/anima_server/services/agent/sleep_agent.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/tests/test_pattern_synthesis.py
+  - apps/server/tests/test_sleep_agent.py
+  - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
   - SUM-002 did not require schema migration.
@@ -276,3 +296,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
   - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
   - SUM-006 adds structured salience metadata, salience-aware heat floors/decay classes, explicit soft-evolution links for preference/relationship drift, and duplicate candidate reinforcement without rewriting promoted candidate audit rows.
+  - SUM-007 stores recurring cross-episode patterns as evidence-backed `MemoryItem` rows with source episode/evidence metadata and renders only active high-confidence patterns in a compact prompt block.

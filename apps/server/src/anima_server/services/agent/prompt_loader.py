@@ -313,6 +313,13 @@ class PromptLoader:
             facts=facts,
         )
 
+    def pattern_synthesis(self, *, episodes: str) -> str:
+        """Render the cross-episode pattern synthesis prompt."""
+        return self.render(
+            "pattern_synthesis",
+            episodes=episodes,
+        )
+
     # -----------------------------------------------------------------------
     # Predict-Calibrate (F3)
     # -----------------------------------------------------------------------
