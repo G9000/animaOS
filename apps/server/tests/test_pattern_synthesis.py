@@ -9,6 +9,7 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.models import MemoryEpisode, MemoryItem, User
 from anima_server.services.data_crypto import df, ef
+from anima_server.services.sessions import unlock_session_store
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -145,6 +146,40 @@ def test_strict_parser_requires_repeated_episode_evidence() -> None:
         "Repeated launch pressure tends to cause fatigue."
     ]
     assert patterns[0].source_episode_ids == (101, 104)
+
+
+def test_prompt_episode_rendering_decrypts_emotional_arc() -> None:
+    from anima_server.services.agent.pattern_synthesis import _render_episodes_for_prompt
+
+    with _db_session() as db:
+        user = _make_user(db)
+        token = unlock_session_store.create(user.id, {"memories": b"m" * 32})
+        try:
+            encrypted_arc = ef(
+                user.id,
+                "anxious -> relieved",
+                table="memory_episodes",
+                field="emotional_arc",
+            )
+            assert encrypted_arc is not None
+            assert encrypted_arc.startswith("enc2:")
+
+            episode = _episode(
+                db,
+                user_id=user.id,
+                date="2026-02-01",
+                summary="The user felt anxious before the demo and relieved afterward.",
+                topics=["demo", "emotion"],
+                significance=4,
+                emotional_arc=encrypted_arc,
+            )
+            rendered = _render_episodes_for_prompt([episode], user_id=user.id)
+        finally:
+            unlock_session_store.revoke(token)
+
+
+    assert "anxious -> relieved" in rendered
+    assert "enc2:" not in rendered
 
 
 @pytest.mark.asyncio()

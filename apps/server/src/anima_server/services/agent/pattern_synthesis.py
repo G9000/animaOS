@@ -361,7 +361,10 @@ def _render_episodes_for_prompt(
     for episode in episodes:
         summary = df(user_id, episode.summary, table="memory_episodes", field="summary")
         topics = ", ".join(_episode_topics(episode)) or "none"
-        emotional_arc = episode.emotional_arc or "unknown"
+        emotional_arc = (
+            df(user_id, episode.emotional_arc, table="memory_episodes", field="emotional_arc")
+            or "unknown"
+        )
         lines.append(
             "\n".join(
                 [

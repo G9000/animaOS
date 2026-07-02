@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 01:05 MYT
+- Updated: 2026-07-03 01:17 MYT
 - Started: 2026-07-02 22:59 MYT
 - Completed: 2026-07-02 22:59 MYT
 
@@ -39,6 +39,7 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
 - 2026-07-02 23:14 MYT - Recorded final lint/build validation and noted that the full backend suite was stopped at user request before completion.
 - 2026-07-03 00:53 MYT - Reran focused, adjacent, and full backend suites before review; full suite failed on an inherited SUM-006 migration repair regression.
 - 2026-07-03 01:05 MYT - Addressed Codex review feedback by making duplicate pattern synthesis idempotent for already-seen source episodes.
+- 2026-07-03 01:17 MYT - Addressed Codex review feedback by decrypting episode emotional arcs before rendering pattern synthesis prompts.
 
 ## Validation
 
@@ -56,6 +57,11 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - review fix focused suite: 6 passed, 4 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - review fix adjacent suite: 48 passed, 15 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_prompt_episode_rendering_decrypts_emotional_arc` - failed before the review fix because encrypted `emotional_arc` rendered as `enc2:` ciphertext.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_prompt_episode_rendering_decrypts_emotional_arc` - 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - emotional-arc review focused suite: 7 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - emotional-arc review adjacent suite: 49 passed, 16 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - emotional-arc review fix lint: passed.
 - Changed paths:
   - apps/server/src/anima_server/services/agent/pattern_synthesis.py
   - apps/server/src/anima_server/services/agent/templates/prompts/pattern_synthesis.md.j2
@@ -73,3 +79,4 @@ Add a sleep-time synthesis pass that discovers recurring patterns across episode
 - Notes:
   - Pattern memories use existing `MemoryItem` and `MemoryItemEvidence` storage with `category="pattern"` and `source="pattern_synthesis"`; no schema migration was required.
   - The full-suite failure is outside the SUM-007 diff; this branch does not modify `apps/server/src/anima_server/db/session.py`, `apps/server/tests/test_runtime_db.py`, or the failing SUM-006 migration.
+  - Prompt rendering now decrypts `MemoryEpisode.emotional_arc` with `table="memory_episodes"` and `field="emotional_arc"` before sending sampled episodes to the LLM.
