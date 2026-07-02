@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 02:26 MYT
+- Updated: 2026-07-03 02:36 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -126,6 +126,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 01:50 MYT - `SUM-007` addressed Codex review feedback by excluding stale episodes from pattern sampling, cleaning pattern memories during forget/suppression, and honoring the heat visibility floor in pattern prompt blocks.
 - 2026-07-03 02:01 MYT - `SUM-007` addressed Codex review feedback by scheduling retrieval/vector index cleanup when forget/suppression deletes derived pattern memories.
 - 2026-07-03 02:26 MYT - `SUM-007` addressed Codex review feedback by decrypting pattern evidence before matching forgotten text during derived pattern cleanup.
+- 2026-07-03 02:36 MYT - `SUM-007` addressed Codex review feedback by explicitly deleting derived pattern evidence rows before deleting derived pattern items.
 
 ## Validation
 
@@ -170,6 +171,10 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 encrypted-evidence cleanup regression: 1 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - SUM-007 encrypted-evidence cleanup focused suite: 33 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-007 encrypted-evidence cleanup lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 pattern-evidence delete regression failed before the fix because the derived pattern item was deleted but its `memory_item_evidence` row remained.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 pattern-evidence delete regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - SUM-007 pattern-evidence delete focused suite: 33 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-007 pattern-evidence delete lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
@@ -345,4 +350,5 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-007 P1/P2 review fix excludes stale episodes from sampling, removes derived pattern memories through forget/suppression cleanup, and applies the heat visibility floor to pattern prompt rendering.
   - SUM-007 retrieval-index cleanup fix removes deleted derived pattern memories from retrieval/vector indexes after commit.
   - SUM-007 encrypted-evidence cleanup fix decrypts pattern evidence before matching forget text so encrypted evidence-only provenance can trigger derived pattern cleanup.
+  - SUM-007 pattern-evidence delete fix explicitly deletes derived pattern evidence rows before deleting derived pattern items.
   - SUM-007 full-suite failure is outside the SUM-007 diff; the branch does not modify `apps/server/src/anima_server/db/session.py`, `apps/server/tests/test_runtime_db.py`, or the failing SUM-006 migration.

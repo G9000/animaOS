@@ -298,6 +298,12 @@ def redact_derived_references(
         if item is None:
             continue
         pattern_cleanup_ids_by_user.setdefault(int(item.user_id), []).append(int(item.id))
+        db.execute(
+            delete(MemoryItemEvidence).where(
+                MemoryItemEvidence.user_id == item.user_id,
+                MemoryItemEvidence.memory_item_id == item.id,
+            )
+        )
         db.delete(item)
         count += 1
 

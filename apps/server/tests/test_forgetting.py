@@ -488,11 +488,18 @@ class TestForgetMemory:
             == "Source evidence mentioned secret codename aurora once."
         )
         pattern_id = pattern.id
+        evidence_id = evidence.id
 
         result = forget_memory(db, memory_id=item.id, user_id=1)
 
         assert result.derived_refs_affected == 1
         assert db.get(MemoryItem, pattern_id) is None
+        remaining_evidence = db.scalar(
+            select(func.count())
+            .select_from(MemoryItemEvidence)
+            .where(MemoryItemEvidence.id == evidence_id)
+        )
+        assert remaining_evidence == 0
 
     def test_forget_nonexistent_memory(self, db: Session):
         result = forget_memory(db, memory_id=9999, user_id=1)
