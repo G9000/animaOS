@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -89,6 +90,66 @@ def rt_factory(runtime_db_engine):
 
 
 # ── _issue_background_task ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio()
+async def test_manual_sleep_generates_episode_before_pattern_synthesis(db_factory):
+    from anima_server.services.agent import sleep_tasks
+
+    with db_factory() as db:
+        user = User(
+            username="manual-sleep-user",
+            display_name="Manual Sleep User",
+            password_hash="x",
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    call_order: list[str] = []
+
+    async def _no_scan(**kwargs: object) -> tuple[int, int]:
+        del kwargs
+        return (0, 0)
+
+    async def _no_merge(**kwargs: object) -> int:
+        del kwargs
+        return 0
+
+    async def _fake_episode(**kwargs: object) -> object:
+        del kwargs
+        call_order.append("episode_gen")
+        return object()
+
+    async def _fake_pattern(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        call_order.append("pattern_synthesis")
+        return SimpleNamespace(created=0, updated=0)
+
+    with (
+        patch.object(sleep_tasks, "scan_contradictions", _no_scan),
+        patch.object(sleep_tasks, "synthesize_profile", _no_merge),
+        patch.object(sleep_tasks, "_should_run_deep_monologue", return_value=False),
+        patch(
+            "anima_server.services.agent.episodes.maybe_generate_episode",
+            new=_fake_episode,
+        ),
+        patch(
+            "anima_server.services.agent.pattern_synthesis.synthesize_cross_episode_patterns",
+            new=_fake_pattern,
+        ),
+        patch(
+            "anima_server.services.agent.embeddings.backfill_embeddings",
+            new=AsyncMock(return_value=0),
+        ),
+    ):
+        result = await sleep_tasks.run_sleep_tasks(
+            user_id=user_id,
+            db_factory=db_factory,
+        )
+
+    assert call_order == ["episode_gen", "pattern_synthesis"]
+    assert result.episodes_generated == 1
 
 
 class TestIssueBackgroundTask:
@@ -353,6 +414,11 @@ class TestForceMode:
                 return_value={},
             ),
             patch(
+                "anima_server.services.agent.sleep_agent._task_pattern_synthesis",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
                 "anima_server.services.agent.sleep_agent._task_deep_monologue",
                 new_callable=AsyncMock,
                 return_value={},
@@ -379,6 +445,7 @@ class TestForceMode:
         # Deep monologue respects 24h throttle (mocked True here).
         assert any("contradiction_scan" in r for r in run_ids)
         assert any("profile_synthesis" in r for r in run_ids)
+        assert any("pattern_synthesis" in r for r in run_ids)
         assert any("deep_monologue" in r for r in run_ids)
 
 

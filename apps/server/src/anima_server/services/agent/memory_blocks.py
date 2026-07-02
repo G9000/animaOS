@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryEpisode, User
@@ -32,6 +32,7 @@ _MIRROR_DESCRIPTIONS: dict[str, str] = {
     "self_intentions": "My active goals and learned behavioral patterns.",
     "emotional_context": "My emotional state right now.",
     "emotional_patterns": "My enduring emotional tendencies.",
+    "cross_episode_patterns": "Recurring patterns noticed across multiple episodes.",
     "facts": "Things I know about myself.",
     "preferences": "My preferences.",
     "goals": "My goals and aspirations.",
@@ -208,6 +209,14 @@ def build_turn_memory_blocks(
         db, user_id=user_id, agent_type=agent_type)
     if emotional_patterns_block is not None:
         blocks.append(emotional_patterns_block)
+
+    cross_episode_patterns_block = build_cross_episode_patterns_block(
+        db,
+        user_id=user_id,
+        agent_type=agent_type,
+    )
+    if cross_episode_patterns_block is not None:
+        blocks.append(cross_episode_patterns_block)
 
     # Semantic retrieval block (Priority 3 — query-relevant memories)
     semantic_item_ids: frozenset[int] = frozenset()
@@ -1118,6 +1127,76 @@ def build_emotional_patterns_block(
         ),
         value=value,
     )
+
+
+def build_cross_episode_patterns_block(
+    db: Session,
+    *,
+    user_id: int,
+    agent_type: str = "companion",
+    confidence_threshold: float = 0.65,
+    limit: int = 8,
+    max_chars: int = 1200,
+) -> MemoryBlock | None:
+    """Build compact pattern memories synthesized from multiple episodes."""
+    from anima_server.models import MemoryItem
+    from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+    from anima_server.services.agent.pattern_synthesis import PATTERN_CATEGORY, PATTERN_SOURCE
+
+    patterns = db.scalars(
+        select(MemoryItem)
+        .where(
+            MemoryItem.user_id == user_id,
+            MemoryItem.category == PATTERN_CATEGORY,
+            MemoryItem.source == PATTERN_SOURCE,
+            MemoryItem.superseded_by.is_(None),
+            MemoryItem.evidence_strength >= confidence_threshold,
+            or_(
+                MemoryItem.heat.is_(None),
+                MemoryItem.heat == 0.0,
+                MemoryItem.heat >= HEAT_VISIBILITY_FLOOR,
+            ),
+        )
+        .order_by(
+            MemoryItem.evidence_strength.desc(),
+            MemoryItem.emotional_salience.desc(),
+            MemoryItem.updated_at.desc(),
+        )
+        .limit(limit)
+    ).all()
+    if not patterns:
+        return None
+
+    lines = [
+        (
+            f"- {df(user_id, pattern.content, table='memory_items', field='content')} "
+            f"(confidence: {pattern.evidence_strength:.2f})"
+        )
+        for pattern in patterns
+    ]
+    value = _truncate_lines("\n".join(lines), max_chars)
+    if not value:
+        return None
+
+    return MemoryBlock(
+        label="cross_episode_patterns",
+        description=_desc(
+            "cross_episode_patterns",
+            "Recurring patterns synthesized from multiple episodes. Use as quiet context, not as labels to announce.",
+            agent_type,
+        ),
+        value=value,
+    )
+
+
+def _truncate_lines(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    truncated = value[:max_chars].rstrip()
+    line_boundary = truncated.rfind("\n")
+    if line_boundary > 0:
+        return truncated[:line_boundary].rstrip()
+    return truncated
 
 
 def build_knowledge_graph_block(

@@ -26,9 +26,13 @@ from anima_server.services.agent.forgetting import (
     redact_derived_references,
     suppress_memory,
 )
+from anima_server.services.agent.provenance import add_memory_item_evidence
+from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+_FAKE_DEK = b"0123456789abcdef0123456789abcdef"
 
 
 @pytest.fixture()
@@ -391,6 +395,111 @@ class TestForgetMemory:
         result = forget_memory(db, memory_id=item.id, user_id=1)
 
         assert result.derived_refs_affected == 2
+
+    def test_forget_removes_pattern_memory_citing_stale_episode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+        item = _make_item(db, content="secret codename aurora")
+        episode = _make_episode(
+            db,
+            summary="User discussed secret codename aurora during launch planning.",
+        )
+        pattern = MemoryItem(
+            user_id=1,
+            category="pattern",
+            source="pattern_synthesis",
+            content="Aurora launch planning repeatedly creates pressure.",
+            importance=4,
+            evidence_strength=0.86,
+        )
+        db.add(pattern)
+        db.flush()
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=pattern.id,
+                source_kind="pattern_synthesis",
+                evidence_text="launch pressure appeared in the source episode",
+                metadata_json={
+                    "memory_source": "pattern_synthesis",
+                    "source_episode_ids": [episode.id],
+                },
+            )
+        )
+        db.flush()
+        pattern_id = pattern.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert deletes == []
+        assert result.derived_refs_affected == 2
+        db.refresh(episode)
+        assert episode.needs_regeneration is True
+        assert db.get(MemoryItem, pattern_id) is None
+        db.commit()
+        deleted_record_ids = {int(call["record_id"]) for call in deletes}
+        assert deleted_record_ids == {item.id, pattern_id}
+
+    def test_forget_matches_encrypted_pattern_evidence_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        monkeypatch.setattr(
+            "anima_server.services.data_crypto.get_active_dek",
+            lambda user_id, domain="memories": _FAKE_DEK,
+        )
+        item = _make_item(db, content="secret codename aurora")
+        pattern = MemoryItem(
+            user_id=1,
+            category="pattern",
+            source="pattern_synthesis",
+            content="Launch planning repeatedly creates pressure.",
+            importance=4,
+            evidence_strength=0.86,
+        )
+        db.add(pattern)
+        db.flush()
+        evidence = add_memory_item_evidence(
+            db,
+            user_id=1,
+            memory_item_id=pattern.id,
+            source_kind="pattern_synthesis",
+            evidence_text="Source evidence mentioned secret codename aurora once.",
+            metadata={"memory_source": "pattern_synthesis"},
+        )
+        assert evidence is not None
+        assert evidence.evidence_text != "Source evidence mentioned secret codename aurora once."
+        assert (
+            df(
+                1,
+                evidence.evidence_text,
+                table="memory_item_evidence",
+                field="evidence_text",
+            )
+            == "Source evidence mentioned secret codename aurora once."
+        )
+        pattern_id = pattern.id
+        evidence_id = evidence.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert result.derived_refs_affected == 1
+        assert db.get(MemoryItem, pattern_id) is None
+        remaining_evidence = db.scalar(
+            select(func.count())
+            .select_from(MemoryItemEvidence)
+            .where(MemoryItemEvidence.id == evidence_id)
+        )
+        assert remaining_evidence == 0
 
     def test_forget_nonexistent_memory(self, db: Session):
         result = forget_memory(db, memory_id=9999, user_id=1)

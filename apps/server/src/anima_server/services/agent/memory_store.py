@@ -14,8 +14,8 @@ from anima_server.models import MemoryItem, MemoryItemTag
 from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.embedding_integrity import check_embedding
 from anima_server.services.agent.memory_salience import (
-    SoftEvolution,
     STABILITY_EVOLVING,
+    SoftEvolution,
     detect_soft_evolution,
     item_salience,
     memory_salience_model_kwargs,
