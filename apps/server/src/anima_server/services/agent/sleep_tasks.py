@@ -171,7 +171,18 @@ async def run_sleep_tasks(
         logger.exception("Structured profile reconciliation failed for user %s", user_id)
         result.errors.append(f"profile_reconciliation: {e}")
 
-    # 2.75. Cross-episode pattern synthesis
+    # 2.75. Episode generation
+    try:
+        from anima_server.services.agent.episodes import maybe_generate_episode
+
+        episode = await maybe_generate_episode(user_id=user_id, db_factory=db_factory)
+        if episode is not None:
+            result.episodes_generated = 1
+    except Exception as e:
+        logger.exception("Episode generation failed for user %s", user_id)
+        result.errors.append(f"episode_generation: {e}")
+
+    # 3. Cross-episode pattern synthesis
     try:
         from anima_server.services.agent.pattern_synthesis import (
             synthesize_cross_episode_patterns,
@@ -186,17 +197,6 @@ async def run_sleep_tasks(
     except Exception as e:
         logger.exception("Pattern synthesis failed for user %s", user_id)
         result.errors.append(f"pattern_synthesis: {e}")
-
-    # 3. Episode generation
-    try:
-        from anima_server.services.agent.episodes import maybe_generate_episode
-
-        episode = await maybe_generate_episode(user_id=user_id, db_factory=db_factory)
-        if episode is not None:
-            result.episodes_generated = 1
-    except Exception as e:
-        logger.exception("Episode generation failed for user %s", user_id)
-        result.errors.append(f"episode_generation: {e}")
 
     # 4. Deep inner monologue (full self-model reflection)
     # Only run once per 24 hours to avoid identity thrashing and LLM cost.

@@ -242,6 +242,8 @@ def _store_pattern(
         invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
         _add_pattern_evidence(db, item=item, user_id=user_id, pattern=pattern)
         return item, "duplicate"
+    if analysis.action == "similar":
+        return None, "similar"
 
     result = store_memory_item(
         db,
@@ -251,6 +253,7 @@ def _store_pattern(
         importance=_importance_for_confidence(pattern.confidence),
         source=PATTERN_SOURCE,
         allow_update=False,
+        defer_on_similar=True,
         tags=["pattern", pattern.category],
         salience=_salience_for_pattern(pattern),
     )

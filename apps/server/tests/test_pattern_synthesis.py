@@ -307,6 +307,75 @@ async def test_synthesis_skips_duplicate_pattern_evidence_for_same_episodes(
         assert len(item.evidence) == 1
 
 
+@pytest.mark.asyncio()
+async def test_synthesis_skips_similar_pattern_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import pattern_synthesis
+
+    with _db_session() as db:
+        user = _make_user(db)
+        first = _episode(
+            db,
+            user_id=user.id,
+            date="2026-02-01",
+            summary="The user was exhausted after launch planning.",
+            topics=["launch", "energy"],
+            significance=4,
+        )
+        second = _episode(
+            db,
+            user_id=user.id,
+            date="2026-04-01",
+            summary="Sprint pressure made launch planning drain the user's energy again.",
+            topics=["launch", "energy"],
+            significance=4,
+        )
+        existing = MemoryItem(
+            user_id=user.id,
+            category="pattern",
+            source="pattern_synthesis",
+            content=ef(
+                user.id,
+                "Launch planning repeatedly drains the user's energy.",
+                table="memory_items",
+                field="content",
+            ),
+            importance=4,
+            memory_class="emotional_pattern",
+            evidence_strength=0.82,
+        )
+        db.add(existing)
+        db.commit()
+
+        async def _fake_call_llm_for_json(*_args: object, **_kwargs: object) -> object:
+            return [
+                {
+                    "pattern": "Launch planning repeatedly drains energy during sprint pressure.",
+                    "category": "emotional_patterns",
+                    "confidence": 0.86,
+                    "source_episode_ids": [first.id, second.id],
+                    "evidence": [
+                        "exhausted after launch planning",
+                        "sprint pressure drained energy again",
+                    ],
+                }
+            ]
+
+        monkeypatch.setattr(pattern_synthesis, "call_llm_for_json", _fake_call_llm_for_json)
+
+        result = await pattern_synthesis.synthesize_cross_episode_patterns(
+            user_id=user.id,
+            db_factory=lambda: db,
+        )
+
+        items = list(db.scalars(select(MemoryItem).where(MemoryItem.user_id == user.id)).all())
+        assert result.created == 0
+        assert result.updated == 0
+        assert result.skipped == 1
+        assert [item.id for item in items] == [existing.id]
+
+
 def test_pattern_prompt_block_renders_only_high_confidence_active_patterns() -> None:
     from anima_server.services.agent.memory_blocks import build_cross_episode_patterns_block
 

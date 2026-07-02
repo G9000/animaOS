@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 01:17 MYT
+- Updated: 2026-07-03 01:30 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -122,6 +122,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 00:53 MYT - `SUM-007` reran focused, adjacent, and full backend validation before review; full suite failed on an inherited SUM-006 migration repair regression.
 - 2026-07-03 01:05 MYT - `SUM-007` addressed Codex review feedback by making duplicate pattern synthesis idempotent for already-seen source episodes.
 - 2026-07-03 01:17 MYT - `SUM-007` addressed Codex review feedback by decrypting episode emotional arcs before rendering pattern synthesis prompts.
+- 2026-07-03 01:30 MYT - `SUM-007` addressed Codex review feedback by running manual sleep episode generation before pattern synthesis and skipping near-duplicate pattern memories.
 
 ## Validation
 
@@ -144,6 +145,12 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 emotional-arc review focused suite: 7 passed, 5 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - SUM-007 emotional-arc review adjacent suite: 49 passed, 16 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 emotional-arc review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_sleep_agent.py::test_manual_sleep_generates_episode_before_pattern_synthesis` - SUM-007 latest review regression failed before the fix because manual sleep ran pattern synthesis before episode generation.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_similar_pattern_memory` - SUM-007 latest review regression failed before the fix because near-duplicate pattern text created a second pattern memory.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_sleep_agent.py::test_manual_sleep_generates_episode_before_pattern_synthesis` - SUM-007 latest review regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_similar_pattern_memory` - SUM-007 latest review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::test_manual_sleep_generates_episode_before_pattern_synthesis apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate apps/server/tests/test_user_profile.py::test_sleep_tasks_reconciles_claims_to_profile_fields apps/server/tests/test_user_profile.py::test_sleep_tasks_invalidates_companion_memory_after_profile_reconciliation` - SUM-007 latest review focused suite: 11 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 latest review fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
@@ -313,4 +320,5 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-007 stores recurring cross-episode patterns as evidence-backed `MemoryItem` rows with source episode/evidence metadata and renders only active high-confidence patterns in a compact prompt block.
   - SUM-007 review fix skips duplicate pattern evidence and salience reinforcement when the matched pattern already has evidence for all incoming source episodes.
   - SUM-007 emotional-arc review fix decrypts encrypted `MemoryEpisode.emotional_arc` values before rendering sampled episodes into pattern synthesis prompts.
+  - SUM-007 latest review fix runs manual sleep episode generation before pattern synthesis and skips similar pattern classifications instead of storing near-duplicates.
   - SUM-007 full-suite failure is outside the SUM-007 diff; the branch does not modify `apps/server/src/anima_server/db/session.py`, `apps/server/tests/test_runtime_db.py`, or the failing SUM-006 migration.
