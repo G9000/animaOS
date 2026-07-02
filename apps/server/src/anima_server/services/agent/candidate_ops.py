@@ -22,6 +22,7 @@ _VALID_SOURCES = frozenset({"regex", "llm", "predict_calibrate", "tool", "feedba
 _VALID_IMPORTANCE_SOURCES = frozenset({
     "regex", "llm", "predict_calibrate", "user_explicit", "correction",
 })
+_TERMINAL_STATUSES = frozenset({"rejected", "reinforced", "superseded", "failed"})
 
 
 def compute_content_hash(
@@ -72,7 +73,7 @@ def create_memory_candidate(
     existing = runtime_db.scalar(
         select(MemoryCandidate).where(
             MemoryCandidate.content_hash == content_hash,
-            MemoryCandidate.status.not_in(["rejected", "superseded", "failed"]),
+            MemoryCandidate.status.not_in(_TERMINAL_STATUSES),
         )
     )
     if existing is not None:
