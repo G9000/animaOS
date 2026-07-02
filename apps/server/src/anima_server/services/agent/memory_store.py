@@ -13,6 +13,15 @@ from sqlalchemy.orm import Session
 from anima_server.models import MemoryItem, MemoryItemTag
 from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.embedding_integrity import check_embedding
+from anima_server.services.agent.memory_salience import (
+    SoftEvolution,
+    STABILITY_EVOLVING,
+    detect_soft_evolution,
+    item_salience,
+    memory_salience_model_kwargs,
+    merge_salience_into_item,
+    serialize_memory_salience,
+)
 from anima_server.services.agent.text_processing import unicode_lexical_tokens
 from anima_server.services.data_crypto import df, ef
 
@@ -338,6 +347,7 @@ def add_memory_item(
     importance: int = 3,
     source: str = "extraction",
     tags: list[str] | None = None,
+    salience: dict[str, object] | None = None,
 ) -> MemoryItem | None:
     content = _clean_memory_text(content)
     if not content:
@@ -359,6 +369,12 @@ def add_memory_item(
         category=category,
         importance=importance,
         source=source,
+        **memory_salience_model_kwargs(
+            salience,
+            content=content,
+            category=category,
+            importance=importance,
+        ),
     )
     if tags:
         memory_item.tags_json = [t.strip().lower() for t in tags if t.strip()]
@@ -437,6 +453,7 @@ def store_memory_item(
     allow_update: bool = False,
     defer_on_similar: bool = False,
     tags: list[str] | None = None,
+    salience: dict[str, object] | None = None,
     dry_run: bool = False,
 ) -> MemoryWriteResult:
     cleaned_content = _clean_memory_text(content)
@@ -448,6 +465,9 @@ def store_memory_item(
     )
 
     if analysis.action == "duplicate":
+        if not dry_run and analysis.matched_item is not None and salience is not None:
+            merge_salience_into_item(analysis.matched_item, salience)
+            invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
         return MemoryWriteResult(
             action="duplicate",
             matched_item=analysis.matched_item,
@@ -461,6 +481,25 @@ def store_memory_item(
                 matched_item=analysis.matched_item,
                 reason=analysis.reason,
             )
+        evolution = detect_soft_evolution(
+            category=category,
+            existing_salience=item_salience(analysis.matched_item),
+            incoming_salience=salience,
+        )
+        if evolution is not None:
+            return _create_evolved_memory_item(
+                db,
+                user_id=user_id,
+                content=cleaned_content,
+                category=category,
+                importance=importance,
+                source=source,
+                matched_item=analysis.matched_item,
+                evolution=evolution,
+                salience=salience,
+                tags=tags,
+                dry_run=dry_run,
+            )
         if dry_run:
             return MemoryWriteResult(
                 action="superseded",
@@ -472,6 +511,7 @@ def store_memory_item(
             old_item_id=analysis.matched_item.id,
             new_content=cleaned_content,
             importance=importance,
+            salience=salience,
             evidence_text=cleaned_content if source != "extraction" else None,
             evidence_source_kind=(
                 _direct_evidence_source_kind(source)
@@ -488,6 +528,33 @@ def store_memory_item(
             matched_item=analysis.matched_item,
             reason=analysis.reason,
         )
+
+    if analysis.action == "similar" and category == "relationship":
+        matched_item = _most_similar_memory_item(
+            user_id=user_id,
+            content=cleaned_content,
+            items=analysis.similar_items,
+        )
+        if matched_item is not None:
+            evolution = detect_soft_evolution(
+                category=category,
+                existing_salience=item_salience(matched_item),
+                incoming_salience=salience,
+            )
+            if evolution is not None:
+                return _create_evolved_memory_item(
+                    db,
+                    user_id=user_id,
+                    content=cleaned_content,
+                    category=category,
+                    importance=importance,
+                    source=source,
+                    matched_item=matched_item,
+                    evolution=evolution,
+                    salience=salience,
+                    tags=tags,
+                    dry_run=dry_run,
+                )
 
     if analysis.action == "similar" and defer_on_similar:
         return MemoryWriteResult(
@@ -512,6 +579,12 @@ def store_memory_item(
         category=category,
         importance=importance,
         source=source,
+        **memory_salience_model_kwargs(
+            salience,
+            content=cleaned_content,
+            category=category,
+            importance=importance,
+        ),
     )
     if tags:
         item.tags_json = [t.strip().lower() for t in tags if t.strip()]
@@ -531,6 +604,79 @@ def store_memory_item(
         item=item,
         similar_items=analysis.similar_items,
         reason=analysis.reason,
+    )
+
+
+def _create_evolved_memory_item(
+    db: Session,
+    *,
+    user_id: int,
+    content: str,
+    category: str,
+    importance: int,
+    source: str,
+    matched_item: MemoryItem,
+    evolution: SoftEvolution,
+    salience: dict[str, object] | None,
+    tags: list[str] | None,
+    dry_run: bool,
+) -> MemoryWriteResult:
+    if dry_run:
+        return MemoryWriteResult(
+            action="evolved",
+            matched_item=matched_item,
+            reason=evolution.reason,
+        )
+
+    item = MemoryItem(
+        user_id=user_id,
+        content=ef(user_id, content, table="memory_items", field="content"),
+        category=category,
+        importance=importance,
+        source=source,
+        evolves_from_item_id=matched_item.id,
+        evolution_kind=evolution.kind,
+        **memory_salience_model_kwargs(
+            salience,
+            content=content,
+            category=category,
+            importance=importance,
+        ),
+    )
+    item.stability_class = STABILITY_EVOLVING
+    matched_item.stability_class = STABILITY_EVOLVING
+    matched_item.updated_at = datetime.now(UTC)
+    db.add(item)
+    db.flush()
+    if tags:
+        _sync_tags(db, item=item, user_id=user_id, tags=tags)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
+    return MemoryWriteResult(
+        action="evolved",
+        item=item,
+        matched_item=matched_item,
+        reason=evolution.reason,
+    )
+
+
+def _most_similar_memory_item(
+    *,
+    user_id: int,
+    content: str,
+    items: tuple[MemoryItem, ...],
+) -> MemoryItem | None:
+    if not items:
+        return None
+    return max(
+        items,
+        key=lambda item: _similarity(
+            df(user_id, item.content, table="memory_items", field="content"),
+            content,
+        ),
     )
 
 
@@ -666,17 +812,9 @@ def _retrieval_score(item: MemoryItem, now: datetime) -> float:
         raw = item.heat
     else:
         # Fallback: compute heat on-the-fly for items that haven't been scored yet
-        from anima_server.services.agent.heat_scoring import compute_heat
+        from anima_server.services.agent.heat_scoring import compute_heat_for_item
 
-        ref_count = item.reference_count or 0
-        raw = compute_heat(
-            access_count=ref_count,
-            interaction_depth=ref_count,
-            last_accessed_at=item.last_referenced_at,
-            importance=float(item.importance),
-            now=now,
-            created_at=item.created_at,
-        )
+        raw = compute_heat_for_item(item, now=now)
     # Normalize: k chosen so that heat=5 maps to ~0.5 (typical mid-range
     # for a moderately accessed item with average importance).
     return raw / (raw + _HEAT_NORM_K)
@@ -794,6 +932,7 @@ def supersede_memory_item(
     old_item_id: int,
     new_content: str,
     importance: int | None = None,
+    salience: dict[str, object] | None = None,
     evidence_text: str | None = None,
     evidence_source_kind: str | None = None,
     evidence_metadata: dict[str, object] | None = None,
@@ -802,12 +941,23 @@ def supersede_memory_item(
     if old_item is None:
         raise ValueError(f"Memory item {old_item_id} not found")
 
+    next_importance = importance if importance is not None else old_item.importance
+    next_salience = salience
+    if next_salience is None:
+        next_salience = serialize_memory_salience(item_salience(old_item))
+
     new_item = MemoryItem(
         user_id=old_item.user_id,
         content=ef(old_item.user_id, new_content, table="memory_items", field="content"),
         category=old_item.category,
-        importance=importance if importance is not None else old_item.importance,
+        importance=next_importance,
         source=old_item.source,
+        **memory_salience_model_kwargs(
+            next_salience,
+            content=new_content,
+            category=old_item.category,
+            importance=next_importance,
+        ),
     )
     db.add(new_item)
     db.flush()
@@ -891,6 +1041,12 @@ def set_current_focus(
         category="focus",
         importance=4,
         source="user",
+        **memory_salience_model_kwargs(
+            None,
+            content=focus,
+            category="goal",
+            importance=4,
+        ),
     )
     db.add(item)
     db.flush()

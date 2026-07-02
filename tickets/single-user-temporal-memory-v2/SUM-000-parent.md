@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-01 13:18 MYT
+- Updated: 2026-07-01 21:18 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -25,7 +25,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
 | `SUM-004` | Structured user profile | `done` | `SUM-002` |
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
-| `SUM-006` | Salience-aware decay and soft evolution | `backlog` | `SUM-003`, `SUM-004` |
+| `SUM-006` | Salience-aware decay and soft evolution | `done` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `backlog` | `SUM-005`, `SUM-006` |
 | `SUM-008` | Foresight signals | `backlog` | `SUM-002` |
 | `SUM-009` | Procedural experience and skill memory | `backlog` | `SUM-005` |
@@ -58,6 +58,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
 - `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
 - `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
+- `SUM-006` - Salience-aware decay and soft evolution (completed 2026-07-01 21:18 MYT)
 
 ## Activity Log
 
@@ -114,6 +115,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-01 03:15 MYT - `SUM-004` addressed additional PR #71 feedback for same-value profile observation timestamps and `user_profile` prompt-budget priority, then reran red/green regressions, profile/prompt-budget suites, lint, diff, and build.
 - 2026-07-01 03:33 MYT - `SUM-004` addressed additional PR #71 feedback for line-boundary structured-profile prompt truncation, then reran red/green regression, the user profile suite, lint, diff, and build.
 - 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
+- 2026-07-01 21:18 MYT - `SUM-006` completed with salience metadata, decay-class heat scoring, soft evolution chains, duplicate-candidate salience reinforcement, and sleep-time drift surfacing.
 
 ## Validation
 
@@ -217,6 +219,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `bun run build` - SUM-003 PR #70 self-supersession build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 self-supersession full backend suite: 1699 passed, 1 skipped, 261 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 self-supersession health smoke for `GET /health`: 200 ok.
+  - not run for SUM-006 restack (verification not requested in this session)
 - Changed paths:
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
@@ -230,6 +233,16 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_knowledge_graph.py
   - apps/server/tests/test_runtime_db.py
   - apps/server/tests/test_vault.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/models/runtime_memory.py
+  - apps/server/src/anima_server/services/agent/candidate_ops.py
+  - apps/server/src/anima_server/services/agent/heat_scoring.py
+  - apps/server/src/anima_server/services/agent/memory_salience.py
+  - apps/server/src/anima_server/services/agent/memory_store.py
+  - apps/server/src/anima_server/services/agent/soul_writer.py
+  - apps/server/tests/test_memory_candidates.py
+  - apps/server/tests/test_memory_salience.py
+  - apps/server/tests/test_pending_memory_ops.py
 - Notes:
   - Parent remains `in_progress` while later child tickets are still backlog.
   - SUM-002 did not require schema migration.
@@ -262,3 +275,4 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 profile/budget fix keeps same-value upserts from moving `last_observed_at` backwards and gives `user_profile` an explicit tier-0 prompt-budget policy.
   - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
   - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
+  - SUM-006 adds structured salience metadata, salience-aware heat floors/decay classes, explicit soft-evolution links for preference/relationship drift, and duplicate candidate reinforcement without rewriting promoted candidate audit rows.

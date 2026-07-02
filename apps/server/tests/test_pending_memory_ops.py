@@ -616,6 +616,7 @@ def test_consolidate_pending_memory_runs_soul_writer() -> None:
                     return_value=SoulWriterResult(
                         ops_processed=2,
                         candidates_promoted=1,
+                        candidates_reinforced=1,
                     )
                 ),
                 create=True,
@@ -627,6 +628,7 @@ def test_consolidate_pending_memory_runs_soul_writer() -> None:
     assert "Soul Writer finished." in result
     assert "Ops processed=2" in result
     assert "candidates promoted=1" in result
+    assert "reinforced=1" in result
 
 
 def test_update_human_memory_creates_full_replace_pending_op() -> None:

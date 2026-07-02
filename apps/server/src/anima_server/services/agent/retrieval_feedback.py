@@ -304,7 +304,7 @@ def sync_retrieval_feedback(
         }
 
     from anima_server.models import MemoryItem
-    from anima_server.services.agent.heat_scoring import compute_heat
+    from anima_server.services.agent.heat_scoring import compute_heat_for_item
 
     ref_now = datetime.now(UTC)
     importance_deltas: dict[int, int] = {}
@@ -327,43 +327,19 @@ def sync_retrieval_feedback(
             prior_importance = item.importance or 3
             item.importance = max(1, min(5, prior_importance + delta))
             importance_deltas[item_id] = item.importance - prior_importance
-            ref_count = item.reference_count or 0
-            heat_value = compute_heat(
-                access_count=ref_count,
-                interaction_depth=ref_count,
-                last_accessed_at=item.last_referenced_at,
-                importance=float(item.importance),
-                now=ref_now,
-                created_at=item.created_at,
-            )
+            heat_value = compute_heat_for_item(item, now=ref_now)
 
         evidence_heat_factor = evidence_heat_factors.get(item_id)
         if evidence_heat_factor is not None:
             if heat_value in (None, 0.0):
-                ref_count = item.reference_count or 0
-                heat_value = compute_heat(
-                    access_count=ref_count,
-                    interaction_depth=ref_count,
-                    last_accessed_at=item.last_referenced_at,
-                    importance=float(item.importance or 3),
-                    now=ref_now,
-                    created_at=item.created_at,
-                )
+                heat_value = compute_heat_for_item(item, now=ref_now)
             applied_evidence_heat_factors[item_id] = evidence_heat_factor
             heat_value = float(heat_value or 0.0) * evidence_heat_factor
 
         decay_count = zero_reference_counts.get(item_id, 0)
         if decay_count > 0:
             if heat_value in (None, 0.0):
-                ref_count = item.reference_count or 0
-                heat_value = compute_heat(
-                    access_count=ref_count,
-                    interaction_depth=ref_count,
-                    last_accessed_at=item.last_referenced_at,
-                    importance=float(item.importance or 3),
-                    now=ref_now,
-                    created_at=item.created_at,
-                )
+                heat_value = compute_heat_for_item(item, now=ref_now)
             decay_factor = _zero_reference_decay(decay_count)
             heat_decay_factors[item_id] = decay_factor
             heat_value = float(heat_value or 0.0) * decay_factor
