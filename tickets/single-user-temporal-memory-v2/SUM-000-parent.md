@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 00:53 MYT
+- Updated: 2026-07-03 01:05 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -120,6 +120,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-02 22:59 MYT - `SUM-007` completed with cross-episode pattern sampling, strict repeated-evidence parsing, pattern memory provenance, compact prompt rendering, and sleep-time orchestration.
 - 2026-07-02 23:14 MYT - `SUM-007` recorded final lint/build validation and noted that the full backend suite was stopped at user request before completion.
 - 2026-07-03 00:53 MYT - `SUM-007` reran focused, adjacent, and full backend validation before review; full suite failed on an inherited SUM-006 migration repair regression.
+- 2026-07-03 01:05 MYT - `SUM-007` addressed Codex review feedback by making duplicate pattern synthesis idempotent for already-seen source episodes.
 
 ## Validation
 
@@ -132,6 +133,11 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-007 build: passed with existing Vite chunk-size warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - SUM-007 full backend suite: 1 failed, 1758 passed, 1 skipped, 297 warnings. Failure: `apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables`.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables` - SUM-007 failure confirmation: failed deterministically with `sqlalchemy.exc.NoSuchTableError: memory_items` in inherited migration `20260701_0003_add_memory_salience.py`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_duplicate_pattern_evidence_for_same_episodes` - SUM-007 review regression failed before the fix because duplicate pattern synthesis reported an update and appended duplicate evidence.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_duplicate_pattern_evidence_for_same_episodes` - SUM-007 review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 review focused suite: 6 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - SUM-007 review adjacent suite: 48 passed, 15 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 review fix lint: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
@@ -299,4 +305,5 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
   - SUM-006 adds structured salience metadata, salience-aware heat floors/decay classes, explicit soft-evolution links for preference/relationship drift, and duplicate candidate reinforcement without rewriting promoted candidate audit rows.
   - SUM-007 stores recurring cross-episode patterns as evidence-backed `MemoryItem` rows with source episode/evidence metadata and renders only active high-confidence patterns in a compact prompt block.
+  - SUM-007 review fix skips duplicate pattern evidence and salience reinforcement when the matched pattern already has evidence for all incoming source episodes.
   - SUM-007 full-suite failure is outside the SUM-007 diff; the branch does not modify `apps/server/src/anima_server/db/session.py`, `apps/server/tests/test_runtime_db.py`, or the failing SUM-006 migration.

@@ -212,6 +212,66 @@ async def test_synthesis_creates_evidence_backed_pattern_memory(
         }
 
 
+@pytest.mark.asyncio()
+async def test_synthesis_skips_duplicate_pattern_evidence_for_same_episodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import pattern_synthesis
+
+    with _db_session() as db:
+        user = _make_user(db)
+        first = _episode(
+            db,
+            user_id=user.id,
+            date="2026-02-01",
+            summary="The user was exhausted after launch planning.",
+            topics=["launch", "energy"],
+            significance=4,
+        )
+        second = _episode(
+            db,
+            user_id=user.id,
+            date="2026-04-01",
+            summary="Another launch planning push led to the same exhaustion.",
+            topics=["launch", "energy"],
+            significance=4,
+        )
+
+        async def _fake_call_llm_for_json(*_args: object, **_kwargs: object) -> object:
+            return [
+                {
+                    "pattern": "Launch planning repeatedly drains the user's energy.",
+                    "category": "emotional_patterns",
+                    "confidence": 0.86,
+                    "source_episode_ids": [first.id, second.id],
+                    "source_evidence_ids": [501, 502],
+                    "evidence": [
+                        "exhausted after launch planning",
+                        "same exhaustion after another launch push",
+                    ],
+                }
+            ]
+
+        monkeypatch.setattr(pattern_synthesis, "call_llm_for_json", _fake_call_llm_for_json)
+
+        first_result = await pattern_synthesis.synthesize_cross_episode_patterns(
+            user_id=user.id,
+            db_factory=lambda: db,
+        )
+        second_result = await pattern_synthesis.synthesize_cross_episode_patterns(
+            user_id=user.id,
+            db_factory=lambda: db,
+        )
+
+        item = db.scalar(select(MemoryItem).where(MemoryItem.user_id == user.id))
+        assert item is not None
+        assert first_result.created == 1
+        assert second_result.updated == 0
+        assert second_result.skipped == 1
+        assert item.evidence_strength == pytest.approx(0.86)
+        assert len(item.evidence) == 1
+
+
 def test_pattern_prompt_block_renders_only_high_confidence_active_patterns() -> None:
     from anima_server.services.agent.memory_blocks import build_cross_episode_patterns_block
 

@@ -25,8 +25,13 @@ from anima_server.services.agent.memory_salience import (
     MEMORY_CLASS_RELATIONSHIP,
     STABILITY_EVOLVING,
     STABILITY_STABLE,
+    merge_salience_into_item,
 )
-from anima_server.services.agent.memory_store import store_memory_item
+from anima_server.services.agent.memory_store import (
+    analyze_memory_item,
+    invalidate_memory_retrieval_indexes,
+    store_memory_item,
+)
 from anima_server.services.agent.provenance import add_memory_item_evidence
 from anima_server.services.data_crypto import df
 
@@ -223,6 +228,21 @@ def _store_pattern(
     user_id: int,
     pattern: PatternCandidate,
 ) -> tuple[MemoryItem | None, str]:
+    analysis = analyze_memory_item(
+        db,
+        user_id=user_id,
+        content=pattern.pattern,
+        category=PATTERN_CATEGORY,
+    )
+    if analysis.action == "duplicate" and analysis.matched_item is not None:
+        item = analysis.matched_item
+        if _pattern_has_source_episodes(item, pattern.source_episode_ids):
+            return item, "duplicate_existing_sources"
+        merge_salience_into_item(item, _salience_for_pattern(pattern))
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
+        _add_pattern_evidence(db, item=item, user_id=user_id, pattern=pattern)
+        return item, "duplicate"
+
     result = store_memory_item(
         db,
         user_id=user_id,
@@ -238,6 +258,17 @@ def _store_pattern(
     if item is None or result.action in {"conflict", "rejected", "similar"}:
         return None, result.action
 
+    _add_pattern_evidence(db, item=item, user_id=user_id, pattern=pattern)
+    return item, result.action
+
+
+def _add_pattern_evidence(
+    db: Session,
+    *,
+    item: MemoryItem,
+    user_id: int,
+    pattern: PatternCandidate,
+) -> None:
     metadata: dict[str, object] = {
         "memory_source": PATTERN_SOURCE,
         "source_episode_ids": list(pattern.source_episode_ids),
@@ -261,7 +292,6 @@ def _store_pattern(
         extractor=PATTERN_SOURCE,
         metadata=metadata,
     )
-    return item, result.action
 
 
 def _parse_candidate(raw: object) -> PatternCandidate | None:
@@ -293,6 +323,33 @@ def _parse_candidate(raw: object) -> PatternCandidate | None:
         evidence=evidence,
         source_evidence_ids=source_evidence_ids,
     )
+
+
+def _pattern_has_source_episodes(
+    item: MemoryItem,
+    source_episode_ids: Sequence[int],
+) -> bool:
+    incoming = set(source_episode_ids)
+    if not incoming:
+        return False
+    existing: set[int] = set()
+    for evidence in item.evidence:
+        if evidence.source_kind != PATTERN_SOURCE:
+            continue
+        metadata = evidence.metadata_json or {}
+        if not isinstance(metadata, dict):
+            continue
+        raw_ids = metadata.get("source_episode_ids")
+        if not isinstance(raw_ids, list):
+            continue
+        for raw_id in raw_ids:
+            try:
+                parsed = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                existing.add(parsed)
+    return incoming.issubset(existing)
 
 
 def _render_episodes_for_prompt(
