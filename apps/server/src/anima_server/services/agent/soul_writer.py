@@ -810,7 +810,7 @@ def _process_candidate(
                 soul_db.commit()
                 invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
 
-            candidate.status = "promoted"
+            candidate.status = "reinforced"
             candidate.processed_at = now
             journal.target_table = "memory_items"
             if old_item is not None:
