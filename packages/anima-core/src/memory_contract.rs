@@ -51,15 +51,6 @@ pub enum DecayClass {
     Ephemeral,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EvidenceStrength {
-    Inferred,
-    Observed,
-    Corroborated,
-    UserConfirmed,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RecallScoreBreakdown {
     #[serde(default)]
@@ -89,9 +80,14 @@ pub struct MemorySalience {
     pub decay_class: DecayClass,
     #[serde(default)]
     pub emotional_salience: f64,
-    pub evidence_strength: EvidenceStrength,
+    #[serde(default = "default_evidence_strength")]
+    pub evidence_strength: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heat_floor: Option<f64>,
+}
+
+fn default_evidence_strength() -> f64 {
+    0.8
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

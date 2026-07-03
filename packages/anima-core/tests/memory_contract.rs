@@ -1,7 +1,8 @@
 use anima_core::memory_contract::{
-    DecayClass, EvidenceStrength, MemoryClass, MemoryEndpointKind, MemorySalience,
-    RecallScoreBreakdown, StabilityClass, TemporalFact, TemporalRecordStatus, TemporalRelationship,
+    DecayClass, MemoryClass, MemoryEndpointKind, MemorySalience, RecallScoreBreakdown,
+    StabilityClass, TemporalFact, TemporalRecordStatus, TemporalRelationship,
 };
+use serde_json::json;
 
 #[test]
 fn memory_contract_serializes_snake_case_status_and_endpoint_values() {
@@ -35,7 +36,7 @@ fn memory_contract_default_score_breakdown_and_salience_shape() {
         stability_class: StabilityClass::Evolving,
         decay_class: DecayClass::Slow,
         emotional_salience: 0.55,
-        evidence_strength: EvidenceStrength::Observed,
+        evidence_strength: 0.8,
         heat_floor: Some(0.4),
     };
     let salience_value = serde_json::to_value(&salience).unwrap();
@@ -44,12 +45,28 @@ fn memory_contract_default_score_breakdown_and_salience_shape() {
     assert_eq!(salience_value["stability_class"], "evolving");
     assert_eq!(salience_value["decay_class"], "slow");
     assert_eq!(salience_value["emotional_salience"], 0.55);
-    assert_eq!(salience_value["evidence_strength"], "observed");
+    assert_eq!(salience_value["evidence_strength"], 0.8);
     assert_eq!(salience_value["heat_floor"], 0.4);
 }
 
 #[test]
-fn memory_contract_serializes_salience_enum_values_as_snake_case() {
+fn memory_contract_accepts_python_numeric_salience_evidence_strength() {
+    let salience: MemorySalience = serde_json::from_value(json!({
+        "memory_class": "active_project",
+        "stability_class": "evolving",
+        "decay_class": "slow",
+        "emotional_salience": 0.55,
+        "evidence_strength": 0.8,
+        "heat_floor": 0.4
+    }))
+    .unwrap();
+
+    assert_eq!(salience.memory_class, MemoryClass::ActiveProject);
+    assert_eq!(salience.evidence_strength, 0.8);
+}
+
+#[test]
+fn memory_contract_serializes_salience_class_values_as_snake_case() {
     assert_eq!(
         serde_json::to_value(MemoryClass::EmotionalPattern).unwrap(),
         "emotional_pattern"
@@ -61,10 +78,6 @@ fn memory_contract_serializes_salience_enum_values_as_snake_case() {
     assert_eq!(
         serde_json::to_value(DecayClass::Ephemeral).unwrap(),
         "ephemeral"
-    );
-    assert_eq!(
-        serde_json::to_value(EvidenceStrength::Inferred).unwrap(),
-        "inferred"
     );
 }
 
