@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 10:49 MYT
+- Updated: 2026-07-03 11:05 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -133,10 +133,18 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 03:36 MYT - `SUM-008` and `SUM-009` completed with foresight signals, procedural experience memory, skill distillation, prompt integration, migration compatibility repair, and full validation.
 - 2026-07-03 10:21 MYT - `SUM-008` addressed PR #77 review feedback for sentence-bound foresight extraction and source-message timestamp anchoring.
 - 2026-07-03 10:49 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for scheduled foresight lifecycle, overdue prompt filtering, and unembedded experience clustering.
+- 2026-07-03 11:05 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for LLM foresight prompt schema and persisted matched-cluster JSON state.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_llm_memory_extraction_prompt_requests_foresight` - SUM-008 PR #77 rereview regression failed before fix because the LLM extraction prompt/system message did not request foresight payloads.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_existing_experience_cluster_state_updates_persist_across_sessions` - SUM-009 PR #77 rereview regression failed before fix because matched cluster JSON state reloaded with count `1` after adding a second similar experience.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - SUM-008/SUM-009 PR #77 rereview consolidation suite: 11 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 rereview experience suite: 6 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py::test_scheduled_sleeptime_runs_foresight_lifecycle` - SUM-008 PR #77 rereview regression failed before fix because scheduled sleeptime did not run foresight lifecycle transitions.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_skips_overdue_active_rows_before_limiting` - SUM-008 PR #77 rereview regression failed before fix because overdue active foresight rows could consume the prompt query limit before filtering.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_unembedded_experiences_do_not_enter_skill_clusters` - SUM-009 PR #77 rereview regression failed before fix because unembedded experiences were assigned to `cluster_{user}_000`.
@@ -347,6 +355,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_pending_memory_ops.py
   - apps/server/src/anima_server/services/agent/pattern_synthesis.py
   - apps/server/src/anima_server/services/agent/templates/prompts/pattern_synthesis.md.j2
+  - apps/server/src/anima_server/services/agent/templates/prompts/memory_extraction.md.j2
   - apps/server/src/anima_server/services/agent/memory_blocks.py
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/prompt_loader.py
@@ -358,6 +367,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 rereview fix adds foresight schema/rules to the LLM memory extraction prompt and includes foresight in the extraction system message.
+  - SUM-009 PR #77 rereview fix flags matched experience cluster JSON state as modified after centroid/count/activity mutations.
   - SUM-008 PR #77 rereview fix runs foresight lifecycle transitions from scheduled sleeptime, not only the manual `/chat/sleep` path.
   - SUM-008 PR #77 rereview fix applies overdue filtering in the foresight prompt query before limiting.
   - SUM-009 PR #77 rereview fix keeps unembedded agent experiences out of clustering and learned skill distillation.

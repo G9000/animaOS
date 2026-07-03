@@ -133,7 +133,8 @@ async def extract_memories_via_llm(
             assistant_response=prepared_assistant_response or assistant_response,
         )
         content = await call_llm_for_text(
-            "You extract memories and emotions. Respond only with JSON.",
+            "You extract memories, profile updates, foresight signals, and emotions. "
+            "Respond only with JSON.",
             prompt,
         )
 

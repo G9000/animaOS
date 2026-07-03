@@ -159,6 +159,74 @@ def test_experience_clustering_is_stable_across_state_reload() -> None:
     assert reloaded_second.cluster_id == first_cluster
 
 
+def test_existing_experience_cluster_state_updates_persist_across_sessions() -> None:
+    from anima_server.services.agent.agent_experience import (
+        AgentExperienceCandidate,
+        assign_experience_to_cluster,
+        store_agent_experience,
+    )
+
+    engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=Session,
+    )
+    Base.metadata.create_all(bind=engine)
+    try:
+        with factory() as db:
+            user = _make_user(db)
+            first = store_agent_experience(
+                db,
+                user_id=user.id,
+                candidate=AgentExperienceCandidate(
+                    task_intent="Plan a weekend trip within a budget",
+                    approach="Ask dates, budget, and constraints before suggesting options.",
+                    quality_score=0.84,
+                    embedding=[1.0, 0.0],
+                ),
+            )
+            cluster_id = assign_experience_to_cluster(db, user_id=user.id, experience=first)
+            user_id = user.id
+            first_id = first.id
+            db.commit()
+
+        with factory() as db:
+            second = store_agent_experience(
+                db,
+                user_id=user_id,
+                candidate=AgentExperienceCandidate(
+                    task_intent="Help plan another budget-friendly weekend trip",
+                    approach="Start with dates and budget, then compare options.",
+                    quality_score=0.88,
+                    embedding=[0.98, 0.02],
+                    created_at=datetime.now(UTC) + timedelta(days=3),
+                ),
+            )
+            assert assign_experience_to_cluster(db, user_id=user_id, experience=second) == cluster_id
+            second_id = second.id
+            db.commit()
+
+        with factory() as db:
+            state = db.scalar(
+                select(ExperienceClusterState).where(ExperienceClusterState.user_id == user_id)
+            )
+
+        assert state is not None
+        cluster = state.state_json["clusters"][cluster_id]
+        assert cluster["count"] == 2
+        assert cluster["experience_ids"] == [first_id, second_id]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_unembedded_experiences_do_not_enter_skill_clusters() -> None:
     from anima_server.services.agent.agent_experience import (
         AgentExperienceCandidate,

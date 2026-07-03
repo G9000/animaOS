@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -214,6 +215,50 @@ async def test_run_background_extraction_attaches_source_ids_to_regex_candidates
         assert all(candidate.source_message_ids == [101, 102] for candidate in candidates)
     finally:
         settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_llm_memory_extraction_prompt_requests_foresight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.consolidation import extract_memories_via_llm
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_for_text(system_prompt: str, prompt: str, **_kwargs: object) -> str:
+        captured["system_prompt"] = system_prompt
+        captured["prompt"] = prompt
+        return json.dumps(
+            {
+                "memories": [],
+                "profile_updates": [],
+                "foresight": [],
+                "emotion": None,
+            }
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.llm_json.call_llm_for_text",
+            _fake_call_llm_for_text,
+        )
+
+        result = await extract_memories_via_llm(
+            user_message="I promised to send the launch deck next Friday.",
+            assistant_response="I will keep that in mind.",
+        )
+
+    finally:
+        settings.agent_provider = original_provider
+
+    assert result.foresight == []
+    assert "foresight" in captured["system_prompt"].lower()
+    assert '"foresight": a JSON array' in captured["prompt"]
+    assert '"start_date"' in captured["prompt"]
+    assert '"end_date"' in captured["prompt"]
+    assert '"evidence"' in captured["prompt"]
 
 
 @pytest.mark.asyncio

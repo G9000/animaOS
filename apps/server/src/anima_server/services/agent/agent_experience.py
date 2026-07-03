@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from anima_server.models import AgentExperience, AgentSkill, ExperienceClusterState
 from anima_server.services.agent.embeddings import cosine_similarity
@@ -152,6 +153,7 @@ def assign_experience_to_cluster(
         experience_ids.append(int(experience.id))
     cluster["experience_ids"] = experience_ids
     state_row.state_json = state
+    flag_modified(state_row, "state_json")
     state_row.updated_at = datetime.now(UTC)
     experience.cluster_id = best_id
     db.flush()
