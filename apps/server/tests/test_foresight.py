@@ -260,6 +260,56 @@ def test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled() -> None:
     assert cancelled.status == "cancelled"
 
 
+def test_foresight_cancellation_matches_short_event_tokens() -> None:
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        mark_cancelled_from_text,
+        upsert_foresight_signal,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        meeting = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has a meeting",
+                evidence="I have a meeting tomorrow.",
+                relative_text="tomorrow",
+                start_date=date(2026, 7, 4),
+                end_date=date(2026, 7, 4),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+        )
+        appointment = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has a dentist appointment",
+                evidence="I have a dentist appointment tomorrow.",
+                relative_text="tomorrow",
+                start_date=date(2026, 7, 4),
+                end_date=date(2026, 7, 4),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+        )
+        db.flush()
+
+        cancelled_count = mark_cancelled_from_text(
+            db,
+            user_id=user.id,
+            text="That meeting got cancelled.",
+            observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+        )
+        db.flush()
+
+    assert cancelled_count == 1
+    assert meeting.status == "cancelled"
+    assert appointment.status == "active"
+
+
 def test_foresight_lifecycle_defaults_to_user_local_date(
     monkeypatch,
 ) -> None:

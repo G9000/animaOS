@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 14:13 MYT
+- Updated: 2026-07-03 14:32 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -140,10 +140,17 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 13:33 MYT - `SUM-009` addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
 - 2026-07-03 13:52 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for recently occurred foresight prompt visibility and lower/equal-quality duplicate procedural capture supersession.
 - 2026-07-03 14:13 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for vault portability, recently elapsed unswept foresight prompts, and task-verb article cleanup.
+- 2026-07-03 14:32 MYT - `SUM-008` addressed PR #77 current-head review feedback for short-event cancellation matching.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens` - SUM-008 PR #77 current-head review regression failed before fix because `That meeting got cancelled.` did not cancel `User has a meeting`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens apps/server/tests/test_foresight.py::test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled` - SUM-008 PR #77 current-head review cancellation regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 current-head review foresight suite: 14 passed, 11 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs` - SUM-008 PR #77 current-head review regression failed before fix because task verb cleanup produced `User has an a report`.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows` - SUM-008 PR #77 current-head review regression failed before fix because active/due rows that elapsed before sleep lifecycle ran were excluded from prompt retrieval.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regression failed before fix because vault exports omitted foresight and procedural memory tables.
@@ -420,6 +427,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 current-head review fix cancels a signal when all stored event tokens appear in the cancellation sentence, preserving the older overlap threshold as fallback for longer phrasing.
   - SUM-008/SUM-009 PR #77 current-head review fix adds foresight and procedural memory tables to vault JSON and anima capsule exports/imports with import-time field re-encryption.
   - SUM-008 PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the follow-up window and strips articles after task verbs.
   - SUM-008 PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.

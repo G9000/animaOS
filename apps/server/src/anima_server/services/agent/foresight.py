@@ -355,7 +355,7 @@ def mark_cancelled_from_text(
     )
     for row in rows:
         content = df(user_id, row.content, table="foresight_signals", field="content")
-        if _text_overlap(content, prepared) < 0.4:
+        if not _cancellation_matches_event(content, prepared):
             continue
         row.status = "cancelled"
         row.updated_at = now
@@ -495,6 +495,14 @@ def _text_overlap(left: str, right: str) -> float:
     if not left_tokens or not right_tokens:
         return 0.0
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _cancellation_matches_event(content: str, cancellation_text: str) -> bool:
+    event_tokens = set(_match_tokens(content))
+    cancellation_tokens = set(_match_tokens(cancellation_text))
+    if event_tokens and event_tokens <= cancellation_tokens:
+        return True
+    return _text_overlap(content, cancellation_text) >= 0.4
 
 
 def _match_tokens(value: str) -> tuple[str, ...]:
