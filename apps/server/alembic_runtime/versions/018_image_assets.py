@@ -23,12 +23,37 @@ TIMESTAMPTZ = postgresql.TIMESTAMP(timezone=True).with_variant(
 )
 
 
+def _has_table(table_name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(table_name)
+
+
+def _has_unique_constraint(table_name: str, constraint_name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table_name):
+        return False
+    return any(
+        constraint["name"] == constraint_name
+        for constraint in inspector.get_unique_constraints(table_name)
+    )
+
+
 def upgrade() -> None:
-    with op.batch_alter_table("runtime_messages") as batch_op:
-        batch_op.create_unique_constraint(
-            "uq_runtime_messages_id_user",
-            ["id", "user_id"],
+    if not _has_unique_constraint("runtime_messages", "uq_runtime_messages_id_user"):
+        with op.batch_alter_table("runtime_messages") as batch_op:
+            batch_op.create_unique_constraint(
+                "uq_runtime_messages_id_user",
+                ["id", "user_id"],
+            )
+
+    if all(
+        _has_table(table_name)
+        for table_name in (
+            "runtime_image_assets",
+            "runtime_image_annotations",
+            "runtime_image_message_links",
         )
+    ):
+        return
 
     op.create_table(
         "runtime_image_assets",
