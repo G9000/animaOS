@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import MemoryItem
-from anima_server.services import anima_core_bindings, anima_core_retrieval
+from anima_server.services import anima_core_bindings
 from anima_server.services.agent.adaptive_retrieval import (
     AdaptiveFilterResult,
     AdaptiveRetrievalConfig,
@@ -553,15 +553,17 @@ def _semantic_ranked_ids_via_rust(
     limit: int,
 ) -> list[tuple[int, float]] | None:
     try:
-        root = anima_core_retrieval.get_retrieval_root()
         from anima_server.services.agent.memory_store import (
             ensure_memory_retrieval_index_ready,
         )
+        from anima_server.services.agent.retrieval_backends import (
+            get_memory_retrieval_backend,
+        )
 
-        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, root=root):
+        backend = get_memory_retrieval_backend()
+        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, backend=backend):
             return None
-        hits = anima_core_retrieval.memory_index_vector_search(
-            root=root,
+        hits = backend.search_memory_by_vector(
             user_id=user_id,
             query_embedding=query_embedding,
             limit=limit,
@@ -575,14 +577,7 @@ def _semantic_ranked_ids_via_rust(
 
     ranked: list[tuple[int, float]] = []
     for hit in hits:
-        record_id = hit.get("record_id")
-        score = hit.get("score")
-        if record_id is None or score is None:
-            continue
-        try:
-            ranked.append((int(record_id), float(score)))
-        except (TypeError, ValueError):
-            continue
+        ranked.append((hit.record_id, hit.score))
     return ranked
 
 
