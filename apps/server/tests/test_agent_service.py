@@ -1178,6 +1178,33 @@ def test_post_turn_hooks_skip_experience_capture_without_source_prompt(
     assert scheduled == []
 
 
+def test_experience_approach_redacts_raw_tool_outputs() -> None:
+    result = AgentResult(
+        response="I found the relevant memory.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="end_turn",
+        step_traces=[
+            StepTrace(
+                step_index=0,
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-1",
+                        name="recall_conversation",
+                        output="PRIVATE MEMORY: the user shared a secret project name.",
+                    ),
+                ),
+            )
+        ],
+    )
+
+    approach = agent_service._experience_approach(result)
+
+    assert "Result: recall_conversation succeeded." in approach
+    assert "PRIVATE MEMORY" not in approach
+    assert "secret project name" not in approach
+
+
 def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
     with runtime_db_session() as session:
         user_id = 43

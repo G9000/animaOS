@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 11:29 MYT
+- Updated: 2026-07-03 13:33 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -137,10 +137,18 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 11:29 MYT - `SUM-008` addressed PR #77 rereview feedback for prompt retrieval priority of dated foresight over undated signals.
 - 2026-07-03 11:45 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for saved-timezone foresight date resolution and promptless approval-resume experience capture.
 - 2026-07-03 12:07 MYT - `SUM-008` addressed PR #77 rereview feedback for saved-timezone lifecycle sweeps and prompt filtering.
+- 2026-07-03 13:33 MYT - `SUM-009` addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression failed before fix because raw `recall_conversation` tool output was persisted in the procedural approach summary.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 current-head review agent service suite: 27 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 PR #77 current-head review experience suite: 6 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-009 PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_lifecycle_defaults_to_user_local_date` - SUM-008 PR #77 rereview regression failed before fix because lifecycle sweeps defaulted to UTC instead of the saved user timezone.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_defaults_to_user_local_date` - SUM-008 PR #77 rereview regression failed before fix because prompt filtering defaulted to UTC instead of the saved user timezone.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview local-date suite: 10 passed, 8 warnings.
@@ -393,6 +401,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-009 PR #77 current-head review fix records only tool name and success/failure status in procedural summaries instead of copying raw tool output that can contain private conversation or memory content.
   - SUM-008 PR #77 rereview fix uses the saved world-context timezone for default lifecycle and prompt dates, keeping extracted local dates and status/prompt filtering on the same calendar day.
   - SUM-008 PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.
   - SUM-009 PR #77 rereview fix leaves consolidation/reflection hooks intact on approval resume while preventing promptless tool-only turns from seeding generic experience memories.

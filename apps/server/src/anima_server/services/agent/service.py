@@ -2383,10 +2383,7 @@ def _experience_approach(result: AgentResult) -> str:
             lines.append(f"Tried: {tool_call.name}")
         for tool_result in trace.tool_results:
             outcome = "failed" if tool_result.is_error else "succeeded"
-            detail = (tool_result.output or "").strip()
-            if len(detail) > 240:
-                detail = detail[:237].rstrip() + "..."
-            lines.append(f"Result: {tool_result.name} {outcome}. {detail}".strip())
+            lines.append(f"Result: {tool_result.name} {outcome}.")
             if tool_result.inner_thinking:
                 lines.append(f"Lesson: {tool_result.inner_thinking.strip()[:500]}")
     if result.response:
