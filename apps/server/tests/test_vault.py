@@ -670,6 +670,116 @@ def test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_
     assert evidence.source_claim_evidence_id is None
 
 
+def test_restore_database_snapshot_defers_kg_relation_self_links() -> None:
+    from anima_server.models import Base
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _connection_record):  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    observed_at = "2026-06-30T10:00:00+00:00"
+    snapshot = {
+        "users": [
+            {
+                "id": 1,
+                "username": "kg-link-user",
+                "password_hash": "hash",
+                "display_name": "KG Link User",
+                "gender": None,
+                "age": None,
+                "birthday": None,
+                "created_at": observed_at,
+                "updated_at": observed_at,
+            }
+        ],
+        "userKeys": [
+            {
+                "id": 1,
+                "user_id": 1,
+                "domain": "memories",
+                "kdf_salt": "salt",
+                "kdf_time_cost": 2,
+                "kdf_memory_cost_kib": 64,
+                "kdf_parallelism": 1,
+                "kdf_key_length": 32,
+                "wrap_iv": "iv",
+                "wrap_tag": "tag",
+                "wrapped_dek": "dek",
+                "created_at": observed_at,
+                "updated_at": observed_at,
+            }
+        ],
+        "kgEntities": [
+            {
+                "id": 1,
+                "user_id": 1,
+                "name": "Ari",
+                "name_normalized": "ari",
+                "entity_type": "person",
+                "description": "",
+                "mentions": 1,
+            },
+            {
+                "id": 2,
+                "user_id": 1,
+                "name": "Temporal Memory",
+                "name_normalized": "temporal memory",
+                "entity_type": "project",
+                "description": "",
+                "mentions": 1,
+            },
+        ],
+        "kgRelations": [
+            {
+                "id": 2,
+                "user_id": 1,
+                "source_id": 1,
+                "destination_id": 2,
+                "relation_type": "leads",
+                "mentions": 1,
+                "status": "active",
+                "supersedes_relation_id": 1,
+                "evolves_from_relation_id": 1,
+            },
+            {
+                "id": 1,
+                "user_id": 1,
+                "source_id": 1,
+                "destination_id": 2,
+                "relation_type": "collaborates_on",
+                "mentions": 1,
+                "status": "superseded",
+                "supersedes_relation_id": None,
+                "evolves_from_relation_id": None,
+            },
+        ],
+    }
+
+    with Session(engine) as db:
+        vault_module.restore_database_snapshot(db, snapshot)
+        db.commit()
+
+        replacement = db.get(KGRelation, 2)
+        historical = db.get(KGRelation, 1)
+
+    assert historical is not None
+    assert replacement is not None
+    assert replacement.supersedes_relation_id == historical.id
+    assert replacement.evolves_from_relation_id == historical.id
+
+
 def test_export_and_import_vault_restores_knowledge_graph() -> None:
     with managed_test_client("anima-vault-test-") as client:
         user = _register_user(client, username="kg-vault-user", password="pw123456")

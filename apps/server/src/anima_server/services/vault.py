@@ -1204,12 +1204,25 @@ def restore_database_snapshot(
 
         db.flush()
 
+        kg_relation_self_links: list[tuple[int, int | None, int | None]] = []
+        restored_kg_relation_ids: set[int] = set()
         for record in kg_relations_payload:
             if not isinstance(record, dict):
                 continue
+            relation_id = int(record["id"])
+            supersedes_relation_id = coerce_optional_int(
+                record.get("supersedes_relation_id")
+            )
+            evolves_from_relation_id = coerce_optional_int(
+                record.get("evolves_from_relation_id")
+            )
+            restored_kg_relation_ids.add(relation_id)
+            kg_relation_self_links.append(
+                (relation_id, supersedes_relation_id, evolves_from_relation_id)
+            )
             db.add(
                 KGRelation(
-                    id=int(record["id"]),
+                    id=relation_id,
                     user_id=int(record["user_id"]),
                     source_id=int(record["source_id"]),
                     destination_id=int(record["destination_id"]),
@@ -1226,12 +1239,25 @@ def restore_database_snapshot(
                         else 1.0
                     ),
                     status=str(record.get("status") or "active"),
-                    supersedes_relation_id=coerce_optional_int(record.get("supersedes_relation_id")),
-                    evolves_from_relation_id=coerce_optional_int(record.get("evolves_from_relation_id")),
+                    supersedes_relation_id=None,
+                    evolves_from_relation_id=None,
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
             )
+
+        db.flush()
+
+        for relation_id, supersedes_relation_id, evolves_from_relation_id in (
+            kg_relation_self_links
+        ):
+            relation = db.get(KGRelation, relation_id)
+            if relation is None:
+                continue
+            if supersedes_relation_id in restored_kg_relation_ids:
+                relation.supersedes_relation_id = supersedes_relation_id
+            if evolves_from_relation_id in restored_kg_relation_ids:
+                relation.evolves_from_relation_id = evolves_from_relation_id
 
         for record in memory_episodes_payload:
             if not isinstance(record, dict):
