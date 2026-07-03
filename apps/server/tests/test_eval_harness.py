@@ -20,6 +20,10 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models import (
+    AgentExperience,
+    AgentSkill,
+    ExperienceClusterState,
+    ForesightSignal,
     MemoryItem,
     MemoryItemEvidence,
     RuntimeDocument,
@@ -1147,6 +1151,62 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                     ),
                 ]
             )
+            soul_db.add_all(
+                [
+                    ForesightSignal(
+                        user_id=1,
+                        content="Eval has a dentist appointment tomorrow",
+                        evidence="Eval mentioned a dentist appointment",
+                        source_message_ids_json=[101],
+                    ),
+                    ForesightSignal(
+                        user_id=2,
+                        content="Other has a dentist appointment tomorrow",
+                        evidence="Other mentioned a dentist appointment",
+                        source_message_ids_json=[201],
+                    ),
+                    AgentExperience(
+                        user_id=1,
+                        task_intent="answer eval case",
+                        approach="used eval context",
+                        quality_score=0.7,
+                        cluster_id="eval-cluster",
+                    ),
+                    AgentExperience(
+                        user_id=2,
+                        task_intent="answer other case",
+                        approach="used other context",
+                        quality_score=0.7,
+                        cluster_id="other-cluster",
+                    ),
+                    ExperienceClusterState(
+                        user_id=1,
+                        state_json={"clusters": {"eval-cluster": {"count": 1}}},
+                    ),
+                    ExperienceClusterState(
+                        user_id=2,
+                        state_json={"clusters": {"other-cluster": {"count": 1}}},
+                    ),
+                    AgentSkill(
+                        user_id=1,
+                        cluster_id="eval-cluster",
+                        name="Eval skill",
+                        description="Eval procedural memory",
+                        content="Use eval evidence.",
+                        confidence=0.8,
+                        experience_count=1,
+                    ),
+                    AgentSkill(
+                        user_id=2,
+                        cluster_id="other-cluster",
+                        name="Other skill",
+                        description="Other procedural memory",
+                        content="Use other evidence.",
+                        confidence=0.8,
+                        experience_count=1,
+                    ),
+                ]
+            )
 
             runtime_db.add_all(
                 [
@@ -1317,6 +1377,10 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert deleted["runtime_documents"] == 1
             assert deleted["runtime_workflow_checkpoints"] == 1
             assert deleted["runtime_workflow_runs"] == 1
+            assert deleted["foresight_signals"] == 1
+            assert deleted["agent_experiences"] == 1
+            assert deleted["experience_cluster_state"] == 1
+            assert deleted["agent_skills"] == 1
             assert soul_db.scalars(
                 select(MemoryItem).where(MemoryItem.user_id == 1)
             ).all() == []
@@ -1330,6 +1394,18 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                 select(UserProfileFieldEvidence).where(
                     UserProfileFieldEvidence.user_id == 1
                 )
+            ).all() == []
+            assert soul_db.scalars(
+                select(ForesightSignal).where(ForesightSignal.user_id == 1)
+            ).all() == []
+            assert soul_db.scalars(
+                select(AgentExperience).where(AgentExperience.user_id == 1)
+            ).all() == []
+            assert soul_db.scalars(
+                select(ExperienceClusterState).where(ExperienceClusterState.user_id == 1)
+            ).all() == []
+            assert soul_db.scalars(
+                select(AgentSkill).where(AgentSkill.user_id == 1)
             ).all() == []
             assert len(
                 soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == 2)).all()
@@ -1349,6 +1425,28 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                     select(UserProfileFieldEvidence).where(
                         UserProfileFieldEvidence.user_id == 2
                     )
+                ).all()
+            ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(ForesightSignal).where(ForesightSignal.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(AgentExperience).where(AgentExperience.user_id == 2)
+                ).all()
+            ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(ExperienceClusterState).where(
+                        ExperienceClusterState.user_id == 2
+                    )
+                ).all()
+            ) == 1
+            assert len(
+                soul_db.scalars(
+                    select(AgentSkill).where(AgentSkill.user_id == 2)
                 ).all()
             ) == 1
             assert runtime_db.scalars(

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import (
+    ForesightSignal,
     ForgetAuditLog,
     MemoryClaim,
     MemoryClaimEvidence,
@@ -336,6 +337,44 @@ class TestForgetMemory:
             .where(MemoryItemEvidence.memory_item_id.in_([old_item.id, current_item.id]))
         )
         assert remaining == 0
+
+    def test_forget_deletes_foresight_signals_from_source_turn(self, db: Session):
+        item = _make_item(db, content="I have a dentist appointment tomorrow")
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=item.id,
+                source_kind="conversation",
+                evidence_text="I have a dentist appointment tomorrow",
+                runtime_message_ids_json=[101, 102],
+            )
+        )
+        overlapping = ForesightSignal(
+            user_id=1,
+            content="User has a dentist appointment tomorrow",
+            evidence="I have a dentist appointment tomorrow",
+            source_message_ids_json=[102],
+        )
+        unrelated = ForesightSignal(
+            user_id=1,
+            content="User has a product review next week",
+            evidence="I have a product review next week",
+            source_message_ids_json=[999],
+        )
+        other_user = ForesightSignal(
+            user_id=2,
+            content="Other user has a dentist appointment tomorrow",
+            evidence="I have a dentist appointment tomorrow",
+            source_message_ids_json=[102],
+        )
+        db.add_all([overlapping, unrelated, other_user])
+        db.flush()
+
+        forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert db.get(ForesightSignal, overlapping.id) is None
+        assert db.get(ForesightSignal, unrelated.id) is not None
+        assert db.get(ForesightSignal, other_user.id) is not None
 
     def test_forget_defers_retrieval_index_cleanup_until_after_commit(
         self,

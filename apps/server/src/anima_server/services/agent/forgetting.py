@@ -19,6 +19,7 @@ from sqlalchemy import delete, event, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import (
+    ForesightSignal,
     ForgetAuditLog,
     MemoryClaim,
     MemoryClaimEvidence,
@@ -468,10 +469,22 @@ def forget_memory(
     evidence_by_item_id: dict[int, list[MemoryItemEvidence]] = {}
     for evidence in memory_evidence:
         evidence_by_item_id.setdefault(evidence.memory_item_id, []).append(evidence)
+    source_message_ids = sorted(
+        {
+            message_id
+            for evidence in memory_evidence
+            for message_id in _runtime_message_ids_for_memory_evidence(evidence)
+        }
+    )
     runtime_contexts = _runtime_profile_forget_contexts(
         user_id=user_id,
         chain_items=chain_items,
         evidence_by_item_id=evidence_by_item_id,
+    )
+    _delete_foresight_signals_for_forget(
+        db,
+        user_id=user_id,
+        source_message_ids=source_message_ids,
     )
     _delete_profile_fields_for_forget(
         db,
@@ -528,6 +541,41 @@ def forget_memory(
     result.audit_log_id = log.id
 
     return result
+
+
+def _delete_foresight_signals_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    source_message_ids: Iterable[int],
+) -> int:
+    forgotten_source_ids = _coerce_message_id_set(source_message_ids)
+    if not forgotten_source_ids:
+        return 0
+
+    deleted = 0
+    signals = list(
+        db.scalars(
+            select(ForesightSignal).where(ForesightSignal.user_id == user_id)
+        ).all()
+    )
+    for signal in signals:
+        signal_source_ids = _coerce_message_id_set(signal.source_message_ids_json)
+        if not signal_source_ids.intersection(forgotten_source_ids):
+            continue
+        db.delete(signal)
+        deleted += 1
+    return deleted
+
+
+def _coerce_message_id_set(raw_ids: Iterable[object] | None) -> set[int]:
+    ids: set[int] = set()
+    for raw_id in raw_ids or []:
+        if raw_id is None:
+            continue
+        with suppress(TypeError, ValueError):
+            ids.add(int(raw_id))
+    return ids
 
 
 def _delete_profile_fields_for_forget(

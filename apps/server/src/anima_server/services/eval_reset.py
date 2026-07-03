@@ -4,13 +4,17 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from anima_server.models import (
+    AgentExperience,
     AgentMessage,
     AgentRun,
+    AgentSkill,
     AgentStep,
     AgentThread,
     BackgroundTaskRun,
     CoreEmotionalPattern,
     EmotionalSignal,
+    ExperienceClusterState,
+    ForesightSignal,
     ForgetAuditLog,
     GrowthLogEntry,
     IdentityBlock,
@@ -166,6 +170,32 @@ def _reset_soul_state(
     _delete(db, deleted, "agent_messages", delete(AgentMessage).where(AgentMessage.thread_id.in_(agent_thread_ids)))
     _delete(db, deleted, "agent_runs", delete(AgentRun).where(AgentRun.user_id == user_id))
     _delete(db, deleted, "agent_threads", delete(AgentThread).where(AgentThread.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "foresight_signals",
+        delete(ForesightSignal).where(ForesightSignal.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "agent_experiences",
+        delete(AgentExperience).where(AgentExperience.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "experience_cluster_state",
+        delete(ExperienceClusterState).where(
+            ExperienceClusterState.user_id == user_id
+        ),
+    )
+    _delete(
+        db,
+        deleted,
+        "agent_skills",
+        delete(AgentSkill).where(AgentSkill.user_id == user_id),
+    )
 
     _delete(
         db,
