@@ -261,3 +261,51 @@ def test_foresight_memory_block_renders_active_and_due_signals() -> None:
     assert "due" in block.value
     assert "2026-07-07" in block.value
     assert "stale event" not in block.value
+
+
+def test_prompt_foresight_skips_overdue_active_rows_before_limiting() -> None:
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        get_prompt_foresight_signals,
+        upsert_foresight_signal,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        for idx in range(20):
+            upsert_foresight_signal(
+                db,
+                user_id=user.id,
+                signal=ForesightCandidate(
+                    content=f"User has old event {idx}",
+                    evidence=f"Old event {idx}.",
+                    relative_text=None,
+                    start_date=date(2026, 6, 1),
+                    end_date=date(2026, 6, 1),
+                    duration_days=1,
+                ),
+                observed_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+        upcoming = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has an upcoming product review",
+                evidence="I have a product review next Tuesday.",
+                relative_text="next Tuesday",
+                start_date=date(2026, 7, 7),
+                end_date=date(2026, 7, 7),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+        )
+        db.flush()
+
+        signals = get_prompt_foresight_signals(
+            db,
+            user_id=user.id,
+            today=date(2026, 7, 3),
+            limit=1,
+        )
+
+    assert [signal.id for signal in signals] == [upcoming.id]

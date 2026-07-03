@@ -187,20 +187,21 @@ async def run_sleeptime_agents(
 ) -> list[str]:
     """Orchestrate all background tasks.
 
-    Parallel group (always run):
+    Sequential group (always run):
     1. Memory consolidation (predict-calibrate from F3)
     2. Embedding backfill
     3. Knowledge graph ingestion (F4)
     4. Heat decay (F2)
-    5. Episode generation check
+    5. Foresight lifecycle sweep
+    6. Episode generation check
 
     Sequential group (heat-gated, skipped if heat < threshold):
-    6. Contradiction scan
-    7. Profile synthesis
-    8. Pattern synthesis
+    7. Contradiction scan
+    8. Profile synthesis
+    9. Pattern synthesis
 
     Time-gated:
-    9. Deep monologue (only once per 24h)
+    10. Deep monologue (only once per 24h)
 
     When force=True (inactivity timer): bypass heat gates.
     Returns list of task run IDs for tracking.
@@ -233,6 +234,7 @@ async def run_sleeptime_agents(
             },
         ),
         ("heat_decay", _task_heat_decay, {}),
+        ("foresight_lifecycle", _task_foresight_lifecycle, {}),
         ("episode_gen", _task_episode_gen, {}),
     ]:
         try:
@@ -584,6 +586,23 @@ async def _task_heat_decay(
         db.commit()
 
     return {"items_decayed": count}
+
+
+async def _task_foresight_lifecycle(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """Advance due/occurred/stale foresight states during scheduled sleep."""
+    from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.foresight import sweep_foresight_lifecycle
+
+    factory = db_factory or SessionLocal
+    with factory() as db:
+        transitions = sweep_foresight_lifecycle(db, user_id=user_id)
+        if any(transitions.values()):
+            db.commit()
+    return transitions
 
 
 async def _task_episode_gen(

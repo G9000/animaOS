@@ -2342,7 +2342,8 @@ async def _extract_agent_experience_in_background(
                 user_id=user_id,
                 experience=experience,
             )
-            maybe_distill_skill_for_cluster(db, user_id=user_id, cluster_id=cluster_id)
+            if cluster_id is not None:
+                maybe_distill_skill_for_cluster(db, user_id=user_id, cluster_id=cluster_id)
             db.commit()
     except Exception:
         logger.debug("Agent experience extraction skipped for user %s", user_id, exc_info=True)

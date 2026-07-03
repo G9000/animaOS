@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from anima_server.db.base import Base
-from anima_server.models import AgentExperience, User
+from anima_server.models import AgentExperience, AgentSkill, ExperienceClusterState, User
 from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -157,6 +157,52 @@ def test_experience_clustering_is_stable_across_state_reload() -> None:
     assert distant_cluster != first_cluster
     assert reloaded_second is not None
     assert reloaded_second.cluster_id == first_cluster
+
+
+def test_unembedded_experiences_do_not_enter_skill_clusters() -> None:
+    from anima_server.services.agent.agent_experience import (
+        AgentExperienceCandidate,
+        assign_experience_to_cluster,
+        maybe_distill_skill_for_cluster,
+        store_agent_experience,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        for idx in range(3):
+            experience = store_agent_experience(
+                db,
+                user_id=user.id,
+                candidate=AgentExperienceCandidate(
+                    task_intent=f"Unembedded task {idx}",
+                    approach="Embedding provider was unavailable.",
+                    quality_score=0.7,
+                    embedding=None,
+                ),
+            )
+            assert assign_experience_to_cluster(db, user_id=user.id, experience=experience) is None
+            assert experience.cluster_id is None
+
+        embedded = store_agent_experience(
+            db,
+            user_id=user.id,
+            candidate=AgentExperienceCandidate(
+                task_intent="Plan a weekend trip within a budget",
+                approach="Ask dates and budget, then compare options.",
+                quality_score=0.84,
+                embedding=[1.0, 0.0],
+            ),
+        )
+        cluster_id = assign_experience_to_cluster(db, user_id=user.id, experience=embedded)
+        skill = maybe_distill_skill_for_cluster(db, user_id=user.id, cluster_id=cluster_id)
+        db.flush()
+        states = list(db.scalars(select(ExperienceClusterState)).all())
+        skills = list(db.scalars(select(AgentSkill)).all())
+
+    assert cluster_id == f"cluster_{user.id}_000"
+    assert skill is None
+    assert len(states) == 1
+    assert skills == []
 
 
 def test_skill_distillation_waits_for_three_experiences_then_creates_skill() -> None:

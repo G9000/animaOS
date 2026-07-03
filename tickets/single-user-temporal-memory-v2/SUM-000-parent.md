@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 10:21 MYT
+- Updated: 2026-07-03 10:49 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -132,10 +132,20 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 02:54 MYT - `SUM-008` and `SUM-009` claimed by Codex on branch `codex/sum-008-009-foresight-procedural`, based on PR #67 head.
 - 2026-07-03 03:36 MYT - `SUM-008` and `SUM-009` completed with foresight signals, procedural experience memory, skill distillation, prompt integration, migration compatibility repair, and full validation.
 - 2026-07-03 10:21 MYT - `SUM-008` addressed PR #77 review feedback for sentence-bound foresight extraction and source-message timestamp anchoring.
+- 2026-07-03 10:49 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for scheduled foresight lifecycle, overdue prompt filtering, and unembedded experience clustering.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py::test_scheduled_sleeptime_runs_foresight_lifecycle` - SUM-008 PR #77 rereview regression failed before fix because scheduled sleeptime did not run foresight lifecycle transitions.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_skips_overdue_active_rows_before_limiting` - SUM-008 PR #77 rereview regression failed before fix because overdue active foresight rows could consume the prompt query limit before filtering.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_unembedded_experiences_do_not_enter_skill_clusters` - SUM-009 PR #77 rereview regression failed before fix because unembedded experiences were assigned to `cluster_{user}_000`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py` - SUM-008/SUM-009 PR #77 rereview sleep suite: 22 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008/SUM-009 PR #77 rereview foresight suite: 6 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 rereview experience suite: 5 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_does_not_cross_sentence_boundaries` - SUM-008 PR #77 review regression failed before fix with a bogus cross-sentence foresight signal.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_run_background_extraction_anchors_foresight_to_source_message_time` - SUM-008 PR #77 review regression failed before fix because source `RuntimeMessage.created_at` was not passed as `observed_at`.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 review focused suite: 15 passed, 6 warnings.
@@ -348,6 +358,9 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 rereview fix runs foresight lifecycle transitions from scheduled sleeptime, not only the manual `/chat/sleep` path.
+  - SUM-008 PR #77 rereview fix applies overdue filtering in the foresight prompt query before limiting.
+  - SUM-009 PR #77 rereview fix keeps unembedded agent experiences out of clustering and learned skill distillation.
   - SUM-008 PR #77 review fix prevents event extraction from spanning punctuation into a separate dated sentence.
   - SUM-008 PR #77 review fix resolves relative dates against source runtime message timestamps instead of background extraction wall-clock time.
   - SUM-008 adds evidence-backed future event memory with deterministic relative-date extraction, lifecycle transitions, and proactive prompt rendering.

@@ -103,13 +103,12 @@ def assign_experience_to_cluster(
     experience: AgentExperience,
     similarity_threshold: float = EXPERIENCE_CLUSTER_SIMILARITY_THRESHOLD,
     max_time_gap_days: int = EXPERIENCE_CLUSTER_MAX_GAP_DAYS,
-) -> str:
+) -> str | None:
     embedding = _valid_embedding(experience.embedding_json)
     if embedding is None:
-        cluster_id = experience.cluster_id or _new_cluster_id(user_id, 0)
-        experience.cluster_id = cluster_id
+        experience.cluster_id = None
         db.flush()
-        return cluster_id
+        return None
 
     state_row = _get_or_create_cluster_state(db, user_id=user_id)
     state = _normalize_state(state_row.state_json)

@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import ForesightSignal
@@ -343,17 +343,17 @@ def get_prompt_foresight_signals(
             .where(
                 ForesightSignal.user_id == user_id,
                 ForesightSignal.status.in_(list(FORESIGHT_PROMPT_STATUSES)),
+                or_(
+                    ForesightSignal.status == "due",
+                    ForesightSignal.end_date.is_(None),
+                    ForesightSignal.end_date >= current,
+                ),
             )
             .order_by(ForesightSignal.start_date.asc(), ForesightSignal.id.asc())
-            .limit(limit * 2)
+            .limit(limit)
         ).all()
     )
-    visible = [
-        row
-        for row in rows
-        if row.end_date is None or row.end_date >= current or row.status == "due"
-    ]
-    return tuple(visible[:limit])
+    return tuple(rows)
 
 
 def _find_duplicate_signal(
