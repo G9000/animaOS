@@ -110,6 +110,21 @@ def test_foresight_extraction_does_not_cross_sentence_boundaries() -> None:
     assert [signal.content for signal in signals] == ["User has a product review"]
 
 
+def test_foresight_extraction_strips_articles_after_task_verbs() -> None:
+    from anima_server.services.agent.foresight import extract_regex_foresight_signals
+
+    observed_at = datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
+    signals = extract_regex_foresight_signals(
+        "I need to finish a report tomorrow. I need to submit the budget next Friday.",
+        observed_at=observed_at,
+    )
+
+    assert [signal.content for signal in signals] == [
+        "User has a report",
+        "User has a budget",
+    ]
+
+
 def test_relative_foresight_extraction_uses_user_timezone_for_local_dates() -> None:
     from anima_server.services.agent.foresight import extract_regex_foresight_signals
 
@@ -519,3 +534,52 @@ def test_prompt_foresight_keeps_recently_occurred_followups() -> None:
         )
 
     assert [signal.id for signal in signals] == [recent.id]
+
+
+def test_prompt_foresight_keeps_recently_elapsed_unswept_rows() -> None:
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        get_prompt_foresight_signals,
+        upsert_foresight_signal,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        unswept = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has a product review",
+                evidence="My product review was yesterday.",
+                relative_text="yesterday",
+                start_date=date(2026, 7, 2),
+                end_date=date(2026, 7, 2),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 2, tzinfo=UTC),
+        )
+        old = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has an old appointment",
+                evidence="My appointment was weeks ago.",
+                relative_text=None,
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 1),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        unswept.status = "active"
+        old.status = "due"
+        db.flush()
+
+        signals = get_prompt_foresight_signals(
+            db,
+            user_id=user.id,
+            today=date(2026, 7, 3),
+            limit=8,
+        )
+
+    assert [signal.id for signal in signals] == [unswept.id]

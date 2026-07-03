@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 13:52 MYT
+- Updated: 2026-07-03 14:13 MYT
 - Started: 2026-07-03 02:54 MYT
 - Completed: 2026-07-03 03:36 MYT
 
@@ -44,10 +44,19 @@ Implement future-oriented memory so Anima can remember commitments, expected eve
 - 2026-07-03 11:45 MYT - Addressed PR #77 rereview feedback by resolving relative foresight dates against the saved user timezone.
 - 2026-07-03 12:07 MYT - Addressed PR #77 rereview feedback by defaulting lifecycle sweeps and prompt filtering to the saved user timezone.
 - 2026-07-03 13:52 MYT - Addressed PR #77 current-head review feedback by keeping recently occurred foresight rows prompt-visible during their follow-up window.
+- 2026-07-03 14:13 MYT - Addressed PR #77 current-head review feedback by keeping recently elapsed unswept foresight rows prompt-visible, cleaning task-verb articles, and adding foresight vault export/import coverage.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs` - PR #77 current-head review regression failed before fix because task verb cleanup produced `User has an a report`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows` - PR #77 current-head review regression failed before fix because active/due rows that elapsed before sleep lifecycle ran were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - PR #77 current-head review regression failed before fix because vault exports omitted `foresightSignals`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - PR #77 current-head review regressions: 3 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_vault.py apps/server/tests/test_agent_experience.py` - PR #77 current-head review focused backend set: 41 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - PR #77 current-head review regression failed before fix because recently occurred rows were excluded from prompt retrieval.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - PR #77 current-head review occurred-followup regression: 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py apps/server/tests/test_agent_service.py` - PR #77 current-head review focused backend set: 45 passed, 34 warnings.
@@ -111,12 +120,17 @@ Implement future-oriented memory so Anima can remember commitments, expected eve
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/sleep_agent.py
   - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/vault.py
   - apps/server/src/anima_server/services/agent/templates/prompts/memory_extraction.md.j2
   - apps/server/src/anima_server/services/user_timezone.py
   - apps/server/tests/test_agent_consolidation.py
   - apps/server/tests/test_foresight.py
+  - apps/server/tests/test_vault.py
   - apps/server/tests/test_sleep_agent.py
 - Notes:
+  - PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the same follow-up window used for occurred rows, so a user returning after an event but before sleep cleanup can still get natural follow-up context.
+  - PR #77 current-head review fix strips articles again after task verbs so `finish a report tomorrow` stores `User has a report`, not `User has an a report`.
+  - PR #77 current-head review fix adds `foresightSignals` to vault JSON and anima capsule exports/imports with plaintext vault payloads and import-time field re-encryption.
   - PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.
   - PR #77 rereview fix uses the saved world-context timezone for default lifecycle and prompt dates, keeping extracted local dates and status/prompt filtering on the same calendar day.
   - PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.

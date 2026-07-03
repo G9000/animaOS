@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 13:52 MYT
+- Updated: 2026-07-03 14:13 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -139,10 +139,19 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 12:07 MYT - `SUM-008` addressed PR #77 rereview feedback for saved-timezone lifecycle sweeps and prompt filtering.
 - 2026-07-03 13:33 MYT - `SUM-009` addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
 - 2026-07-03 13:52 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for recently occurred foresight prompt visibility and lower/equal-quality duplicate procedural capture supersession.
+- 2026-07-03 14:13 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for vault portability, recently elapsed unswept foresight prompts, and task-verb article cleanup.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs` - SUM-008 PR #77 current-head review regression failed before fix because task verb cleanup produced `User has an a report`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows` - SUM-008 PR #77 current-head review regression failed before fix because active/due rows that elapsed before sleep lifecycle ran were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regression failed before fix because vault exports omitted foresight and procedural memory tables.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regressions: 3 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_vault.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 current-head review focused backend set: 41 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review regression failed before fix because recently occurred rows were excluded from prompt retrieval.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review regression failed before fix because an equal-quality duplicate remained active with `superseded_by` unset.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review occurred-followup regression: 1 passed, 1 warning.
@@ -411,6 +420,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008/SUM-009 PR #77 current-head review fix adds foresight and procedural memory tables to vault JSON and anima capsule exports/imports with import-time field re-encryption.
+  - SUM-008 PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the follow-up window and strips articles after task verbs.
   - SUM-008 PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.
   - SUM-009 PR #77 current-head review fix supersedes lower/equal-quality near-duplicate procedural captures and prevents superseded experiences from entering cluster state.
   - SUM-009 duplicate suppression now requires high embedding similarity plus near-identical decrypted procedural text, so distinct examples with coarse identical embeddings can still support skill distillation.

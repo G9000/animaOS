@@ -373,6 +373,10 @@ def get_prompt_foresight_signals(
 ) -> tuple[ForesightSignal, ...]:
     current = today or _current_date_for_user(db, user_id=user_id)
     occurred_cutoff = current - timedelta(days=max(0, int(occurred_followup_days)))
+    recent_or_future_active_signal = or_(
+        ForesightSignal.end_date.is_(None),
+        ForesightSignal.end_date >= occurred_cutoff,
+    )
     rows = list(
         db.scalars(
             select(ForesightSignal)
@@ -380,12 +384,10 @@ def get_prompt_foresight_signals(
                 ForesightSignal.user_id == user_id,
                 ForesightSignal.status.in_(list(FORESIGHT_PROMPT_STATUSES)),
                 or_(
-                    ForesightSignal.status == "due",
                     and_(
-                        ForesightSignal.status != "occurred",
-                        ForesightSignal.end_date.is_(None),
+                        ForesightSignal.status.in_(["active", "due"]),
+                        recent_or_future_active_signal,
                     ),
-                    ForesightSignal.end_date >= current,
                     and_(
                         ForesightSignal.status == "occurred",
                         ForesightSignal.end_date.is_not(None),
@@ -520,6 +522,7 @@ def _clean_event(value: str) -> str:
     cleaned = _clean_text(value)
     cleaned = re.sub(r"^(?:a|an|the)\s+", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^(?:submit|finish|complete)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^(?:a|an|the)\s+", "", cleaned, flags=re.IGNORECASE)
     return cleaned
 
 

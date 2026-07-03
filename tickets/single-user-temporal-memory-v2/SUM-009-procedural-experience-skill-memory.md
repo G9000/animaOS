@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 13:52 MYT
+- Updated: 2026-07-03 14:13 MYT
 - Started: 2026-07-03 02:54 MYT
 - Completed: 2026-07-03 03:36 MYT
 
@@ -42,10 +42,17 @@ Let Anima learn reusable procedures from its own tool use, mistakes, recoveries,
 - 2026-07-03 11:45 MYT - Addressed PR #77 rereview feedback by skipping procedural experience capture for approval resumes without an originating user prompt.
 - 2026-07-03 13:33 MYT - Addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
 - 2026-07-03 13:52 MYT - Addressed PR #77 current-head review feedback by superseding lower/equal-quality duplicate procedural captures before clustering.
+- 2026-07-03 14:13 MYT - Addressed PR #77 current-head review feedback by adding procedural experience, cluster state, and learned skill vault export/import coverage.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - PR #77 current-head review regression failed before fix because vault exports omitted `agentExperiences`, `experienceClusterState`, and `agentSkills`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - PR #77 current-head review regressions: 3 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_vault.py apps/server/tests/test_agent_experience.py` - PR #77 current-head review focused backend set: 41 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - PR #77 current-head review regression failed before fix because an equal-quality duplicate remained active with `superseded_by` unset.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - PR #77 current-head review duplicate-supersession regression: 1 passed, 1 warning.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - PR #77 current-head review experience suite: 7 passed, 7 warnings.
@@ -92,9 +99,12 @@ Let Anima learn reusable procedures from its own tool use, mistakes, recoveries,
   - apps/server/src/anima_server/services/agent/memory_blocks.py
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/vault.py
   - apps/server/tests/test_agent_experience.py
   - apps/server/tests/test_agent_service.py
+  - apps/server/tests/test_vault.py
 - Notes:
+  - PR #77 current-head review fix adds `agentExperiences`, `experienceClusterState`, and `agentSkills` to vault JSON and anima capsule exports/imports with import-time field re-encryption for procedural text.
   - PR #77 current-head review fix supersedes lower/equal-quality near-duplicate procedural captures and prevents superseded experiences from entering cluster state.
   - Duplicate suppression now requires high embedding similarity plus near-identical decrypted procedural text, so distinct examples with coarse identical embeddings can still support skill distillation.
   - PR #77 current-head review fix records only tool name and success/failure status in procedural summaries instead of copying raw tool output that can contain private conversation or memory content.

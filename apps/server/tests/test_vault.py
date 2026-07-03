@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import (
+    AgentExperience,
+    AgentSkill,
+    ExperienceClusterState,
+    ForesightSignal,
     KGEntity,
     KGRelation,
     MemoryItem,
@@ -372,6 +376,175 @@ def test_export_and_import_vault_restores_user_profile_fields() -> None:
                 )
                 == "I work as a systems designer."
             )
+
+
+def test_export_and_import_vault_restores_foresight_and_procedural_memory() -> None:
+    with managed_test_client("anima-vault-test-") as client:
+        user = _register_user(client, username="sum-vault-user", password="pw123456")
+        user_id = int(user["id"])
+        headers = {"x-anima-unlock": user["unlockToken"]}
+        observed_at = datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
+
+        from anima_server.services.agent.agent_experience import (
+            AgentExperienceCandidate,
+            AgentSkillCandidate,
+            store_agent_experience,
+            upsert_agent_skill,
+        )
+        from anima_server.services.agent.foresight import (
+            ForesightCandidate,
+            upsert_foresight_signal,
+        )
+
+        with get_user_session_factory(user_id)() as db:
+            signal = upsert_foresight_signal(
+                db,
+                user_id=user_id,
+                signal=ForesightCandidate(
+                    content="User has a product review",
+                    evidence="I have a product review next Tuesday.",
+                    relative_text="next Tuesday",
+                    start_date=date(2026, 7, 7),
+                    end_date=date(2026, 7, 7),
+                    duration_days=1,
+                    confidence=0.91,
+                ),
+                source_thread_id=42,
+                source_message_ids=[101, 102],
+                observed_at=observed_at,
+            )
+            experience = store_agent_experience(
+                db,
+                user_id=user_id,
+                candidate=AgentExperienceCandidate(
+                    task_intent="Recover from a failed local search tool call",
+                    approach="Narrow the query after a timeout, then retry once.",
+                    quality_score=0.84,
+                    source_thread_id=42,
+                    source_run_id=7,
+                    tool_names=("search_memory",),
+                    turn_count=2,
+                    embedding=[0.9, 0.1],
+                    cluster_id="cluster_1_000",
+                    created_at=observed_at,
+                ),
+            )
+            state = ExperienceClusterState(
+                user_id=user_id,
+                state_json={
+                    "next_index": 1,
+                    "clusters": {
+                        "cluster_1_000": {
+                            "centroid": [0.9, 0.1],
+                            "count": 1,
+                            "experience_ids": [experience.id],
+                            "last_activity": observed_at.isoformat(),
+                        }
+                    },
+                },
+                created_at=observed_at,
+                updated_at=observed_at,
+            )
+            db.add(state)
+            skill = upsert_agent_skill(
+                db,
+                user_id=user_id,
+                skill=AgentSkillCandidate(
+                    cluster_id="cluster_1_000",
+                    name="Search Recovery",
+                    description="Recover from local search tool timeouts.",
+                    content="Narrow the query after a timeout and retry once.",
+                    confidence=0.82,
+                    experience_count=3,
+                    embedding=[0.9, 0.1],
+                ),
+            )
+            db.commit()
+            signal_id = signal.id
+            experience_id = experience.id
+            state_id = state.id
+            skill_id = skill.id
+
+        export_response = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass"},
+        )
+        assert export_response.status_code == 200
+
+        envelope = json.loads(export_response.json()["vault"])
+        payload = json.loads(decrypt_string(envelope, "vault-pass"))
+        database = payload["database"]
+        assert database["foresightSignals"][0]["content"] == "User has a product review"
+        assert database["foresightSignals"][0]["evidence"] == (
+            "I have a product review next Tuesday."
+        )
+        assert database["agentExperiences"][0]["task_intent"] == (
+            "Recover from a failed local search tool call"
+        )
+        assert database["agentExperiences"][0]["approach"] == (
+            "Narrow the query after a timeout, then retry once."
+        )
+        assert database["agentSkills"][0]["content"] == (
+            "Narrow the query after a timeout and retry once."
+        )
+        assert database["experienceClusterState"][0]["state_json"]["next_index"] == 1
+
+        with get_user_session_factory(user_id)() as db:
+            db.execute(delete(AgentSkill).where(AgentSkill.id == skill_id))
+            db.execute(delete(ExperienceClusterState).where(ExperienceClusterState.id == state_id))
+            db.execute(delete(AgentExperience).where(AgentExperience.id == experience_id))
+            db.execute(delete(ForesightSignal).where(ForesightSignal.id == signal_id))
+            db.commit()
+
+        import_response = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={"passphrase": "vault-pass", "vault": export_response.json()["vault"]},
+        )
+        assert import_response.status_code == 200
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "sum-vault-user", "password": "pw123456"},
+        )
+        assert login_response.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            restored_signal = db.get(ForesightSignal, signal_id)
+            restored_experience = db.get(AgentExperience, experience_id)
+            restored_state = db.get(ExperienceClusterState, state_id)
+            restored_skill = db.get(AgentSkill, skill_id)
+
+        assert restored_signal is not None
+        assert restored_signal.source_thread_id == 42
+        assert restored_signal.source_message_ids_json == [101, 102]
+        assert restored_signal.start_date == date(2026, 7, 7)
+        assert (
+            df(user_id, restored_signal.content, table="foresight_signals", field="content")
+            == "User has a product review"
+        )
+        assert restored_experience is not None
+        assert restored_experience.tool_names_json == ["search_memory"]
+        assert restored_experience.cluster_id == "cluster_1_000"
+        assert (
+            df(
+                user_id,
+                restored_experience.task_intent,
+                table="agent_experiences",
+                field="task_intent",
+            )
+            == "Recover from a failed local search tool call"
+        )
+        assert restored_state is not None
+        assert restored_state.state_json["clusters"]["cluster_1_000"]["experience_ids"] == [
+            experience_id
+        ]
+        assert restored_skill is not None
+        assert restored_skill.cluster_id == "cluster_1_000"
+        assert (
+            df(user_id, restored_skill.name, table="agent_skills", field="name")
+            == "Search Recovery"
+        )
 
 
 def test_restore_database_snapshot_defers_profile_links_and_drops_missing_claim_fks() -> None:
