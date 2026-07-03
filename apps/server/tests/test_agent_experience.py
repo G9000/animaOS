@@ -93,6 +93,57 @@ def test_store_tool_failure_experience_encrypts_text_and_logs_growth() -> None:
     ]
 
 
+def test_duplicate_lower_or_equal_quality_experience_is_superseded() -> None:
+    from anima_server.services.agent.agent_experience import (
+        AgentExperienceCandidate,
+        assign_experience_to_cluster,
+        store_agent_experience,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        first = store_agent_experience(
+            db,
+            user_id=user.id,
+            candidate=AgentExperienceCandidate(
+                task_intent="Recover from a failed local search tool call",
+                approach="Narrow the query after a timeout, then retry once.",
+                quality_score=0.84,
+                source_thread_id=17,
+                source_run_id=23,
+                tool_names=("search_memory",),
+                turn_count=1,
+                embedding=[1.0, 0.0, 0.0],
+                created_at=datetime(2026, 7, 3, 1, 0, tzinfo=UTC),
+            ),
+        )
+        duplicate = store_agent_experience(
+            db,
+            user_id=user.id,
+            candidate=AgentExperienceCandidate(
+                task_intent="Recover from a failed local search tool call",
+                approach="Narrow the query after a timeout and retry once.",
+                quality_score=0.84,
+                source_thread_id=17,
+                source_run_id=24,
+                tool_names=("search_memory",),
+                turn_count=1,
+                embedding=[1.0, 0.0, 0.0],
+                created_at=datetime(2026, 7, 3, 1, 5, tzinfo=UTC),
+            ),
+        )
+        duplicate_cluster_id = assign_experience_to_cluster(
+            db,
+            user_id=user.id,
+            experience=duplicate,
+        )
+
+    assert duplicate.superseded_by == first.id
+    assert duplicate_cluster_id is None
+    assert duplicate.cluster_id is None
+    assert first.superseded_by is None
+
+
 def test_experience_clustering_is_stable_across_state_reload() -> None:
     from anima_server.services.agent.agent_experience import (
         AgentExperienceCandidate,

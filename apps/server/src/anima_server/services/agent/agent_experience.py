@@ -20,6 +20,7 @@ EXPERIENCE_CLUSTER_MAX_GAP_DAYS = 90
 MIN_EXPERIENCES_FOR_SKILL = 3
 SKILL_CONFIDENCE_PROMPT_THRESHOLD = 0.7
 PROCEDURAL_SIMILARITY_THRESHOLD = 0.6
+PROCEDURAL_DUPLICATE_TEXT_THRESHOLD = 0.82
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,11 @@ def assign_experience_to_cluster(
     similarity_threshold: float = EXPERIENCE_CLUSTER_SIMILARITY_THRESHOLD,
     max_time_gap_days: int = EXPERIENCE_CLUSTER_MAX_GAP_DAYS,
 ) -> str | None:
+    if experience.superseded_by is not None:
+        experience.cluster_id = None
+        db.flush()
+        return None
+
     embedding = _valid_embedding(experience.embedding_json)
     if embedding is None:
         experience.cluster_id = None
@@ -495,9 +501,15 @@ def _supersede_lower_quality_duplicate(
             continue
         if cosine_similarity(embedding, row_embedding) < 0.9:
             continue
+        if not _is_duplicate_experience_text(user_id=user_id, left=experience, right=row):
+            continue
         if experience.quality_score > row.quality_score:
             row.superseded_by = experience.id
             row.updated_at = datetime.now(UTC)
+            continue
+        experience.superseded_by = row.id
+        experience.updated_at = datetime.now(UTC)
+        return
 
 
 def _append_experience_growth_log(
@@ -538,6 +550,48 @@ def _append_skill_growth_log(
         )
     except Exception:
         return
+
+
+def _is_duplicate_experience_text(
+    *,
+    user_id: int,
+    left: AgentExperience,
+    right: AgentExperience,
+) -> bool:
+    left_intent = _normalize_duplicate_text(
+        df(user_id, left.task_intent, table="agent_experiences", field="task_intent")
+    )
+    right_intent = _normalize_duplicate_text(
+        df(user_id, right.task_intent, table="agent_experiences", field="task_intent")
+    )
+    if not left_intent or not right_intent:
+        return False
+    if left_intent == right_intent:
+        return True
+
+    left_approach = _normalize_duplicate_text(
+        df(user_id, left.approach, table="agent_experiences", field="approach")
+    )
+    right_approach = _normalize_duplicate_text(
+        df(user_id, right.approach, table="agent_experiences", field="approach")
+    )
+    return (
+        _token_jaccard(left_intent, right_intent) >= PROCEDURAL_DUPLICATE_TEXT_THRESHOLD
+        and _token_jaccard(left_approach, right_approach) >= PROCEDURAL_DUPLICATE_TEXT_THRESHOLD
+    )
+
+
+def _normalize_duplicate_text(value: str) -> str:
+    cleaned = _clean_text(value).lower()
+    return re.sub(r"[^a-z0-9 ]+", " ", cleaned)
+
+
+def _token_jaccard(left: str, right: str) -> float:
+    left_tokens = set(re.findall(r"[a-z0-9]+", left))
+    right_tokens = set(re.findall(r"[a-z0-9]+", right))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
 def _valid_embedding(value: object) -> list[float] | None:

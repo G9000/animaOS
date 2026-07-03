@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 12:07 MYT
+- Updated: 2026-07-03 13:52 MYT
 - Started: 2026-07-03 02:54 MYT
 - Completed: 2026-07-03 03:36 MYT
 
@@ -43,10 +43,17 @@ Implement future-oriented memory so Anima can remember commitments, expected eve
 - 2026-07-03 11:29 MYT - Addressed PR #77 rereview feedback by ranking due and dated foresight rows ahead of undated rows in prompt retrieval.
 - 2026-07-03 11:45 MYT - Addressed PR #77 rereview feedback by resolving relative foresight dates against the saved user timezone.
 - 2026-07-03 12:07 MYT - Addressed PR #77 rereview feedback by defaulting lifecycle sweeps and prompt filtering to the saved user timezone.
+- 2026-07-03 13:52 MYT - Addressed PR #77 current-head review feedback by keeping recently occurred foresight rows prompt-visible during their follow-up window.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - PR #77 current-head review regression failed before fix because recently occurred rows were excluded from prompt retrieval.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - PR #77 current-head review occurred-followup regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py apps/server/tests/test_agent_service.py` - PR #77 current-head review focused backend set: 45 passed, 34 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_lifecycle_defaults_to_user_local_date` - PR #77 rereview regression failed before fix because lifecycle sweeps defaulted to UTC instead of the saved user timezone.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_defaults_to_user_local_date` - PR #77 rereview regression failed before fix because prompt filtering defaulted to UTC instead of the saved user timezone.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - PR #77 rereview local-date suite: 10 passed, 8 warnings.
@@ -110,6 +117,7 @@ Implement future-oriented memory so Anima can remember commitments, expected eve
   - apps/server/tests/test_foresight.py
   - apps/server/tests/test_sleep_agent.py
 - Notes:
+  - PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.
   - PR #77 rereview fix uses the saved world-context timezone for default lifecycle and prompt dates, keeping extracted local dates and status/prompt filtering on the same calendar day.
   - PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.
   - PR #77 rereview fix ranks due rows first, dated rows next, and undated rows last so undated LLM foresight cannot starve upcoming dated events from prompt retrieval.

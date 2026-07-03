@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 13:33 MYT
+- Updated: 2026-07-03 13:52 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -138,10 +138,20 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 11:45 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for saved-timezone foresight date resolution and promptless approval-resume experience capture.
 - 2026-07-03 12:07 MYT - `SUM-008` addressed PR #77 rereview feedback for saved-timezone lifecycle sweeps and prompt filtering.
 - 2026-07-03 13:33 MYT - `SUM-009` addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
+- 2026-07-03 13:52 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for recently occurred foresight prompt visibility and lower/equal-quality duplicate procedural capture supersession.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review regression failed before fix because recently occurred rows were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review regression failed before fix because an equal-quality duplicate remained active with `superseded_by` unset.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review occurred-followup regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review duplicate-supersession regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 PR #77 current-head review experience suite: 7 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py apps/server/tests/test_agent_service.py` - SUM-008/SUM-009 PR #77 current-head review focused backend set: 45 passed, 34 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression failed before fix because raw `recall_conversation` tool output was persisted in the procedural approach summary.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression: 1 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 current-head review agent service suite: 27 passed, 18 warnings.
@@ -401,6 +411,9 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.
+  - SUM-009 PR #77 current-head review fix supersedes lower/equal-quality near-duplicate procedural captures and prevents superseded experiences from entering cluster state.
+  - SUM-009 duplicate suppression now requires high embedding similarity plus near-identical decrypted procedural text, so distinct examples with coarse identical embeddings can still support skill distillation.
   - SUM-009 PR #77 current-head review fix records only tool name and success/failure status in procedural summaries instead of copying raw tool output that can contain private conversation or memory content.
   - SUM-008 PR #77 rereview fix uses the saved world-context timezone for default lifecycle and prompt dates, keeping extracted local dates and status/prompt filtering on the same calendar day.
   - SUM-008 PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.

@@ -470,3 +470,52 @@ def test_prompt_foresight_prioritizes_dated_rows_over_undated_rows() -> None:
         )
 
     assert [signal.id for signal in signals] == [upcoming.id]
+
+
+def test_prompt_foresight_keeps_recently_occurred_followups() -> None:
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        get_prompt_foresight_signals,
+        upsert_foresight_signal,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        recent = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User had a product review",
+                evidence="My product review was yesterday.",
+                relative_text="yesterday",
+                start_date=date(2026, 7, 2),
+                end_date=date(2026, 7, 2),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 2, tzinfo=UTC),
+        )
+        stale = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User had an old dentist appointment",
+                evidence="My dentist appointment was two weeks ago.",
+                relative_text="two weeks ago",
+                start_date=date(2026, 6, 15),
+                end_date=date(2026, 6, 15),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 6, 15, tzinfo=UTC),
+        )
+        recent.status = "occurred"
+        stale.status = "occurred"
+        db.flush()
+
+        signals = get_prompt_foresight_signals(
+            db,
+            user_id=user.id,
+            today=date(2026, 7, 3),
+            limit=8,
+        )
+
+    assert [signal.id for signal in signals] == [recent.id]

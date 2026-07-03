@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 13:33 MYT
+- Updated: 2026-07-03 13:52 MYT
 - Started: 2026-07-03 02:54 MYT
 - Completed: 2026-07-03 03:36 MYT
 
@@ -41,10 +41,18 @@ Let Anima learn reusable procedures from its own tool use, mistakes, recoveries,
 - 2026-07-03 11:05 MYT - Addressed PR #77 rereview feedback by explicitly persisting matched-cluster JSON state updates across sessions.
 - 2026-07-03 11:45 MYT - Addressed PR #77 rereview feedback by skipping procedural experience capture for approval resumes without an originating user prompt.
 - 2026-07-03 13:33 MYT - Addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
+- 2026-07-03 13:52 MYT - Addressed PR #77 current-head review feedback by superseding lower/equal-quality duplicate procedural captures before clustering.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - PR #77 current-head review regression failed before fix because an equal-quality duplicate remained active with `superseded_by` unset.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - PR #77 current-head review duplicate-supersession regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - PR #77 current-head review experience suite: 7 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py apps/server/tests/test_agent_service.py` - PR #77 current-head review focused backend set: 45 passed, 34 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #77 current-head review whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - PR #77 current-head review regression failed before fix because raw `recall_conversation` tool output was persisted in the procedural approach summary.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - PR #77 current-head review regression: 1 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - PR #77 current-head review agent service suite: 27 passed, 18 warnings.
@@ -87,6 +95,8 @@ Let Anima learn reusable procedures from its own tool use, mistakes, recoveries,
   - apps/server/tests/test_agent_experience.py
   - apps/server/tests/test_agent_service.py
 - Notes:
+  - PR #77 current-head review fix supersedes lower/equal-quality near-duplicate procedural captures and prevents superseded experiences from entering cluster state.
+  - Duplicate suppression now requires high embedding similarity plus near-identical decrypted procedural text, so distinct examples with coarse identical embeddings can still support skill distillation.
   - PR #77 current-head review fix records only tool name and success/failure status in procedural summaries instead of copying raw tool output that can contain private conversation or memory content.
   - PR #77 rereview fix leaves consolidation/reflection hooks intact on approval resume while preventing promptless tool-only turns from seeding generic experience memories.
   - PR #77 rereview fix flags `ExperienceClusterState.state_json` as modified after centroid/count/activity mutations so SQLAlchemy persists matched-cluster updates.

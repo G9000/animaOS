@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import ForesightSignal
@@ -23,7 +23,8 @@ from anima_server.services.user_timezone import (
 )
 
 FORESIGHT_ACTIVE_STATUSES = frozenset({"active", "due", "occurred"})
-FORESIGHT_PROMPT_STATUSES = frozenset({"active", "due"})
+FORESIGHT_PROMPT_STATUSES = frozenset({"active", "due", "occurred"})
+FORESIGHT_OCCURRED_PROMPT_DAYS = 7
 _WEEKDAY_INDEX = {
     "monday": 0,
     "tuesday": 1,
@@ -368,8 +369,10 @@ def get_prompt_foresight_signals(
     user_id: int,
     today: date | None = None,
     limit: int = 8,
+    occurred_followup_days: int = FORESIGHT_OCCURRED_PROMPT_DAYS,
 ) -> tuple[ForesightSignal, ...]:
     current = today or _current_date_for_user(db, user_id=user_id)
+    occurred_cutoff = current - timedelta(days=max(0, int(occurred_followup_days)))
     rows = list(
         db.scalars(
             select(ForesightSignal)
@@ -378,15 +381,30 @@ def get_prompt_foresight_signals(
                 ForesightSignal.status.in_(list(FORESIGHT_PROMPT_STATUSES)),
                 or_(
                     ForesightSignal.status == "due",
-                    ForesightSignal.end_date.is_(None),
+                    and_(
+                        ForesightSignal.status != "occurred",
+                        ForesightSignal.end_date.is_(None),
+                    ),
                     ForesightSignal.end_date >= current,
+                    and_(
+                        ForesightSignal.status == "occurred",
+                        ForesightSignal.end_date.is_not(None),
+                        ForesightSignal.end_date >= occurred_cutoff,
+                    ),
                 ),
             )
             .order_by(
                 case(
                     (ForesightSignal.status == "due", 0),
-                    (ForesightSignal.start_date.is_not(None), 1),
-                    else_=2,
+                    (
+                        and_(
+                            ForesightSignal.status == "active",
+                            ForesightSignal.start_date.is_not(None),
+                        ),
+                        1,
+                    ),
+                    (ForesightSignal.status == "occurred", 2),
+                    else_=3,
                 ).asc(),
                 ForesightSignal.start_date.asc(),
                 ForesightSignal.id.asc(),
