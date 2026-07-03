@@ -870,14 +870,18 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
     """Search long-term memory across sessions for compact evidence.
 
     Use this when the user asks for counts, latest values, temporal ordering,
-    or preference-driven recommendations that are not already in visible memory.
-    Pick mode="aggregate", "latest_update", "temporal", or "preference".
+    preference-driven recommendations, project continuity, foresight, or prior
+    procedural context that is not already in visible memory. Pick
+    mode="auto" to let the deterministic memory router choose a query plan, or
+    explicitly set mode="aggregate", "latest_update", "temporal", or
+    "preference" when the user asks for a specific retrieval shape.
     """
     import asyncio
 
     from anima_server.services.agent import evidence_retrieval
     from anima_server.services.agent.evidence_retrieval import RetrievalMode
     from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.memory.retrieval_router import build_query_plan, mode_for_plan
 
     query_stripped = query.strip()
     if not query_stripped:
@@ -889,14 +893,22 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
         RetrievalMode.TEMPORAL,
         RetrievalMode.PREFERENCE,
     }
-    try:
-        parsed_mode = RetrievalMode(mode.strip().lower())
-    except ValueError:
-        valid = ", ".join(sorted(mode.value for mode in allowed_modes))
-        return f"Unknown long-memory search mode: {mode}. Valid modes: {valid}."
-    if parsed_mode not in allowed_modes:
-        valid = ", ".join(sorted(mode.value for mode in allowed_modes))
-        return f"Unknown long-memory search mode: {mode}. Valid modes: {valid}."
+    mode_stripped, invalid_mode = _normalize_long_memory_mode(mode)
+    valid = ", ".join(["auto", *sorted(item.value for item in allowed_modes)])
+    if invalid_mode is not None:
+        return f"Unknown long-memory search mode: {invalid_mode}. Valid modes: {valid}."
+
+    route_plan = None
+    if mode_stripped in {"", "auto"}:
+        route_plan = build_query_plan(query_stripped)
+        parsed_mode = RetrievalMode(mode_for_plan(route_plan))
+    else:
+        try:
+            parsed_mode = RetrievalMode(mode_stripped)
+        except ValueError:
+            return f"Unknown long-memory search mode: {mode}. Valid modes: {valid}."
+        if parsed_mode not in allowed_modes:
+            return f"Unknown long-memory search mode: {mode}. Valid modes: {valid}."
 
     ctx = get_tool_context()
     coro = evidence_retrieval.retrieve_wide_evidence(
@@ -913,15 +925,34 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
     else:
         result = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=30)
 
+    route_line = ""
+    if route_plan is not None:
+        route_line = (
+            f"Route: {route_plan.route_label} -> {parsed_mode.value}: "
+            f"{route_plan.route_reason}"
+        )
+
     if not result.semantic_results:
+        if route_line:
+            return f"No long-memory evidence found for: {query_stripped}\n{route_line}"
         return f"No long-memory evidence found for: {query_stripped}"
 
     lines = [
         f"Long-memory evidence ({result.mode or parsed_mode}, {len(result.semantic_results)} result(s)):"
     ]
+    if route_line:
+        lines.append(route_line)
     for _item_id, text, _score in result.semantic_results:
         lines.append(text.strip())
     return "\n\n".join(lines)
+
+
+def _normalize_long_memory_mode(mode: object) -> tuple[str, object | None]:
+    if mode is None:
+        return "auto", None
+    if not isinstance(mode, str):
+        return "", mode
+    return mode.strip().lower(), None
 
 
 @tool

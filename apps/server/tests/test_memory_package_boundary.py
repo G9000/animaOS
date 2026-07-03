@@ -55,6 +55,15 @@ def test_memory_retrieval_facade_delegates_existing_agent_implementation() -> No
     assert retrieval.get_memory_retrieval_backend is agent_retrieval.get_memory_retrieval_backend
 
 
+def test_memory_retrieval_router_exports_stable_contracts() -> None:
+    from anima_server.services.memory import retrieval_router
+
+    assert retrieval_router.RetrievalIntent.FACTUAL_RECALL == "factual_recall"
+    assert retrieval_router.RetrievalLane.PROFILE_CLAIMS == "profile_claims"
+    assert retrieval_router.RetrievalLane.SKILLS == "skills"
+    assert retrieval_router.build_query_plan("what do I prefer?").route_label == "preference_lookup"
+
+
 def test_memory_temporal_helpers_normalize_stable_status_contracts() -> None:
     from anima_server.services.memory import temporal
 

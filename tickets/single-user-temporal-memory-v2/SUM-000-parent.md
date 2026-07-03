@@ -1,6 +1,6 @@
 # SUM-000 - Single-User Temporal Memory v2 Parent Tracker
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server`, `docs/prds/memory`, `docs/architecture/memory`, `tickets/single-user-temporal-memory-v2`
 - Depends on: none
@@ -8,9 +8,9 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 16:04 MYT
+- Updated: 2026-07-03 16:41 MYT
 - Started: 2026-06-29 02:30 MYT
-- Completed:
+- Completed: 2026-07-03 16:28 MYT
 
 ## Goal
 
@@ -24,7 +24,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-002` | Evidence baseline and episode quality | `done` | `SUM-001` |
 | `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
 | `SUM-004` | Structured user profile | `done` | `SUM-002` |
-| `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
+| `SUM-005` | Retrieval router and query plans | `done` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `done` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `done` | `SUM-005`, `SUM-006` |
 | `SUM-008` | Foresight signals | `done` | `SUM-002` |
@@ -60,6 +60,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
 - `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
 - `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
+- `SUM-005` - Retrieval router and query plans (completed 2026-07-03 16:28 MYT)
 - `SUM-006` - Salience-aware decay and soft evolution (completed 2026-07-01 21:18 MYT)
 - `SUM-007` - Cross-episode pattern synthesis (completed 2026-07-02 22:59 MYT)
 - `SUM-008` - Foresight signals (completed 2026-07-03 03:36 MYT)
@@ -149,6 +150,9 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 15:08 MYT - `SUM-010` completed with optional retrieval adapter seams, native backend contract tests, canonical rebuild docs, and validation.
 - 2026-07-03 15:56 MYT - `SUM-011` completed in detached PR #67 worktree with a minimal package boundary, domain/status contracts, salience/retrieval facades, temporal helpers, focused boundary tests, and architecture reference.
 - 2026-07-03 16:04 MYT - `SUM-011` boundary renamed to `services.memory`; test, docs, and ticket paths updated.
+- 2026-07-03 16:28 MYT - `SUM-005` completed in the detached PR #67 worktree with deterministic retrieval query plans, `search_long_memory` auto routing, focused router regression coverage, and additive `anima-core` shared memory contract parity. All child tickets are now done; PR #67 remains reviewable.
+- 2026-07-03 16:37 MYT - `SUM-005` code-quality review cleanup hardened auto-mode input handling, fixed mixed-intent router precedence, renamed trace planning metadata from scores to route weights, tightened Rust salience contracts, and clarified that SUM-005 composes query-plan lanes rather than executing separate per-lane retrievers.
+- 2026-07-03 16:41 MYT - Controller reran SUM-005 focused tests, Rust package tests, server lint/build, Alembic current, diff check, and temporary-data health smoke before commit.
 
 ## Validation
 
