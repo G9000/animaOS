@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+
+def test_memory_v2_domain_exports_stable_string_contracts() -> None:
+    from anima_server.services.memory_v2 import domain
+
+    assert domain.TemporalRecordStatus.ACTIVE == "active"
+    assert domain.TemporalRecordStatus.SUPERSEDED == "superseded"
+    assert domain.TemporalRecordStatus.RETRACTED == "retracted"
+    assert domain.ForesightStatus.CANCELLED == "cancelled"
+    assert domain.MemoryEndpointKind.USER == "user"
+    assert domain.MemoryEndpointKind.PERSON == "person"
+    assert domain.MemoryEndpointKind.EXTERNAL == "external"
+    assert domain.MemoryClass.IDENTITY == "identity"
+    assert domain.StabilityClass.EVOLVING == "evolving"
+    assert domain.DecayClass.EPHEMERAL == "ephemeral"
+
+    assert "active" in domain.ACTIVE_TEMPORAL_STATUSES
+    assert "superseded" in domain.HISTORICAL_TEMPORAL_STATUSES
+    assert "cancelled" in domain.TERMINAL_FORESIGHT_STATUSES
+    assert "organization" in domain.VALID_MEMORY_ENDPOINT_KINDS
+
+    breakdown = domain.RecallScoreBreakdown(lexical=0.25, vector=0.75)
+    assert breakdown.lexical == 0.25
+    assert breakdown.vector == 0.75
+
+
+def test_memory_v2_salience_facade_delegates_existing_agent_implementation() -> None:
+    from anima_server.services.agent import memory_salience as agent_salience
+    from anima_server.services.memory_v2 import salience
+
+    assert salience.MemorySalience is agent_salience.MemorySalience
+    assert salience.MEMORY_CLASS_IDENTITY == agent_salience.MEMORY_CLASS_IDENTITY
+    assert salience.VALID_DECAY_CLASSES == agent_salience.VALID_DECAY_CLASSES
+    assert salience.normalize_salience_payload is agent_salience.normalize_salience_payload
+
+    normalized = salience.normalize_salience_payload(
+        {"memory_class": "identity", "decay_class": "anchored"},
+        content="The user is Leo.",
+        category="fact",
+        importance=5,
+    )
+
+    assert normalized["memory_class"] == "identity"
+    assert normalized["decay_class"] == "anchored"
+
+
+def test_memory_v2_retrieval_facade_delegates_existing_agent_implementation() -> None:
+    from anima_server.services.agent import retrieval_backends as agent_retrieval
+    from anima_server.services.memory_v2 import retrieval
+
+    assert retrieval.MemoryRetrievalDocument is agent_retrieval.MemoryRetrievalDocument
+    assert retrieval.MemoryRetrievalHit is agent_retrieval.MemoryRetrievalHit
+    assert retrieval.NativeMemoryRetrievalBackend is agent_retrieval.NativeMemoryRetrievalBackend
+    assert retrieval.get_memory_retrieval_backend is agent_retrieval.get_memory_retrieval_backend
+
+
+def test_memory_v2_temporal_helpers_normalize_stable_status_contracts() -> None:
+    from anima_server.services.memory_v2 import temporal
+
+    assert temporal.normalize_temporal_status(" SUPERSEDED ") == "superseded"
+    assert temporal.normalize_temporal_status("unknown") == "active"
+    assert temporal.is_current_status("active")
+    assert not temporal.is_current_status("superseded")
+    assert temporal.is_historical_status("superseded")
+    assert temporal.is_terminal_foresight_status("cancelled")
