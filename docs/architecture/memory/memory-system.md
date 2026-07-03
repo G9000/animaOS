@@ -8,6 +8,8 @@ category: architecture
 
 [Back to Index](../README.md)
 
+[Optional External Memory Adapter Seams](optional-external-adapters.md) documents the native retrieval backend contract and rebuild rules for optional vector adapters.
+
 This document traces every path through AnimaOS's memory system: how memories are written, stored, retrieved, scored, consolidated, and maintained. It covers the full lifecycle from user utterance to long-term knowledge.
 
 ---
@@ -924,6 +926,7 @@ Portability guarantee: copy `.anima/` directory, enter passphrase on new machine
 | `consolidation.py` | Post-turn extraction (predict-calibrate F3 + emotional signals), orchestrator routing (F5) |
 | `embeddings.py` | Embedding generation, hybrid search (BM25 F1 + semantic), heat floor, adaptive filter |
 | `vector_store.py` | VectorStore facade that uses runtime PostgreSQL/pgvector via `pgvec_store.py` when available, with an in-memory degraded fallback |
+| `retrieval_backends.py` | Rebuildable memory retrieval backend contract with the native local implementation as default |
 | `bm25_index.py` | **F1** — BM25Okapi lexical search index (per-user, in-memory) |
 | `heat_scoring.py` | **F2** — Heat formula, exponential decay, visibility floor |
 | `predict_calibrate.py` | **F3** — Two-stage extraction with quality gate |

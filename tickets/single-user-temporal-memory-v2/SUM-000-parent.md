@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 14:32 MYT
+- Updated: 2026-07-03 15:08 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -29,7 +29,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-007` | Cross-episode pattern synthesis | `done` | `SUM-005`, `SUM-006` |
 | `SUM-008` | Foresight signals | `done` | `SUM-002` |
 | `SUM-009` | Procedural experience and skill memory | `done` | `SUM-005` |
-| `SUM-010` | Optional external adapter seams | `backlog` | `SUM-003`, `SUM-005` |
+| `SUM-010` | Optional external adapter seams | `done` | `SUM-003`, `SUM-005` |
 
 ## Deliverables
 
@@ -62,6 +62,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-007` - Cross-episode pattern synthesis (completed 2026-07-02 22:59 MYT)
 - `SUM-008` - Foresight signals (completed 2026-07-03 03:36 MYT)
 - `SUM-009` - Procedural experience and skill memory (completed 2026-07-03 03:36 MYT)
+- `SUM-010` - Optional external adapter seams (completed 2026-07-03 15:08 MYT)
 
 ## Activity Log
 
@@ -141,10 +142,19 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 13:52 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for recently occurred foresight prompt visibility and lower/equal-quality duplicate procedural capture supersession.
 - 2026-07-03 14:13 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for vault portability, recently elapsed unswept foresight prompts, and task-verb article cleanup.
 - 2026-07-03 14:32 MYT - `SUM-008` addressed PR #77 current-head review feedback for short-event cancellation matching.
+- 2026-07-03 15:04 MYT - `SUM-010` claimed by Codex on branch `codex/sum-010-optional-external-adapter-seams`, based on PR #67 head.
+- 2026-07-03 15:08 MYT - `SUM-010` completed with optional retrieval adapter seams, native backend contract tests, canonical rebuild docs, and validation.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_retrieval_rebuild.py::test_memory_rebuild_contract_uses_only_active_canonical_rows` - SUM-010 adapter contract failed before implementation because `retrieval_backends.py` did not exist.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_retrieval_rebuild.py` - SUM-010 retrieval rebuild suite: 8 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_bm25_index.py apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_memory_index_for_keyword_leg apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_semantic_search_uses_rust_memory_index_when_available apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_semantic_search_falls_back_when_rust_vector_search_has_no_hits apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_rebuilds_missing_rust_memory_index_for_keyword_leg apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_semantic_search_rebuilds_missing_rust_memory_index_from_canonical` - SUM-010 adjacent retrieval suite: 25 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-010 server lint: passed.
+  - `git diff --check` - SUM-010 whitespace check: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-010 build: passed after `bun install --frozen-lockfile` prepared the fresh worktree dependencies; existing Vite chunk-size warning remained.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-010 health smoke for `GET /health`: 200 ok.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens` - SUM-008 PR #77 current-head review regression failed before fix because `That meeting got cancelled.` did not cancel `User has a meeting`.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens apps/server/tests/test_foresight.py::test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled` - SUM-008 PR #77 current-head review cancellation regressions: 2 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 current-head review foresight suite: 14 passed, 11 warnings.
@@ -372,6 +382,15 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 self-supersession health smoke for `GET /health`: 200 ok.
   - not run for SUM-006 restack (verification not requested in this session)
 - Changed paths:
+  - apps/server/src/anima_server/services/agent/retrieval_backends.py
+  - apps/server/src/anima_server/services/agent/memory_store.py
+  - apps/server/src/anima_server/services/agent/bm25_index.py
+  - apps/server/src/anima_server/services/agent/embeddings.py
+  - apps/server/tests/test_memory_retrieval_rebuild.py
+  - docs/architecture/memory/optional-external-adapters.md
+  - docs/architecture/memory/memory-system.md
+  - tickets/single-user-temporal-memory-v2/SUM-010-optional-external-adapter-seams.md
+  - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - apps/server/alembic_core/versions/20260701_0003_add_memory_salience.py
   - apps/server/alembic_core/versions/20260703_0001_create_foresight_signals.py
   - apps/server/alembic_core/versions/20260703_0002_create_agent_experience_memory.py
@@ -427,6 +446,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-010 adds a narrow retrieval backend protocol with the native local index as default, plus canonical SQLCipher rebuild helpers and docs for optional Weaviate/Qdrant/LanceDB-style adapters.
+  - SUM-010 intentionally defers graph backend seams until native temporal KG semantics are stable enough to contract-test separately.
   - SUM-008 PR #77 current-head review fix cancels a signal when all stored event tokens appear in the cancellation sentence, preserving the older overlap threshold as fallback for longer phrasing.
   - SUM-008/SUM-009 PR #77 current-head review fix adds foresight and procedural memory tables to vault JSON and anima capsule exports/imports with import-time field re-encryption.
   - SUM-008 PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the follow-up window and strips articles after task verbs.

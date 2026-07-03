@@ -8,11 +8,17 @@ from pathlib import Path
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
 from anima_server.services import anima_core_retrieval as retrieval_module
+from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.memory_store import (
     ensure_memory_retrieval_index_ready,
     memory_retrieval_index_needs_rebuild,
     rebuild_memory_retrieval_index,
     store_memory_item,
+)
+from anima_server.services.agent.retrieval_backends import (
+    MemoryRetrievalDocument,
+    MemoryRetrievalHit,
+    NativeMemoryRetrievalBackend,
 )
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -78,6 +84,146 @@ def test_memory_rebuild_clears_dirty_manifest(tmp_path: Path) -> None:
 
         assert rebuilt == 1
         assert retrieval_module.is_retrieval_family_dirty(root=root, family="memory") is False
+
+
+class RecordingMemoryBackend:
+    def __init__(self) -> None:
+        self.documents: dict[tuple[int, int], MemoryRetrievalDocument] = {}
+        self.deleted_users: list[int] = []
+        self.marked_dirty = 0
+        self.cleared_dirty = 0
+
+    def memory_documents_exist(self) -> bool:
+        return bool(self.documents)
+
+    def memory_index_is_dirty(self) -> bool:
+        return False
+
+    def mark_memory_index_dirty(self) -> None:
+        self.marked_dirty += 1
+
+    def clear_memory_index_dirty(self) -> None:
+        self.cleared_dirty += 1
+
+    def upsert_memory_document(self, document: MemoryRetrievalDocument) -> bool:
+        self.documents[(document.user_id, document.record_id)] = document
+        return True
+
+    def delete_memory_document(self, *, user_id: int, record_id: int) -> bool:
+        self.documents.pop((user_id, record_id), None)
+        return True
+
+    def delete_user_memory_documents(self, *, user_id: int) -> bool:
+        self.deleted_users.append(user_id)
+        for key in [key for key in self.documents if key[0] == user_id]:
+            self.documents.pop(key, None)
+        return True
+
+    def search_memory(
+        self,
+        *,
+        user_id: int,
+        query: str,
+        limit: int,
+    ) -> list[MemoryRetrievalHit]:
+        return []
+
+    def search_memory_by_vector(
+        self,
+        *,
+        user_id: int,
+        query_embedding: list[float],
+        limit: int,
+    ) -> list[MemoryRetrievalHit]:
+        return []
+
+
+def test_memory_rebuild_contract_uses_only_active_canonical_rows() -> None:
+    with _db_session() as db:
+        user = User(username="backend_contract", display_name="Backend", password_hash="x")
+        db.add(user)
+        db.flush()
+
+        active = MemoryItem(
+            user_id=user.id,
+            content="user keeps saffron harvest notes",
+            category="fact",
+            importance=4,
+            source="test",
+            embedding_json=[1.0, 0.0, 0.0],
+            embedding_checksum=compute_embedding_checksum([1.0, 0.0, 0.0]),
+            created_at=datetime.now(UTC),
+        )
+        old = MemoryItem(
+            user_id=user.id,
+            content="old user note that should stay out of derived indexes",
+            category="fact",
+            importance=2,
+            source="test",
+            created_at=datetime.now(UTC),
+        )
+        db.add_all([active, old])
+        db.flush()
+        old.superseded_by = active.id
+        db.commit()
+
+        backend = RecordingMemoryBackend()
+
+        rebuilt = rebuild_memory_retrieval_index(db, user_id=user.id, backend=backend)
+
+        assert rebuilt == 1
+        assert backend.deleted_users == [user.id]
+        assert backend.marked_dirty == 0
+        assert backend.cleared_dirty == 1
+        assert list(backend.documents.values()) == [
+            MemoryRetrievalDocument(
+                record_id=active.id,
+                user_id=user.id,
+                text="user keeps saffron harvest notes",
+                embedding=[1.0, 0.0, 0.0],
+                source_type="memory_item",
+                category="fact",
+                importance=4,
+                created_at=int(active.created_at.timestamp()),
+            )
+        ]
+
+
+def test_native_retrieval_backend_contract_indexes_searches_and_drops_user_documents(
+    tmp_path: Path,
+) -> None:
+    backend = NativeMemoryRetrievalBackend(root=tmp_path / "indices")
+    document = MemoryRetrievalDocument(
+        record_id=42,
+        user_id=7,
+        text="user likes pour over coffee",
+        embedding=[1.0, 0.0, 0.0],
+        source_type="memory_item",
+        category="preference",
+        importance=4,
+        created_at=int(datetime.now(UTC).timestamp()),
+    )
+
+    assert backend.upsert_memory_document(document) is True
+    assert [hit.record_id for hit in backend.search_memory(user_id=7, query="coffee", limit=5)] == [
+        42
+    ]
+    assert [
+        hit.record_id
+        for hit in backend.search_memory_by_vector(
+            user_id=7,
+            query_embedding=[0.9, 0.1, 0.0],
+            limit=5,
+        )
+    ] == [42]
+
+    backend.mark_memory_index_dirty()
+    assert backend.memory_index_is_dirty() is True
+    backend.clear_memory_index_dirty()
+    assert backend.memory_index_is_dirty() is False
+
+    assert backend.delete_user_memory_documents(user_id=7) is True
+    assert backend.search_memory(user_id=7, query="coffee", limit=5) == []
 
 
 def test_store_memory_item_keeps_successful_incremental_index_clean(
