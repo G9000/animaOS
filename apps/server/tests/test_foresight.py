@@ -309,3 +309,51 @@ def test_prompt_foresight_skips_overdue_active_rows_before_limiting() -> None:
         )
 
     assert [signal.id for signal in signals] == [upcoming.id]
+
+
+def test_prompt_foresight_prioritizes_dated_rows_over_undated_rows() -> None:
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        get_prompt_foresight_signals,
+        upsert_foresight_signal,
+    )
+
+    with _db_session() as db:
+        user = _make_user(db)
+        for idx in range(20):
+            upsert_foresight_signal(
+                db,
+                user_id=user.id,
+                signal=ForesightCandidate(
+                    content=f"User expects undated future outcome {idx}",
+                    evidence=f"Undated future outcome {idx}.",
+                    relative_text=None,
+                    start_date=None,
+                    end_date=None,
+                    duration_days=None,
+                ),
+                observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+            )
+        upcoming = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has a product review next week",
+                evidence="I have a product review next Tuesday.",
+                relative_text="next Tuesday",
+                start_date=date(2026, 7, 7),
+                end_date=date(2026, 7, 7),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+        )
+        db.flush()
+
+        signals = get_prompt_foresight_signals(
+            db,
+            user_id=user.id,
+            today=date(2026, 7, 3),
+            limit=1,
+        )
+
+    assert [signal.id for signal in signals] == [upcoming.id]

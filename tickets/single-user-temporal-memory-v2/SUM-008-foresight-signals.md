@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 11:05 MYT
+- Updated: 2026-07-03 11:29 MYT
 - Started: 2026-07-03 02:54 MYT
 - Completed: 2026-07-03 03:36 MYT
 
@@ -40,10 +40,16 @@ Implement future-oriented memory so Anima can remember commitments, expected eve
 - 2026-07-03 10:21 MYT - Addressed PR #77 review feedback by bounding regex extraction to sentence boundaries and anchoring relative dates to source runtime message timestamps.
 - 2026-07-03 10:49 MYT - Addressed PR #77 rereview feedback by running foresight lifecycle in scheduled sleeptime and filtering overdue active prompt rows before limiting.
 - 2026-07-03 11:05 MYT - Addressed PR #77 rereview feedback by adding foresight payload rules to the LLM memory extraction prompt and system message.
+- 2026-07-03 11:29 MYT - Addressed PR #77 rereview feedback by ranking due and dated foresight rows ahead of undated rows in prompt retrieval.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_prioritizes_dated_rows_over_undated_rows` - PR #77 rereview regression failed before fix because an undated row was returned before an upcoming dated row.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - PR #77 rereview foresight suite: 7 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #77 rereview whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_llm_memory_extraction_prompt_requests_foresight` - PR #77 rereview regression failed before fix because the LLM extraction prompt/system message did not request foresight payloads.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - PR #77 rereview consolidation suite: 11 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 rereview lint: passed.
@@ -87,5 +93,6 @@ Implement future-oriented memory so Anima can remember commitments, expected eve
   - apps/server/tests/test_foresight.py
   - apps/server/tests/test_sleep_agent.py
 - Notes:
+  - PR #77 rereview fix ranks due rows first, dated rows next, and undated rows last so undated LLM foresight cannot starve upcoming dated events from prompt retrieval.
   - PR #77 rereview fix adds foresight schema/rules to the LLM memory extraction prompt and includes foresight in the extraction system message.
   - Added a defensive guard to the inherited salience migration so stamped legacy soul databases missing `memory_items` can reach metadata repair; this unblocked full-suite validation.

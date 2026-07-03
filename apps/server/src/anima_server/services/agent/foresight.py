@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import ForesightSignal
@@ -349,7 +349,15 @@ def get_prompt_foresight_signals(
                     ForesightSignal.end_date >= current,
                 ),
             )
-            .order_by(ForesightSignal.start_date.asc(), ForesightSignal.id.asc())
+            .order_by(
+                case(
+                    (ForesightSignal.status == "due", 0),
+                    (ForesightSignal.start_date.is_not(None), 1),
+                    else_=2,
+                ).asc(),
+                ForesightSignal.start_date.asc(),
+                ForesightSignal.id.asc(),
+            )
             .limit(limit)
         ).all()
     )
