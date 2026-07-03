@@ -4,13 +4,17 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from anima_server.models import (
+    AgentExperience,
     AgentMessage,
     AgentRun,
+    AgentSkill,
     AgentStep,
     AgentThread,
     BackgroundTaskRun,
     CoreEmotionalPattern,
     EmotionalSignal,
+    ExperienceClusterState,
+    ForesightSignal,
     ForgetAuditLog,
     GrowthLogEntry,
     IdentityBlock,
@@ -35,6 +39,8 @@ from anima_server.models import (
     RuntimeWorkflowRun,
     SelfModelBlock,
     Task,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
 from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.runtime_consciousness import (
@@ -46,6 +52,7 @@ from anima_server.models.runtime_memory import (
     MemoryAccessLog,
     MemoryCandidate,
     MemoryRetrievalFeedback,
+    ProfileUpdateCandidate,
     PromotionJournal,
     RuntimeSessionNote,
 )
@@ -126,6 +133,12 @@ def _reset_runtime_state(
     _delete(db, deleted, "runtime_threads", delete(RuntimeThread).where(RuntimeThread.user_id == user_id))
     _delete(db, deleted, "pending_memory_ops", delete(PendingMemoryOp).where(PendingMemoryOp.user_id == user_id))
     _delete(db, deleted, "memory_candidates", delete(MemoryCandidate).where(MemoryCandidate.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "profile_update_candidates",
+        delete(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == user_id),
+    )
     _delete(db, deleted, "promotion_journal", delete(PromotionJournal).where(PromotionJournal.user_id == user_id))
     _delete(db, deleted, "memory_access_log", delete(MemoryAccessLog).where(MemoryAccessLog.user_id == user_id))
     _delete(
@@ -157,6 +170,32 @@ def _reset_soul_state(
     _delete(db, deleted, "agent_messages", delete(AgentMessage).where(AgentMessage.thread_id.in_(agent_thread_ids)))
     _delete(db, deleted, "agent_runs", delete(AgentRun).where(AgentRun.user_id == user_id))
     _delete(db, deleted, "agent_threads", delete(AgentThread).where(AgentThread.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "foresight_signals",
+        delete(ForesightSignal).where(ForesightSignal.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "agent_experiences",
+        delete(AgentExperience).where(AgentExperience.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "experience_cluster_state",
+        delete(ExperienceClusterState).where(
+            ExperienceClusterState.user_id == user_id
+        ),
+    )
+    _delete(
+        db,
+        deleted,
+        "agent_skills",
+        delete(AgentSkill).where(AgentSkill.user_id == user_id),
+    )
 
     _delete(
         db,
@@ -169,6 +208,18 @@ def _reset_soul_state(
         deleted,
         "memory_item_evidence",
         delete(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id.in_(memory_item_ids)),
+    )
+    _delete(
+        db,
+        deleted,
+        "user_profile_field_evidence",
+        delete(UserProfileFieldEvidence).where(UserProfileFieldEvidence.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "user_profile_fields",
+        delete(UserProfileField).where(UserProfileField.user_id == user_id),
     )
     _delete(db, deleted, "kg_relations", delete(KGRelation).where(KGRelation.user_id == user_id))
     _delete(db, deleted, "kg_entities", delete(KGEntity).where(KGEntity.user_id == user_id))

@@ -164,12 +164,19 @@ class PromptLoader:
             messages=messages,
         )
 
-    def episode_generation(self, *, turns: str, user_name: str = "the user") -> str:
+    def episode_generation(
+        self,
+        *,
+        turns: str,
+        user_name: str = "the user",
+        conversation_timestamp: str = "unknown",
+    ) -> str:
         """Render the episode generation prompt."""
         return self.render(
             "episode_generation",
             turns=turns,
             user_name=user_name,
+            conversation_timestamp=conversation_timestamp,
         )
 
     # -----------------------------------------------------------------------
@@ -304,6 +311,13 @@ class PromptLoader:
         return self.render(
             "profile_synthesis",
             facts=facts,
+        )
+
+    def pattern_synthesis(self, *, episodes: str) -> str:
+        """Render the cross-episode pattern synthesis prompt."""
+        return self.render(
+            "pattern_synthesis",
+            episodes=episodes,
         )
 
     # -----------------------------------------------------------------------

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from anima_server.db.base import Base
 from anima_server.models import (
+    ForesightSignal,
     ForgetAuditLog,
     MemoryClaim,
     MemoryClaimEvidence,
@@ -26,9 +27,13 @@ from anima_server.services.agent.forgetting import (
     redact_derived_references,
     suppress_memory,
 )
+from anima_server.services.agent.provenance import add_memory_item_evidence
+from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+_FAKE_DEK = b"0123456789abcdef0123456789abcdef"
 
 
 @pytest.fixture()
@@ -333,6 +338,70 @@ class TestForgetMemory:
         )
         assert remaining == 0
 
+    def test_forget_deletes_foresight_signals_from_source_turn(self, db: Session):
+        item = _make_item(db, content="I have a dentist appointment tomorrow")
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=item.id,
+                source_kind="conversation",
+                evidence_text="I have a dentist appointment tomorrow",
+                runtime_message_ids_json=[101, 102],
+            )
+        )
+        overlapping = ForesightSignal(
+            user_id=1,
+            content="User has a dentist appointment tomorrow",
+            evidence="I have a dentist appointment tomorrow",
+            source_message_ids_json=[102],
+        )
+        unrelated = ForesightSignal(
+            user_id=1,
+            content="User has a product review next week",
+            evidence="I have a product review next week",
+            source_message_ids_json=[999],
+        )
+        other_user = ForesightSignal(
+            user_id=2,
+            content="Other user has a dentist appointment tomorrow",
+            evidence="I have a dentist appointment tomorrow",
+            source_message_ids_json=[102],
+        )
+        db.add_all([overlapping, unrelated, other_user])
+        db.flush()
+
+        forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert db.get(ForesightSignal, overlapping.id) is None
+        assert db.get(ForesightSignal, unrelated.id) is not None
+        assert db.get(ForesightSignal, other_user.id) is not None
+
+    def test_forget_preserves_unrelated_foresight_from_same_source_turn(self, db: Session):
+        item = _make_item(db, content="User likes sushi")
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=item.id,
+                source_kind="conversation",
+                evidence_text=(
+                    "I like sushi and I have a dentist appointment tomorrow"
+                ),
+                runtime_message_ids_json=[102],
+            )
+        )
+        unrelated_foresight = ForesightSignal(
+            user_id=1,
+            content="User has a dentist appointment tomorrow",
+            evidence="I have a dentist appointment tomorrow",
+            source_message_ids_json=[102],
+        )
+        db.add(unrelated_foresight)
+        db.flush()
+
+        forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert db.get(ForesightSignal, unrelated_foresight.id) is not None
+
     def test_forget_defers_retrieval_index_cleanup_until_after_commit(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -391,6 +460,111 @@ class TestForgetMemory:
         result = forget_memory(db, memory_id=item.id, user_id=1)
 
         assert result.derived_refs_affected == 2
+
+    def test_forget_removes_pattern_memory_citing_stale_episode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        deletes: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            retrieval_module,
+            "memory_index_delete",
+            lambda **kwargs: deletes.append(kwargs) or True,
+        )
+        item = _make_item(db, content="secret codename aurora")
+        episode = _make_episode(
+            db,
+            summary="User discussed secret codename aurora during launch planning.",
+        )
+        pattern = MemoryItem(
+            user_id=1,
+            category="pattern",
+            source="pattern_synthesis",
+            content="Aurora launch planning repeatedly creates pressure.",
+            importance=4,
+            evidence_strength=0.86,
+        )
+        db.add(pattern)
+        db.flush()
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=pattern.id,
+                source_kind="pattern_synthesis",
+                evidence_text="launch pressure appeared in the source episode",
+                metadata_json={
+                    "memory_source": "pattern_synthesis",
+                    "source_episode_ids": [episode.id],
+                },
+            )
+        )
+        db.flush()
+        pattern_id = pattern.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert deletes == []
+        assert result.derived_refs_affected == 2
+        db.refresh(episode)
+        assert episode.needs_regeneration is True
+        assert db.get(MemoryItem, pattern_id) is None
+        db.commit()
+        deleted_record_ids = {int(call["record_id"]) for call in deletes}
+        assert deleted_record_ids == {item.id, pattern_id}
+
+    def test_forget_matches_encrypted_pattern_evidence_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        db: Session,
+    ):
+        monkeypatch.setattr(
+            "anima_server.services.data_crypto.get_active_dek",
+            lambda user_id, domain="memories": _FAKE_DEK,
+        )
+        item = _make_item(db, content="secret codename aurora")
+        pattern = MemoryItem(
+            user_id=1,
+            category="pattern",
+            source="pattern_synthesis",
+            content="Launch planning repeatedly creates pressure.",
+            importance=4,
+            evidence_strength=0.86,
+        )
+        db.add(pattern)
+        db.flush()
+        evidence = add_memory_item_evidence(
+            db,
+            user_id=1,
+            memory_item_id=pattern.id,
+            source_kind="pattern_synthesis",
+            evidence_text="Source evidence mentioned secret codename aurora once.",
+            metadata={"memory_source": "pattern_synthesis"},
+        )
+        assert evidence is not None
+        assert evidence.evidence_text != "Source evidence mentioned secret codename aurora once."
+        assert (
+            df(
+                1,
+                evidence.evidence_text,
+                table="memory_item_evidence",
+                field="evidence_text",
+            )
+            == "Source evidence mentioned secret codename aurora once."
+        )
+        pattern_id = pattern.id
+        evidence_id = evidence.id
+
+        result = forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert result.derived_refs_affected == 1
+        assert db.get(MemoryItem, pattern_id) is None
+        remaining_evidence = db.scalar(
+            select(func.count())
+            .select_from(MemoryItemEvidence)
+            .where(MemoryItemEvidence.id == evidence_id)
+        )
+        assert remaining_evidence == 0
 
     def test_forget_nonexistent_memory(self, db: Session):
         result = forget_memory(db, memory_id=9999, user_id=1)

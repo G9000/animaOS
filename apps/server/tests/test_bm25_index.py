@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from anima_server.services.agent import bm25_index as bm25_module
+from anima_server.services.agent import memory_store as memory_store_module
 from anima_server.services.agent.bm25_index import (
     BM25Index,
     _tokenize,
@@ -169,6 +170,11 @@ class TestRustBackedKeywordSearch:
             bm25_module.anima_core_retrieval,
             "is_retrieval_family_dirty",
             lambda **kwargs: False,
+        )
+        monkeypatch.setattr(
+            memory_store_module,
+            "ensure_memory_retrieval_index_ready",
+            lambda *args, **kwargs: True,
         )
 
         def _fake_search(**kwargs):

@@ -25,6 +25,7 @@ pub mod engine;
 pub mod integrity;
 pub mod frame;
 pub mod graph;
+pub mod memory_contract;
 pub mod projection;
 pub mod retrieval_index;
 pub mod search;

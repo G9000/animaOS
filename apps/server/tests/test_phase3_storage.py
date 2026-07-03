@@ -235,6 +235,45 @@ class TestTagSystem:
             assert result.item is not None
             assert result.item.tags_json == ["hobby", "outdoors"]
 
+    def test_relationship_drift_links_similar_memory_with_explicit_salience(self) -> None:
+        with _db_session() as db:
+            user = _make_user(db)
+            first = store_memory_item(
+                db,
+                user_id=user.id,
+                content="Leo is my close friend",
+                category="relationship",
+            )
+            second = store_memory_item(
+                db,
+                user_id=user.id,
+                content="Leo is my close partner",
+                category="relationship",
+                salience={
+                    "memory_class": "relationship",
+                    "emotional_salience": 0.55,
+                    "stability_class": "evolving",
+                    "decay_class": "slow",
+                    "relationship_proximity": 0.9,
+                    "evidence_strength": 0.9,
+                    "salience_source": "explicit",
+                    "salience_signal_fields": [
+                        "memory_class",
+                        "stability_class",
+                        "relationship_proximity",
+                        "evidence_strength",
+                    ],
+                },
+            )
+
+            assert first.action == "added"
+            assert first.item is not None
+            assert second.action == "evolved"
+            assert second.item is not None
+            assert second.matched_item == first.item
+            assert second.item.evolves_from_item_id == first.item.id
+            assert second.item.evolution_kind == "relationship_drift"
+
     def test_add_tags_to_item(self) -> None:
         with _db_session() as db:
             user = _make_user(db)

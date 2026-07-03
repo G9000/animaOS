@@ -187,3 +187,100 @@ def test_backfill_memory_item_evidence_progresses_past_existing_rows_with_limit(
         covered_two.id,
         uncovered.id,
     }
+
+
+def test_backfill_memory_item_evidence_prioritizes_active_missing_rows() -> None:
+    from anima_server.services.agent.provenance import backfill_memory_item_evidence
+
+    created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
+    with _db_session() as db:
+        user = User(username="backfill-active-first", password_hash="x", display_name="Backfill")
+        db.add(user)
+        db.flush()
+        superseded_one = MemoryItem(
+            user_id=user.id,
+            content="Old superseded memory one.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+            superseded_by=1001,
+        )
+        superseded_two = MemoryItem(
+            user_id=user.id,
+            content="Old superseded memory two.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+            superseded_by=1002,
+        )
+        active = MemoryItem(
+            user_id=user.id,
+            content="Active memory needs evidence.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+        )
+        db.add_all([superseded_one, superseded_two, active])
+        db.flush()
+
+        result = backfill_memory_item_evidence(db, user_id=user.id, limit=1)
+        rows = list(
+            db.scalars(
+                select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == user.id)
+            ).all()
+        )
+
+    assert result.created == 1
+    assert [row.memory_item_id for row in rows] == [active.id]
+
+
+def test_audit_memory_item_evidence_reports_active_coverage_only() -> None:
+    from anima_server.services.agent.provenance import audit_memory_item_evidence
+
+    created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
+    with _db_session() as db:
+        user = User(username="audit-coverage", password_hash="x", display_name="Audit")
+        db.add(user)
+        db.flush()
+        covered = MemoryItem(
+            user_id=user.id,
+            content="Covered active memory.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+        )
+        missing = MemoryItem(
+            user_id=user.id,
+            content="Missing active evidence.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+        )
+        superseded = MemoryItem(
+            user_id=user.id,
+            content="Superseded memory without evidence.",
+            category="fact",
+            source="extraction",
+            created_at=created_at,
+            superseded_by=999,
+        )
+        db.add_all([covered, missing, superseded])
+        db.flush()
+        db.add(
+            MemoryItemEvidence(
+                user_id=user.id,
+                memory_item_id=covered.id,
+                source_kind="explicit_save",
+                evidence_text="Covered active memory.",
+            )
+        )
+        db.flush()
+
+        report = audit_memory_item_evidence(db, user_id=user.id)
+
+    assert report.total_active == 2
+    assert report.with_evidence == 1
+    assert report.missing_evidence == 1
+    assert report.coverage_ratio == 0.5
+    assert report.coverage_percent == 50.0
+    assert report.missing_item_ids == [missing.id]

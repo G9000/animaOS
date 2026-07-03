@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections import Counter
 from threading import Lock
 
 from rank_bm25 import BM25Okapi
@@ -16,13 +17,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.services import anima_core_retrieval
+from anima_server.services.agent.text_processing import unicode_lexical_tokens
 
 logger = logging.getLogger(__name__)
 
 
 def _tokenize(text: str) -> list[str]:
-    """Simple whitespace tokenization with lowercasing."""
-    return text.lower().split()
+    """Unicode-aware lexical tokenization for degraded BM25 fallback."""
+    return unicode_lexical_tokens(text, min_word_chars=1)
 
 
 class BM25Index:
@@ -36,8 +38,17 @@ class BM25Index:
     def build(self, documents: list[tuple[int, str]]) -> None:
         """Build index from (item_id, content) pairs."""
         self._documents = list(documents)
-        self._item_ids = [doc_id for doc_id, _ in self._documents]
-        tokenized = [_tokenize(content) for _, content in self._documents]
+        tokenized_documents = [
+            (doc_id, _tokenize(content))
+            for doc_id, content in self._documents
+        ]
+        tokenized_documents = [
+            (doc_id, tokens)
+            for doc_id, tokens in tokenized_documents
+            if tokens
+        ]
+        self._item_ids = [doc_id for doc_id, _tokens in tokenized_documents]
+        tokenized = [tokens for _doc_id, tokens in tokenized_documents]
         if tokenized:
             self._bm25 = BM25Okapi(tokenized)
         else:
@@ -54,10 +65,36 @@ class BM25Index:
         scored = [
             (self._item_ids[i], float(scores[i]))
             for i in range(len(self._item_ids))
-            if scores[i] != 0.0
+            if scores[i] > 0.0
         ]
+        if not scored:
+            scored = self._overlap_search(tokenized_query)
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:limit]
+
+    def _overlap_search(self, tokenized_query: list[str]) -> list[tuple[int, float]]:
+        query_counts = Counter(tokenized_query)
+        if not query_counts:
+            return []
+        scored: list[tuple[int, float]] = []
+        for item_id, content in self._documents:
+            content_counts = Counter(_tokenize(content))
+            if not content_counts:
+                continue
+            overlap = sum(
+                min(query_count, content_counts[term])
+                for term, query_count in query_counts.items()
+            )
+            if overlap:
+                term_frequency = sum(content_counts[term] for term in query_counts)
+                scored.append(
+                    (
+                        item_id,
+                        (overlap / sum(query_counts.values()))
+                        + (term_frequency / sum(content_counts.values())),
+                    )
+                )
+        return scored
 
     def add_document(self, item_id: int, content: str) -> None:
         """Add a document. Triggers full rebuild (BM25Okapi needs corpus stats)."""
@@ -232,13 +269,13 @@ def _search_memory_index_via_rust(
     db: Session,
 ) -> list[tuple[int, float]] | None:
     try:
-        root = anima_core_retrieval.get_retrieval_root()
         from anima_server.services.agent.memory_store import ensure_memory_retrieval_index_ready
+        from anima_server.services.agent.retrieval_backends import get_memory_retrieval_backend
 
-        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, root=root):
+        backend = get_memory_retrieval_backend(root=anima_core_retrieval.get_retrieval_root())
+        if not ensure_memory_retrieval_index_ready(db, user_id=user_id, backend=backend):
             return None
-        hits = anima_core_retrieval.memory_index_search(
-            root=root,
+        hits = backend.search_memory(
             user_id=user_id,
             query=query,
             limit=limit,
@@ -252,12 +289,5 @@ def _search_memory_index_via_rust(
 
     ranked: list[tuple[int, float]] = []
     for hit in hits:
-        record_id = hit.get("record_id")
-        score = hit.get("score", 0.0)
-        if record_id is None:
-            continue
-        try:
-            ranked.append((int(record_id), float(score)))
-        except (TypeError, ValueError):
-            continue
+        ranked.append((hit.record_id, hit.score))
     return ranked

@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-07-03
+
+- added a Mermaid architecture snapshot to the Single-User Temporal Memory PRD covering the shared memory contract boundary, SQLCipher-backed durable memory records, recall routing, background cognition, and cleanup paths
+
 ## 2026-06-29
 
 - documented visual memory image assets: central image storage, image annotation embeddings, retrieval/proactive behavior, deletion semantics, backfill, and the boundary with PDF document processing

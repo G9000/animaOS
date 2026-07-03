@@ -25,4 +25,6 @@ Also detect the user's emotional tone if notable (or null if nothing):
 Return as JSON array of objects with fields:
   content, category (fact/preference/goal/relationship), confidence (0.0-1.0),
   reason (surprising/contradictory/corrective),
+  salience (object with memory_class, emotional_salience, stability_class, decay_class,
+  relationship_proximity, evidence_strength),
   detected_emotion (object with emotion/confidence/trajectory/evidence_type/evidence, or null)

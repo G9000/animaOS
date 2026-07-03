@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
 from anima_server.db import get_db
+from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models import MemoryItem
 from anima_server.services.agent.forgetting import forget_by_topic, forget_memory
 from anima_server.services.data_crypto import df
@@ -34,8 +35,14 @@ async def forget_single_memory(
             detail="Memory item not found",
         )
 
-    result = forget_memory(db, memory_id=memory_id, user_id=user_id)
+    result = forget_memory(
+        db,
+        memory_id=memory_id,
+        user_id=user_id,
+        runtime_db_factory=_get_runtime_session_factory_or_none(),
+    )
     db.commit()
+    _invalidate_companion_memory(user_id)
 
     return {
         "forgotten": True,
@@ -75,3 +82,21 @@ async def forget_by_topic_endpoint(
             for item in candidates
         ],
     }
+
+
+def _invalidate_companion_memory(user_id: int) -> None:
+    try:
+        from anima_server.services.agent.companion import get_companion
+
+        companion = get_companion(user_id)
+        if companion is not None:
+            companion.invalidate_memory()
+    except Exception:
+        pass
+
+
+def _get_runtime_session_factory_or_none():
+    try:
+        return get_runtime_session_factory()
+    except Exception:
+        return None

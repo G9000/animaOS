@@ -45,12 +45,17 @@ Consolidated list of every gap found during detailed per-requirement audits. Sor
 | ID | Gap | Impact | Fix Effort |
 |----|-----|--------|------------|
 | F5.5 | Tasks run **sequentially**, not parallel via `asyncio.gather()` | Slower background processing. **Intentional** — SQLite can't handle concurrent writes. | N/A (design constraint) |
-| F5.14/F5.23 | `last_processed_message_id` restart cursor is always `None` (TODO at `sleep_agent.py:411`) | Restart safety incomplete — system cannot resume from where it left off after crash | Medium — need to wire actual message ID from runtime DB |
+| F3 | PRD roll-up references `predict_calibrate.py` and `test_predict_calibrate.py`, but those files are absent in live server code | Predict-calibrate should not be treated as a dependency until the module is restored or the PRD is revised | Medium — product/architecture decision before implementation |
 | F7.9 | `needs_regeneration` flags set on derived references but never acted on | Stale derived references (episodes, growth log entries citing superseded facts) remain stale indefinitely | Medium — need LLM-based regeneration task in sleep-time |
-| F4.7 | Entity dedup uses token Jaccard, not embedding similarity | Misses aliases like "NYC" ↔ "New York City". `embedding_json` column exists on `KGEntity` but is never populated. | Medium — need to compute entity embeddings + cosine similarity check in `upsert_entity()` |
-| F4.15 | Vault export/import doesn't include `kg_entities` / `kg_relations` | KG data lost on vault transfer | Small — add tables to vault export handler |
-| F2.9 | `get_memory_items_scored()` pool fetch uses `ORDER BY created_at DESC` not `ORDER BY heat DESC` | Top-200 pool may miss high-heat older items that fell out of recency window | Tiny — one-line change at `memory_store.py:310` |
-| F3.10 | `_MIN_CONVERSATION_LENGTH = 3` defined but never checked | Short conversations (< 3 exchanges) still go through predict-calibrate, wasting tokens | Tiny — add 3-line check in `predict_calibrate_extraction()` |
+| F4.7 | Entity dedup uses normalized-name and token/fuzzy matching, not embedding similarity | Misses aliases like "NYC" ↔ "New York City"; entity embeddings now exist but are not used for alias merge | Medium — add embedding-based candidate matching to graph upsert/dedup |
+
+### Resolved or Rebaselined by SUM-001
+
+| ID | Change | Verification |
+|----|--------|--------------|
+| F2.9 | `get_memory_items_scored()` now combines heat-ranked and recency-ranked candidate slices before Python-side scoring and query blending | `test_scored_retrieval_pool_keeps_hot_older_items`, `test_scored_retrieval_pool_keeps_fresh_unscored_items` |
+| F4.15 | Vault export/import now includes `kg_entities` and `kg_relations` with graph capsule grouping and restore ordering | `test_export_and_import_vault_restores_knowledge_graph` |
+| F5.14/F5.23 | Consolidation result payloads now include the latest runtime message cursor and processed-message count when runtime DB rows are available | `test_consolidation_task_records_latest_runtime_message_cursor` |
 
 ### Dead Code / Cleanup
 
@@ -123,15 +128,14 @@ Based on effort/impact ratio:
 | Priority | Feature | Rationale |
 |----------|---------|-----------|
 | 1 | **F9** (Episode Upgrade) | Tiny effort (prompt-only), improves all episode quality immediately |
-| 2 | **F2.9 fix** | One-line fix, improves retrieval quality for users with large memory stores |
+| 2 | **F3 rebaseline** | Live predict-calibrate code is absent despite PRD status claims; decide whether to restore or revise before depending on it |
 | 3 | **F8** (Foresight) | Small effort, directly enhances proactive companion |
-| 4 | **F5.14 fix** | Medium effort, completes restart safety |
-| 5 | **F4.15 fix** | Small effort, prevents KG data loss on vault transfer |
-| 6 | **F11** (Experiences) | Medium effort, unlocks procedural learning pipeline |
-| 7 | **F7.9 fix** | Medium effort, completes forgetting system |
-| 8 | **F10** (User Profile) | Medium effort, builds on existing claims infrastructure |
-| 9 | **F12 → F13** | Depends on F11, completes the learning loop |
-| 10 | **F14** (Multi-User) | Large effort, closes the last structural gap vs multi-tenant memory systems |
+| 4 | **F7.9 fix** | Medium effort, completes forgetting system |
+| 5 | **F10** (User Profile) | Medium effort, builds on existing claims infrastructure |
+| 6 | **F4.7 semantic alias dedup** | Medium effort, improves graph quality after entity embeddings are now live |
+| 7 | **F11** (Experiences) | Medium effort, unlocks procedural learning pipeline |
+| 8 | **F12 → F13** | Depends on F11, completes the learning loop |
+| 9 | **F14** (Multi-User) | Large effort, closes the last structural gap vs multi-tenant memory systems |
 
 ---
 

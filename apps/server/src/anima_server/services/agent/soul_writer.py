@@ -29,9 +29,9 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
 
 @dataclass(slots=True)
 class PromotionDecision:
-    action: str  # "promote" | "supersede" | "rejected"
+    action: str  # "promote" | "supersede" | "evolve" | "reinforce" | "rejected"
     reason: str = ""
-    old_item: object | None = None  # MemoryItem when action == "supersede"
+    old_item: object | None = None  # MemoryItem when action targets an existing item
 
 
 @dataclass(slots=True)
@@ -44,8 +44,11 @@ class SoulWriterResult:
     extraction_failures_failed: int = 0
     candidates_promoted: int = 0
     candidates_rejected: int = 0
+    candidates_reinforced: int = 0
     candidates_superseded: int = 0
     candidates_failed: int = 0
+    profile_updates_promoted: int = 0
+    profile_updates_failed: int = 0
     access_sync: dict = field(default_factory=dict)
     retrieval_feedback_sync: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -143,7 +146,12 @@ async def run_soul_writer(
 
     # Soul Writer mutates identity blocks (human/persona/soul) outside the
     # turn pipeline, so the companion's static-block cache must be told.
-    if result.ops_processed > 0 or result.candidates_promoted > 0:
+    if (
+        result.ops_processed > 0
+        or result.candidates_promoted > 0
+        or result.profile_updates_promoted > 0
+        or result.candidates_reinforced > 0
+    ):
         try:
             from anima_server.services.agent.companion import get_companion
 
@@ -163,14 +171,17 @@ async def run_soul_writer(
         + result.extraction_failures_retried
         + result.candidates_promoted
         + result.candidates_rejected
+        + result.candidates_reinforced
         + result.candidates_superseded
         + result.candidates_failed
+        + result.profile_updates_promoted
+        + result.profile_updates_failed
     )
     if total_work > 0 or result.errors:
         logger.info(
             (
                 "Soul Writer user=%s: ops=%d/%d/%d extraction_retries=%d/%d/%d "
-                "cands=%d/%d/%d/%d access=%s retrieval=%s errors=%d"
+                "cands=%d/%d/%d/%d/%d profile=%d/%d access=%s retrieval=%s errors=%d"
             ),
             user_id,
             result.ops_processed,
@@ -181,8 +192,11 @@ async def run_soul_writer(
             result.extraction_failures_failed,
             result.candidates_promoted,
             result.candidates_rejected,
+            result.candidates_reinforced,
             result.candidates_superseded,
             result.candidates_failed,
+            result.profile_updates_promoted,
+            result.profile_updates_failed,
             result.access_sync.get("items_synced", 0),
             result.retrieval_feedback_sync.get("items_synced", 0),
             len(result.errors),
@@ -357,6 +371,42 @@ def _run_soul_writer_inner(
 
         runtime_db.commit()
 
+    # Phase 2.5: Promote structured profile updates.
+    with rt_factory() as runtime_db:
+        from anima_server.services.agent.user_profile import (
+            get_profile_update_candidates_for_promotion,
+        )
+
+        profile_candidates = get_profile_update_candidates_for_promotion(
+            runtime_db,
+            user_id=user_id,
+            limit=MAX_ITEMS_PER_RUN,
+            max_retry=MAX_RETRY_COUNT,
+        )
+
+        for candidate in profile_candidates:
+            candidate.status = "queued"
+        runtime_db.flush()
+
+        for candidate in profile_candidates:
+            try:
+                _process_profile_update_candidate(
+                    candidate,
+                    soul_db_factory=soul_factory,
+                    result=result,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Soul Writer profile update candidate %s failed", candidate.id
+                )
+                candidate.status = "failed"
+                candidate.last_error = str(e)[:500]
+                candidate.retry_count = (candidate.retry_count or 0) + 1
+                result.profile_updates_failed += 1
+                result.errors.append(f"profile update {candidate.id}: {e}")
+
+        runtime_db.commit()
+
     # Phase 3: Access sync (always runs)
     with rt_factory() as runtime_db, soul_factory() as soul_db:
         from anima_server.services.agent.access_sync import sync_access_metadata
@@ -417,6 +467,9 @@ def _retry_memory_extraction_failures(
     from anima_server.models.runtime_memory import MemoryExtractionFailure
     from anima_server.services.agent.candidate_ops import create_memory_candidate
     from anima_server.services.agent.consolidation import extract_memories_via_llm
+    from anima_server.services.agent.user_profile import (
+        create_profile_update_candidates_from_payload,
+    )
 
     failures = list(
         runtime_db.scalars(
@@ -481,7 +534,18 @@ def _retry_memory_extraction_failures(
                 source="llm",
                 source_message_ids=list(failure.source_message_ids or []),
                 extraction_model=failure.extraction_model,
+                salience=item.get("salience")
+                if isinstance(item.get("salience"), dict)
+                else None,
             )
+
+        create_profile_update_candidates_from_payload(
+            runtime_db,
+            user_id=user_id,
+            profile_updates=llm_result.profile_updates,
+            source_message_ids=list(failure.source_message_ids or []),
+            extraction_model=failure.extraction_model,
+        )
 
         failure.status = "resolved"
         failure.resolved_at = now
@@ -667,6 +731,25 @@ def _process_pending_op(
     result.ops_processed += 1
 
 
+def _process_profile_update_candidate(
+    candidate,
+    *,
+    soul_db_factory: Callable,
+    result: SoulWriterResult,
+) -> None:
+    """Promote one structured profile candidate into the durable soul DB."""
+    from anima_server.services.agent.user_profile import promote_profile_update_candidate
+
+    with soul_db_factory() as soul_db:
+        promote_profile_update_candidate(soul_db, candidate=candidate)
+        soul_db.commit()
+
+    candidate.status = "promoted"
+    candidate.processed_at = datetime.now(UTC)
+    candidate.last_error = None
+    result.profile_updates_promoted += 1
+
+
 def _process_candidate(
     candidate,
     *,
@@ -704,6 +787,38 @@ def _process_candidate(
             result.candidates_rejected += 1
             return
 
+        if decision.action == "reinforce":
+            old_item = decision.old_item
+            if old_item is not None:
+                from anima_server.services.agent.memory_salience import (
+                    merge_salience_into_item,
+                )
+                from anima_server.services.agent.memory_store import (
+                    invalidate_memory_retrieval_indexes,
+                )
+                from anima_server.services.agent.provenance import (
+                    add_candidate_memory_item_evidence,
+                )
+
+                merge_salience_into_item(old_item, candidate.salience_json)
+                add_candidate_memory_item_evidence(
+                    soul_db,
+                    runtime_db=runtime_db,
+                    candidate=candidate,
+                    memory_item=old_item,
+                )
+                soul_db.commit()
+                invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
+
+            candidate.status = "reinforced"
+            candidate.processed_at = now
+            journal.target_table = "memory_items"
+            if old_item is not None:
+                journal.target_record_id = str(old_item.id)
+            journal.journal_status = "confirmed"
+            result.candidates_reinforced += 1
+            return
+
         if decision.action == "supersede":
             from anima_server.services.agent.memory_store import supersede_memory_item
 
@@ -713,6 +828,7 @@ def _process_candidate(
                 old_item_id=old_item.id,
                 new_content=candidate.content,
                 importance=candidate.importance,
+                salience=candidate.salience_json,
             )
 
             # Suppress old item
@@ -790,6 +906,89 @@ def _process_candidate(
             result.candidates_superseded += 1
             return
 
+        if decision.action == "evolve":
+            from anima_server.services.agent.memory_store import store_memory_item
+
+            write_result = store_memory_item(
+                soul_db,
+                user_id=user_id,
+                content=candidate.content,
+                category=candidate.category,
+                importance=candidate.importance,
+                source="extraction",
+                allow_update=True,
+                defer_on_similar=False,
+                tags=candidate.tags_json,
+                salience=candidate.salience_json,
+            )
+            new_item = write_result.item
+            if new_item is None:
+                candidate.status = "rejected"
+                candidate.processed_at = now
+                journal.decision = "rejected"
+                journal.reason = f"evolution rejected: {write_result.reason}"
+                journal.journal_status = "confirmed"
+                result.candidates_rejected += 1
+                return
+
+            try:
+                from anima_server.services.agent.claims import upsert_claim
+
+                upsert_claim(
+                    soul_db,
+                    user_id=user_id,
+                    content=candidate.content,
+                    category=candidate.category,
+                    importance=candidate.importance,
+                    source_kind="extraction",
+                    extractor=candidate.source,
+                    memory_item_id=new_item.id,
+                    evidence_text=candidate.content,
+                )
+            except Exception:
+                logger.debug("upsert_claim failed for candidate %s", candidate.id)
+
+            from anima_server.services.agent.provenance import (
+                add_candidate_memory_item_evidence,
+            )
+
+            add_candidate_memory_item_evidence(
+                soul_db,
+                runtime_db=runtime_db,
+                candidate=candidate,
+                memory_item=new_item,
+            )
+            soul_db.commit()
+
+            if event_loop is not None:
+                try:
+                    import asyncio as _aio
+
+                    _aio.run_coroutine_threadsafe(
+                        _embed_and_index_item(
+                            user_id,
+                            new_item.id,
+                            candidate.content,
+                            candidate.category,
+                            candidate.importance,
+                            soul_db_factory,
+                        ),
+                        event_loop,
+                    ).result(timeout=15)
+                except Exception:
+                    logger.debug(
+                        "Inline embedding failed for evolved item %d, will backfill later",
+                        new_item.id,
+                    )
+
+            candidate.status = "promoted"
+            candidate.processed_at = now
+            journal.target_table = "memory_items"
+            journal.target_record_id = str(new_item.id)
+            journal.journal_status = "confirmed"
+            result.candidates_promoted += 1
+            return
+
         # action == "promote"
         from anima_server.services.agent.memory_store import store_memory_item
 
@@ -803,6 +1002,7 @@ def _process_candidate(
             allow_update=True,
             defer_on_similar=False,
             tags=candidate.tags_json,
+            salience=candidate.salience_json,
         )
 
         if write_result.action in ("duplicate", "conflict", "rejected"):
@@ -936,11 +1136,16 @@ def plan_candidate_promotion(
         source="extraction",
         allow_update=True,
         defer_on_similar=True,
+        salience=candidate.salience_json,
         dry_run=True,
     )
 
     if write_analysis.action == "duplicate":
-        return PromotionDecision(action="rejected", reason="duplicate in canonical state")
+        return PromotionDecision(
+            action="reinforce",
+            old_item=write_analysis.matched_item,
+            reason="duplicate in canonical state - reinforced salience/evidence",
+        )
 
     if write_analysis.action == "superseded":
         return PromotionDecision(
@@ -951,6 +1156,13 @@ def plan_candidate_promotion(
                 if write_analysis.matched_item
                 else "supersede"
             ),
+        )
+
+    if write_analysis.action == "evolved":
+        return PromotionDecision(
+            action="evolve",
+            old_item=write_analysis.matched_item,
+            reason=write_analysis.reason or "soft evolution",
         )
 
     if write_analysis.action == "similar":

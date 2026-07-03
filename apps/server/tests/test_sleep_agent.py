@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import KGRelation, User
-from anima_server.models.runtime import RuntimeBackgroundTaskRun
+from anima_server.models.runtime import RuntimeBackgroundTaskRun, RuntimeMessage, RuntimeThread
+from anima_server.models.runtime_memory import MemoryCandidate, MemoryExtractionFailure
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.sleep_agent import (
     _issue_background_task,
     _should_run_expensive,
+    _task_consolidation,
     _task_episode_gen,
     _task_graph_ingestion,
     get_last_processed_message_id,
@@ -89,6 +92,66 @@ def rt_factory(runtime_db_engine):
 # ── _issue_background_task ───────────────────────────────────────────
 
 
+@pytest.mark.asyncio()
+async def test_manual_sleep_generates_episode_before_pattern_synthesis(db_factory):
+    from anima_server.services.agent import sleep_tasks
+
+    with db_factory() as db:
+        user = User(
+            username="manual-sleep-user",
+            display_name="Manual Sleep User",
+            password_hash="x",
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    call_order: list[str] = []
+
+    async def _no_scan(**kwargs: object) -> tuple[int, int]:
+        del kwargs
+        return (0, 0)
+
+    async def _no_merge(**kwargs: object) -> int:
+        del kwargs
+        return 0
+
+    async def _fake_episode(**kwargs: object) -> object:
+        del kwargs
+        call_order.append("episode_gen")
+        return object()
+
+    async def _fake_pattern(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        call_order.append("pattern_synthesis")
+        return SimpleNamespace(created=0, updated=0)
+
+    with (
+        patch.object(sleep_tasks, "scan_contradictions", _no_scan),
+        patch.object(sleep_tasks, "synthesize_profile", _no_merge),
+        patch.object(sleep_tasks, "_should_run_deep_monologue", return_value=False),
+        patch(
+            "anima_server.services.agent.episodes.maybe_generate_episode",
+            new=_fake_episode,
+        ),
+        patch(
+            "anima_server.services.agent.pattern_synthesis.synthesize_cross_episode_patterns",
+            new=_fake_pattern,
+        ),
+        patch(
+            "anima_server.services.agent.embeddings.backfill_embeddings",
+            new=AsyncMock(return_value=0),
+        ),
+    ):
+        result = await sleep_tasks.run_sleep_tasks(
+            user_id=user_id,
+            db_factory=db_factory,
+        )
+
+    assert call_order == ["episode_gen", "pattern_synthesis"]
+    assert result.episodes_generated == 1
+
+
 class TestIssueBackgroundTask:
     @pytest.mark.asyncio()
     async def test_successful_task(self, db_factory, rt_factory):
@@ -156,6 +219,55 @@ class TestIssueBackgroundTask:
             run = db.get(RuntimeBackgroundTaskRun, task_id)
             assert run.status == "completed"
             assert run.result_json is None
+
+    @pytest.mark.asyncio()
+    async def test_uses_default_runtime_factory_for_task_cursor(self, db_factory, rt_factory):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            message = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="hello",
+            )
+            db.add(message)
+            db.commit()
+            thread_id = thread.id
+            expected_message_id = message.id
+
+        with (
+            patch(
+                "anima_server.db.runtime.get_runtime_session_factory",
+                return_value=rt_factory,
+            ),
+            patch(
+                "anima_server.services.agent.soul_writer.run_soul_writer",
+                new_callable=AsyncMock,
+            ),
+        ):
+            run_id = await _issue_background_task(
+                user_id=1,
+                task_type="consolidation",
+                task_fn=_task_consolidation,
+                db_factory=db_factory,
+                user_message="hello",
+                thread_id=thread_id,
+                _task_runtime_db_factory=None,
+            )
+
+        task_id = int(run_id.split(":")[1])
+        with rt_factory() as db:
+            run = db.get(RuntimeBackgroundTaskRun, task_id)
+            assert run is not None
+            assert run.status == "completed"
+            assert run.result_json == {
+                "thread_id": thread_id,
+                "last_processed_message_id": expected_message_id,
+                "messages_processed": 1,
+            }
 
 
 # ── Task failure isolation ───────────────────────────────────────────
@@ -302,6 +414,11 @@ class TestForceMode:
                 return_value={},
             ),
             patch(
+                "anima_server.services.agent.sleep_agent._task_pattern_synthesis",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
                 "anima_server.services.agent.sleep_agent._task_deep_monologue",
                 new_callable=AsyncMock,
                 return_value={},
@@ -328,10 +445,64 @@ class TestForceMode:
         # Deep monologue respects 24h throttle (mocked True here).
         assert any("contradiction_scan" in r for r in run_ids)
         assert any("profile_synthesis" in r for r in run_ids)
+        assert any("pattern_synthesis" in r for r in run_ids)
         assert any("deep_monologue" in r for r in run_ids)
 
 
 # ── Heat gating ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio()
+async def test_scheduled_sleeptime_runs_foresight_lifecycle(db_factory, rt_factory):
+    with (
+        patch(
+            "anima_server.services.agent.sleep_agent._task_consolidation",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_embedding_backfill",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_graph_ingestion",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_heat_decay",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_episode_gen",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._should_run_expensive",
+            return_value=False,
+        ),
+        patch(
+            "anima_server.services.agent.sleep_tasks._should_run_deep_monologue",
+            return_value=False,
+        ),
+        patch(
+            "anima_server.services.agent.companion.get_companion",
+            return_value=None,
+        ),
+    ):
+        run_ids = await run_sleeptime_agents(
+            user_id=1,
+            user_message="hello",
+            assistant_response="hi",
+            db_factory=db_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+    task_types = {run_id.split(":")[0] for run_id in run_ids}
+    assert "foresight_lifecycle" in task_types
 
 
 class TestHeatGating:
@@ -431,6 +602,168 @@ class TestRestartCursor:
             1, thread_id=None, runtime_db_factory=rt_factory)
         assert msg_id == 50
 
+    @pytest.mark.asyncio()
+    async def test_consolidation_task_records_latest_runtime_message_cursor(self, rt_factory):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            first = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="first",
+            )
+            second = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=2,
+                role="assistant",
+                content_text="second",
+            )
+            db.add_all([first, second])
+            db.commit()
+            thread_id = thread.id
+            expected_message_id = second.id
+
+        with patch(
+            "anima_server.services.agent.soul_writer.run_soul_writer",
+            new_callable=AsyncMock,
+        ):
+            result = await _task_consolidation(
+                user_id=1,
+                user_message="first",
+                assistant_response="second",
+                thread_id=thread_id,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == {
+            "thread_id": thread_id,
+            "last_processed_message_id": expected_message_id,
+            "messages_processed": 2,
+        }
+
+    @pytest.mark.asyncio()
+    async def test_consolidation_task_does_not_advance_cursor_with_candidate_backlog(
+        self, rt_factory
+    ):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            first = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="first",
+            )
+            second = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=2,
+                role="assistant",
+                content_text="second",
+            )
+            db.add_all([first, second])
+            db.flush()
+            db.add_all(
+                [
+                    MemoryCandidate(
+                        user_id=1,
+                        content="processed fact",
+                        category="fact",
+                        importance=3,
+                        source="extractor",
+                        source_message_ids=[first.id],
+                        content_hash="processed",
+                        status="promoted",
+                        processed_at=datetime.now(UTC),
+                    ),
+                    MemoryCandidate(
+                        user_id=1,
+                        content="queued fact",
+                        category="fact",
+                        importance=3,
+                        source="extractor",
+                        source_message_ids=[second.id],
+                        content_hash="queued",
+                        status="extracted",
+                    ),
+                ]
+            )
+            db.commit()
+            thread_id = thread.id
+
+        with patch(
+            "anima_server.services.agent.soul_writer.run_soul_writer",
+            new_callable=AsyncMock,
+        ):
+            result = await _task_consolidation(
+                user_id=1,
+                user_message="first",
+                assistant_response="second",
+                thread_id=thread_id,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == {
+            "thread_id": thread_id,
+            "last_processed_message_id": None,
+            "messages_processed": 0,
+        }
+
+    @pytest.mark.asyncio()
+    async def test_consolidation_task_does_not_advance_cursor_with_extraction_failure_backlog(
+        self, rt_factory
+    ):
+        with rt_factory() as db:
+            thread = RuntimeThread(user_id=1, status="active")
+            db.add(thread)
+            db.flush()
+            message = RuntimeMessage(
+                user_id=1,
+                thread_id=thread.id,
+                sequence_id=1,
+                role="user",
+                content_text="remember this",
+            )
+            db.add(message)
+            db.flush()
+            db.add(
+                MemoryExtractionFailure(
+                    user_id=1,
+                    source_message_ids=[message.id],
+                    user_message_preview="remember this",
+                    assistant_response_preview=None,
+                    failure_reason="temporary extraction failure",
+                    status="failed",
+                    retry_count=0,
+                )
+            )
+            db.commit()
+            thread_id = thread.id
+
+        with patch(
+            "anima_server.services.agent.soul_writer.run_soul_writer",
+            new_callable=AsyncMock,
+        ):
+            result = await _task_consolidation(
+                user_id=1,
+                user_message="remember this",
+                assistant_response="",
+                thread_id=thread_id,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == {
+            "thread_id": thread_id,
+            "last_processed_message_id": None,
+            "messages_processed": 0,
+        }
+
 
 # ── Orchestrator integration ─────────────────────────────────────────
 
@@ -486,19 +819,20 @@ class TestRunSleeptimeAgents:
                 runtime_db_factory=rt_factory,
             )
 
-        assert len(run_ids) == 5
+        assert len(run_ids) == 6
         task_types = {r.split(":")[0] for r in run_ids}
         assert task_types == {
             "consolidation",
             "embedding_backfill",
             "graph_ingestion",
             "heat_decay",
+            "foresight_lifecycle",
             "episode_gen",
         }
 
         with rt_factory() as db:
             runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
-            assert len(runs) == 5
+            assert len(runs) == 6
             assert all(r.status == "completed" for r in runs)
 
 

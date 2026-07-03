@@ -1,16 +1,16 @@
 # SUM-000 - Single-User Temporal Memory v2 Parent Tracker
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server`, `docs/prds/memory`, `docs/architecture/memory`, `tickets/single-user-temporal-memory-v2`
 - Depends on: none
-- Owner: unassigned
+- Owner: Codex
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-06-27 12:40 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-03 16:41 MYT
+- Started: 2026-06-29 02:30 MYT
+- Completed: 2026-07-03 16:28 MYT
 
 ## Goal
 
@@ -20,16 +20,17 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `SUM-001` | Baseline memory truth audit and eval probes | `backlog` | none |
-| `SUM-002` | Evidence baseline and episode quality | `backlog` | `SUM-001` |
-| `SUM-003` | Temporal knowledge graph v2 | `backlog` | `SUM-002` |
-| `SUM-004` | Structured user profile | `backlog` | `SUM-002` |
-| `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
-| `SUM-006` | Salience-aware decay and soft evolution | `backlog` | `SUM-003`, `SUM-004` |
-| `SUM-007` | Cross-episode pattern synthesis | `backlog` | `SUM-005`, `SUM-006` |
-| `SUM-008` | Foresight signals | `backlog` | `SUM-002` |
-| `SUM-009` | Procedural experience and skill memory | `backlog` | `SUM-005` |
-| `SUM-010` | Optional external adapter seams | `backlog` | `SUM-003`, `SUM-005` |
+| `SUM-001` | Baseline memory truth audit and eval probes | `done` | none |
+| `SUM-002` | Evidence baseline and episode quality | `done` | `SUM-001` |
+| `SUM-003` | Temporal knowledge graph v2 | `done` | `SUM-002` |
+| `SUM-004` | Structured user profile | `done` | `SUM-002` |
+| `SUM-005` | Retrieval router and query plans | `done` | `SUM-003`, `SUM-004` |
+| `SUM-006` | Salience-aware decay and soft evolution | `done` | `SUM-003`, `SUM-004` |
+| `SUM-007` | Cross-episode pattern synthesis | `done` | `SUM-005`, `SUM-006` |
+| `SUM-008` | Foresight signals | `done` | `SUM-002` |
+| `SUM-009` | Procedural experience and skill memory | `done` | `SUM-005` |
+| `SUM-010` | Optional external adapter seams | `done` | `SUM-003`, `SUM-005` |
+| `SUM-011` | Memory package boundary | `done` | `SUM-001`, `SUM-003`, `SUM-006`, `SUM-010` |
 
 ## Deliverables
 
@@ -43,6 +44,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - Foresight signal extraction and lifecycle.
 - Procedural experience extraction, clustering, and skill distillation.
 - Optional external adapter seams that preserve SQLCipher as canonical storage.
+- Stable memory package boundary with compatibility facades over existing agent implementations.
 
 ## Acceptance
 
@@ -54,17 +56,488 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 
 ## Completed Tickets
 
-- none
+- `SUM-001` - Baseline memory truth audit and eval probes (completed 2026-06-29 10:39 MYT)
+- `SUM-002` - Evidence baseline and episode quality (completed 2026-06-29 11:03 MYT)
+- `SUM-003` - Temporal knowledge graph v2 (completed 2026-06-29 22:53 MYT)
+- `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
+- `SUM-005` - Retrieval router and query plans (completed 2026-07-03 16:28 MYT)
+- `SUM-006` - Salience-aware decay and soft evolution (completed 2026-07-01 21:18 MYT)
+- `SUM-007` - Cross-episode pattern synthesis (completed 2026-07-02 22:59 MYT)
+- `SUM-008` - Foresight signals (completed 2026-07-03 03:36 MYT)
+- `SUM-009` - Procedural experience and skill memory (completed 2026-07-03 03:36 MYT)
+- `SUM-010` - Optional external adapter seams (completed 2026-07-03 15:08 MYT)
+- `SUM-011` - Memory package boundary (completed 2026-07-03 16:04 MYT)
 
 ## Activity Log
 
 - 2026-06-27 12:40 MYT - Parent tracker created for single-user temporal memory v2 planning.
+- 2026-06-29 02:30 MYT - `SUM-001` claimed by Codex on branch `codex/sum-001-memory-baseline`.
+- 2026-06-29 03:12 MYT - `SUM-001` completed with baseline audit, deterministic recall probes, focused fixes, and validation.
+- 2026-06-29 03:32 MYT - `SUM-001` updated after Codex review fixes and validation rerun.
+- 2026-06-29 10:36 MYT - `SUM-002` claimed by Codex on branch `codex/sum-002-evidence-episode-quality`, based on PR #67 branch `codex/sum-001-memory-baseline`.
+- 2026-06-29 10:39 MYT - `SUM-001` updated after Codex PR comment fix for KG sequence reset and validation rerun.
+- 2026-06-29 11:03 MYT - `SUM-002` completed with evidence audit/backfill endpoints, episode timestamp/detail safeguards, focused validation, lint, build, and health smoke.
+- 2026-06-29 11:13 MYT - `SUM-002` updated after review feedback to use multilingual-safe exact user detail excerpts.
+- 2026-06-29 11:38 MYT - `SUM-002` expanded to production multilingual baseline across grounded episode details, lexical fallbacks, transcript search metadata, vector fallback scoring, and generic claim keys.
+- 2026-06-29 12:32 MYT - `SUM-002` addressed PR #68 review threads and reran focused suite, lint, build, full backend tests, and health smoke.
+- 2026-06-29 13:06 MYT - `SUM-002` addressed Codex rereview threads for per-turn relative date resolution and CJK unigram fallback search.
+- 2026-06-29 17:01 MYT - `SUM-002` addressed Codex rereview thread for non-positive BM25 scores on ubiquitous CJK unigram hits.
+- 2026-06-29 17:37 MYT - `SUM-002` addressed Codex rereview thread for one-character ASCII memory slot values in relation matching.
+- 2026-06-29 18:08 MYT - `SUM-002` addressed Codex rereview threads for one-character ASCII fallback retrieval and long salient episode excerpt grounding.
+- 2026-06-29 18:49 MYT - `SUM-002` addressed Codex rereview thread for one-character transcript query false positives.
+- 2026-06-29 22:19 MYT - Resolved stacked PR merge conflict by preserving `SUM-001` base updates and `SUM-002` review validation history.
+- 2026-06-29 22:27 MYT - `SUM-003` claimed by Codex on branch `codex/sum-003-temporal-kg-v2`, based on PR #68 branch `codex/sum-002-evidence-episode-quality`.
+- 2026-06-29 22:53 MYT - `SUM-003` completed with temporal KG schema migration, evidence-backed relation lifecycle, alias/embedding entity deduplication, history/latest-belief retrieval helpers, vault portability, migration guard coverage, and full validation.
+- 2026-06-29 23:55 MYT - `SUM-003` addressed PR #70 review feedback for exact-name entity type drift and superseded relation re-add intervals, then reran focused, KG/vault, lint, build, and full backend validation.
+- 2026-06-30 00:12 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering superseded relations out of current public graph API endpoints, then reran focused, KG/vault, lint, build, full backend validation, and health smoke.
+- 2026-06-30 00:38 MYT - `SUM-003` addressed PR #70 rereview feedback by repairing current KG columns on legacy DBs with old KG tables and no Alembic version, then reran focused, KG/vault, runtime DB, lint, build, full backend validation, and health smoke.
+- 2026-06-30 02:15 MYT - `SUM-003` addressed PR #70 rereview feedback by preserving relation confidence on duplicate upserts when omitted and resolving graph reads/search from entity aliases, then reran red/green regressions, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 02:33 MYT - `SUM-003` addressed PR #70 rereview feedback by resolving graph-context entity extraction from aliases when semantic fallback is disabled, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 02:54 MYT - `SUM-003` addressed PR #70 rereview feedback by resolving stale-pruning turn entities through aliases and relation endpoints, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 03:09 MYT - `SUM-003` addressed PR #70 rereview feedback by filtering stale-pruning candidates to active relations, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 03:32 MYT - `SUM-003` addressed PR #70 rereview feedback by guarding legacy downgrade FK drops when repaired KG tables lack constraints, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 03:49 MYT - `SUM-003` addressed PR #70 rereview feedback by preventing same-triple self-supersession from mutating the replacement row, then reran focused, related KG/API/runtime/vault suite, lint, build, full backend validation, and health smoke.
+- 2026-06-30 05:34 MYT - `SUM-004` claimed by Codex on branch `codex/sum-004-structured-user-profile`, based on PR #70 head for `SUM-003`.
+- 2026-06-30 05:47 MYT - `SUM-004` completed with structured profile storage, extraction and Soul Writer promotion, sleep-time claim reconciliation, profile prompt rendering, correction API, migrations, focused validation, lint, build, full backend tests, and health smoke.
+- 2026-06-30 12:29 MYT - `SUM-004` addressed PR #71 review feedback for idempotent claim-profile reconciliation and companion memory invalidation after sleep-time profile updates, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 12:42 MYT - `SUM-004` addressed additional PR #71 feedback for profile source FK delete semantics and promoted-candidate re-extraction, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 12:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim-specific profile provenance and profile retraction during user-initiated forget, then reran focused, lint, build, and full backend validation.
+- 2026-06-30 13:21 MYT - `SUM-004` addressed additional PR #71 feedback for companion memory invalidation after user-initiated forget retracts sourced profile fields, then reran focused, lint, diff, and build validation.
+- 2026-06-30 13:35 MYT - `SUM-004` addressed additional PR #71 feedback for hard-deleting forgotten profile evidence and clearing structured profile state during eval reset, then reran red/green regressions and related suites.
+- 2026-06-30 13:58 MYT - `SUM-004` addressed additional PR #71 feedback for preserving profile fields with surviving evidence after a partial source forget, then reran red/green regressions and related suites.
+- 2026-06-30 14:41 MYT - `SUM-004` addressed additional PR #71 feedback for runtime-message-linked profile forget cleanup and profile self-FK delete semantics, then reran red/green regressions, related suites, lint, diff, and build.
+- 2026-06-30 16:50 MYT - `SUM-004` addressed additional PR #71 feedback for preserving unrelated same-turn profile fields during runtime-message forget cleanup, then reran red/green regressions, related suites, lint, diff, and build.
+- 2026-06-30 17:03 MYT - `SUM-004` addressed additional PR #71 feedback for preserving manual profile corrections from automatic updates and cascading profile rows on user deletion, then reran red/green regressions, related suites, lint, diff, and build.
+- 2026-06-30 17:21 MYT - `SUM-004` addressed additional PR #71 feedback for rejecting pending profile candidates after source-memory forget and accepting profile-only extraction payloads, then reran red/green regressions and related profile/API tests.
+- 2026-06-30 17:35 MYT - `SUM-004` addressed additional PR #71 feedback for canonical profile keys and same-value user corrections, then reran red/green regressions and the user profile suite.
+- 2026-06-30 18:00 MYT - `SUM-004` addressed additional PR #71 feedback for skipping unmapped fact claims and preserving forget behavior without a runtime DB, then reran red/green regressions and related profile/API tests.
+- 2026-06-30 18:23 MYT - `SUM-004` addressed additional PR #71 feedback for profile observation bounds after partial forget and stricter same-turn runtime profile matching, then reran red/green regressions, related profile/API tests, lint, diff, and build.
+- 2026-06-30 18:44 MYT - `SUM-004` addressed additional PR #71 feedback for vault round-tripping structured profile rows and sticky profile retractions, then reran red/green regressions, vault/profile suites, lint, diff, and build.
+- 2026-07-01 00:54 MYT - `SUM-004` addressed additional PR #71 feedback for claim reconciliation counts and source-less claim dedupe, then reran red/green regressions, the user profile suite, lint, diff, and build.
+- 2026-07-01 01:17 MYT - `SUM-004` addressed additional PR #71 feedback for vault restore ordering and missing claim-evidence FKs, then reran red/green regression, vault/profile suites, lint, diff, and build.
+- 2026-07-01 01:35 MYT - `SUM-004` addressed additional PR #71 feedback for explicit profile-evidence deletion during forget cleanup, then reran red/green regression, related forget tests, user profile suite, and forget endpoint checks.
+- 2026-07-01 01:53 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer non-claim profile updates during claim reconciliation, then reran red/green regression, reconciliation cluster, and the user profile suite.
+- 2026-07-01 02:13 MYT - `SUM-004` addressed additional PR #71 feedback for returning 400 on blank profile correction payloads, then reran red/green regression, profile API checks, and the user profile suite.
+- 2026-07-01 02:34 MYT - `SUM-004` addressed additional PR #71 feedback for preserving newer profile fields when retrying older failed profile candidates, then reran red/green regression, profile promotion checks, and the user profile suite.
+- 2026-07-01 02:55 MYT - `SUM-004` addressed additional PR #71 feedback for single-token runtime-message profile forget cleanup and field-scoped sourceless claim reconciliation, then reran red/green regressions, related forget/reconciliation checks, the user profile suite, lint, diff, and build.
+- 2026-07-01 03:15 MYT - `SUM-004` addressed additional PR #71 feedback for same-value profile observation timestamps and `user_profile` prompt-budget priority, then reran red/green regressions, profile/prompt-budget suites, lint, diff, and build.
+- 2026-07-01 03:33 MYT - `SUM-004` addressed additional PR #71 feedback for line-boundary structured-profile prompt truncation, then reran red/green regression, the user profile suite, lint, diff, and build.
+- 2026-07-01 13:18 MYT - `SUM-004` addressed additional PR #71 feedback for restoring a prior superseded profile value when its active replacement is forgotten, then reran red/green regression and profile forget checks.
+- 2026-07-01 21:18 MYT - `SUM-006` completed with salience metadata, decay-class heat scoring, soft evolution chains, duplicate-candidate salience reinforcement, and sleep-time drift surfacing.
+- 2026-07-02 22:59 MYT - `SUM-007` completed with cross-episode pattern sampling, strict repeated-evidence parsing, pattern memory provenance, compact prompt rendering, and sleep-time orchestration.
+- 2026-07-02 23:14 MYT - `SUM-007` recorded final lint/build validation and noted that the full backend suite was stopped at user request before completion.
+- 2026-07-03 00:53 MYT - `SUM-007` reran focused, adjacent, and full backend validation before review; full suite failed on an inherited SUM-006 migration repair regression.
+- 2026-07-03 01:05 MYT - `SUM-007` addressed Codex review feedback by making duplicate pattern synthesis idempotent for already-seen source episodes.
+- 2026-07-03 01:17 MYT - `SUM-007` addressed Codex review feedback by decrypting episode emotional arcs before rendering pattern synthesis prompts.
+- 2026-07-03 01:30 MYT - `SUM-007` addressed Codex review feedback by running manual sleep episode generation before pattern synthesis and skipping near-duplicate pattern memories.
+- 2026-07-03 01:50 MYT - `SUM-007` addressed Codex review feedback by excluding stale episodes from pattern sampling, cleaning pattern memories during forget/suppression, and honoring the heat visibility floor in pattern prompt blocks.
+- 2026-07-03 02:01 MYT - `SUM-007` addressed Codex review feedback by scheduling retrieval/vector index cleanup when forget/suppression deletes derived pattern memories.
+- 2026-07-03 02:26 MYT - `SUM-007` addressed Codex review feedback by decrypting pattern evidence before matching forgotten text during derived pattern cleanup.
+- 2026-07-03 02:36 MYT - `SUM-007` addressed Codex review feedback by explicitly deleting derived pattern evidence rows before deleting derived pattern items.
+- 2026-07-03 02:54 MYT - `SUM-008` and `SUM-009` claimed by Codex on branch `codex/sum-008-009-foresight-procedural`, based on PR #67 head.
+- 2026-07-03 03:36 MYT - `SUM-008` and `SUM-009` completed with foresight signals, procedural experience memory, skill distillation, prompt integration, migration compatibility repair, and full validation.
+- 2026-07-03 10:21 MYT - `SUM-008` addressed PR #77 review feedback for sentence-bound foresight extraction and source-message timestamp anchoring.
+- 2026-07-03 10:49 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for scheduled foresight lifecycle, overdue prompt filtering, and unembedded experience clustering.
+- 2026-07-03 11:05 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for LLM foresight prompt schema and persisted matched-cluster JSON state.
+- 2026-07-03 11:29 MYT - `SUM-008` addressed PR #77 rereview feedback for prompt retrieval priority of dated foresight over undated signals.
+- 2026-07-03 11:45 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for saved-timezone foresight date resolution and promptless approval-resume experience capture.
+- 2026-07-03 12:07 MYT - `SUM-008` addressed PR #77 rereview feedback for saved-timezone lifecycle sweeps and prompt filtering.
+- 2026-07-03 13:33 MYT - `SUM-009` addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
+- 2026-07-03 13:52 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for recently occurred foresight prompt visibility and lower/equal-quality duplicate procedural capture supersession.
+- 2026-07-03 14:13 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for vault portability, recently elapsed unswept foresight prompts, and task-verb article cleanup.
+- 2026-07-03 14:32 MYT - `SUM-008` addressed PR #77 current-head review feedback for short-event cancellation matching.
+- 2026-07-03 15:04 MYT - `SUM-010` claimed by Codex on branch `codex/sum-010-optional-external-adapter-seams`, based on PR #67 head.
+- 2026-07-03 15:08 MYT - `SUM-010` completed with optional retrieval adapter seams, native backend contract tests, canonical rebuild docs, and validation.
+- 2026-07-03 15:56 MYT - `SUM-011` completed in detached PR #67 worktree with a minimal package boundary, domain/status contracts, salience/retrieval facades, temporal helpers, focused boundary tests, and architecture reference.
+- 2026-07-03 16:04 MYT - `SUM-011` boundary renamed to `services.memory`; test, docs, and ticket paths updated.
+- 2026-07-03 16:28 MYT - `SUM-005` completed in the detached PR #67 worktree with deterministic retrieval query plans, `search_long_memory` auto routing, focused router regression coverage, and additive `anima-core` shared memory contract parity. All child tickets are now done; PR #67 remains reviewable.
+- 2026-07-03 16:37 MYT - `SUM-005` code-quality review cleanup hardened auto-mode input handling, fixed mixed-intent router precedence, renamed trace planning metadata from scores to route weights, tightened Rust salience contracts, and clarified that SUM-005 composes query-plan lanes rather than executing separate per-lane retrievers.
+- 2026-07-03 16:41 MYT - Controller reran SUM-005 focused tests, Rust package tests, server lint/build, Alembic current, diff check, and temporary-data health smoke before commit.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_retrieval_rebuild.py::test_memory_rebuild_contract_uses_only_active_canonical_rows` - SUM-010 adapter contract failed before implementation because `retrieval_backends.py` did not exist.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_retrieval_rebuild.py` - SUM-010 retrieval rebuild suite: 8 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_bm25_index.py apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_uses_rust_memory_index_for_keyword_leg apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_semantic_search_uses_rust_memory_index_when_available apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_semantic_search_falls_back_when_rust_vector_search_has_no_hits apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_hybrid_search_rebuilds_missing_rust_memory_index_for_keyword_leg apps/server/tests/test_hybrid_retrieval.py::TestHybridSearchIntegration::test_semantic_search_rebuilds_missing_rust_memory_index_from_canonical` - SUM-010 adjacent retrieval suite: 25 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-010 server lint: passed.
+  - `git diff --check` - SUM-010 whitespace check: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-010 build: passed after `bun install --frozen-lockfile` prepared the fresh worktree dependencies; existing Vite chunk-size warning remained.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-010 health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 package-boundary test failed before implementation with `ModuleNotFoundError: No module named 'anima_server.services.memory'`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 package-boundary test: 4 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 server lint initially failed on unsorted `domain.__all__`.
+  - `uv run --project apps/server ruff check apps/server/src/anima_server/services/memory/domain.py --select RUF022 --fix` - SUM-011 lint fix sorted `domain.__all__`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 package-boundary test after lint fix: 4 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 server lint: passed.
+  - `git diff --check` - SUM-011 whitespace check: passed with existing CRLF normalization warnings for edited markdown files.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 controller rerun after domain contract review: 4 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 controller rerun: passed.
+  - `git diff --check` - SUM-011 controller rerun: passed with existing CRLF normalization warnings for edited markdown files.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build:server` - SUM-011 controller server build: passed.
+  - Search for the old package path/name across code, tests, memory docs, and memory tickets - SUM-011 rename check: no matches outside historical initiative titles.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 rename validation: 4 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 rename validation: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens` - SUM-008 PR #77 current-head review regression failed before fix because `That meeting got cancelled.` did not cancel `User has a meeting`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens apps/server/tests/test_foresight.py::test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled` - SUM-008 PR #77 current-head review cancellation regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 current-head review foresight suite: 14 passed, 11 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs` - SUM-008 PR #77 current-head review regression failed before fix because task verb cleanup produced `User has an a report`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows` - SUM-008 PR #77 current-head review regression failed before fix because active/due rows that elapsed before sleep lifecycle ran were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regression failed before fix because vault exports omitted foresight and procedural memory tables.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regressions: 3 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_vault.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 current-head review focused backend set: 41 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review regression failed before fix because recently occurred rows were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review regression failed before fix because an equal-quality duplicate remained active with `superseded_by` unset.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review occurred-followup regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review duplicate-supersession regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 PR #77 current-head review experience suite: 7 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py apps/server/tests/test_agent_service.py` - SUM-008/SUM-009 PR #77 current-head review focused backend set: 45 passed, 34 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression failed before fix because raw `recall_conversation` tool output was persisted in the procedural approach summary.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 current-head review agent service suite: 27 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 PR #77 current-head review experience suite: 6 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-009 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_lifecycle_defaults_to_user_local_date` - SUM-008 PR #77 rereview regression failed before fix because lifecycle sweeps defaulted to UTC instead of the saved user timezone.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_defaults_to_user_local_date` - SUM-008 PR #77 rereview regression failed before fix because prompt filtering defaulted to UTC instead of the saved user timezone.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview local-date suite: 10 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py` - SUM-008 PR #77 rereview lifecycle caller suite: 22 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 rereview local-date lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 rereview local-date build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 rereview local-date whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_relative_foresight_extraction_uses_user_timezone_for_local_dates` - SUM-008 PR #77 rereview regression failed before fix because foresight extraction could not accept a user timezone for local date resolution.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_post_turn_hooks_skip_experience_capture_without_source_prompt` - SUM-009 PR #77 rereview regression failed before fix because promptless approval resumes scheduled a generic procedural experience extraction.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview timezone suite: 8 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 rereview consolidation suite: 11 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_pending_memory_ops.py` - SUM-008 PR #77 rereview timezone tool suite: 22 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 rereview agent service suite: 26 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_prioritizes_dated_rows_over_undated_rows` - SUM-008 PR #77 rereview regression failed before fix because an undated row was returned before an upcoming dated row.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview foresight suite: 7 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_llm_memory_extraction_prompt_requests_foresight` - SUM-008 PR #77 rereview regression failed before fix because the LLM extraction prompt/system message did not request foresight payloads.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_existing_experience_cluster_state_updates_persist_across_sessions` - SUM-009 PR #77 rereview regression failed before fix because matched cluster JSON state reloaded with count `1` after adding a second similar experience.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - SUM-008/SUM-009 PR #77 rereview consolidation suite: 11 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 rereview experience suite: 6 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py::test_scheduled_sleeptime_runs_foresight_lifecycle` - SUM-008 PR #77 rereview regression failed before fix because scheduled sleeptime did not run foresight lifecycle transitions.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_skips_overdue_active_rows_before_limiting` - SUM-008 PR #77 rereview regression failed before fix because overdue active foresight rows could consume the prompt query limit before filtering.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_unembedded_experiences_do_not_enter_skill_clusters` - SUM-009 PR #77 rereview regression failed before fix because unembedded experiences were assigned to `cluster_{user}_000`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py` - SUM-008/SUM-009 PR #77 rereview sleep suite: 22 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008/SUM-009 PR #77 rereview foresight suite: 6 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 rereview experience suite: 5 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_does_not_cross_sentence_boundaries` - SUM-008 PR #77 review regression failed before fix with a bogus cross-sentence foresight signal.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_run_background_extraction_anchors_foresight_to_source_message_time` - SUM-008 PR #77 review regression failed before fix because source `RuntimeMessage.created_at` was not passed as `observed_at`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 review focused suite: 15 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-008 PR #77 review fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 review fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 review fix whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 red suite failed before implementation because `ForesightSignal` was not exported from `anima_server.models`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 red suite failed before implementation because `AgentExperience` was not exported from `anima_server.models`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 focused suite: 8 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_service.py` - SUM-008/SUM-009 adjacent suite: 64 passed, 24 warnings.
+  - `bun run db:server:heads` - SUM-008/SUM-009 migration head: `20260703_0002 (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-008/SUM-009 server lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server -- --maxfail=1 -q` - SUM-008/SUM-009 full backend suite after migration repair: 1775 passed, 1 skipped, 310 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-008/SUM-009 health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 red suite failed before implementation with missing pattern synthesis module, block renderer, and sleep task hook.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_creates_evidence_backed_pattern_memory` - SUM-007 provenance regression failed before source evidence IDs were persisted in pattern metadata.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 focused suite: 5 passed, 3 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - SUM-007 adjacent suite: 47 passed, 14 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-007 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - SUM-007 full backend suite: 1 failed, 1758 passed, 1 skipped, 297 warnings. Failure: `apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables` - SUM-007 failure confirmation: failed deterministically with `sqlalchemy.exc.NoSuchTableError: memory_items` in inherited migration `20260701_0003_add_memory_salience.py`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_duplicate_pattern_evidence_for_same_episodes` - SUM-007 review regression failed before the fix because duplicate pattern synthesis reported an update and appended duplicate evidence.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_duplicate_pattern_evidence_for_same_episodes` - SUM-007 review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 review focused suite: 6 passed, 4 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - SUM-007 review adjacent suite: 48 passed, 15 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_prompt_episode_rendering_decrypts_emotional_arc` - SUM-007 emotional-arc review regression failed before the fix because encrypted `emotional_arc` rendered as `enc2:` ciphertext.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_prompt_episode_rendering_decrypts_emotional_arc` - SUM-007 emotional-arc review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 emotional-arc review focused suite: 7 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_single_user_memory_baseline_probes.py` - SUM-007 emotional-arc review adjacent suite: 49 passed, 16 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 emotional-arc review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_sleep_agent.py::test_manual_sleep_generates_episode_before_pattern_synthesis` - SUM-007 latest review regression failed before the fix because manual sleep ran pattern synthesis before episode generation.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_similar_pattern_memory` - SUM-007 latest review regression failed before the fix because near-duplicate pattern text created a second pattern memory.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_sleep_agent.py::test_manual_sleep_generates_episode_before_pattern_synthesis` - SUM-007 latest review regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_skips_similar_pattern_memory` - SUM-007 latest review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::test_manual_sleep_generates_episode_before_pattern_synthesis apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate apps/server/tests/test_user_profile.py::test_sleep_tasks_reconciles_claims_to_profile_fields apps/server/tests/test_user_profile.py::test_sleep_tasks_invalidates_companion_memory_after_profile_reconciliation` - SUM-007 latest review focused suite: 11 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 latest review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_episode_sampling_skips_stale_episodes_marked_for_regeneration` - SUM-007 P1 review regression failed before the fix because stale episodes marked `needs_regeneration` were sampled.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - SUM-007 P1 review regression failed before the fix because pattern memories citing stale source episodes survived forgetting.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_pattern_prompt_block_honors_heat_visibility_floor` - SUM-007 P2 review regression failed before the fix because below-floor pattern memories rendered into the prompt block.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_episode_sampling_skips_stale_episodes_marked_for_regeneration` - SUM-007 P1 review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - SUM-007 P1 review regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_pattern_prompt_block_honors_heat_visibility_floor` - SUM-007 P2 review regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_forgetting.py apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py` - SUM-007 latest review focused suite: 59 passed, 14 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-007 latest review fix lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - SUM-007 retrieval-index cleanup regression failed before the fix because the source memory id was deleted from the index but the derived pattern id was not.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_removes_pattern_memory_citing_stale_episode` - SUM-007 retrieval-index cleanup regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - SUM-007 retrieval-index cleanup focused suite: 32 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-007 retrieval-index cleanup lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 encrypted-evidence cleanup regression failed before the fix because encrypted pattern evidence was compared as ciphertext.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 encrypted-evidence cleanup regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - SUM-007 encrypted-evidence cleanup focused suite: 33 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-007 encrypted-evidence cleanup lint: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 pattern-evidence delete regression failed before the fix because the derived pattern item was deleted but its `memory_item_evidence` row remained.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py::TestForgetMemory::test_forget_matches_encrypted_pattern_evidence_text` - SUM-007 pattern-evidence delete regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_forgetting.py` - SUM-007 pattern-evidence delete focused suite: 33 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-007 pattern-evidence delete lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_bm25_index.py::TestRustBackedKeywordSearch::test_bm25_search_uses_rust_memory_index_when_clean apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_hot_older_items apps/server/tests/test_memory_scored_retrieval.py::test_scored_retrieval_pool_keeps_fresh_unscored_items apps/server/tests/test_sleep_agent.py::TestRestartCursor::test_consolidation_task_records_latest_runtime_message_cursor apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph apps/server/tests/test_vault.py::test_capsule_sections_include_knowledge_graph_tables apps/server/tests/test_vault.py::test_reset_identity_sequences_includes_knowledge_graph_tables apps/server/tests/test_single_user_memory_baseline_probes.py` - 12 passed, 7 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` - 1661 passed, 1 skipped, 242 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_api.py` - SUM-002 focused suite: 45 passed, 17 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_api.py apps/server/tests/test_phase3_storage.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py::TestTranscriptSearch` - expanded SUM-002 multilingual suite: 118 passed, 34 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_provenance_backfill.py::test_backfill_memory_item_evidence_prioritizes_active_missing_rows apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_does_not_append_ordinary_turns_without_salient_details apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_resolves_relative_dates_in_summary apps/server/tests/test_memory_multilingual_baseline.py::test_unicode_tokens_preserve_one_character_multilingual_and_digit_values apps/server/tests/test_memory_multilingual_baseline.py::test_bm25_fallback_handles_empty_tokenized_corpus` - PR review regressions: 5 passed, 3 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_provenance_backfill.py::test_backfill_memory_item_evidence_prioritizes_active_missing_rows apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_does_not_append_ordinary_turns_without_salient_details apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_resolves_relative_dates_in_summary apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_resolves_relative_dates_from_matching_turn apps/server/tests/test_memory_multilingual_baseline.py::test_unicode_tokens_preserve_one_character_multilingual_and_digit_values apps/server/tests/test_memory_multilingual_baseline.py::test_single_character_cjk_queries_match_longer_non_space_text apps/server/tests/test_memory_multilingual_baseline.py::test_bm25_fallback_handles_empty_tokenized_corpus` - PR rereview regressions: 7 passed, 4 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_provenance_backfill.py::test_backfill_memory_item_evidence_prioritizes_active_missing_rows apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_does_not_append_ordinary_turns_without_salient_details apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_resolves_relative_dates_in_summary apps/server/tests/test_agent_episodes.py::test_maybe_generate_episode_resolves_relative_dates_from_matching_turn apps/server/tests/test_memory_multilingual_baseline.py::test_unicode_tokens_preserve_one_character_multilingual_and_digit_values apps/server/tests/test_memory_multilingual_baseline.py::test_single_character_cjk_queries_match_longer_non_space_text apps/server/tests/test_memory_multilingual_baseline.py::test_bm25_fallback_handles_empty_tokenized_corpus apps/server/tests/test_memory_multilingual_baseline.py::test_bm25_fallback_ranks_cjk_unigram_by_overlap_when_bm25_scores_are_non_positive` - PR rereview regressions: 8 passed, 4 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py::test_memory_relation_preserves_one_character_ascii_slot_values` - PR rereview regression: failed before fix, then 1 passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py::test_degraded_retrieval_preserves_one_character_ascii_identifiers apps/server/tests/test_agent_episodes.py::test_ground_salient_user_details_truncates_after_grounding_long_excerpt` - PR rereview regressions: failed before fix, then 2 passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py::test_degraded_retrieval_preserves_one_character_ascii_identifiers` - PR rereview regression: failed before fix, then 1 passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_api.py apps/server/tests/test_phase3_storage.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py::TestTranscriptSearch apps/server/tests/test_batch_segmenter.py` - expanded SUM-002 rereview suite: 148 passed, 41 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_evidence_retrieval.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_api.py apps/server/tests/test_phase3_storage.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py::TestTranscriptSearch apps/server/tests/test_batch_segmenter.py` - expanded SUM-002 rereview suite: 149 passed, 41 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_memory_api.py apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py apps/server/tests/test_memory_retrieval_rebuild.py apps/server/tests/test_evidence_retrieval.py` - expanded SUM-002 rereview suite: 151 passed, 28 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_bm25_index.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_p5_transcript_archive.py` - focused SUM-002 rereview suite: 109 passed, 11 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py` - focused SUM-002 rereview suite: 96 passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_memory_item_evidence.py apps/server/tests/test_memory_api.py apps/server/tests/test_memory_provenance_backfill.py apps/server/tests/test_agent_episodes.py apps/server/tests/test_memory_multilingual_baseline.py apps/server/tests/test_bm25_index.py apps/server/tests/test_p5_transcript_archive.py apps/server/tests/test_memory_retrieval_rebuild.py apps/server/tests/test_evidence_retrieval.py` - expanded SUM-002 rereview suite: 153 passed, 28 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` smoke for `GET /health` - 200 ok
+  - `bun run lint` - passed
+  - `bun run build` - passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: 1678 passed, 1 skipped, 250 warnings after isolated rerun of an order-dependent dashboard scaffold mismatch passed
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: 1679 passed, 1 skipped, 250 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: first attempt timed out at 5 minutes, rerun with longer timeout passed: 1680 passed, 1 skipped, 250 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: 1682 passed, 1 skipped, 250 warnings
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-002 run: 1682 passed, 1 skipped, 250 warnings
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::test_temporal_knowledge_graph_model_metadata apps/server/tests/test_knowledge_graph.py::TestUpsertEntity::test_upsert_entity_deduplicates_aliases_and_similar_embeddings apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_upsert_relation_records_temporal_evidence_fields apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_relation_evolution_preserves_history_and_resolves_latest_belief apps/server/tests/test_vault.py::test_export_and_import_vault_restores_knowledge_graph` - SUM-003 red test failed before implementation because `get_relation_history` was missing.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 KG/vault suite: 65 passed, 27 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_stamped_soul_database_migration_repairs_missing_new_tables` - SUM-003 migration guard regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server alembic -c apps/server/alembic_core.ini downgrade -1`; `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run db:server:upgrade`; `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run db:server:current` - SUM-003 migration rollback/re-upgrade passed, current `dbbe99c1da3a (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 full backend suite: 1687 passed, 1 skipped, 253 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertEntity::test_upsert_same_exact_name_tolerates_type_drift apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_readding_superseded_relation_creates_new_interval` - SUM-003 PR #70 review regressions failed before fix with entity unique constraint violation and superseded relation row reuse.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertEntity::test_upsert_same_exact_name_tolerates_type_drift apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_readding_superseded_relation_creates_new_interval` - SUM-003 PR #70 review regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 review suite: 67 passed, 29 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_creation_flow.py::test_agent_can_generate_thinking_monologue_draft -q` - SUM-003 isolated rerun of an order-dependent full-suite failure: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 review fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 review fix build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 review fix full backend suite: first run failed on order-dependent `test_agent_can_generate_thinking_monologue_draft`, isolated rerun passed, longer rerun passed: 1689 passed, 1 skipped, 255 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 review fix health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_graph_api.py::test_graph_current_endpoints_filter_superseded_relations` - SUM-003 PR #70 rereview graph API regression failed before fix because `/api/graph/{user_id}/entities/{id}` returned the superseded `Acme` edge.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_graph_api.py::test_graph_current_endpoints_filter_superseded_relations` - SUM-003 PR #70 rereview graph API regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 rereview graph/API suite: 68 passed, 29 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 rereview fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 rereview fix build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 rereview fix full backend suite: 1690 passed, 1 skipped, 255 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 rereview fix health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_soul_database_migration_repairs_existing_kg_columns` - SUM-003 PR #70 legacy KG repair regression failed before fix because legacy KG tables were missing current mapped columns.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_soul_database_migration_repairs_existing_kg_columns` - SUM-003 PR #70 legacy KG repair regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 legacy KG repair suite: 93 passed, 29 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 legacy KG repair lint: passed after import-order cleanup.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 legacy KG repair build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 legacy KG repair full backend suite: 1691 passed, 1 skipped, 255 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 legacy KG repair health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_duplicate_relation_without_confidence_preserves_existing_confidence apps/server/tests/test_knowledge_graph.py::TestSearchGraphDepth1::test_resolves_start_entity_by_alias apps/server/tests/test_graph_api.py::test_graph_search_resolves_entity_aliases` - SUM-003 PR #70 alias/confidence regressions failed before fix because duplicate relation upsert overwrote stored confidence and alias graph search returned no results.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_duplicate_relation_without_confidence_preserves_existing_confidence apps/server/tests/test_knowledge_graph.py::TestSearchGraphDepth1::test_resolves_start_entity_by_alias apps/server/tests/test_graph_api.py::test_graph_search_resolves_entity_aliases` - SUM-003 PR #70 alias/confidence regressions: 3 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 alias/confidence suite: 96 passed, 31 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 alias/confidence lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 alias/confidence build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_dashboard_api.py::test_proactive_notice_uses_saved_custom_instruction -q` - SUM-003 isolated rerun of an order-dependent full-suite failure: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 alias/confidence full backend suite: first run failed on order-dependent `test_proactive_notice_uses_saved_custom_instruction`, isolated rerun passed, longer rerun passed: 1694 passed, 1 skipped, 257 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 alias/confidence health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestGraphContextForQuery::test_resolves_alias_when_blocking_embeddings_disabled` - SUM-003 PR #70 alias-context regression failed before fix because alias-only graph context returned no lines when semantic fallback was disabled.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestGraphContextForQuery::test_resolves_alias_when_blocking_embeddings_disabled` - SUM-003 PR #70 alias-context regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 alias-context suite: 97 passed, 32 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-003 PR #70 alias-context lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-003 PR #70 alias-context build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 alias-context full backend suite: 1695 passed, 1 skipped, 258 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 alias-context health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_resolves_alias_subject_entities` - SUM-003 PR #70 alias-pruning regression failed before fix because alias-only turn subjects excluded canonical stale edges from pruning candidates.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_resolves_alias_subject_entities` - SUM-003 PR #70 alias-pruning regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 alias-pruning suite: 98 passed, 33 warnings.
+  - `bun run lint` - SUM-003 PR #70 alias-pruning lint: passed.
+  - `bun run build` - SUM-003 PR #70 alias-pruning build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 alias-pruning full backend suite: 1696 passed, 1 skipped, 259 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 alias-pruning health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_ignores_superseded_relation_candidates` - SUM-003 PR #70 active-pruning regression failed before fix because superseded relations were still sent to stale-pruning candidates.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_resolves_alias_subject_entities apps/server/tests/test_knowledge_graph.py::TestIngestConversationGraphRules::test_pruning_ignores_superseded_relation_candidates` - SUM-003 PR #70 active-pruning regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 active-pruning suite: 99 passed, 34 warnings.
+  - `bun run lint` - SUM-003 PR #70 active-pruning lint: passed.
+  - `bun run build` - SUM-003 PR #70 active-pruning build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 active-pruning full backend suite: 1697 passed, 1 skipped, 260 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 active-pruning health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_kg_migration_downgrade_tolerates_missing_constraints` - SUM-003 PR #70 legacy downgrade regression failed before fix with `ValueError: No such constraint` during Alembic downgrade.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py::test_legacy_kg_migration_downgrade_tolerates_missing_constraints` - SUM-003 PR #70 legacy downgrade regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 legacy downgrade suite: 100 passed, 34 warnings.
+  - `bun run lint` - SUM-003 PR #70 legacy downgrade lint: passed.
+  - `bun run build` - SUM-003 PR #70 legacy downgrade build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 legacy downgrade full backend suite: 1698 passed, 1 skipped, 260 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 legacy downgrade health smoke for `GET /health`: 200 ok.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_same_triple_supersession_creates_replacement_interval` - SUM-003 PR #70 self-supersession regression failed before fix because same-triple supersession updated and superseded the existing row instead of inserting a replacement.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_knowledge_graph.py::TestUpsertRelation::test_same_triple_supersession_creates_replacement_interval` - SUM-003 PR #70 self-supersession regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_runtime_db.py apps/server/tests/test_graph_api.py apps/server/tests/test_knowledge_graph.py apps/server/tests/test_vault.py` - SUM-003 PR #70 self-supersession suite: 101 passed, 35 warnings.
+  - `bun run lint` - SUM-003 PR #70 self-supersession lint: passed.
+  - `bun run build` - SUM-003 PR #70 self-supersession build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- --maxfail=1 -q` - SUM-003 PR #70 self-supersession full backend suite: 1699 passed, 1 skipped, 261 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 self-supersession health smoke for `GET /health`: 200 ok.
+  - not run for SUM-006 restack (verification not requested in this session)
 - Changed paths:
+  - apps/server/src/anima_server/services/agent/retrieval_backends.py
+  - apps/server/src/anima_server/services/agent/memory_store.py
+  - apps/server/src/anima_server/services/agent/bm25_index.py
+  - apps/server/src/anima_server/services/agent/embeddings.py
+  - apps/server/tests/test_memory_retrieval_rebuild.py
+  - docs/architecture/memory/optional-external-adapters.md
+  - docs/architecture/memory/memory-system.md
+  - tickets/single-user-temporal-memory-v2/SUM-010-optional-external-adapter-seams.md
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
+  - apps/server/src/anima_server/services/memory/__init__.py
+  - apps/server/src/anima_server/services/memory/domain.py
+  - apps/server/src/anima_server/services/memory/retrieval.py
+  - apps/server/src/anima_server/services/memory/salience.py
+  - apps/server/src/anima_server/services/memory/temporal.py
+  - apps/server/tests/test_memory_package_boundary.py
+  - tickets/single-user-temporal-memory-v2/SUM-011-memory-package-boundary.md
+  - apps/server/alembic_core/versions/20260701_0003_add_memory_salience.py
+  - apps/server/alembic_core/versions/20260703_0001_create_foresight_signals.py
+  - apps/server/alembic_core/versions/20260703_0002_create_agent_experience_memory.py
+  - apps/server/src/anima_server/models/__init__.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/services/agent/agent_experience.py
+  - apps/server/src/anima_server/services/agent/consolidation.py
+  - apps/server/src/anima_server/services/agent/foresight.py
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/user_timezone.py
+  - apps/server/tests/test_agent_consolidation.py
+  - apps/server/tests/test_agent_experience.py
+  - apps/server/tests/test_foresight.py
+  - apps/server/tests/test_agent_service.py
+  - tickets/single-user-temporal-memory-v2/SUM-008-foresight-signals.md
+  - tickets/single-user-temporal-memory-v2/SUM-009-procedural-experience-skill-memory.md
+  - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
+  - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
+  - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
+  - apps/server/src/anima_server/api/routes/graph.py
+  - apps/server/src/anima_server/db/session.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/services/agent/knowledge_graph.py
+  - apps/server/src/anima_server/services/vault.py
+  - apps/server/tests/test_graph_api.py
+  - apps/server/tests/test_knowledge_graph.py
+  - apps/server/tests/test_runtime_db.py
+  - apps/server/tests/test_vault.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/models/runtime_memory.py
+  - apps/server/src/anima_server/services/agent/candidate_ops.py
+  - apps/server/src/anima_server/services/agent/heat_scoring.py
+  - apps/server/src/anima_server/services/agent/memory_salience.py
+  - apps/server/src/anima_server/services/agent/memory_store.py
+  - apps/server/src/anima_server/services/agent/soul_writer.py
+  - apps/server/tests/test_memory_candidates.py
+  - apps/server/tests/test_memory_salience.py
+  - apps/server/tests/test_pending_memory_ops.py
+  - apps/server/src/anima_server/services/agent/pattern_synthesis.py
+  - apps/server/src/anima_server/services/agent/templates/prompts/pattern_synthesis.md.j2
+  - apps/server/src/anima_server/services/agent/templates/prompts/memory_extraction.md.j2
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/src/anima_server/services/agent/prompt_loader.py
+  - apps/server/src/anima_server/services/agent/sleep_agent.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/agent/forgetting.py
+  - apps/server/tests/test_pattern_synthesis.py
+  - apps/server/tests/test_sleep_agent.py
+  - apps/server/tests/test_forgetting.py
+  - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
-  - tracker only
+  - SUM-010 adds a narrow retrieval backend protocol with the native local index as default, plus canonical SQLCipher rebuild helpers and docs for optional Weaviate/Qdrant/LanceDB-style adapters.
+  - SUM-010 intentionally defers graph backend seams until native temporal KG semantics are stable enough to contract-test separately.
+  - SUM-011 adds a minimal `services.memory` package boundary with `TemporalRecordStatus`, `MemoryEndpointKind`, `RecallScoreBreakdown`, and compatibility facades while leaving existing `services.agent` production imports unchanged.
+  - SUM-008 PR #77 current-head review fix cancels a signal when all stored event tokens appear in the cancellation sentence, preserving the older overlap threshold as fallback for longer phrasing.
+  - SUM-008/SUM-009 PR #77 current-head review fix adds foresight and procedural memory tables to vault JSON and anima capsule exports/imports with import-time field re-encryption.
+  - SUM-008 PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the follow-up window and strips articles after task verbs.
+  - SUM-008 PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.
+  - SUM-009 PR #77 current-head review fix supersedes lower/equal-quality near-duplicate procedural captures and prevents superseded experiences from entering cluster state.
+  - SUM-009 duplicate suppression now requires high embedding similarity plus near-identical decrypted procedural text, so distinct examples with coarse identical embeddings can still support skill distillation.
+  - SUM-009 PR #77 current-head review fix records only tool name and success/failure status in procedural summaries instead of copying raw tool output that can contain private conversation or memory content.
+  - SUM-008 PR #77 rereview fix uses the saved world-context timezone for default lifecycle and prompt dates, keeping extracted local dates and status/prompt filtering on the same calendar day.
+  - SUM-008 PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.
+  - SUM-009 PR #77 rereview fix leaves consolidation/reflection hooks intact on approval resume while preventing promptless tool-only turns from seeding generic experience memories.
+  - SUM-008 PR #77 rereview fix ranks due rows first, dated rows next, and undated rows last so undated LLM foresight cannot starve upcoming dated events from prompt retrieval.
+  - SUM-008 PR #77 rereview fix adds foresight schema/rules to the LLM memory extraction prompt and includes foresight in the extraction system message.
+  - SUM-009 PR #77 rereview fix flags matched experience cluster JSON state as modified after centroid/count/activity mutations.
+  - SUM-008 PR #77 rereview fix runs foresight lifecycle transitions from scheduled sleeptime, not only the manual `/chat/sleep` path.
+  - SUM-008 PR #77 rereview fix applies overdue filtering in the foresight prompt query before limiting.
+  - SUM-009 PR #77 rereview fix keeps unembedded agent experiences out of clustering and learned skill distillation.
+  - SUM-008 PR #77 review fix prevents event extraction from spanning punctuation into a separate dated sentence.
+  - SUM-008 PR #77 review fix resolves relative dates against source runtime message timestamps instead of background extraction wall-clock time.
+  - SUM-008 adds evidence-backed future event memory with deterministic relative-date extraction, lifecycle transitions, and proactive prompt rendering.
+  - SUM-009 adds agent experience memory, stable embedding-based clustering, learned skill distillation, prompt retrieval, and growth-log entries for meaningful procedural learning.
+  - SUM-008/SUM-009 validation included a narrow guard in the inherited SUM-006 salience migration so stamped legacy soul databases missing `memory_items` can reach metadata repair.
+  - Parent remains `in_progress` while later child tickets are still backlog.
+  - SUM-002 did not require schema migration.
+  - SUM-002 episode detail preservation now appends only grounded LLM-selected salient details, not ordinary turns.
+  - SUM-002 relative date context now resolves from the matching turn timestamp when available.
+  - SUM-002 degraded lexical fallback paths now use shared Unicode tokenization plus non-space script unigrams and overlap fallback for non-positive BM25 scores.
+  - SUM-002 memory relation matching now preserves non-stop one-character ASCII slot values.
+  - SUM-002 degraded BM25, vector, and transcript fallback retrieval now preserves one-character ASCII identifiers.
+  - SUM-002 salient episode detail grounding now checks full cleaned text before truncating stored excerpts.
+  - SUM-002 transcript fallback no longer treats one-character ASCII queries as raw substrings inside unrelated words.
+  - SUM-003 keeps KG traversal active-relation compatible while preserving superseded relation history for latest-belief and relationship-history retrieval.
+  - SUM-003 core migration skips safely for stamped legacy soul databases missing KG tables; metadata repair creates the current schema immediately afterward.
+  - SUM-003 PR #70 review fix keeps exact normalized-name entity upserts on the existing row when extractor type labels drift.
+  - SUM-003 PR #70 review fix only reuses active relation rows so re-observed superseded triples create new intervals instead of mutating historical facts.
+  - SUM-003 PR #70 rereview fix treats `/api/graph/{user_id}/overview`, `/entities/{id}`, and `/relations` as current-graph endpoints by filtering to active relations.
+  - SUM-003 PR #70 legacy repair fix adds current KG columns and indexes to old KG tables in the legacy stamp path before mapped KG operations run.
+  - SUM-003 PR #70 alias/confidence fix preserves existing relation confidence when duplicate upserts omit confidence.
+  - SUM-003 PR #70 alias/confidence fix resolves graph traversal and public graph search from entity aliases as well as canonical names.
+  - SUM-003 PR #70 alias-context fix resolves graph-context query entity extraction from aliases when semantic fallback is disabled.
+  - SUM-003 PR #70 alias-pruning fix resolves stale-pruning turn entities from aliases and relation endpoints so canonical stale edges are considered when a turn uses an alias-only subject.
+  - SUM-003 PR #70 active-pruning fix filters stale-pruning candidate relations to active rows so already-superseded edges are not re-presented as current facts.
+  - SUM-003 PR #70 legacy downgrade fix skips FK drops for repaired legacy KG tables that were stamped at head without named constraints.
+  - SUM-003 PR #70 self-supersession fix excludes explicitly superseded/evolved relation IDs from duplicate-active lookup so same-triple corrections create a new active interval.
+  - SUM-004 PR #71 vault restore fix inserts structured profile rows without unresolved profile/claim provenance FKs, then backfills only in-snapshot profile self-links after all profile rows exist.
+  - SUM-004 PR #71 forget cleanup fix deletes profile evidence rows explicitly before deleting the profile field so SQLite soul DBs without FK cascade enforcement do not retain orphaned evidence.
+  - SUM-004 PR #71 claim reconciliation fix compares active profile timestamps against claim provenance timestamps so older claims cannot supersede newer non-claim profile updates.
+  - SUM-004 PR #71 profile API fix maps blank correction values to HTTP 400 while preserving 404 for missing active profile fields.
+  - SUM-004 PR #71 profile candidate retry fix passes candidate creation time into promotion and preserves newer profile fields from older automatic updates.
+  - SUM-004 PR #71 forget/reconciliation fix deletes single-token runtime-message profile facts only when profile metadata supports the relation and scopes sourceless source-memory reconciliation evidence to the target profile field.
+  - SUM-004 PR #71 profile/budget fix keeps same-value upserts from moving `last_observed_at` backwards and gives `user_profile` an explicit tier-0 prompt-budget policy.
+  - SUM-004 PR #71 profile prompt fix truncates rendered structured-profile blocks at the previous complete line when `max_chars` is exceeded.
+  - SUM-004 PR #71 replacement forget fix reactivates the latest evidence-backed superseded profile field when deleting its active replacement during user-initiated forget.
+  - SUM-006 adds structured salience metadata, salience-aware heat floors/decay classes, explicit soft-evolution links for preference/relationship drift, and duplicate candidate reinforcement without rewriting promoted candidate audit rows.
+  - SUM-007 stores recurring cross-episode patterns as evidence-backed `MemoryItem` rows with source episode/evidence metadata and renders only active high-confidence patterns in a compact prompt block.
+  - SUM-007 review fix skips duplicate pattern evidence and salience reinforcement when the matched pattern already has evidence for all incoming source episodes.
+  - SUM-007 emotional-arc review fix decrypts encrypted `MemoryEpisode.emotional_arc` values before rendering sampled episodes into pattern synthesis prompts.
+  - SUM-007 latest review fix runs manual sleep episode generation before pattern synthesis and skips similar pattern classifications instead of storing near-duplicates.
+  - SUM-007 P1/P2 review fix excludes stale episodes from sampling, removes derived pattern memories through forget/suppression cleanup, and applies the heat visibility floor to pattern prompt rendering.
+  - SUM-007 retrieval-index cleanup fix removes deleted derived pattern memories from retrieval/vector indexes after commit.
+  - SUM-007 encrypted-evidence cleanup fix decrypts pattern evidence before matching forget text so encrypted evidence-only provenance can trigger derived pattern cleanup.
+  - SUM-007 pattern-evidence delete fix explicitly deletes derived pattern evidence rows before deleting derived pattern items.
+  - SUM-007 full-suite failure is outside the SUM-007 diff; the branch does not modify `apps/server/src/anima_server/db/session.py`, `apps/server/tests/test_runtime_db.py`, or the failing SUM-006 migration.

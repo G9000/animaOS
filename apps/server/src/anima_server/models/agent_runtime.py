@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -185,6 +186,8 @@ class MemoryItem(Base):
     __table_args__ = (
         Index("ix_memory_items_user_category_active", "user_id", "category", "superseded_by"),
         Index("ix_memory_items_user_heat", "user_id", "heat"),
+        Index("ix_memory_items_user_decay_class", "user_id", "decay_class"),
+        Index("ix_memory_items_user_evolves_from", "user_id", "evolves_from_item_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -232,6 +235,47 @@ class MemoryItem(Base):
         JSON,
         nullable=True,
     )
+    memory_class: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="casual",
+        server_default=text("'casual'"),
+    )
+    emotional_salience: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.0,
+        server_default=text("0.0"),
+    )
+    stability_class: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="stable",
+        server_default=text("'stable'"),
+    )
+    decay_class: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="standard",
+        server_default=text("'standard'"),
+    )
+    relationship_proximity: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.0,
+        server_default=text("0.0"),
+    )
+    evidence_strength: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.8,
+        server_default=text("0.8"),
+    )
+    evolves_from_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    evolution_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     heat: Mapped[float] = mapped_column(
         Float,
         nullable=False,
@@ -301,6 +345,168 @@ class MemoryEpisode(Base):
         server_default=text("0"),
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ForesightSignal(Base):
+    """Evidence-backed future-oriented memory signal."""
+
+    __tablename__ = "foresight_signals"
+    __table_args__ = (
+        Index("ix_foresight_signals_user_status", "user_id", "status"),
+        Index("ix_foresight_signals_user_start", "user_id", "start_date"),
+        Index("ix_foresight_signals_user_thread", "user_id", "source_thread_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    relative_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    confidence: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.8,
+        server_default=text("0.8"),
+    )
+    source_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_message_ids_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AgentExperience(Base):
+    """Durable procedural memory of the agent's own problem solving."""
+
+    __tablename__ = "agent_experiences"
+    __table_args__ = (
+        Index("ix_agent_experiences_user", "user_id"),
+        Index("ix_agent_experiences_user_cluster", "user_id", "cluster_id"),
+        Index("ix_agent_experiences_user_active", "user_id", "superseded_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_intent: Mapped[str] = mapped_column(Text, nullable=False)
+    approach: Mapped[str] = mapped_column(Text, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    source_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_names_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_experiences.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ExperienceClusterState(Base):
+    """Serialized incremental centroid state for procedural experiences."""
+
+    __tablename__ = "experience_cluster_state"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_experience_cluster_state_user"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    state_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AgentSkill(Base):
+    """Distilled reusable procedure derived from clustered agent experiences."""
+
+    __tablename__ = "agent_skills"
+    __table_args__ = (
+        Index("ix_agent_skills_user_cluster", "user_id", "cluster_id"),
+        Index("ix_agent_skills_user_active", "user_id", "superseded_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    cluster_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    experience_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_refined_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_skills.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
@@ -586,6 +792,153 @@ class MemoryClaimEvidence(Base):
     claim: Mapped[MemoryClaim] = relationship(back_populates="evidence")
 
 
+class UserProfileField(Base):
+    """Evidence-backed structured user profile field.
+
+    Active rows describe Anima's current compact model of the user; older
+    rows remain for audit when a field is corrected or superseded.
+    """
+
+    __tablename__ = "user_profile_fields"
+    __table_args__ = (
+        Index("ix_user_profile_fields_user_status", "user_id", "status"),
+        Index(
+            "ix_user_profile_fields_user_category_key",
+            "user_id",
+            "category",
+            "key",
+        ),
+        Index("ix_user_profile_fields_superseded_by", "superseded_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value_text: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.8,
+        server_default=text("0.8"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    source_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="extraction",
+        server_default=text("'extraction'"),
+    )
+    source_memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_item_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_claim_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_claim_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    superseded_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("user_profile_fields.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    evidence: Mapped[list[UserProfileFieldEvidence]] = relationship(
+        back_populates="profile_field",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="UserProfileFieldEvidence.profile_field_id",
+    )
+
+
+class UserProfileFieldEvidence(Base):
+    """Evidence row supporting a structured user profile field."""
+
+    __tablename__ = "user_profile_field_evidence"
+    __table_args__ = (
+        Index("ix_user_profile_field_evidence_user_field", "user_id", "profile_field_id"),
+        Index("ix_user_profile_field_evidence_user_observed", "user_id", "observed_at"),
+        Index("ix_user_profile_field_evidence_memory", "source_memory_id"),
+        Index("ix_user_profile_field_evidence_source_evidence", "source_evidence_id"),
+        Index(
+            "ix_user_profile_field_evidence_source_claim_evidence",
+            "source_claim_evidence_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    profile_field_id: Mapped[int] = mapped_column(
+        ForeignKey("user_profile_fields.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_item_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_claim_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_claim_evidence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    runtime_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_text: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    profile_field: Mapped[UserProfileField] = relationship(
+        back_populates="evidence",
+        foreign_keys=[profile_field_id],
+    )
+
+
 
 class MemoryVector(Base):
     __tablename__ = "memory_vectors"
@@ -700,6 +1053,7 @@ class KGEntity(Base):
     )
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     mentions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    aliases_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     embedding_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -717,6 +1071,12 @@ class KGRelation(Base):
     __table_args__ = (
         Index("ix_kg_relations_source", "source_id"),
         Index("ix_kg_relations_dest", "destination_id"),
+        Index("ix_kg_relations_user_status", "user_id", "status"),
+        Index("ix_kg_relations_user_source_type", "user_id", "source_id", "relation_type"),
+        Index("ix_kg_relations_user_observed", "user_id", "observed_at"),
+        Index("ix_kg_relations_evidence", "evidence_id"),
+        Index("ix_kg_relations_supersedes", "supersedes_relation_id"),
+        Index("ix_kg_relations_evolves_from", "evolves_from_relation_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -731,6 +1091,24 @@ class KGRelation(Base):
     mentions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     source_memory_id: Mapped[int | None] = mapped_column(
         ForeignKey("memory_items.id", ondelete="SET NULL"), nullable=True
+    )
+    evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_item_evidence.id", ondelete="SET NULL"), nullable=True
+    )
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidence: Mapped[float] = mapped_column(
+        Float, nullable=False, default=1.0, server_default=text("1.0")
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="active", server_default=text("'active'")
+    )
+    supersedes_relation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kg_relations.id", ondelete="SET NULL"), nullable=True
+    )
+    evolves_from_relation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kg_relations.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

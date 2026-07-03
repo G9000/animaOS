@@ -113,7 +113,11 @@ async def _issue_background_task(
             run.started_at = datetime.now(UTC)
             rt_db.commit()
 
-    task_runtime_db_factory = kwargs.pop("_task_runtime_db_factory", None)
+    missing_task_runtime_db_factory = object()
+    task_runtime_db_factory = kwargs.pop(
+        "_task_runtime_db_factory",
+        missing_task_runtime_db_factory,
+    )
 
     # Execute the task function (no session held open here)
     try:
@@ -122,8 +126,8 @@ async def _issue_background_task(
             "db_factory": db_factory,
             **kwargs,
         }
-        if task_runtime_db_factory is not None:
-            task_kwargs["runtime_db_factory"] = task_runtime_db_factory
+        if task_runtime_db_factory is not missing_task_runtime_db_factory:
+            task_kwargs["runtime_db_factory"] = task_runtime_db_factory or rt_factory
 
         result = await task_fn(
             **task_kwargs,
@@ -183,19 +187,21 @@ async def run_sleeptime_agents(
 ) -> list[str]:
     """Orchestrate all background tasks.
 
-    Parallel group (always run):
+    Sequential group (always run):
     1. Memory consolidation (predict-calibrate from F3)
     2. Embedding backfill
     3. Knowledge graph ingestion (F4)
     4. Heat decay (F2)
-    5. Episode generation check
+    5. Foresight lifecycle sweep
+    6. Episode generation check
 
     Sequential group (heat-gated, skipped if heat < threshold):
-    6. Contradiction scan
-    7. Profile synthesis
+    7. Contradiction scan
+    8. Profile synthesis
+    9. Pattern synthesis
 
     Time-gated:
-    8. Deep monologue (only once per 24h)
+    10. Deep monologue (only once per 24h)
 
     When force=True (inactivity timer): bypass heat gates.
     Returns list of task run IDs for tracking.
@@ -228,6 +234,7 @@ async def run_sleeptime_agents(
             },
         ),
         ("heat_decay", _task_heat_decay, {}),
+        ("foresight_lifecycle", _task_foresight_lifecycle, {}),
         ("episode_gen", _task_episode_gen, {}),
     ]:
         try:
@@ -272,6 +279,18 @@ async def run_sleeptime_agents(
         try:
             rid = await _issue_background_task(
                 user_id=user_id,
+                task_type="memory_evolution_scan",
+                task_fn=_task_memory_evolution_scan,
+                db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
+            run_ids.append(rid)
+        except Exception:
+            logger.exception("Memory evolution scan task failed")
+
+        try:
+            rid = await _issue_background_task(
+                user_id=user_id,
                 task_type="profile_synthesis",
                 task_fn=_task_profile_synthesis,
                 db_factory=db_factory,
@@ -280,6 +299,18 @@ async def run_sleeptime_agents(
             run_ids.append(rid)
         except Exception:
             logger.exception("Profile synthesis task failed")
+
+        try:
+            rid = await _issue_background_task(
+                user_id=user_id,
+                task_type="pattern_synthesis",
+                task_fn=_task_pattern_synthesis,
+                db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
+            run_ids.append(rid)
+        except Exception:
+            logger.exception("Pattern synthesis task failed")
 
     # ── Time-gated: deep monologue ───────────────────────────────
 
@@ -354,13 +385,148 @@ async def _task_consolidation(
     """
     from anima_server.services.agent.soul_writer import run_soul_writer
 
-    await run_soul_writer(user_id)
+    await run_soul_writer(
+        user_id,
+        soul_db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
+
+    cursor = _runtime_message_cursor(
+        user_id=user_id,
+        thread_id=thread_id,
+        runtime_db_factory=runtime_db_factory,
+    )
+    if cursor is not None:
+        last_processed_message_id, messages_processed = cursor
+        return {
+            "thread_id": thread_id,
+            "last_processed_message_id": last_processed_message_id,
+            "messages_processed": messages_processed,
+        }
 
     return {
         "thread_id": thread_id,
         "last_processed_message_id": None,
         "messages_processed": 1 if (user_message or assistant_response) else 0,
     }
+
+
+def _runtime_message_cursor(
+    *,
+    user_id: int,
+    thread_id: int | None,
+    runtime_db_factory: Callable[..., object] | None,
+) -> tuple[int | None, int] | None:
+    """Return the latest runtime message id and unprocessed message count."""
+    if runtime_db_factory is None:
+        return None
+
+    from sqlalchemy import func, select
+
+    from anima_server.models.runtime import RuntimeMessage
+
+    previous_message_id = get_last_processed_message_id(
+        user_id,
+        thread_id=thread_id,
+        runtime_db_factory=runtime_db_factory,
+    )
+
+    with runtime_db_factory() as rt_db:
+        if _has_unprocessed_memory_backlog(
+            rt_db,
+            user_id=user_id,
+            thread_id=thread_id,
+            previous_message_id=previous_message_id,
+        ):
+            return previous_message_id, 0
+
+        filters = [
+            RuntimeMessage.user_id == user_id,
+        ]
+        if thread_id is not None:
+            filters.append(RuntimeMessage.thread_id == thread_id)
+
+        latest_message_id = rt_db.scalar(
+            select(func.max(RuntimeMessage.id)).where(*filters)
+        )
+        if latest_message_id is None:
+            return None
+
+        count_filters = list(filters)
+        if previous_message_id is not None:
+            count_filters.append(RuntimeMessage.id > previous_message_id)
+        messages_processed = int(
+            rt_db.scalar(select(func.count(RuntimeMessage.id)).where(*count_filters)) or 0
+        )
+
+    return int(latest_message_id), messages_processed
+
+
+def _has_unprocessed_memory_backlog(
+    rt_db: Any,
+    *,
+    user_id: int,
+    thread_id: int | None,
+    previous_message_id: int | None,
+) -> bool:
+    from sqlalchemy import select
+
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.models.runtime_memory import MemoryCandidate, MemoryExtractionFailure
+    from anima_server.services.agent.soul_writer import MAX_RETRY_COUNT
+
+    candidates = list(
+        rt_db.scalars(
+            select(MemoryCandidate).where(
+                MemoryCandidate.user_id == user_id,
+                MemoryCandidate.status.in_(["extracted", "queued", "failed"]),
+            )
+        ).all()
+    )
+    backlog_message_ids: set[int] = set()
+    for candidate in candidates:
+        if (
+            candidate.status == "failed"
+            and (candidate.retry_count or 0) >= MAX_RETRY_COUNT
+        ):
+            continue
+        for message_id in candidate.source_message_ids or []:
+            try:
+                numeric_message_id = int(message_id)
+            except (TypeError, ValueError):
+                continue
+            if previous_message_id is None or numeric_message_id > previous_message_id:
+                backlog_message_ids.add(numeric_message_id)
+
+    extraction_failures = list(
+        rt_db.scalars(
+            select(MemoryExtractionFailure).where(
+                MemoryExtractionFailure.user_id == user_id,
+                MemoryExtractionFailure.status == "failed",
+                MemoryExtractionFailure.retry_count < MAX_RETRY_COUNT,
+            )
+        ).all()
+    )
+    for failure in extraction_failures:
+        for message_id in failure.source_message_ids or []:
+            try:
+                numeric_message_id = int(message_id)
+            except (TypeError, ValueError):
+                continue
+            if previous_message_id is None or numeric_message_id > previous_message_id:
+                backlog_message_ids.add(numeric_message_id)
+
+    if not backlog_message_ids:
+        return False
+
+    filters = [
+        RuntimeMessage.user_id == user_id,
+        RuntimeMessage.id.in_(backlog_message_ids),
+    ]
+    if thread_id is not None:
+        filters.append(RuntimeMessage.thread_id == thread_id)
+
+    return rt_db.scalar(select(RuntimeMessage.id).where(*filters).limit(1)) is not None
 
 
 async def _task_embedding_backfill(
@@ -422,6 +588,23 @@ async def _task_heat_decay(
     return {"items_decayed": count}
 
 
+async def _task_foresight_lifecycle(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """Advance due/occurred/stale foresight states during scheduled sleep."""
+    from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.foresight import sweep_foresight_lifecycle
+
+    factory = db_factory or SessionLocal
+    with factory() as db:
+        transitions = sweep_foresight_lifecycle(db, user_id=user_id)
+        if any(transitions.values()):
+            db.commit()
+    return transitions
+
+
 async def _task_episode_gen(
     *,
     user_id: int,
@@ -477,6 +660,41 @@ async def _task_profile_synthesis(
 
     merged = await synthesize_profile(user_id=user_id, db_factory=db_factory)
     return {"merged": merged}
+
+
+async def _task_pattern_synthesis(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """Synthesize repeated patterns across episodes."""
+    from anima_server.services.agent.pattern_synthesis import synthesize_cross_episode_patterns
+
+    result = await synthesize_cross_episode_patterns(
+        user_id=user_id,
+        db_factory=db_factory,
+    )
+    return {
+        "sampled": result.sampled,
+        "proposed": result.proposed,
+        "created": result.created,
+        "updated": result.updated,
+        "skipped": result.skipped,
+    }
+
+
+async def _task_memory_evolution_scan(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """Surface linked and possible soft memory evolution during sleep time."""
+    from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.memory_salience import surface_memory_drift
+
+    factory = db_factory or SessionLocal
+    with factory() as db:
+        return surface_memory_drift(db, user_id=user_id)
 
 
 async def _task_deep_monologue(

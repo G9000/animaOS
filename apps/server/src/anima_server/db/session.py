@@ -8,7 +8,7 @@ from threading import RLock
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -26,6 +26,153 @@ _user_engines: dict[str, Engine] = {}
 _migrated_databases: set[str] = set()
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic_core.ini"
+
+
+def _sqlite_column_names(connection: Connection, table_name: str) -> set[str]:
+    rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _repair_legacy_kg_schema(connection: Connection) -> None:
+    """Add current KG columns to legacy SQLite tables stamped past migrations."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    entity_columns = _sqlite_column_names(connection, "kg_entities")
+    if entity_columns:
+        for column_name, ddl in (
+            ("aliases_json", "ALTER TABLE kg_entities ADD COLUMN aliases_json JSON"),
+            ("embedding_json", "ALTER TABLE kg_entities ADD COLUMN embedding_json JSON"),
+            (
+                "embedding_checksum",
+                "ALTER TABLE kg_entities ADD COLUMN embedding_checksum VARCHAR(64)",
+            ),
+        ):
+            if column_name not in entity_columns:
+                connection.exec_driver_sql(ddl)
+                entity_columns.add(column_name)
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_kg_entities_user_type "
+            "ON kg_entities (user_id, entity_type)"
+        )
+
+    relation_columns = _sqlite_column_names(connection, "kg_relations")
+    if not relation_columns:
+        return
+
+    for column_name, ddl in (
+        ("source_memory_id", "ALTER TABLE kg_relations ADD COLUMN source_memory_id INTEGER"),
+        ("evidence_id", "ALTER TABLE kg_relations ADD COLUMN evidence_id INTEGER"),
+        ("observed_at", "ALTER TABLE kg_relations ADD COLUMN observed_at DATETIME"),
+        ("valid_from", "ALTER TABLE kg_relations ADD COLUMN valid_from DATETIME"),
+        ("valid_to", "ALTER TABLE kg_relations ADD COLUMN valid_to DATETIME"),
+        (
+            "confidence",
+            "ALTER TABLE kg_relations ADD COLUMN confidence FLOAT NOT NULL DEFAULT 1.0",
+        ),
+        (
+            "status",
+            "ALTER TABLE kg_relations ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'active'",
+        ),
+        (
+            "supersedes_relation_id",
+            "ALTER TABLE kg_relations ADD COLUMN supersedes_relation_id INTEGER",
+        ),
+        (
+            "evolves_from_relation_id",
+            "ALTER TABLE kg_relations ADD COLUMN evolves_from_relation_id INTEGER",
+        ),
+    ):
+        if column_name not in relation_columns:
+            connection.exec_driver_sql(ddl)
+            relation_columns.add(column_name)
+
+    connection.exec_driver_sql(
+        """
+        UPDATE kg_relations
+        SET
+            observed_at = COALESCE(observed_at, created_at),
+            valid_from = COALESCE(valid_from, created_at),
+            confidence = COALESCE(confidence, 1.0),
+            status = COALESCE(status, 'active')
+        """
+    )
+    for index_name, columns in (
+        ("ix_kg_relations_source", "source_id"),
+        ("ix_kg_relations_dest", "destination_id"),
+        ("ix_kg_relations_user_status", "user_id, status"),
+        ("ix_kg_relations_user_source_type", "user_id, source_id, relation_type"),
+        ("ix_kg_relations_user_observed", "user_id, observed_at"),
+        ("ix_kg_relations_evidence", "evidence_id"),
+        ("ix_kg_relations_supersedes", "supersedes_relation_id"),
+        ("ix_kg_relations_evolves_from", "evolves_from_relation_id"),
+    ):
+        connection.exec_driver_sql(
+            f"CREATE INDEX IF NOT EXISTS {index_name} ON kg_relations ({columns})"
+        )
+
+
+def _repair_legacy_memory_schema(connection: Connection) -> None:
+    """Add current memory columns to legacy SQLite tables stamped past migrations."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    memory_columns = _sqlite_column_names(connection, "memory_items")
+    if not memory_columns:
+        return
+
+    for column_name, ddl in (
+        (
+            "memory_class",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN memory_class VARCHAR(32) NOT NULL DEFAULT 'casual'",
+        ),
+        (
+            "emotional_salience",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
+        ),
+        (
+            "stability_class",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN stability_class VARCHAR(32) NOT NULL DEFAULT 'stable'",
+        ),
+        (
+            "decay_class",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN decay_class VARCHAR(32) NOT NULL DEFAULT 'standard'",
+        ),
+        (
+            "relationship_proximity",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
+        ),
+        (
+            "evidence_strength",
+            "ALTER TABLE memory_items "
+            "ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
+        ),
+        (
+            "evolves_from_item_id",
+            "ALTER TABLE memory_items ADD COLUMN evolves_from_item_id INTEGER",
+        ),
+        (
+            "evolution_kind",
+            "ALTER TABLE memory_items ADD COLUMN evolution_kind VARCHAR(32)",
+        ),
+    ):
+        if column_name not in memory_columns:
+            connection.exec_driver_sql(ddl)
+            memory_columns.add(column_name)
+
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_memory_items_user_decay_class "
+        "ON memory_items (user_id, decay_class)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_memory_items_user_evolves_from "
+        "ON memory_items (user_id, evolves_from_item_id)"
+    )
 
 
 def _make_engine(database_url: str | None = None) -> Engine:
@@ -258,6 +405,8 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
         if has_app_tables and not has_alembic:
             # Legacy DB created by create_all — stamp at head so Alembic
             # considers it up-to-date (columns were already added manually).
+            _repair_legacy_memory_schema(connection)
+            _repair_legacy_kg_schema(connection)
             command.stamp(cfg, "head")
             logger.info("Stamped legacy database at Alembic head.")
         else:
@@ -273,6 +422,8 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             from anima_server.models import Base
 
             Base.metadata.create_all(bind=connection)
+            _repair_legacy_memory_schema(connection)
+            _repair_legacy_kg_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 

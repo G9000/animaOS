@@ -8,6 +8,8 @@ category: architecture
 
 [Back to Index](../README.md)
 
+[Optional External Memory Adapter Seams](optional-external-adapters.md) documents the native retrieval backend contract and rebuild rules for optional vector adapters.
+
 This document traces every path through AnimaOS's memory system: how memories are written, stored, retrieved, scored, consolidated, and maintained. It covers the full lifecycle from user utterance to long-term knowledge.
 
 ---
@@ -97,8 +99,8 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `memory_vectors` | Legacy packed float32 embedding table retained in the soul schema; active semantic search uses runtime pgvector plus `MemoryItem.embedding_json` | `item_id`, `content`, `embedding` (binary), `category`, `importance` |
 | `self_model_blocks` | Agent's self-model sections (identity, persona, soul, etc.) | `section`, `content`, `version`, `needs_regeneration` |
 | `emotional_signals` | Detected user emotional states | `emotion`, `confidence`, `trajectory`, `evidence_type`, `evidence` |
-| `kg_entities` | Knowledge graph entities (F4) | `name`, `name_normalized`, `entity_type`, `description`, `mention_count` |
-| `kg_relations` | Knowledge graph relations (F4) | `source_id`, `destination_id`, `relation_type`, `confidence` |
+| `kg_entities` | Knowledge graph entities (F4) | `name`, `name_normalized`, `entity_type`, `description`, `mentions`, `embedding_json`, `embedding_checksum` |
+| `kg_relations` | Knowledge graph relations (F4) | `source_id`, `destination_id`, `relation_type`, `mentions`, `source_memory_id` |
 | `forget_audit_log` | Audit trail for forgetting operations (F7) | `trigger`, `scope`, `items_forgotten`, `derived_refs_affected` |
 | `background_task_runs` | Sleep-time task tracking (F5) | `task_type`, `status`, `result_json`, `error_message` |
 
@@ -941,6 +943,8 @@ Portability guarantee: copy `.anima/` directory, enter passphrase on new machine
 | `consolidation.py` | Post-turn extraction (predict-calibrate F3 + emotional signals), orchestrator routing (F5) |
 | `embeddings.py` | Embedding generation, hybrid search (BM25 F1 + semantic), heat floor, adaptive filter |
 | `vector_store.py` | VectorStore facade that uses runtime PostgreSQL/pgvector via `pgvec_store.py` when available, with an in-memory degraded fallback |
+| `retrieval_backends.py` | Rebuildable memory retrieval backend contract with the native local implementation as default |
+| `services/memory/` | Stable package boundary for memory domain contracts and compatibility facades over existing agent implementations |
 | `bm25_index.py` | **F1** — BM25Okapi lexical search index (per-user, in-memory) |
 | `heat_scoring.py` | **F2** — Heat formula, exponential decay, visibility floor |
 | `predict_calibrate.py` | **F3** — Two-stage extraction with quality gate |

@@ -4,10 +4,13 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
+
+from sqlalchemy import select
 
 from anima_server.config import settings
 from anima_server.services.agent.emotional_intelligence import (
@@ -102,6 +105,8 @@ _CURRENT_FOCUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 @dataclass(slots=True)
 class LLMExtractionResult:
     memories: list[dict[str, Any]] = field(default_factory=list)
+    profile_updates: list[dict[str, Any]] = field(default_factory=list)
+    foresight: list[dict[str, Any]] = field(default_factory=list)
     emotion: dict[str, Any] | None = None
     failed: bool = False
     error: str | None = None
@@ -129,7 +134,8 @@ async def extract_memories_via_llm(
             assistant_response=prepared_assistant_response or assistant_response,
         )
         content = await call_llm_for_text(
-            "You extract memories and emotions. Respond only with JSON.",
+            "You extract memories, profile updates, foresight signals, and emotions. "
+            "Respond only with JSON.",
             prompt,
         )
 
@@ -141,10 +147,18 @@ async def extract_memories_via_llm(
             memories = obj.get("memories", [])
             if isinstance(memories, list):
                 result.memories = [m for m in memories if isinstance(m, dict)]
-                emotion = obj.get("emotion")
-                if emotion and isinstance(emotion, dict):
-                    result.emotion = emotion
-                return result
+            profile_updates = obj.get("profile_updates", [])
+            if isinstance(profile_updates, list):
+                result.profile_updates = [
+                    update for update in profile_updates if isinstance(update, dict)
+                ]
+            foresight = obj.get("foresight", [])
+            if isinstance(foresight, list):
+                result.foresight = [item for item in foresight if isinstance(item, dict)]
+            emotion = obj.get("emotion")
+            if emotion and isinstance(emotion, dict):
+                result.emotion = emotion
+            return result
 
         # Fallback: try as plain array (backward compat)
         result.memories = _parse_json_array(content)
@@ -359,6 +373,10 @@ async def run_background_extraction(
         count_eligible_candidates,
         create_memory_candidate,
     )
+    from anima_server.services.agent.user_profile import (
+        count_eligible_profile_update_candidates,
+        create_profile_update_candidates_from_payload,
+    )
 
     try:
         rt_factory = runtime_db_factory or _get_runtime_factory()
@@ -402,6 +420,17 @@ async def run_background_extraction(
                     len(extracted.facts),
                     len(extracted.preferences),
                 )
+            foresight_observed_at = _source_message_observed_at(
+                rt_db,
+                user_id=user_id,
+                source_message_ids=source_message_ids,
+            )
+            _store_foresight_best_effort(
+                user_id=user_id,
+                user_message=user_message,
+                source_message_ids=source_message_ids,
+                observed_at=foresight_observed_at,
+            )
 
             # 2. LLM extraction
             if settings.agent_provider != "scaffold":
@@ -448,8 +477,24 @@ async def run_background_extraction(
                                 importance_source="llm",
                                 source="llm",
                                 source_message_ids=source_message_ids,
+                                salience=item.get("salience")
+                                if isinstance(item.get("salience"), dict)
+                                else None,
                             )
                         llm_count = len(llm_result.memories)
+                        profile_update_count = create_profile_update_candidates_from_payload(
+                            rt_db,
+                            user_id=user_id,
+                            profile_updates=llm_result.profile_updates,
+                            source_message_ids=source_message_ids,
+                        )
+                        _store_foresight_best_effort(
+                            user_id=user_id,
+                            user_message=user_message,
+                            source_message_ids=source_message_ids,
+                            observed_at=foresight_observed_at,
+                            llm_foresight=llm_result.foresight,
+                        )
 
                         emotion_payload = (
                             llm_result.emotion
@@ -484,9 +529,13 @@ async def run_background_extraction(
                             )
 
                         logger.info(
-                            "LLM extraction for user %s: %d memories extracted%s",
+                            (
+                                "LLM extraction for user %s: %d memories, "
+                                "%d profile updates extracted%s"
+                            ),
                             user_id,
                             llm_count,
+                            profile_update_count,
                             f" (emotion: {emotion_name})" if emotion_name else "",
                         )
                 except Exception:
@@ -506,8 +555,16 @@ async def run_background_extraction(
             from anima_server.services.agent.pending_ops import count_pending_ops
 
             candidate_count = count_eligible_candidates(rt_db, user_id=user_id)
+            profile_update_count = count_eligible_profile_update_candidates(
+                rt_db,
+                user_id=user_id,
+            )
             pending_count = count_pending_ops(rt_db, user_id=user_id)
-            if trigger_soul_writer and (candidate_count > 0 or pending_count > 0):
+            if trigger_soul_writer and (
+                candidate_count > 0
+                or profile_update_count > 0
+                or pending_count > 0
+            ):
                 from anima_server.services.agent.soul_writer import run_soul_writer
 
                 task = asyncio.create_task(run_soul_writer(user_id))
@@ -515,9 +572,13 @@ async def run_background_extraction(
                     _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
                 logger.info(
-                    "Triggered eager Soul Writer for user %s (%d candidates, %d pending ops)",
+                    (
+                        "Triggered eager Soul Writer for user %s "
+                        "(%d candidates, %d profile updates, %d pending ops)"
+                    ),
                     user_id,
                     candidate_count,
+                    profile_update_count,
                     pending_count,
                 )
 
@@ -566,6 +627,111 @@ def record_memory_extraction_failure(
         )
     )
     runtime_db.flush()
+
+
+def _store_foresight_best_effort(
+    *,
+    user_id: int,
+    user_message: str,
+    source_message_ids: list[int] | None,
+    observed_at: datetime | None = None,
+    llm_foresight: list[dict[str, Any]] | None = None,
+) -> None:
+    try:
+        from anima_server.db.session import SessionLocal, get_user_session_factory, is_sqlite_mode
+        from anima_server.services.agent.foresight import (
+            mark_cancelled_from_text,
+            parse_llm_foresight_payload,
+            store_foresight_from_text,
+            upsert_foresight_signal,
+        )
+        from anima_server.services.user_timezone import resolve_timezone_from_world_context
+
+        observed_at = observed_at or datetime.now(UTC)
+        factory = get_user_session_factory(user_id) if is_sqlite_mode() else SessionLocal
+        with factory() as soul_db:
+            timezone_name = None
+            with suppress(ValueError):
+                timezone_name, _timezone = resolve_timezone_from_world_context(
+                    soul_db,
+                    user_id=user_id,
+                )
+            count = store_foresight_from_text(
+                soul_db,
+                user_id=user_id,
+                text=user_message,
+                observed_at=observed_at,
+                source_message_ids=source_message_ids,
+                timezone_name=timezone_name,
+            )
+            for signal in parse_llm_foresight_payload(
+                llm_foresight or (),
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            ):
+                upsert_foresight_signal(
+                    soul_db,
+                    user_id=user_id,
+                    signal=signal,
+                    source_message_ids=source_message_ids,
+                    observed_at=observed_at,
+                )
+                count += 1
+            cancelled = mark_cancelled_from_text(
+                soul_db,
+                user_id=user_id,
+                text=user_message,
+                observed_at=observed_at,
+            )
+            if count or cancelled:
+                soul_db.commit()
+                logger.info(
+                    "Foresight extraction for user %s: %d upserted, %d cancelled",
+                    user_id,
+                    count,
+                    cancelled,
+                )
+    except Exception:
+        logger.debug("Foresight extraction skipped for user %s", user_id, exc_info=True)
+
+
+def _source_message_observed_at(
+    runtime_db: Any,
+    *,
+    user_id: int,
+    source_message_ids: list[int] | None,
+) -> datetime | None:
+    if not source_message_ids:
+        return None
+    try:
+        from anima_server.models.runtime import RuntimeMessage
+
+        rows = list(
+            runtime_db.scalars(
+                select(RuntimeMessage)
+                .where(
+                    RuntimeMessage.user_id == user_id,
+                    RuntimeMessage.id.in_([int(message_id) for message_id in source_message_ids]),
+                )
+                .order_by(
+                    RuntimeMessage.role == "user",
+                    RuntimeMessage.created_at.asc(),
+                    RuntimeMessage.id.asc(),
+                )
+            ).all()
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    user_rows = [row for row in rows if row.role == "user"]
+    selected = user_rows[0] if user_rows else rows[0]
+    created_at = selected.created_at
+    if created_at is None:
+        return None
+    if created_at.tzinfo is None:
+        return created_at.replace(tzinfo=UTC)
+    return created_at
 
 
 def _preview_text(value: str, *, limit: int = 240) -> str | None:

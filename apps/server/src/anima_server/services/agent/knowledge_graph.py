@@ -60,6 +60,9 @@ def normalize_entity_name(name: str) -> str:
 _ABBREV_MAP: dict[str, str] = {}  # extensible later if needed
 _SEMANTIC_ENTITY_LIMIT = 3
 _SEMANTIC_ENTITY_THRESHOLD = 0.5
+_ENTITY_DEDUPE_EMBEDDING_THRESHOLD = 0.92
+_ACTIVE_RELATION_STATUSES = {"active"}
+_VISIBLE_RELATION_STATUSES = {"active", "superseded"}
 
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
@@ -87,6 +90,150 @@ def _substring_containment(short: str, long: str) -> bool:
     if min(len(s), len(lng)) < 3:
         return False
     return s in lng or lng in s
+
+
+def _entity_type_compatible(existing_type: str, candidate_type: str) -> bool:
+    existing = _normalize_graph_entity_type(existing_type)
+    candidate = _normalize_graph_entity_type(candidate_type)
+    return existing == "unknown" or candidate == "unknown" or existing == candidate
+
+
+def _merge_aliases(
+    existing_aliases: list[str] | None,
+    *candidates: str | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        alias = value.strip()
+        if not alias:
+            return
+        key = normalize_entity_name(alias)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        aliases.append(alias)
+
+    for alias in existing_aliases or []:
+        if isinstance(alias, str):
+            _add(alias)
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, str):
+            _add(candidate)
+            continue
+        for value in candidate:
+            _add(str(value))
+
+    return aliases
+
+
+def _entity_alias_keys(entity: KGEntity) -> set[str]:
+    keys = {entity.name_normalized, normalize_entity_name(entity.name)}
+    for alias in entity.aliases_json or []:
+        if isinstance(alias, str):
+            normalized = normalize_entity_name(alias)
+            if normalized:
+                keys.add(normalized)
+    return keys
+
+
+def _find_entity_by_name_or_alias(
+    db: Session,
+    *,
+    user_id: int,
+    name: str,
+    entity_type: str = "unknown",
+) -> KGEntity | None:
+    normalized = normalize_entity_name(name)
+    if not normalized:
+        return None
+
+    entity = db.scalar(
+        select(KGEntity).where(
+            KGEntity.user_id == user_id,
+            KGEntity.name_normalized == normalized,
+        )
+    )
+    if entity is not None:
+        return entity
+
+    entities = list(db.scalars(select(KGEntity).where(KGEntity.user_id == user_id)).all())
+    for candidate in entities:
+        if not _entity_type_compatible(candidate.entity_type, entity_type):
+            continue
+        if normalized in _entity_alias_keys(candidate):
+            return candidate
+    return None
+
+
+def resolve_entities_by_name_or_aliases(
+    db: Session,
+    *,
+    user_id: int,
+    names: list[str],
+) -> list[KGEntity]:
+    normalized_names = {normalize_entity_name(name) for name in names}
+    normalized_names.discard("")
+    if not normalized_names:
+        return []
+
+    matches: list[KGEntity] = []
+    for entity in db.scalars(select(KGEntity).where(KGEntity.user_id == user_id)):
+        if _entity_alias_keys(entity) & normalized_names:
+            matches.append(entity)
+    return matches
+
+
+def _find_semantic_entity(
+    db: Session,
+    user_id: int,
+    embedding: list[float],
+    entity_type: str = "unknown",
+    threshold: float = _ENTITY_DEDUPE_EMBEDDING_THRESHOLD,
+) -> KGEntity | None:
+    best_entity: KGEntity | None = None
+    best_score = 0.0
+    repaired_any = False
+    entities = list(db.scalars(select(KGEntity).where(KGEntity.user_id == user_id)).all())
+    for entity in entities:
+        if not _entity_type_compatible(entity.entity_type, entity_type):
+            continue
+        entity_embedding, repaired = _validated_entity_embedding(entity)
+        repaired_any = repaired_any or repaired
+        if entity_embedding is None:
+            continue
+        similarity = cosine_similarity(embedding, entity_embedding)
+        if similarity > best_score:
+            best_score = similarity
+            best_entity = entity
+
+    if repaired_any:
+        db.flush()
+    return best_entity if best_entity is not None and best_score >= threshold else None
+
+
+def _normalize_relation_status(status: str | None) -> str:
+    normalized = (status or "active").strip().lower()
+    if normalized in {"active", "superseded", "inactive"}:
+        return normalized
+    return "active"
+
+
+def _normalize_confidence(confidence: float | None) -> float:
+    if confidence is None:
+        return 1.0
+    try:
+        value = float(confidence)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, value))
+
+
+def _relation_time_sort_value(value: datetime | None) -> datetime:
+    return _comparable_datetime(value) or datetime.min.replace(tzinfo=UTC)
 
 
 def _find_similar_entity(
@@ -120,13 +267,10 @@ def _find_similar_entity(
 
     for entity in entities:
         # Only match compatible types (same type or either is unknown)
-        if (
-            entity_type != "unknown"
-            and entity.entity_type != "unknown"
-            and entity.entity_type != entity_type
-        ):
+        if not _entity_type_compatible(entity.entity_type, entity_type):
             continue
-        existing_tokens = _tokenize_name(entity.name)
+        alias_text = " ".join(entity.aliases_json or [])
+        existing_tokens = _tokenize_name(f"{entity.name} {alias_text}")
         score = _jaccard(new_tokens, existing_tokens)
 
         # Boost for substring containment (catches "New York" vs "New York City"
@@ -306,6 +450,7 @@ def upsert_entity(
     entity_type: str = "unknown",
     description: str = "",
     embedding: list[float] | None = None,
+    aliases: list[str] | None = None,
 ) -> KGEntity:
     """Create or update an entity. Increments mentions on existing match."""
     normalized = normalize_entity_name(name)
@@ -315,19 +460,26 @@ def upsert_entity(
         if parsed_embedding is None:
             raise ValueError("KG entity embedding must be a non-empty sequence of finite numbers.")
 
-    existing = db.scalar(
-        select(KGEntity).where(
-            KGEntity.user_id == user_id,
-            KGEntity.name_normalized == normalized,
-        )
+    existing = _find_entity_by_name_or_alias(
+        db,
+        user_id=user_id,
+        name=name,
+        entity_type=entity_type,
     )
-    # Fuzzy match: if no exact normalized match, look for token-similar names
     if existing is None:
         existing = _find_similar_entity(db, user_id, name, entity_type=entity_type)
+    if existing is None and parsed_embedding is not None:
+        existing = _find_semantic_entity(
+            db,
+            user_id,
+            parsed_embedding,
+            entity_type=entity_type,
+        )
 
     if existing is not None:
         existing.mentions = (existing.mentions or 1) + 1
         existing.updated_at = datetime.now(UTC)
+        existing.aliases_json = _merge_aliases(existing.aliases_json, existing.name, name, aliases)
         if description and (
             not existing.description or len(description) > len(existing.description)
         ):
@@ -347,6 +499,7 @@ def upsert_entity(
         entity_type=entity_type,
         description=description,
         mentions=1,
+        aliases_json=_merge_aliases(None, name, aliases),
         embedding_json=parsed_embedding,
         embedding_checksum=(
             compute_embedding_checksum(parsed_embedding) if parsed_embedding is not None else None
@@ -357,6 +510,23 @@ def upsert_entity(
     return entity
 
 
+def _supersede_relation(
+    db: Session,
+    *,
+    user_id: int,
+    relation_id: int | None,
+    valid_to: datetime | None,
+) -> None:
+    if relation_id is None:
+        return
+    relation = db.get(KGRelation, relation_id)
+    if relation is None or relation.user_id != user_id:
+        return
+    relation.status = "superseded"
+    relation.valid_to = valid_to or datetime.now(UTC)
+    relation.updated_at = datetime.now(UTC)
+
+
 def upsert_relation(
     db: Session,
     *,
@@ -365,27 +535,22 @@ def upsert_relation(
     destination_name: str,
     relation_type: str,
     source_memory_id: int | None = None,
+    evidence_id: int | None = None,
+    observed_at: datetime | None = None,
+    valid_from: datetime | None = None,
+    valid_to: datetime | None = None,
+    confidence: float | None = None,
+    status: str = "active",
+    supersedes_relation_id: int | None = None,
+    evolves_from_relation_id: int | None = None,
 ) -> KGRelation | None:
     """Create or update a relation between two entities.
 
     Entities must already exist (looked up by normalized name).
     Increments mentions on existing match.
     """
-    src_norm = normalize_entity_name(source_name)
-    dst_norm = normalize_entity_name(destination_name)
-
-    source = db.scalar(
-        select(KGEntity).where(
-            KGEntity.user_id == user_id,
-            KGEntity.name_normalized == src_norm,
-        )
-    )
-    dest = db.scalar(
-        select(KGEntity).where(
-            KGEntity.user_id == user_id,
-            KGEntity.name_normalized == dst_norm,
-        )
-    )
+    source = _find_entity_by_name_or_alias(db, user_id=user_id, name=source_name)
+    dest = _find_entity_by_name_or_alias(db, user_id=user_id, name=destination_name)
     if source is None or dest is None:
         logger.debug(
             "Cannot create relation: source=%s(%s) dest=%s(%s)",
@@ -396,23 +561,61 @@ def upsert_relation(
         )
         return None
 
+    now = datetime.now(UTC)
+    observed = observed_at or now
+    valid_start = valid_from or observed
+    normalized_status = _normalize_relation_status(status)
+    normalized_confidence = _normalize_confidence(confidence)
+
     # Check for existing relation
-    existing = db.scalar(
-        select(KGRelation).where(
-            KGRelation.user_id == user_id,
-            KGRelation.source_id == source.id,
-            KGRelation.destination_id == dest.id,
-            KGRelation.relation_type == relation_type,
-        )
+    existing_query = select(KGRelation).where(
+        KGRelation.user_id == user_id,
+        KGRelation.source_id == source.id,
+        KGRelation.destination_id == dest.id,
+        KGRelation.relation_type == relation_type,
+        KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
     )
+    excluded_existing_ids = {
+        relation_id
+        for relation_id in (supersedes_relation_id, evolves_from_relation_id)
+        if relation_id is not None
+    }
+    if excluded_existing_ids:
+        existing_query = existing_query.where(KGRelation.id.not_in(excluded_existing_ids))
+    existing = db.scalar(existing_query)
     if existing is not None:
         existing.mentions = (existing.mentions or 1) + 1
-        existing.updated_at = datetime.now(UTC)
+        existing.updated_at = now
+        existing.status = normalized_status
+        existing.observed_at = observed_at or existing.observed_at or observed
+        existing.valid_from = valid_from or existing.valid_from or valid_start
+        if valid_to is not None:
+            existing.valid_to = valid_to
+        if confidence is not None or existing.confidence is None:
+            existing.confidence = normalized_confidence
         if source_memory_id is not None:
             existing.source_memory_id = source_memory_id
+        if evidence_id is not None:
+            existing.evidence_id = evidence_id
+        if supersedes_relation_id is not None:
+            existing.supersedes_relation_id = supersedes_relation_id
+            _supersede_relation(
+                db,
+                user_id=user_id,
+                relation_id=supersedes_relation_id,
+                valid_to=valid_start,
+            )
+        if evolves_from_relation_id is not None:
+            existing.evolves_from_relation_id = evolves_from_relation_id
         db.flush()
         return existing
 
+    _supersede_relation(
+        db,
+        user_id=user_id,
+        relation_id=supersedes_relation_id,
+        valid_to=valid_start,
+    )
     relation = KGRelation(
         user_id=user_id,
         source_id=source.id,
@@ -420,6 +623,14 @@ def upsert_relation(
         relation_type=relation_type,
         mentions=1,
         source_memory_id=source_memory_id,
+        evidence_id=evidence_id,
+        observed_at=observed,
+        valid_from=valid_start,
+        valid_to=valid_to,
+        confidence=normalized_confidence,
+        status=normalized_status,
+        supersedes_relation_id=supersedes_relation_id,
+        evolves_from_relation_id=evolves_from_relation_id,
     )
     db.add(relation)
     db.flush()
@@ -444,14 +655,10 @@ def search_graph(
               "source_type": ..., "destination_type": ...}, ...]
     """
     # Resolve starting entity IDs
-    normalized_names = [normalize_entity_name(n) for n in entity_names]
-    start_entities = list(
-        db.scalars(
-            select(KGEntity).where(
-                KGEntity.user_id == user_id,
-                KGEntity.name_normalized.in_(normalized_names),
-            )
-        ).all()
+    start_entities = resolve_entities_by_name_or_aliases(
+        db,
+        user_id=user_id,
+        names=entity_names,
     )
 
     if not start_entities:
@@ -472,6 +679,7 @@ def search_graph(
             db.scalars(
                 select(KGRelation).where(
                     KGRelation.user_id == user_id,
+                    KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
                     or_(
                         KGRelation.source_id.in_(entity_ids),
                         KGRelation.destination_id.in_(entity_ids),
@@ -532,6 +740,152 @@ def search_graph(
             break
 
     return results[:limit]
+
+
+def _comparable_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _relation_history_entry(
+    relation: KGRelation,
+    *,
+    source: KGEntity,
+    destination: KGEntity,
+) -> dict[str, Any]:
+    evidence_ids = [relation.evidence_id] if relation.evidence_id is not None else []
+    return {
+        "relation_id": relation.id,
+        "source": source.name,
+        "relation": relation.relation_type,
+        "destination": destination.name,
+        "source_type": source.entity_type,
+        "destination_type": destination.entity_type,
+        "status": relation.status,
+        "mentions": relation.mentions or 1,
+        "source_memory_id": relation.source_memory_id,
+        "evidence_id": relation.evidence_id,
+        "evidence_ids": evidence_ids,
+        "observed_at": relation.observed_at,
+        "valid_from": relation.valid_from,
+        "valid_to": relation.valid_to,
+        "confidence": relation.confidence,
+        "supersedes_relation_id": relation.supersedes_relation_id,
+        "evolves_from_relation_id": relation.evolves_from_relation_id,
+    }
+
+
+def get_relation_history(
+    db: Session,
+    *,
+    user_id: int,
+    source_name: str,
+    relation_type: str,
+    destination_name: str | None = None,
+    include_inactive: bool = False,
+) -> list[dict[str, Any]]:
+    """Return temporal history for a source/relation, oldest first."""
+    source = _find_entity_by_name_or_alias(db, user_id=user_id, name=source_name)
+    if source is None:
+        return []
+
+    query = select(KGRelation).where(
+        KGRelation.user_id == user_id,
+        KGRelation.source_id == source.id,
+        KGRelation.relation_type == relation_type,
+    )
+    if not include_inactive:
+        query = query.where(KGRelation.status.in_(_VISIBLE_RELATION_STATUSES))
+
+    relations = list(db.scalars(query).all())
+    if not relations:
+        return []
+
+    destination_filter = normalize_entity_name(destination_name) if destination_name else None
+    entity_ids = {relation.destination_id for relation in relations}
+    entity_ids.add(source.id)
+    entity_map = {
+        entity.id: entity for entity in db.scalars(select(KGEntity).where(KGEntity.id.in_(entity_ids))).all()
+    }
+
+    entries: list[dict[str, Any]] = []
+    for relation in relations:
+        destination = entity_map.get(relation.destination_id)
+        if destination is None:
+            continue
+        if destination_filter is not None and destination_filter not in _entity_alias_keys(destination):
+            continue
+        entries.append(_relation_history_entry(relation, source=source, destination=destination))
+
+    entries.sort(
+        key=lambda entry: (
+            _relation_time_sort_value(entry.get("valid_from") or entry.get("observed_at")),
+            int(entry["relation_id"]),
+        )
+    )
+    return entries
+
+
+def _relation_is_valid_at(entry: dict[str, Any], as_of: datetime) -> bool:
+    comparable_as_of = _comparable_datetime(as_of)
+    valid_from = _comparable_datetime(entry.get("valid_from") or entry.get("observed_at"))
+    valid_to = _comparable_datetime(entry.get("valid_to"))
+    if comparable_as_of is None:
+        return False
+    if valid_from is not None and valid_from > comparable_as_of:
+        return False
+    if valid_to is not None and valid_to <= comparable_as_of:
+        return False
+    return entry.get("status") != "inactive"
+
+
+def resolve_latest_relation_belief(
+    db: Session,
+    *,
+    user_id: int,
+    source_name: str,
+    relation_type: str,
+    destination_name: str | None = None,
+    as_of: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the latest believed relation while preserving supporting history."""
+    history = get_relation_history(
+        db,
+        user_id=user_id,
+        source_name=source_name,
+        relation_type=relation_type,
+        destination_name=destination_name,
+    )
+    if not history:
+        return None
+
+    if as_of is not None:
+        candidates = [entry for entry in history if _relation_is_valid_at(entry, as_of)]
+    else:
+        candidates = [
+            entry for entry in history if entry.get("status") in _ACTIVE_RELATION_STATUSES
+        ]
+        if not candidates:
+            candidates = [entry for entry in history if entry.get("status") != "inactive"]
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda entry: (
+            _relation_time_sort_value(entry.get("valid_from") or entry.get("observed_at")),
+            float(entry.get("confidence") or 0.0),
+            int(entry["relation_id"]),
+        ),
+        reverse=True,
+    )
+    latest = dict(candidates[0])
+    latest["history_count"] = len(history)
+    latest["history"] = history
+    return latest
 
 
 # ── BM25 reranking ───────────────────────────────────────────────────
@@ -703,7 +1057,8 @@ def _extract_entity_names_from_query(
 
     matched: list[str] = []
     for entity in entities:
-        if entity.name.lower() in query_lower:
+        names = [entity.name, *(alias for alias in entity.aliases_json or [] if isinstance(alias, str))]
+        if any(name.strip() and name.lower() in query_lower for name in names):
             matched.append(entity.name)
 
     if matched:
@@ -1085,7 +1440,7 @@ async def prune_stale_relations(
 
     Uses ID hallucination protection: maps real IDs to sequential integers.
 
-    Returns list of kg_relations.id that were deleted.
+    Returns list of kg_relations.id that were marked superseded.
     """
     if not existing_relations or not new_facts:
         return []
@@ -1129,12 +1484,14 @@ async def prune_stale_relations(
             reverse_map,
         )
 
-        # Delete the relations
+        # Preserve historical rows rather than deleting contradicted relations.
         if real_ids:
             for rel_id in real_ids:
                 rel = db.get(KGRelation, rel_id)
                 if rel is not None and rel.user_id == user_id:
-                    db.delete(rel)
+                    rel.status = "superseded"
+                    rel.valid_to = rel.valid_to or datetime.now(UTC)
+                    rel.updated_at = datetime.now(UTC)
             db.flush()
 
         return real_ids
@@ -1205,17 +1562,16 @@ async def ingest_conversation_graph(
             logger.debug("Failed to upsert relation: %s", rel_data)
 
     # 4. Prune stale relations touching this turn's entities
-    entity_names = [e["name"] for e in entities]
-    normalized_names = [normalize_entity_name(n) for n in entity_names]
+    turn_entity_names = [str(e.get("name", "")) for e in entities]
+    for rel_data in relations:
+        turn_entity_names.append(str(rel_data.get("source", "")))
+        turn_entity_names.append(str(rel_data.get("destination", "")))
 
     # Find entity IDs for this turn
-    turn_entities = list(
-        db.scalars(
-            select(KGEntity).where(
-                KGEntity.user_id == user_id,
-                KGEntity.name_normalized.in_(normalized_names),
-            )
-        ).all()
+    turn_entities = resolve_entities_by_name_or_aliases(
+        db,
+        user_id=user_id,
+        names=turn_entity_names,
     )
     turn_entity_ids = {e.id for e in turn_entities}
 
@@ -1225,6 +1581,7 @@ async def ingest_conversation_graph(
             db.scalars(
                 select(KGRelation).where(
                     KGRelation.user_id == user_id,
+                    KGRelation.status.in_(_ACTIVE_RELATION_STATUSES),
                     or_(
                         KGRelation.source_id.in_(turn_entity_ids),
                         KGRelation.destination_id.in_(turn_entity_ids),

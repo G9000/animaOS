@@ -116,6 +116,109 @@ Agent experiences should be extracted, clustered, and distilled into reusable sk
 6. User-facing inspection and correction remain first-class product requirements.
 7. Multi-user/group memory stays out of scope for this version.
 
+## Architecture Snapshot
+
+```mermaid
+flowchart TD
+  User["User turn"] --> Agent["Agent runtime"]
+
+  Agent --> Extract["Memory extraction and consolidation"]
+  Extract --> Evidence["Evidence anchors"]
+  Evidence --> SQLCipher["Canonical SQLCipher soul DB"]
+
+  subgraph Contract["Shared contract boundary"]
+    Core["packages/anima-core"]
+    PyMemory["anima_server.services.memory"]
+    Fixtures["Parity fixtures and tests"]
+    Core --> Fixtures
+    PyMemory --> Fixtures
+  end
+
+  subgraph Durable["Durable memory records"]
+    Claims["Temporal facts / MemoryClaim"]
+    Graph["Temporal relationships / KGRelation"]
+    Items["MemoryItem and episodes"]
+    Semantics["Salience, stability, decay semantics"]
+    Patterns["Cross-episode patterns"]
+    Foresight["ForesightSignal"]
+    Procedural["AgentExperience, clusters, skills"]
+  end
+
+  SQLCipher --> Claims
+  SQLCipher --> Graph
+  SQLCipher --> Items
+  SQLCipher --> Semantics
+  SQLCipher --> Patterns
+  SQLCipher --> Foresight
+  SQLCipher --> Procedural
+
+  Extract --> Claims
+  Extract --> Graph
+  Extract --> Items
+  Extract --> Foresight
+  Agent --> Procedural
+
+  subgraph Sleep["Sleep and background cognition"]
+    PatternSynth["Pattern synthesis"]
+    ForesightSweep["Foresight lifecycle sweep"]
+    SkillDistill["Experience clustering and skill distillation"]
+    Decay["Salience-aware decay"]
+  end
+
+  Items --> PatternSynth --> Patterns
+  Foresight --> ForesightSweep --> Foresight
+  Procedural --> SkillDistill --> Procedural
+  Semantics --> Decay --> Items
+
+  subgraph Recall["Recall path"]
+    Query["Memory query"]
+    Router["Retrieval router"]
+    Plan["Intent-specific query plan"]
+    Lanes["Profile, graph, episodes, transcripts, foresight, skills"]
+    Trace["Recall trace and score breakdown"]
+  end
+
+  Agent --> Query --> Router --> Plan --> Lanes
+  Claims --> Lanes
+  Graph --> Lanes
+  Items --> Lanes
+  Patterns --> Lanes
+  Foresight --> Lanes
+  Procedural --> Lanes
+  Lanes --> Trace --> Prompt["Fenced memory prompt blocks"]
+  Prompt --> Agent
+
+  subgraph Cleanup["Privacy and eval cleanup"]
+    Forget["User forget"]
+    EvalReset["Eval reset"]
+  end
+
+  Forget --> Claims
+  Forget --> Items
+  Forget --> Foresight
+  EvalReset --> Claims
+  EvalReset --> Graph
+  EvalReset --> Items
+  EvalReset --> Foresight
+  EvalReset --> Procedural
+```
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Forget as forget_memory
+  participant Evidence as MemoryItemEvidence
+  participant Foresight as foresight_signals
+  participant Prompt as Memory prompt blocks
+
+  User->>Forget: forget memory
+  Forget->>Evidence: read source runtime message IDs
+  Forget->>Foresight: delete same-user signals with overlapping source IDs
+  Forget->>Evidence: delete memory evidence and claims
+  Prompt->>Foresight: build foresight block
+  Foresight-->>Prompt: forgotten future event no longer appears
+```
+
 ## Success Metrics
 
 | Metric | Target | Measurement |

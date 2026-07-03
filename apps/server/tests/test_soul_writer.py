@@ -677,7 +677,7 @@ async def test_inline_embedding_uses_event_loop_owned_soul_session(
 
 
 @pytest.mark.asyncio
-async def test_process_candidate_duplicate_rejected() -> None:
+async def test_process_candidate_duplicate_reinforced() -> None:
     soul_engine = _create_soul_engine()
     runtime_engine = _create_runtime_engine()
     soul_factory = _make_soul_factory(soul_engine)
@@ -721,14 +721,15 @@ async def test_process_candidate_duplicate_rejected() -> None:
         runtime_db_factory=runtime_factory,
     )
 
-    assert result.candidates_rejected == 1
+    assert result.candidates_reinforced == 1
+    assert result.candidates_rejected == 0
     assert result.candidates_promoted == 0
 
-    # Verify candidate marked as rejected
+    # Verify candidate marked as reinforced
     with runtime_factory() as runtime_db:
         c = runtime_db.scalar(select(MemoryCandidate).where(MemoryCandidate.user_id == user_id))
         assert c is not None
-        assert c.status == "rejected"
+        assert c.status == "reinforced"
 
     soul_engine.dispose()
     runtime_engine.dispose()

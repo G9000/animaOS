@@ -56,6 +56,9 @@ class MemoryCandidate(RuntimeBase):
     tags_json: Mapped[list[str] | None] = mapped_column(
         SA_JSON().with_variant(ARRAY(String(100)), "postgresql"), nullable=True
     )
+    salience_json: Mapped[dict[str, object] | None] = mapped_column(
+        SA_JSON().with_variant(JSON, "postgresql"), nullable=True
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="extracted")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -97,6 +100,37 @@ class MemoryExtractionFailure(RuntimeBase):
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
+
+
+class ProfileUpdateCandidate(RuntimeBase):
+    """Structured user profile update awaiting promotion to the soul DB."""
+
+    __tablename__ = "profile_update_candidates"
+    __table_args__ = (
+        Index("ix_profile_update_candidates_user_status", "user_id", "status"),
+        Index("ix_profile_update_candidates_hash", "content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="llm")
+    source_message_ids: Mapped[list[int] | None] = mapped_column(
+        SA_JSON().with_variant(ARRAY(Integer), "postgresql"), nullable=True
+    )
+    extraction_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="extracted")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
 
 
 class PromotionJournal(RuntimeBase):

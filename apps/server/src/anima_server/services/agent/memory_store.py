@@ -11,8 +11,22 @@ from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import MemoryItem, MemoryItemTag
-from anima_server.services import anima_core_retrieval
 from anima_server.services.agent.embedding_integrity import check_embedding
+from anima_server.services.agent.memory_salience import (
+    STABILITY_EVOLVING,
+    SoftEvolution,
+    detect_soft_evolution,
+    item_salience,
+    memory_salience_model_kwargs,
+    merge_salience_into_item,
+    serialize_memory_salience,
+)
+from anima_server.services.agent.retrieval_backends import (
+    MemoryRetrievalBackend,
+    MemoryRetrievalDocument,
+    get_memory_retrieval_backend,
+)
+from anima_server.services.agent.text_processing import unicode_lexical_tokens
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
@@ -31,7 +45,6 @@ _CATEGORY_QUERY_WEIGHTS: dict[str, tuple[float, float]] = {
     "relationship": (0.3, 0.7),
 }
 _DEFAULT_QUERY_WEIGHTS: tuple[float, float] = (0.5, 0.5)
-_WORD_RE = re.compile(r"[a-z0-9']+")
 _TOKEN_STOPWORDS = frozenset(
     {
         "a",
@@ -97,21 +110,19 @@ class MemoryWriteResult:
     reason: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class _MemoryRetrievalIndexPayload:
-    record_id: int
-    user_id: int
-    text: str
-    embedding: list[float] | None
-    source_type: str
-    category: str
-    importance: int
-    created_at: int
+def _resolve_memory_retrieval_backend(
+    *,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
+) -> MemoryRetrievalBackend:
+    if backend is not None:
+        return backend
+    return get_memory_retrieval_backend(root=root)
 
 
-def _memory_item_retrieval_index_payload(item: MemoryItem) -> _MemoryRetrievalIndexPayload:
+def _memory_item_retrieval_index_payload(item: MemoryItem) -> MemoryRetrievalDocument:
     created_at = item.created_at or datetime.now(UTC)
-    return _MemoryRetrievalIndexPayload(
+    return MemoryRetrievalDocument(
         record_id=item.id,
         user_id=item.user_id,
         text=df(item.user_id, item.content, table="memory_items", field="content"),
@@ -124,48 +135,40 @@ def _memory_item_retrieval_index_payload(item: MemoryItem) -> _MemoryRetrievalIn
 
 
 def _sync_retrieval_index_payload(
-    payload: _MemoryRetrievalIndexPayload,
+    payload: MemoryRetrievalDocument,
     *,
-    root: Path | None = None,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
     mark_dirty_on_failure: bool = True,
 ) -> bool:
-    resolved_root = root or anima_core_retrieval.get_retrieval_root()
+    resolved_backend = _resolve_memory_retrieval_backend(root=root, backend=backend)
     try:
-        anima_core_retrieval.memory_index_upsert(
-            root=resolved_root,
-            record_id=payload.record_id,
-            user_id=payload.user_id,
-            text=payload.text,
-            embedding=payload.embedding,
-            source_type=payload.source_type,
-            category=payload.category,
-            importance=payload.importance,
-            created_at=payload.created_at,
-        )
-        return True
-    except RuntimeError:
-        logger.debug("Rust memory index upsert is unavailable for item %s", payload.record_id)
-        return False
+        synced = resolved_backend.upsert_memory_document(payload)
+        if not synced and mark_dirty_on_failure:
+            _mark_memory_index_dirty(backend=resolved_backend)
+        return synced
     except Exception:
         logger.warning(
-            "Failed to upsert memory item %s into the Rust retrieval index",
+            "Failed to upsert memory item %s into the retrieval index",
             payload.record_id,
             exc_info=True,
         )
         if mark_dirty_on_failure:
-            _mark_memory_index_dirty(root=resolved_root)
+            _mark_memory_index_dirty(backend=resolved_backend)
         return False
 
 
 def sync_memory_item_to_retrieval_index(
     item: MemoryItem,
     *,
-    root: Path | None = None,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
     mark_dirty_on_failure: bool = True,
 ) -> bool:
     return _sync_retrieval_index_payload(
         _memory_item_retrieval_index_payload(item),
         root=root,
+        backend=backend,
         mark_dirty_on_failure=mark_dirty_on_failure,
     )
 
@@ -174,25 +177,19 @@ def remove_memory_item_from_retrieval_index_by_id(
     *,
     user_id: int,
     item_id: int,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
 ) -> bool:
-    root = anima_core_retrieval.get_retrieval_root()
+    resolved_backend = _resolve_memory_retrieval_backend(root=root, backend=backend)
     try:
-        anima_core_retrieval.memory_index_delete(
-            root=root,
-            record_id=item_id,
-            user_id=user_id,
-        )
-        return True
-    except RuntimeError:
-        logger.debug("Rust memory index delete is unavailable for item %s", item_id)
-        return False
+        return resolved_backend.delete_memory_document(user_id=user_id, record_id=item_id)
     except Exception:
         logger.warning(
-            "Failed to delete memory item %s from the Rust retrieval index",
+            "Failed to delete memory item %s from the retrieval index",
             item_id,
             exc_info=True,
         )
-        _mark_memory_index_dirty(root=root)
+        _mark_memory_index_dirty(backend=resolved_backend)
         return False
 
 
@@ -203,16 +200,24 @@ def remove_memory_item_from_retrieval_index(item: MemoryItem) -> bool:
     )
 
 
-def _mark_memory_index_dirty(*, root) -> None:
+def _mark_memory_index_dirty(
+    *,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
+) -> None:
     try:
-        anima_core_retrieval.mark_retrieval_index_dirty(root=root, family="memory")
+        _resolve_memory_retrieval_backend(root=root, backend=backend).mark_memory_index_dirty()
     except Exception:
         logger.debug("Failed to mark memory retrieval index dirty", exc_info=True)
 
 
-def _clear_memory_index_dirty(*, root) -> None:
+def _clear_memory_index_dirty(
+    *,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
+) -> None:
     try:
-        anima_core_retrieval.clear_retrieval_index_dirty(root=root, family="memory")
+        _resolve_memory_retrieval_backend(root=root, backend=backend).clear_memory_index_dirty()
     except Exception:
         logger.debug("Failed to clear memory retrieval index dirty state", exc_info=True)
 
@@ -221,6 +226,7 @@ def invalidate_memory_retrieval_indexes(
     user_id: int,
     *,
     root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
     mark_dirty: bool = True,
 ) -> None:
     try:
@@ -234,8 +240,7 @@ def invalidate_memory_retrieval_indexes(
         return
 
     try:
-        resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
-        _mark_memory_index_dirty(root=resolved_root)
+        _mark_memory_index_dirty(root=root, backend=backend)
     except Exception:
         logger.debug("Failed to mark memory retrieval index dirty for user %s", user_id, exc_info=True)
 
@@ -247,13 +252,36 @@ def _memory_embedding_for_retrieval_index(item: MemoryItem) -> list[float] | Non
     return None
 
 
-def memory_retrieval_index_needs_rebuild(*, root: Path | str) -> bool:
-    resolved_root = Path(root)
-    if not (resolved_root / "memory" / "documents.json").exists():
+def load_canonical_memory_retrieval_documents(
+    db: Session,
+    *,
+    user_id: int,
+) -> list[MemoryRetrievalDocument]:
+    """Load active canonical memory rows for derived retrieval index rebuilds."""
+    items = list(
+        db.scalars(
+            select(MemoryItem)
+            .where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.superseded_by.is_(None),
+            )
+            .order_by(MemoryItem.created_at.desc())
+        ).all()
+    )
+    return [_memory_item_retrieval_index_payload(item) for item in items]
+
+
+def memory_retrieval_index_needs_rebuild(
+    *,
+    root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
+) -> bool:
+    resolved_backend = _resolve_memory_retrieval_backend(root=root, backend=backend)
+    if not resolved_backend.memory_documents_exist():
         return True
 
     try:
-        return anima_core_retrieval.is_retrieval_family_dirty(root=resolved_root, family="memory")
+        return resolved_backend.memory_index_is_dirty()
     except RuntimeError:
         return False
     except Exception:
@@ -266,42 +294,29 @@ def rebuild_memory_retrieval_index(
     *,
     user_id: int,
     root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
 ) -> int:
-    resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
+    resolved_backend = _resolve_memory_retrieval_backend(root=root, backend=backend)
     try:
-        anima_core_retrieval.memory_index_delete_user_documents(
-            root=resolved_root,
-            user_id=user_id,
-        )
-    except RuntimeError:
-        logger.debug("Rust memory index user purge is unavailable for user %s", user_id)
-        return 0
+        purged = resolved_backend.delete_user_memory_documents(user_id=user_id)
     except Exception:
         logger.warning(
-            "Failed to purge Rust memory retrieval documents for user %s",
+            "Failed to purge memory retrieval documents for user %s",
             user_id,
             exc_info=True,
         )
-        _mark_memory_index_dirty(root=resolved_root)
+        _mark_memory_index_dirty(backend=resolved_backend)
         return 0
-
-    items = list(
-        db.scalars(
-            select(MemoryItem)
-            .where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.superseded_by.is_(None),
-            )
-            .order_by(MemoryItem.created_at.desc())
-        ).all()
-    )
+    if not purged:
+        logger.debug("Memory retrieval document purge is unavailable for user %s", user_id)
+        return 0
 
     rebuilt = 0
     had_errors = False
-    for item in items:
-        if sync_memory_item_to_retrieval_index(
-            item,
-            root=resolved_root,
+    for payload in load_canonical_memory_retrieval_documents(db, user_id=user_id):
+        if _sync_retrieval_index_payload(
+            payload,
+            backend=resolved_backend,
             mark_dirty_on_failure=False,
         ):
             rebuilt += 1
@@ -309,9 +324,9 @@ def rebuild_memory_retrieval_index(
             had_errors = True
 
     if had_errors:
-        _mark_memory_index_dirty(root=resolved_root)
+        _mark_memory_index_dirty(backend=resolved_backend)
     else:
-        _clear_memory_index_dirty(root=resolved_root)
+        _clear_memory_index_dirty(backend=resolved_backend)
     return rebuilt
 
 
@@ -320,13 +335,14 @@ def ensure_memory_retrieval_index_ready(
     *,
     user_id: int,
     root: Path | str | None = None,
+    backend: MemoryRetrievalBackend | None = None,
 ) -> bool:
-    resolved_root = Path(root) if root is not None else anima_core_retrieval.get_retrieval_root()
-    if not memory_retrieval_index_needs_rebuild(root=resolved_root):
+    resolved_backend = _resolve_memory_retrieval_backend(root=root, backend=backend)
+    if not memory_retrieval_index_needs_rebuild(backend=resolved_backend):
         return True
 
-    rebuild_memory_retrieval_index(db, user_id=user_id, root=resolved_root)
-    return not memory_retrieval_index_needs_rebuild(root=resolved_root)
+    rebuild_memory_retrieval_index(db, user_id=user_id, backend=resolved_backend)
+    return not memory_retrieval_index_needs_rebuild(backend=resolved_backend)
 
 
 def add_memory_item(
@@ -338,6 +354,7 @@ def add_memory_item(
     importance: int = 3,
     source: str = "extraction",
     tags: list[str] | None = None,
+    salience: dict[str, object] | None = None,
 ) -> MemoryItem | None:
     content = _clean_memory_text(content)
     if not content:
@@ -359,6 +376,12 @@ def add_memory_item(
         category=category,
         importance=importance,
         source=source,
+        **memory_salience_model_kwargs(
+            salience,
+            content=content,
+            category=category,
+            importance=importance,
+        ),
     )
     if tags:
         memory_item.tags_json = [t.strip().lower() for t in tags if t.strip()]
@@ -437,6 +460,7 @@ def store_memory_item(
     allow_update: bool = False,
     defer_on_similar: bool = False,
     tags: list[str] | None = None,
+    salience: dict[str, object] | None = None,
     dry_run: bool = False,
 ) -> MemoryWriteResult:
     cleaned_content = _clean_memory_text(content)
@@ -448,6 +472,9 @@ def store_memory_item(
     )
 
     if analysis.action == "duplicate":
+        if not dry_run and analysis.matched_item is not None and salience is not None:
+            merge_salience_into_item(analysis.matched_item, salience)
+            invalidate_memory_retrieval_indexes(user_id, mark_dirty=False)
         return MemoryWriteResult(
             action="duplicate",
             matched_item=analysis.matched_item,
@@ -461,6 +488,25 @@ def store_memory_item(
                 matched_item=analysis.matched_item,
                 reason=analysis.reason,
             )
+        evolution = detect_soft_evolution(
+            category=category,
+            existing_salience=item_salience(analysis.matched_item),
+            incoming_salience=salience,
+        )
+        if evolution is not None:
+            return _create_evolved_memory_item(
+                db,
+                user_id=user_id,
+                content=cleaned_content,
+                category=category,
+                importance=importance,
+                source=source,
+                matched_item=analysis.matched_item,
+                evolution=evolution,
+                salience=salience,
+                tags=tags,
+                dry_run=dry_run,
+            )
         if dry_run:
             return MemoryWriteResult(
                 action="superseded",
@@ -472,6 +518,7 @@ def store_memory_item(
             old_item_id=analysis.matched_item.id,
             new_content=cleaned_content,
             importance=importance,
+            salience=salience,
             evidence_text=cleaned_content if source != "extraction" else None,
             evidence_source_kind=(
                 _direct_evidence_source_kind(source)
@@ -488,6 +535,33 @@ def store_memory_item(
             matched_item=analysis.matched_item,
             reason=analysis.reason,
         )
+
+    if analysis.action == "similar" and category == "relationship":
+        matched_item = _most_similar_memory_item(
+            user_id=user_id,
+            content=cleaned_content,
+            items=analysis.similar_items,
+        )
+        if matched_item is not None:
+            evolution = detect_soft_evolution(
+                category=category,
+                existing_salience=item_salience(matched_item),
+                incoming_salience=salience,
+            )
+            if evolution is not None:
+                return _create_evolved_memory_item(
+                    db,
+                    user_id=user_id,
+                    content=cleaned_content,
+                    category=category,
+                    importance=importance,
+                    source=source,
+                    matched_item=matched_item,
+                    evolution=evolution,
+                    salience=salience,
+                    tags=tags,
+                    dry_run=dry_run,
+                )
 
     if analysis.action == "similar" and defer_on_similar:
         return MemoryWriteResult(
@@ -512,6 +586,12 @@ def store_memory_item(
         category=category,
         importance=importance,
         source=source,
+        **memory_salience_model_kwargs(
+            salience,
+            content=cleaned_content,
+            category=category,
+            importance=importance,
+        ),
     )
     if tags:
         item.tags_json = [t.strip().lower() for t in tags if t.strip()]
@@ -531,6 +611,79 @@ def store_memory_item(
         item=item,
         similar_items=analysis.similar_items,
         reason=analysis.reason,
+    )
+
+
+def _create_evolved_memory_item(
+    db: Session,
+    *,
+    user_id: int,
+    content: str,
+    category: str,
+    importance: int,
+    source: str,
+    matched_item: MemoryItem,
+    evolution: SoftEvolution,
+    salience: dict[str, object] | None,
+    tags: list[str] | None,
+    dry_run: bool,
+) -> MemoryWriteResult:
+    if dry_run:
+        return MemoryWriteResult(
+            action="evolved",
+            matched_item=matched_item,
+            reason=evolution.reason,
+        )
+
+    item = MemoryItem(
+        user_id=user_id,
+        content=ef(user_id, content, table="memory_items", field="content"),
+        category=category,
+        importance=importance,
+        source=source,
+        evolves_from_item_id=matched_item.id,
+        evolution_kind=evolution.kind,
+        **memory_salience_model_kwargs(
+            salience,
+            content=content,
+            category=category,
+            importance=importance,
+        ),
+    )
+    item.stability_class = STABILITY_EVOLVING
+    matched_item.stability_class = STABILITY_EVOLVING
+    matched_item.updated_at = datetime.now(UTC)
+    db.add(item)
+    db.flush()
+    if tags:
+        _sync_tags(db, item=item, user_id=user_id, tags=tags)
+    _schedule_memory_retrieval_upsert_after_commit(
+        db,
+        user_id=user_id,
+        payload=_memory_item_retrieval_index_payload(item),
+    )
+    return MemoryWriteResult(
+        action="evolved",
+        item=item,
+        matched_item=matched_item,
+        reason=evolution.reason,
+    )
+
+
+def _most_similar_memory_item(
+    *,
+    user_id: int,
+    content: str,
+    items: tuple[MemoryItem, ...],
+) -> MemoryItem | None:
+    if not items:
+        return None
+    return max(
+        items,
+        key=lambda item: _similarity(
+            df(user_id, item.content, table="memory_items", field="content"),
+            content,
+        ),
     )
 
 
@@ -565,7 +718,7 @@ def get_memory_items_scored(
     When *query_embedding* is provided, blends the retrieval score with cosine
     similarity to the query using per-category weights.
     """
-    from sqlalchemy import or_
+    from sqlalchemy import func, or_
 
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
@@ -582,10 +735,28 @@ def get_memory_items_scored(
     )
     if category is not None:
         query = query.where(MemoryItem.category == category)
-    # Fetch a larger pool, then rank in Python
+    # Fetch complementary pools, then rank in Python. Heat-first keeps older
+    # accessed memories visible; recency-first keeps fresh unscored items from
+    # being starved before their on-the-fly heat can be computed.
     pool_limit = min(limit * 3, 200)
-    query = query.order_by(MemoryItem.created_at.desc()).limit(pool_limit)
-    items = list(db.scalars(query).all())
+    heat_ranked = list(
+        db.scalars(
+            query.order_by(
+                func.coalesce(MemoryItem.heat, 0.0).desc(),
+                MemoryItem.created_at.desc(),
+            ).limit(pool_limit)
+        ).all()
+    )
+    recent_ranked = list(
+        db.scalars(query.order_by(MemoryItem.created_at.desc()).limit(pool_limit)).all()
+    )
+    items: list[MemoryItem] = []
+    seen_ids: set[int] = set()
+    for item in (*heat_ranked, *recent_ranked):
+        if item.id in seen_ids:
+            continue
+        seen_ids.add(item.id)
+        items.append(item)
 
     if not items:
         return []
@@ -648,17 +819,9 @@ def _retrieval_score(item: MemoryItem, now: datetime) -> float:
         raw = item.heat
     else:
         # Fallback: compute heat on-the-fly for items that haven't been scored yet
-        from anima_server.services.agent.heat_scoring import compute_heat
+        from anima_server.services.agent.heat_scoring import compute_heat_for_item
 
-        ref_count = item.reference_count or 0
-        raw = compute_heat(
-            access_count=ref_count,
-            interaction_depth=ref_count,
-            last_accessed_at=item.last_referenced_at,
-            importance=float(item.importance),
-            now=now,
-            created_at=item.created_at,
-        )
+        raw = compute_heat_for_item(item, now=now)
     # Normalize: k chosen so that heat=5 maps to ~0.5 (typical mid-range
     # for a moderately accessed item with average importance).
     return raw / (raw + _HEAT_NORM_K)
@@ -711,7 +874,7 @@ def _schedule_supersede_external_index_after_commit(
     *,
     user_id: int,
     old_item_id: int,
-    new_payload: _MemoryRetrievalIndexPayload,
+    new_payload: MemoryRetrievalDocument,
 ) -> None:
     def _sync_external_indexes(_session: Session) -> None:
         with suppress(Exception):
@@ -753,7 +916,7 @@ def _schedule_memory_retrieval_upsert_after_commit(
     db: Session,
     *,
     user_id: int,
-    payload: _MemoryRetrievalIndexPayload,
+    payload: MemoryRetrievalDocument,
 ) -> None:
     def _sync_external_index(_session: Session) -> None:
         with suppress(Exception):
@@ -776,6 +939,7 @@ def supersede_memory_item(
     old_item_id: int,
     new_content: str,
     importance: int | None = None,
+    salience: dict[str, object] | None = None,
     evidence_text: str | None = None,
     evidence_source_kind: str | None = None,
     evidence_metadata: dict[str, object] | None = None,
@@ -784,12 +948,23 @@ def supersede_memory_item(
     if old_item is None:
         raise ValueError(f"Memory item {old_item_id} not found")
 
+    next_importance = importance if importance is not None else old_item.importance
+    next_salience = salience
+    if next_salience is None:
+        next_salience = serialize_memory_salience(item_salience(old_item))
+
     new_item = MemoryItem(
         user_id=old_item.user_id,
         content=ef(old_item.user_id, new_content, table="memory_items", field="content"),
         category=old_item.category,
-        importance=importance if importance is not None else old_item.importance,
+        importance=next_importance,
         source=old_item.source,
+        **memory_salience_model_kwargs(
+            next_salience,
+            content=new_content,
+            category=old_item.category,
+            importance=next_importance,
+        ),
     )
     db.add(new_item)
     db.flush()
@@ -873,6 +1048,12 @@ def set_current_focus(
         category="focus",
         importance=4,
         source="user",
+        **memory_salience_model_kwargs(
+            None,
+            content=focus,
+            category="goal",
+            importance=4,
+        ),
     )
     db.add(item)
     db.flush()
@@ -1007,7 +1188,7 @@ def _clean_memory_text(value: str) -> str:
 
 
 def _tokenize(value: str) -> list[str]:
-    return [token for token in _WORD_RE.findall(value.lower()) if token not in _TOKEN_STOPWORDS]
+    return unicode_lexical_tokens(value, stopwords=_TOKEN_STOPWORDS, min_word_chars=1)
 
 
 def _normalize_subject(value: str) -> str:

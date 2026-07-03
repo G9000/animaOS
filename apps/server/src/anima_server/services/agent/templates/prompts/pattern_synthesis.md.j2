@@ -1,0 +1,24 @@
+Extract recurring user patterns from the sampled episodes below.
+
+Only return patterns supported by evidence from at least two distinct episodes. Do not promote a one-off event, a single mention, or a generic personality guess.
+
+Return strict JSON only: an array of objects with this shape:
+[
+  {
+    "pattern": "compact reusable pattern in one sentence",
+    "category": "emotional_patterns|goals|preferences|relationships|work|values|constraints|active_projects|identity",
+    "confidence": 0.0,
+    "source_episode_ids": [1, 2],
+    "evidence": ["short quote or paraphrase from episode 1", "short quote or paraphrase from episode 2"]
+  }
+]
+
+Rules:
+- Use source_episode_ids exactly as shown below.
+- Require at least two source_episode_ids and at least two evidence strings.
+- Prefer patterns that help future support: recurring stressors, repeated goals, avoidance loops, unresolved decisions, emotional rhythms, or changing preferences.
+- Keep each pattern compact. Avoid diagnostic labels and therapy-speak.
+- Return [] if repeated evidence is not strong enough.
+
+Episodes:
+{{ episodes }}

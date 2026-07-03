@@ -9,20 +9,25 @@ Three mechanisms:
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models import (
+    ForesightSignal,
     ForgetAuditLog,
     MemoryClaim,
     MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
+    UserProfileField,
+    UserProfileFieldEvidence,
 )
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.services.data_crypto import df
@@ -41,7 +46,7 @@ SUPERSEDED_DECAY_MULTIPLIER: float = 3.0
 class DerivedReference:
     """A single derived reference found in episodes or self-model blocks."""
 
-    table: str  # "memory_episodes" or "self_model_blocks"
+    table: str  # "memory_episodes", "self_model_blocks", or "memory_items"
     record_id: int
     section: str | None = None  # for self_model_blocks: growth_log, intentions
 
@@ -52,10 +57,11 @@ class DerivedReferences:
 
     episodes: list[DerivedReference] = field(default_factory=list)
     self_model_blocks: list[DerivedReference] = field(default_factory=list)
+    pattern_items: list[DerivedReference] = field(default_factory=list)
 
     @property
     def total(self) -> int:
-        return len(self.episodes) + len(self.self_model_blocks)
+        return len(self.episodes) + len(self.self_model_blocks) + len(self.pattern_items)
 
 
 @dataclass(slots=True)
@@ -65,6 +71,15 @@ class ForgetResult:
     items_forgotten: int = 0
     derived_refs_affected: int = 0
     audit_log_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProfileForgetContext:
+    """Runtime-message fallback context for profile cleanup."""
+
+    message_ids: tuple[int, ...]
+    memory_category: str
+    content_text: str
 
 
 @dataclass(slots=True)
@@ -85,12 +100,14 @@ def find_derived_references(
     *,
     memory_content: str,
     user_id: int,
+    exclude_memory_item_ids: Iterable[int] | None = None,
 ) -> DerivedReferences:
     """Search for the memory's content in episodes and self-model blocks.
 
     Uses substring matching against:
     - memory_episodes.summary
     - self_model_blocks.content WHERE section IN ('growth_log', 'intentions')
+    - pattern memory items and evidence that cite stale source episodes
     """
     refs = DerivedReferences()
 
@@ -136,7 +153,103 @@ def find_derived_references(
                 )
             )
 
+    _find_pattern_references(
+        db,
+        refs=refs,
+        memory_content_lower=memory_content_lower,
+        user_id=user_id,
+        exclude_memory_item_ids=set(exclude_memory_item_ids or ()),
+    )
+
     return refs
+
+
+def _find_pattern_references(
+    db: Session,
+    *,
+    refs: DerivedReferences,
+    memory_content_lower: str,
+    user_id: int,
+    exclude_memory_item_ids: set[int],
+) -> None:
+    from anima_server.services.agent.pattern_synthesis import PATTERN_CATEGORY, PATTERN_SOURCE
+
+    stale_episode_ids = {ref.record_id for ref in refs.episodes}
+    seen_pattern_ids: set[int] = set()
+
+    def add_pattern_ref(item_id: int) -> None:
+        if item_id in exclude_memory_item_ids or item_id in seen_pattern_ids:
+            return
+        seen_pattern_ids.add(item_id)
+        refs.pattern_items.append(
+            DerivedReference(
+                table="memory_items",
+                record_id=item_id,
+                section=PATTERN_CATEGORY,
+            )
+        )
+
+    pattern_items = list(
+        db.scalars(
+            select(MemoryItem).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.category == PATTERN_CATEGORY,
+                MemoryItem.source == PATTERN_SOURCE,
+                MemoryItem.superseded_by.is_(None),
+            )
+        ).all()
+    )
+    for item in pattern_items:
+        if item.id in exclude_memory_item_ids:
+            continue
+        content = df(user_id, item.content, table="memory_items", field="content")
+        if memory_content_lower in content.lower():
+            add_pattern_ref(item.id)
+
+    pattern_evidence = list(
+        db.scalars(
+            select(MemoryItemEvidence)
+            .join(MemoryItem, MemoryItemEvidence.memory_item_id == MemoryItem.id)
+            .where(
+                MemoryItemEvidence.user_id == user_id,
+                MemoryItem.category == PATTERN_CATEGORY,
+                MemoryItem.source == PATTERN_SOURCE,
+                MemoryItem.superseded_by.is_(None),
+            )
+        ).all()
+    )
+    for evidence in pattern_evidence:
+        item_id = int(evidence.memory_item_id)
+        if item_id in exclude_memory_item_ids or item_id in seen_pattern_ids:
+            continue
+        evidence_text = df(
+            user_id,
+            evidence.evidence_text,
+            table="memory_item_evidence",
+            field="evidence_text",
+        )
+        if memory_content_lower in evidence_text.lower():
+            add_pattern_ref(item_id)
+            continue
+        if stale_episode_ids & _metadata_source_episode_ids(evidence.metadata_json):
+            add_pattern_ref(item_id)
+
+
+def _metadata_source_episode_ids(metadata: dict[str, object] | None) -> set[int]:
+    if not isinstance(metadata, dict):
+        return set()
+    raw_ids = metadata.get("source_episode_ids")
+    if not isinstance(raw_ids, list):
+        return set()
+    parsed_ids: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            parsed = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            parsed_ids.add(parsed)
+    return parsed_ids
 
 
 def redact_derived_references(
@@ -152,6 +265,7 @@ def redact_derived_references(
     - immediate_redact: replace the citation text with '[redacted]'
     """
     count = 0
+    pattern_cleanup_ids_by_user: dict[int, list[int]] = {}
 
     for ep_ref in refs.episodes:
         episode = db.get(MemoryEpisode, ep_ref.record_id)
@@ -180,8 +294,28 @@ def redact_derived_references(
             )
         count += 1
 
+    for pattern_ref in refs.pattern_items:
+        item = db.get(MemoryItem, pattern_ref.record_id)
+        if item is None:
+            continue
+        pattern_cleanup_ids_by_user.setdefault(int(item.user_id), []).append(int(item.id))
+        db.execute(
+            delete(MemoryItemEvidence).where(
+                MemoryItemEvidence.user_id == item.user_id,
+                MemoryItemEvidence.memory_item_id == item.id,
+            )
+        )
+        db.delete(item)
+        count += 1
+
     if count > 0:
         db.flush()
+    for user_id, item_ids in pattern_cleanup_ids_by_user.items():
+        _schedule_forget_external_cleanup_after_commit(
+            db,
+            user_id=user_id,
+            item_ids=item_ids,
+        )
     return count
 
 
@@ -213,7 +347,12 @@ def suppress_memory(
     content = df(user_id, memory.content, table="memory_items", field="content")
 
     # Find and flag derived references
-    refs = find_derived_references(db, memory_content=content, user_id=user_id)
+    refs = find_derived_references(
+        db,
+        memory_content=content,
+        user_id=user_id,
+        exclude_memory_item_ids=(memory_id, superseded_by),
+    )
     if refs.total > 0:
         result.derived_refs_flagged = redact_derived_references(
             db,
@@ -246,6 +385,7 @@ def forget_memory(
     memory_id: int,
     user_id: int,
     trigger: str = "user_request",
+    runtime_db_factory: Callable[[], Session] | None = None,
 ) -> ForgetResult:
     """Hard-delete a memory item with full cleanup.
 
@@ -284,7 +424,12 @@ def forget_memory(
     # 2. Find and flag derived references for ALL items in the chain
     for item in chain_items:
         item_content = df(user_id, item.content, table="memory_items", field="content")
-        refs = find_derived_references(db, memory_content=item_content, user_id=user_id)
+        refs = find_derived_references(
+            db,
+            memory_content=item_content,
+            user_id=user_id,
+            exclude_memory_item_ids=chain_ids,
+        )
         if refs.total > 0:
             result.derived_refs_affected += redact_derived_references(
                 db,
@@ -299,6 +444,65 @@ def forget_memory(
                 MemoryClaim.memory_item_id.in_(chain_ids),
             )
         ).all()
+    )
+    claim_ids = [claim.id for claim in all_claims]
+    claim_evidence_ids = (
+        list(
+            db.scalars(
+                select(MemoryClaimEvidence.id).where(
+                    MemoryClaimEvidence.claim_id.in_(claim_ids),
+                )
+            ).all()
+        )
+        if claim_ids
+        else []
+    )
+    memory_evidence = list(
+        db.scalars(
+            select(MemoryItemEvidence).where(
+                MemoryItemEvidence.user_id == user_id,
+                MemoryItemEvidence.memory_item_id.in_(chain_ids),
+            )
+        ).all()
+    )
+    memory_evidence_ids = [evidence.id for evidence in memory_evidence]
+    evidence_by_item_id: dict[int, list[MemoryItemEvidence]] = {}
+    for evidence in memory_evidence:
+        evidence_by_item_id.setdefault(evidence.memory_item_id, []).append(evidence)
+    source_message_ids = sorted(
+        {
+            message_id
+            for evidence in memory_evidence
+            for message_id in _runtime_message_ids_for_memory_evidence(evidence)
+        }
+    )
+    runtime_contexts = _runtime_profile_forget_contexts(
+        user_id=user_id,
+        chain_items=chain_items,
+        evidence_by_item_id=evidence_by_item_id,
+    )
+    _delete_foresight_signals_for_forget(
+        db,
+        user_id=user_id,
+        source_message_ids=source_message_ids,
+        forgotten_texts=(
+            df(user_id, item.content, table="memory_items", field="content")
+            for item in chain_items
+        ),
+    )
+    _delete_profile_fields_for_forget(
+        db,
+        user_id=user_id,
+        source_memory_ids=chain_ids,
+        source_evidence_ids=memory_evidence_ids,
+        source_claim_evidence_ids=claim_evidence_ids,
+        runtime_contexts=runtime_contexts,
+    )
+    _schedule_profile_candidate_rejection_after_commit(
+        db,
+        user_id=user_id,
+        runtime_contexts=runtime_contexts,
+        runtime_db_factory=runtime_db_factory,
     )
     for claim in all_claims:
         db.execute(
@@ -341,6 +545,634 @@ def forget_memory(
     result.audit_log_id = log.id
 
     return result
+
+
+def _delete_foresight_signals_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    source_message_ids: Iterable[int],
+    forgotten_texts: Iterable[str],
+) -> int:
+    forgotten_source_ids = _coerce_message_id_set(source_message_ids)
+    if not forgotten_source_ids:
+        return 0
+    forgotten_tokens = _combined_meaningful_tokens(forgotten_texts)
+    if not forgotten_tokens:
+        return 0
+
+    deleted = 0
+    signals = list(
+        db.scalars(
+            select(ForesightSignal).where(ForesightSignal.user_id == user_id)
+        ).all()
+    )
+    for signal in signals:
+        signal_source_ids = _coerce_message_id_set(signal.source_message_ids_json)
+        if not signal_source_ids.intersection(forgotten_source_ids):
+            continue
+        if not _foresight_signal_matches_forgotten_text(
+            user_id=user_id,
+            signal=signal,
+            forgotten_tokens=forgotten_tokens,
+        ):
+            continue
+        db.delete(signal)
+        deleted += 1
+    return deleted
+
+
+def _coerce_message_id_set(raw_ids: Iterable[object] | None) -> set[int]:
+    ids: set[int] = set()
+    for raw_id in raw_ids or []:
+        if raw_id is None:
+            continue
+        with suppress(TypeError, ValueError):
+            ids.add(int(raw_id))
+    return ids
+
+
+def _foresight_signal_matches_forgotten_text(
+    *,
+    user_id: int,
+    signal: ForesightSignal,
+    forgotten_tokens: set[str],
+) -> bool:
+    signal_text = " ".join(
+        filter(
+            None,
+            [
+                df(
+                    user_id,
+                    signal.content,
+                    table="foresight_signals",
+                    field="content",
+                ),
+                df(
+                    user_id,
+                    signal.evidence,
+                    table="foresight_signals",
+                    field="evidence",
+                ),
+                signal.relative_text or "",
+            ],
+        )
+    )
+    signal_tokens = _meaningful_relation_tokens(signal_text)
+    shared = forgotten_tokens & signal_tokens
+    return len(shared) >= 2 and any(len(token) >= 5 for token in shared)
+
+
+def _combined_meaningful_tokens(texts: Iterable[str]) -> set[str]:
+    tokens: set[str] = set()
+    for text in texts:
+        tokens.update(_meaningful_relation_tokens(text))
+    return tokens
+
+
+def _delete_profile_fields_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    source_memory_ids: list[int],
+    source_evidence_ids: list[int],
+    source_claim_evidence_ids: list[int],
+    runtime_contexts: list[RuntimeProfileForgetContext],
+) -> int:
+    field_criteria = [
+        UserProfileField.source_memory_id.in_(source_memory_ids),
+    ]
+    evidence_criteria = [
+        UserProfileFieldEvidence.source_memory_id.in_(source_memory_ids),
+    ]
+    if source_evidence_ids:
+        field_criteria.append(
+            UserProfileField.source_evidence_id.in_(source_evidence_ids)
+        )
+        evidence_criteria.append(
+            UserProfileFieldEvidence.source_evidence_id.in_(source_evidence_ids)
+        )
+    if source_claim_evidence_ids:
+        field_criteria.append(
+            UserProfileField.source_claim_evidence_id.in_(source_claim_evidence_ids)
+        )
+        evidence_criteria.append(
+            UserProfileFieldEvidence.source_claim_evidence_id.in_(
+                source_claim_evidence_ids,
+            )
+        )
+    matching_evidence = list(
+        db.scalars(
+            select(UserProfileFieldEvidence).where(
+                UserProfileFieldEvidence.user_id == user_id,
+                or_(*evidence_criteria),
+            )
+        ).all()
+    )
+    seen_evidence_ids = {evidence.id for evidence in matching_evidence}
+    for evidence in _matching_runtime_profile_evidence(
+        db,
+        user_id=user_id,
+        runtime_contexts=runtime_contexts,
+    ):
+        if evidence.id in seen_evidence_ids:
+            continue
+        matching_evidence.append(evidence)
+        seen_evidence_ids.add(evidence.id)
+    matching_evidence_by_field: dict[int, list[UserProfileFieldEvidence]] = {}
+    for evidence in matching_evidence:
+        matching_evidence_by_field.setdefault(evidence.profile_field_id, []).append(
+            evidence
+        )
+    field_ids = set(matching_evidence_by_field)
+    field_ids.update(
+        db.scalars(
+            select(UserProfileField.id).where(
+                UserProfileField.user_id == user_id,
+                or_(*field_criteria),
+            )
+        ).all()
+    )
+    if not field_ids:
+        return 0
+
+    now = datetime.now(UTC)
+    deleted_count = 0
+    for field_id in sorted(field_ids):
+        field = db.get(UserProfileField, field_id)
+        if field is None or field.user_id != user_id:
+            continue
+        matching_ids = [
+            evidence.id for evidence in matching_evidence_by_field.get(field_id, [])
+        ]
+        surviving_query = select(UserProfileFieldEvidence).where(
+            UserProfileFieldEvidence.user_id == user_id,
+            UserProfileFieldEvidence.profile_field_id == field.id,
+        )
+        if matching_ids:
+            surviving_query = surviving_query.where(
+                ~UserProfileFieldEvidence.id.in_(matching_ids)
+            )
+        surviving_evidence_rows = list(
+            db.scalars(surviving_query.order_by(UserProfileFieldEvidence.id.desc())).all()
+        )
+        if not surviving_evidence_rows:
+            evidence_to_delete = {
+                evidence.id: evidence
+                for evidence in matching_evidence_by_field.get(field_id, [])
+            }
+            for evidence in db.scalars(
+                select(UserProfileFieldEvidence).where(
+                    UserProfileFieldEvidence.user_id == user_id,
+                    UserProfileFieldEvidence.profile_field_id == field.id,
+                )
+            ).all():
+                evidence_to_delete[evidence.id] = evidence
+            for evidence in evidence_to_delete.values():
+                db.delete(evidence)
+            _restore_previous_profile_field_before_delete(
+                db,
+                user_id=user_id,
+                replacement_field=field,
+                now=now,
+            )
+            db.delete(field)
+            deleted_count += 1
+            continue
+
+        surviving_evidence = surviving_evidence_rows[0]
+        for evidence in matching_evidence_by_field.get(field_id, []):
+            db.delete(evidence)
+        observed_values = [
+            evidence.observed_at
+            for evidence in surviving_evidence_rows
+            if evidence.observed_at is not None
+        ]
+        field.source_kind = surviving_evidence.source_kind
+        field.source_memory_id = surviving_evidence.source_memory_id
+        field.source_evidence_id = surviving_evidence.source_evidence_id
+        field.source_claim_evidence_id = surviving_evidence.source_claim_evidence_id
+        field.first_observed_at = min(observed_values) if observed_values else None
+        field.last_observed_at = max(observed_values) if observed_values else None
+        field.updated_at = now
+    db.flush()
+    return deleted_count
+
+
+def _restore_previous_profile_field_before_delete(
+    db: Session,
+    *,
+    user_id: int,
+    replacement_field: UserProfileField,
+    now: datetime,
+) -> None:
+    previous_fields = list(
+        db.scalars(
+            select(UserProfileField)
+            .where(
+                UserProfileField.user_id == user_id,
+                UserProfileField.category == replacement_field.category,
+                UserProfileField.key == replacement_field.key,
+                UserProfileField.superseded_by_id == replacement_field.id,
+            )
+            .order_by(UserProfileField.updated_at.desc(), UserProfileField.id.desc())
+        ).all()
+    )
+    restored = False
+    for previous in previous_fields:
+        previous.superseded_by_id = None
+        if restored or previous.status != "superseded":
+            continue
+        has_surviving_evidence = db.scalar(
+            select(UserProfileFieldEvidence.id)
+            .where(
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.profile_field_id == previous.id,
+            )
+            .limit(1)
+        )
+        if has_surviving_evidence is None:
+            continue
+        previous.status = "active"
+        previous.updated_at = now
+        restored = True
+
+
+def _runtime_profile_forget_contexts(
+    *,
+    user_id: int,
+    chain_items: list[MemoryItem],
+    evidence_by_item_id: dict[int, list[MemoryItemEvidence]],
+) -> list[RuntimeProfileForgetContext]:
+    contexts: list[RuntimeProfileForgetContext] = []
+    for item in chain_items:
+        message_ids = sorted(
+            {
+                message_id
+                for evidence in evidence_by_item_id.get(item.id, [])
+                for message_id in _runtime_message_ids_for_memory_evidence(evidence)
+            }
+        )
+        if not message_ids:
+            continue
+        content_text = df(
+            user_id,
+            item.content,
+            table="memory_items",
+            field="content",
+        ).strip()
+        if not content_text:
+            continue
+        contexts.append(
+            RuntimeProfileForgetContext(
+                message_ids=tuple(message_ids),
+                memory_category=item.category,
+                content_text=content_text,
+            )
+        )
+    return contexts
+
+
+def _matching_runtime_profile_evidence(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_contexts: list[RuntimeProfileForgetContext],
+) -> list[UserProfileFieldEvidence]:
+    contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
+    for context in runtime_contexts:
+        for message_id in context.message_ids:
+            contexts_by_message_id.setdefault(message_id, []).append(context)
+    if not contexts_by_message_id:
+        return []
+
+    candidates = list(
+        db.scalars(
+            select(UserProfileFieldEvidence).where(
+                UserProfileFieldEvidence.user_id == user_id,
+                UserProfileFieldEvidence.runtime_message_id.in_(
+                    sorted(contexts_by_message_id)
+                ),
+            )
+        ).all()
+    )
+    matched: list[UserProfileFieldEvidence] = []
+    for evidence in candidates:
+        if evidence.runtime_message_id is None:
+            continue
+        field = db.get(UserProfileField, evidence.profile_field_id)
+        if field is None or field.user_id != user_id:
+            continue
+        if _runtime_profile_evidence_matches_context(
+            user_id=user_id,
+            field=field,
+            evidence=evidence,
+            contexts=contexts_by_message_id.get(evidence.runtime_message_id, []),
+        ):
+            matched.append(evidence)
+    return matched
+
+
+def _runtime_profile_evidence_matches_context(
+    *,
+    user_id: int,
+    field: UserProfileField,
+    evidence: UserProfileFieldEvidence,
+    contexts: list[RuntimeProfileForgetContext],
+) -> bool:
+    profile_texts = [
+        df(
+            user_id,
+            field.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        ),
+        df(
+            user_id,
+            evidence.evidence_text,
+            table="user_profile_field_evidence",
+            field="evidence_text",
+        ),
+    ]
+    for context in contexts:
+        if not _profile_category_can_derive_from_memory_category(
+            profile_category=field.category,
+            memory_category=context.memory_category,
+        ):
+            continue
+        if any(
+            _texts_are_related(
+                context.content_text,
+                text,
+                profile_category=field.category,
+                profile_key=field.key,
+            )
+            for text in profile_texts
+        ):
+            return True
+    return False
+
+
+def _profile_category_can_derive_from_memory_category(
+    *,
+    profile_category: str,
+    memory_category: str,
+) -> bool:
+    category_map = {
+        "preference": {"preferences"},
+        "goal": {"goals"},
+        "relationship": {"relationships"},
+        "focus": {"active_projects"},
+    }
+    allowed = category_map.get(memory_category)
+    if allowed is None:
+        return True
+    return profile_category in allowed
+
+
+def _texts_are_related(
+    source: str,
+    target: str,
+    *,
+    profile_category: str = "",
+    profile_key: str = "",
+) -> bool:
+    source_text = _normalize_relation_text(source)
+    target_text = _normalize_relation_text(target)
+    if not source_text or not target_text:
+        return False
+
+    source_tokens = _meaningful_relation_tokens(source_text)
+    target_tokens = _meaningful_relation_tokens(target_text)
+    shared = source_tokens & target_tokens
+    if len(shared) >= 2:
+        return True
+    if (
+        shared
+        and (source_text in target_text or target_text in source_text)
+        and len(source_tokens) >= 2
+    ):
+        if len(target_tokens) >= 2:
+            return True
+        return _profile_metadata_supports_relation(
+            source_tokens,
+            profile_category=profile_category,
+            profile_key=profile_key,
+        )
+    if any(token.isdigit() or len(token) >= 5 for token in shared):
+        return _profile_metadata_supports_relation(
+            source_tokens,
+            profile_category=profile_category,
+            profile_key=profile_key,
+        )
+    return False
+
+
+def _profile_metadata_supports_relation(
+    source_tokens: set[str],
+    *,
+    profile_category: str,
+    profile_key: str,
+) -> bool:
+    metadata_tokens = _meaningful_relation_tokens(f"{profile_category} {profile_key}")
+    metadata_tokens.update(
+        _PROFILE_RELATION_SOURCE_ALIASES.get((profile_category, profile_key), set())
+    )
+    return bool(source_tokens & metadata_tokens)
+
+
+_RELATION_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_PROFILE_RELATION_SOURCE_ALIASES: dict[tuple[str, str], set[str]] = {
+    ("identity", "location"): {
+        "based",
+        "live",
+        "lives",
+        "living",
+        "located",
+        "location",
+        "reside",
+        "resides",
+    },
+}
+_RELATION_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "am",
+    "for",
+    "i",
+    "in",
+    "im",
+    "is",
+    "my",
+    "of",
+    "on",
+    "the",
+    "to",
+}
+
+
+def _normalize_relation_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.casefold()).strip()
+
+
+def _meaningful_relation_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in _RELATION_TOKEN_RE.findall(text):
+        normalized = token
+        if len(normalized) > 3 and normalized.endswith("s"):
+            normalized = normalized[:-1]
+        if normalized in _RELATION_STOP_WORDS:
+            continue
+        tokens.add(normalized)
+    return tokens
+
+
+def _runtime_message_ids_for_memory_evidence(evidence: MemoryItemEvidence) -> list[int]:
+    ids: list[int] = []
+    if evidence.runtime_message_id is not None:
+        ids.append(int(evidence.runtime_message_id))
+    for raw_id in evidence.runtime_message_ids_json or []:
+        if raw_id is None:
+            continue
+        ids.append(int(raw_id))
+    return ids
+
+
+def _schedule_profile_candidate_rejection_after_commit(
+    db: Session,
+    *,
+    user_id: int,
+    runtime_contexts: list[RuntimeProfileForgetContext],
+    runtime_db_factory: Callable[[], Session] | None,
+) -> None:
+    if runtime_db_factory is None:
+        return
+    message_ids = tuple(
+        sorted(
+            {
+                message_id
+                for context in runtime_contexts
+                for message_id in context.message_ids
+            }
+        )
+    )
+    if not message_ids:
+        return
+
+    contexts = tuple(runtime_contexts)
+
+    def _cleanup(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_rollback", _discard)
+
+        try:
+            with runtime_db_factory() as runtime_db:
+                _reject_profile_candidates_for_forget_contexts(
+                    runtime_db,
+                    user_id=user_id,
+                    runtime_contexts=list(contexts),
+                )
+                runtime_db.commit()
+        except Exception:
+            logger.debug(
+                "Profile candidate rejection failed for messages %s",
+                message_ids,
+                exc_info=True,
+            )
+
+    def _discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(db, "after_commit", _cleanup)
+
+    event.listen(db, "after_commit", _cleanup, once=True)
+    event.listen(db, "after_rollback", _discard, once=True)
+
+
+def _reject_profile_candidates_for_forget_contexts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    runtime_contexts: list[RuntimeProfileForgetContext],
+) -> int:
+    from anima_server.models.runtime_memory import ProfileUpdateCandidate
+
+    contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
+    for context in runtime_contexts:
+        for message_id in context.message_ids:
+            contexts_by_message_id.setdefault(message_id, []).append(context)
+    if not contexts_by_message_id:
+        return 0
+
+    candidates = list(
+        runtime_db.scalars(
+            select(ProfileUpdateCandidate).where(
+                ProfileUpdateCandidate.user_id == user_id,
+                ProfileUpdateCandidate.status.in_(["extracted", "queued", "failed"]),
+            )
+        ).all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for candidate in candidates:
+        matched_contexts = [
+            context
+            for message_id in _source_message_ids_for_profile_candidate(candidate)
+            for context in contexts_by_message_id.get(message_id, [])
+        ]
+        if not matched_contexts:
+            continue
+        if not _runtime_profile_candidate_matches_context(
+            candidate=candidate,
+            contexts=matched_contexts,
+        ):
+            continue
+        candidate.status = "rejected"
+        candidate.last_error = "Source memory forgotten before profile promotion"
+        candidate.processed_at = now
+        rejected += 1
+    if rejected:
+        runtime_db.flush()
+    return rejected
+
+
+def _source_message_ids_for_profile_candidate(candidate: object) -> list[int]:
+    ids: list[int] = []
+    for raw_id in getattr(candidate, "source_message_ids", None) or []:
+        if raw_id is None:
+            continue
+        ids.append(int(raw_id))
+    return ids
+
+
+def _runtime_profile_candidate_matches_context(
+    *,
+    candidate: object,
+    contexts: list[RuntimeProfileForgetContext],
+) -> bool:
+    profile_category = str(getattr(candidate, "category", "") or "")
+    profile_texts = [
+        str(getattr(candidate, "value", "") or ""),
+        str(getattr(candidate, "evidence_text", "") or ""),
+    ]
+    for context in contexts:
+        if not _profile_category_can_derive_from_memory_category(
+            profile_category=profile_category,
+            memory_category=context.memory_category,
+        ):
+            continue
+        if any(
+            _texts_are_related(
+                context.content_text,
+                text,
+                profile_category=profile_category,
+                profile_key=str(getattr(candidate, "key", "") or ""),
+            )
+            for text in profile_texts
+        ):
+            return True
+    return False
 
 
 def _schedule_forget_external_cleanup_after_commit(
