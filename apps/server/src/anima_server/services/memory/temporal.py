@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from anima_server.services.memory_v2.domain import (
+from anima_server.services.memory.domain import (
     ACTIVE_TEMPORAL_STATUSES,
     HISTORICAL_TEMPORAL_STATUSES,
     TERMINAL_FORESIGHT_STATUSES,

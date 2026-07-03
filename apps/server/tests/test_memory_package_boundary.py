@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 
-def test_memory_v2_domain_exports_stable_string_contracts() -> None:
-    from anima_server.services.memory_v2 import domain
+def test_memory_domain_exports_stable_string_contracts() -> None:
+    from anima_server.services.memory import domain
 
     assert domain.TemporalRecordStatus.ACTIVE == "active"
     assert domain.TemporalRecordStatus.SUPERSEDED == "superseded"
@@ -25,9 +25,9 @@ def test_memory_v2_domain_exports_stable_string_contracts() -> None:
     assert breakdown.vector == 0.75
 
 
-def test_memory_v2_salience_facade_delegates_existing_agent_implementation() -> None:
+def test_memory_salience_facade_delegates_existing_agent_implementation() -> None:
     from anima_server.services.agent import memory_salience as agent_salience
-    from anima_server.services.memory_v2 import salience
+    from anima_server.services.memory import salience
 
     assert salience.MemorySalience is agent_salience.MemorySalience
     assert salience.MEMORY_CLASS_IDENTITY == agent_salience.MEMORY_CLASS_IDENTITY
@@ -45,9 +45,9 @@ def test_memory_v2_salience_facade_delegates_existing_agent_implementation() -> 
     assert normalized["decay_class"] == "anchored"
 
 
-def test_memory_v2_retrieval_facade_delegates_existing_agent_implementation() -> None:
+def test_memory_retrieval_facade_delegates_existing_agent_implementation() -> None:
     from anima_server.services.agent import retrieval_backends as agent_retrieval
-    from anima_server.services.memory_v2 import retrieval
+    from anima_server.services.memory import retrieval
 
     assert retrieval.MemoryRetrievalDocument is agent_retrieval.MemoryRetrievalDocument
     assert retrieval.MemoryRetrievalHit is agent_retrieval.MemoryRetrievalHit
@@ -55,8 +55,8 @@ def test_memory_v2_retrieval_facade_delegates_existing_agent_implementation() ->
     assert retrieval.get_memory_retrieval_backend is agent_retrieval.get_memory_retrieval_backend
 
 
-def test_memory_v2_temporal_helpers_normalize_stable_status_contracts() -> None:
-    from anima_server.services.memory_v2 import temporal
+def test_memory_temporal_helpers_normalize_stable_status_contracts() -> None:
+    from anima_server.services.memory import temporal
 
     assert temporal.normalize_temporal_status(" SUPERSEDED ") == "superseded"
     assert temporal.normalize_temporal_status("unknown") == "active"

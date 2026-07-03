@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 15:56 MYT
+- Updated: 2026-07-03 16:04 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -30,7 +30,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-008` | Foresight signals | `done` | `SUM-002` |
 | `SUM-009` | Procedural experience and skill memory | `done` | `SUM-005` |
 | `SUM-010` | Optional external adapter seams | `done` | `SUM-003`, `SUM-005` |
-| `SUM-011` | Memory v2 package boundary | `done` | `SUM-001`, `SUM-003`, `SUM-006`, `SUM-010` |
+| `SUM-011` | Memory package boundary | `done` | `SUM-001`, `SUM-003`, `SUM-006`, `SUM-010` |
 
 ## Deliverables
 
@@ -44,7 +44,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - Foresight signal extraction and lifecycle.
 - Procedural experience extraction, clustering, and skill distillation.
 - Optional external adapter seams that preserve SQLCipher as canonical storage.
-- Stable memory v2 package boundary with compatibility facades over existing agent implementations.
+- Stable memory package boundary with compatibility facades over existing agent implementations.
 
 ## Acceptance
 
@@ -65,7 +65,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-008` - Foresight signals (completed 2026-07-03 03:36 MYT)
 - `SUM-009` - Procedural experience and skill memory (completed 2026-07-03 03:36 MYT)
 - `SUM-010` - Optional external adapter seams (completed 2026-07-03 15:08 MYT)
-- `SUM-011` - Memory v2 package boundary (completed 2026-07-03 15:56 MYT)
+- `SUM-011` - Memory package boundary (completed 2026-07-03 16:04 MYT)
 
 ## Activity Log
 
@@ -147,7 +147,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 14:32 MYT - `SUM-008` addressed PR #77 current-head review feedback for short-event cancellation matching.
 - 2026-07-03 15:04 MYT - `SUM-010` claimed by Codex on branch `codex/sum-010-optional-external-adapter-seams`, based on PR #67 head.
 - 2026-07-03 15:08 MYT - `SUM-010` completed with optional retrieval adapter seams, native backend contract tests, canonical rebuild docs, and validation.
-- 2026-07-03 15:56 MYT - `SUM-011` completed in detached PR #67 worktree with a minimal `services.memory_v2` package boundary, domain/status contracts, salience/retrieval facades, temporal helpers, focused boundary tests, and architecture reference.
+- 2026-07-03 15:56 MYT - `SUM-011` completed in detached PR #67 worktree with a minimal package boundary, domain/status contracts, salience/retrieval facades, temporal helpers, focused boundary tests, and architecture reference.
+- 2026-07-03 16:04 MYT - `SUM-011` boundary renamed to `services.memory`; test, docs, and ticket paths updated.
 
 ## Validation
 
@@ -159,17 +160,20 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `git diff --check` - SUM-010 whitespace check: passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-010 build: passed after `bun install --frozen-lockfile` prepared the fresh worktree dependencies; existing Vite chunk-size warning remained.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-010 health smoke for `GET /health`: 200 ok.
-  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_v2_package_boundary.py` - SUM-011 package-boundary test failed before implementation with `ModuleNotFoundError: No module named 'anima_server.services.memory_v2'`.
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_v2_package_boundary.py` - SUM-011 package-boundary test: 4 passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 package-boundary test failed before implementation with `ModuleNotFoundError: No module named 'anima_server.services.memory'`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 package-boundary test: 4 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 server lint initially failed on unsorted `domain.__all__`.
-  - `uv run --project apps/server ruff check apps/server/src/anima_server/services/memory_v2/domain.py --select RUF022 --fix` - SUM-011 lint fix sorted `domain.__all__`.
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_v2_package_boundary.py` - SUM-011 package-boundary test after lint fix: 4 passed.
+  - `uv run --project apps/server ruff check apps/server/src/anima_server/services/memory/domain.py --select RUF022 --fix` - SUM-011 lint fix sorted `domain.__all__`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 package-boundary test after lint fix: 4 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 server lint: passed.
   - `git diff --check` - SUM-011 whitespace check: passed with existing CRLF normalization warnings for edited markdown files.
-  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_v2_package_boundary.py` - SUM-011 controller rerun after domain contract review: 4 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 controller rerun after domain contract review: 4 passed.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 controller rerun: passed.
   - `git diff --check` - SUM-011 controller rerun: passed with existing CRLF normalization warnings for edited markdown files.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build:server` - SUM-011 controller server build: passed.
+  - Search for the old package path/name across code, tests, memory docs, and memory tickets - SUM-011 rename check: no matches outside historical initiative titles.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_memory_package_boundary.py` - SUM-011 rename validation: 4 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-011 rename validation: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens` - SUM-008 PR #77 current-head review regression failed before fix because `That meeting got cancelled.` did not cancel `User has a meeting`.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens apps/server/tests/test_foresight.py::test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled` - SUM-008 PR #77 current-head review cancellation regressions: 2 passed, 2 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 current-head review foresight suite: 14 passed, 11 warnings.
@@ -406,13 +410,13 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - docs/architecture/memory/memory-system.md
   - tickets/single-user-temporal-memory-v2/SUM-010-optional-external-adapter-seams.md
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
-  - apps/server/src/anima_server/services/memory_v2/__init__.py
-  - apps/server/src/anima_server/services/memory_v2/domain.py
-  - apps/server/src/anima_server/services/memory_v2/retrieval.py
-  - apps/server/src/anima_server/services/memory_v2/salience.py
-  - apps/server/src/anima_server/services/memory_v2/temporal.py
-  - apps/server/tests/test_memory_v2_package_boundary.py
-  - tickets/single-user-temporal-memory-v2/SUM-011-memory-v2-package-boundary.md
+  - apps/server/src/anima_server/services/memory/__init__.py
+  - apps/server/src/anima_server/services/memory/domain.py
+  - apps/server/src/anima_server/services/memory/retrieval.py
+  - apps/server/src/anima_server/services/memory/salience.py
+  - apps/server/src/anima_server/services/memory/temporal.py
+  - apps/server/tests/test_memory_package_boundary.py
+  - tickets/single-user-temporal-memory-v2/SUM-011-memory-package-boundary.md
   - apps/server/alembic_core/versions/20260701_0003_add_memory_salience.py
   - apps/server/alembic_core/versions/20260703_0001_create_foresight_signals.py
   - apps/server/alembic_core/versions/20260703_0002_create_agent_experience_memory.py
@@ -470,7 +474,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - Notes:
   - SUM-010 adds a narrow retrieval backend protocol with the native local index as default, plus canonical SQLCipher rebuild helpers and docs for optional Weaviate/Qdrant/LanceDB-style adapters.
   - SUM-010 intentionally defers graph backend seams until native temporal KG semantics are stable enough to contract-test separately.
-  - SUM-011 adds a minimal `services.memory_v2` package boundary with `TemporalRecordStatus`, `MemoryEndpointKind`, `RecallScoreBreakdown`, and compatibility facades while leaving existing `services.agent` production imports unchanged.
+  - SUM-011 adds a minimal `services.memory` package boundary with `TemporalRecordStatus`, `MemoryEndpointKind`, `RecallScoreBreakdown`, and compatibility facades while leaving existing `services.agent` production imports unchanged.
   - SUM-008 PR #77 current-head review fix cancels a signal when all stored event tokens appear in the cancellation sentence, preserving the older overlap threshold as fallback for longer phrasing.
   - SUM-008/SUM-009 PR #77 current-head review fix adds foresight and procedural memory tables to vault JSON and anima capsule exports/imports with import-time field re-encryption.
   - SUM-008 PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the follow-up window and strips articles after task verbs.

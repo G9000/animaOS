@@ -927,7 +927,7 @@ Portability guarantee: copy `.anima/` directory, enter passphrase on new machine
 | `embeddings.py` | Embedding generation, hybrid search (BM25 F1 + semantic), heat floor, adaptive filter |
 | `vector_store.py` | VectorStore facade that uses runtime PostgreSQL/pgvector via `pgvec_store.py` when available, with an in-memory degraded fallback |
 | `retrieval_backends.py` | Rebuildable memory retrieval backend contract with the native local implementation as default |
-| `services/memory_v2/` | Stable package boundary for memory v2 domain contracts and compatibility facades over existing agent implementations |
+| `services/memory/` | Stable package boundary for memory domain contracts and compatibility facades over existing agent implementations |
 | `bm25_index.py` | **F1** — BM25Okapi lexical search index (per-user, in-memory) |
 | `heat_scoring.py` | **F2** — Heat formula, exponential decay, visibility floor |
 | `predict_calibrate.py` | **F3** — Two-stage extraction with quality gate |
