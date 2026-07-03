@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-07-03
+
+- added a Mermaid architecture snapshot to the Single-User Temporal Memory PRD covering the shared memory contract boundary, SQLCipher-backed durable memory records, recall routing, background cognition, and cleanup paths
+
 ## 2026-06-29
 
 - documented local runtime daemon build, run, desktop release staging, default runtime launch behavior, data directory behavior, and key environment overrides
