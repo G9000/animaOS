@@ -376,6 +376,32 @@ class TestForgetMemory:
         assert db.get(ForesightSignal, unrelated.id) is not None
         assert db.get(ForesightSignal, other_user.id) is not None
 
+    def test_forget_preserves_unrelated_foresight_from_same_source_turn(self, db: Session):
+        item = _make_item(db, content="User likes sushi")
+        db.add(
+            MemoryItemEvidence(
+                user_id=1,
+                memory_item_id=item.id,
+                source_kind="conversation",
+                evidence_text=(
+                    "I like sushi and I have a dentist appointment tomorrow"
+                ),
+                runtime_message_ids_json=[102],
+            )
+        )
+        unrelated_foresight = ForesightSignal(
+            user_id=1,
+            content="User has a dentist appointment tomorrow",
+            evidence="I have a dentist appointment tomorrow",
+            source_message_ids_json=[102],
+        )
+        db.add(unrelated_foresight)
+        db.flush()
+
+        forget_memory(db, memory_id=item.id, user_id=1)
+
+        assert db.get(ForesightSignal, unrelated_foresight.id) is not None
+
     def test_forget_defers_retrieval_index_cleanup_until_after_commit(
         self,
         monkeypatch: pytest.MonkeyPatch,

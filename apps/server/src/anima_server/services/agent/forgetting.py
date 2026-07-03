@@ -485,6 +485,10 @@ def forget_memory(
         db,
         user_id=user_id,
         source_message_ids=source_message_ids,
+        forgotten_texts=(
+            df(user_id, item.content, table="memory_items", field="content")
+            for item in chain_items
+        ),
     )
     _delete_profile_fields_for_forget(
         db,
@@ -548,9 +552,13 @@ def _delete_foresight_signals_for_forget(
     *,
     user_id: int,
     source_message_ids: Iterable[int],
+    forgotten_texts: Iterable[str],
 ) -> int:
     forgotten_source_ids = _coerce_message_id_set(source_message_ids)
     if not forgotten_source_ids:
+        return 0
+    forgotten_tokens = _combined_meaningful_tokens(forgotten_texts)
+    if not forgotten_tokens:
         return 0
 
     deleted = 0
@@ -562,6 +570,12 @@ def _delete_foresight_signals_for_forget(
     for signal in signals:
         signal_source_ids = _coerce_message_id_set(signal.source_message_ids_json)
         if not signal_source_ids.intersection(forgotten_source_ids):
+            continue
+        if not _foresight_signal_matches_forgotten_text(
+            user_id=user_id,
+            signal=signal,
+            forgotten_tokens=forgotten_tokens,
+        ):
             continue
         db.delete(signal)
         deleted += 1
@@ -576,6 +590,44 @@ def _coerce_message_id_set(raw_ids: Iterable[object] | None) -> set[int]:
         with suppress(TypeError, ValueError):
             ids.add(int(raw_id))
     return ids
+
+
+def _foresight_signal_matches_forgotten_text(
+    *,
+    user_id: int,
+    signal: ForesightSignal,
+    forgotten_tokens: set[str],
+) -> bool:
+    signal_text = " ".join(
+        filter(
+            None,
+            [
+                df(
+                    user_id,
+                    signal.content,
+                    table="foresight_signals",
+                    field="content",
+                ),
+                df(
+                    user_id,
+                    signal.evidence,
+                    table="foresight_signals",
+                    field="evidence",
+                ),
+                signal.relative_text or "",
+            ],
+        )
+    )
+    signal_tokens = _meaningful_relation_tokens(signal_text)
+    shared = forgotten_tokens & signal_tokens
+    return len(shared) >= 2 and any(len(token) >= 5 for token in shared)
+
+
+def _combined_meaningful_tokens(texts: Iterable[str]) -> set[str]:
+    tokens: set[str] = set()
+    for text in texts:
+        tokens.update(_meaningful_relation_tokens(text))
+    return tokens
 
 
 def _delete_profile_fields_for_forget(
