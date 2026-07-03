@@ -85,6 +85,18 @@ def test_relative_foresight_extraction_uses_conversation_timestamp() -> None:
         assert stored.source_message_ids_json == [101]
 
 
+def test_foresight_extraction_does_not_cross_sentence_boundaries() -> None:
+    from anima_server.services.agent.foresight import extract_regex_foresight_signals
+
+    observed_at = datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
+    signals = extract_regex_foresight_signals(
+        "I have a headache. My product review is next Tuesday.",
+        observed_at=observed_at,
+    )
+
+    assert [signal.content for signal in signals] == ["User has a product review"]
+
+
 def test_foresight_upsert_deduplicates_overlapping_events() -> None:
     from anima_server.services.agent.foresight import ForesightCandidate, upsert_foresight_signal
 

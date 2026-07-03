@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
+from sqlalchemy import select
+
 from anima_server.config import settings
 from anima_server.services.agent.emotional_intelligence import (
     record_emotional_signal,
@@ -416,10 +418,16 @@ async def run_background_extraction(
                     len(extracted.facts),
                     len(extracted.preferences),
                 )
+            foresight_observed_at = _source_message_observed_at(
+                rt_db,
+                user_id=user_id,
+                source_message_ids=source_message_ids,
+            )
             _store_foresight_best_effort(
                 user_id=user_id,
                 user_message=user_message,
                 source_message_ids=source_message_ids,
+                observed_at=foresight_observed_at,
             )
 
             # 2. LLM extraction
@@ -482,6 +490,7 @@ async def run_background_extraction(
                             user_id=user_id,
                             user_message=user_message,
                             source_message_ids=source_message_ids,
+                            observed_at=foresight_observed_at,
                             llm_foresight=llm_result.foresight,
                         )
 
@@ -623,6 +632,7 @@ def _store_foresight_best_effort(
     user_id: int,
     user_message: str,
     source_message_ids: list[int] | None,
+    observed_at: datetime | None = None,
     llm_foresight: list[dict[str, Any]] | None = None,
 ) -> None:
     try:
@@ -634,7 +644,7 @@ def _store_foresight_best_effort(
             upsert_foresight_signal,
         )
 
-        observed_at = datetime.now(UTC)
+        observed_at = observed_at or datetime.now(UTC)
         factory = get_user_session_factory(user_id) if is_sqlite_mode() else SessionLocal
         with factory() as soul_db:
             count = store_foresight_from_text(
@@ -672,6 +682,45 @@ def _store_foresight_best_effort(
                 )
     except Exception:
         logger.debug("Foresight extraction skipped for user %s", user_id, exc_info=True)
+
+
+def _source_message_observed_at(
+    runtime_db: Any,
+    *,
+    user_id: int,
+    source_message_ids: list[int] | None,
+) -> datetime | None:
+    if not source_message_ids:
+        return None
+    try:
+        from anima_server.models.runtime import RuntimeMessage
+
+        rows = list(
+            runtime_db.scalars(
+                select(RuntimeMessage)
+                .where(
+                    RuntimeMessage.user_id == user_id,
+                    RuntimeMessage.id.in_([int(message_id) for message_id in source_message_ids]),
+                )
+                .order_by(
+                    RuntimeMessage.role == "user",
+                    RuntimeMessage.created_at.asc(),
+                    RuntimeMessage.id.asc(),
+                )
+            ).all()
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    user_rows = [row for row in rows if row.role == "user"]
+    selected = user_rows[0] if user_rows else rows[0]
+    created_at = selected.created_at
+    if created_at is None:
+        return None
+    if created_at.tzinfo is None:
+        return created_at.replace(tzinfo=UTC)
+    return created_at
 
 
 def _preview_text(value: str, *, limit: int = 240) -> str | None:

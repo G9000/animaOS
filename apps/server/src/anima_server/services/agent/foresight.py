@@ -33,17 +33,21 @@ _RELATIVE_DATE_PATTERN = (
     r"tomorrow|today|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
     r"|in\s+\d+\s+(?:day|days|week|weeks)|by\s+end\s+of\s+month|end\s+of\s+month"
 )
+_EVENT_TEXT_PATTERN = r"[^.!?;\n\r]+?"
 _EVENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        rf"\bI\s+have\s+(?P<event>.+?)\s+(?P<relative>{_RELATIVE_DATE_PATTERN})\b",
+        rf"\bI\s+have\s+(?P<event>{_EVENT_TEXT_PATTERN})\s+"
+        rf"(?P<relative>{_RELATIVE_DATE_PATTERN})\b",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\bI\s+need\s+to\s+(?P<event>.+?)\s+(?P<relative>{_RELATIVE_DATE_PATTERN})\b",
+        rf"\bI\s+need\s+to\s+(?P<event>{_EVENT_TEXT_PATTERN})\s+"
+        rf"(?P<relative>{_RELATIVE_DATE_PATTERN})\b",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\bmy\s+(?P<event>.+?)\s+is\s+(?P<relative>{_RELATIVE_DATE_PATTERN})\b",
+        rf"\bmy\s+(?P<event>{_EVENT_TEXT_PATTERN})\s+is\s+"
+        rf"(?P<relative>{_RELATIVE_DATE_PATTERN})\b",
         re.IGNORECASE,
     ),
 )

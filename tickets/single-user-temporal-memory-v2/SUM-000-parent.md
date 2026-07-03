@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 03:36 MYT
+- Updated: 2026-07-03 10:21 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -131,10 +131,17 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 02:36 MYT - `SUM-007` addressed Codex review feedback by explicitly deleting derived pattern evidence rows before deleting derived pattern items.
 - 2026-07-03 02:54 MYT - `SUM-008` and `SUM-009` claimed by Codex on branch `codex/sum-008-009-foresight-procedural`, based on PR #67 head.
 - 2026-07-03 03:36 MYT - `SUM-008` and `SUM-009` completed with foresight signals, procedural experience memory, skill distillation, prompt integration, migration compatibility repair, and full validation.
+- 2026-07-03 10:21 MYT - `SUM-008` addressed PR #77 review feedback for sentence-bound foresight extraction and source-message timestamp anchoring.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_does_not_cross_sentence_boundaries` - SUM-008 PR #77 review regression failed before fix with a bogus cross-sentence foresight signal.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_run_background_extraction_anchors_foresight_to_source_message_time` - SUM-008 PR #77 review regression failed before fix because source `RuntimeMessage.created_at` was not passed as `observed_at`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 review focused suite: 15 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-008 PR #77 review fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 review fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 review fix whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 red suite failed before implementation because `ForesightSignal` was not exported from `anima_server.models`.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 red suite failed before implementation because `AgentExperience` was not exported from `anima_server.models`.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 focused suite: 8 passed, 8 warnings.
@@ -301,6 +308,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/service.py
   - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/tests/test_agent_consolidation.py
   - apps/server/tests/test_agent_experience.py
   - apps/server/tests/test_foresight.py
   - tickets/single-user-temporal-memory-v2/SUM-008-foresight-signals.md
@@ -340,6 +348,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 review fix prevents event extraction from spanning punctuation into a separate dated sentence.
+  - SUM-008 PR #77 review fix resolves relative dates against source runtime message timestamps instead of background extraction wall-clock time.
   - SUM-008 adds evidence-backed future event memory with deterministic relative-date extraction, lifecycle transitions, and proactive prompt rendering.
   - SUM-009 adds agent experience memory, stable embedding-based clustering, learned skill distillation, prompt retrieval, and growth-log entries for meaningful procedural learning.
   - SUM-008/SUM-009 validation included a narrow guard in the inherited SUM-006 salience migration so stamped legacy soul databases missing `memory_items` can reach metadata repair.
