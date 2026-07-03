@@ -135,10 +135,20 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 10:49 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for scheduled foresight lifecycle, overdue prompt filtering, and unembedded experience clustering.
 - 2026-07-03 11:05 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for LLM foresight prompt schema and persisted matched-cluster JSON state.
 - 2026-07-03 11:29 MYT - `SUM-008` addressed PR #77 rereview feedback for prompt retrieval priority of dated foresight over undated signals.
+- 2026-07-03 11:45 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for saved-timezone foresight date resolution and promptless approval-resume experience capture.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_relative_foresight_extraction_uses_user_timezone_for_local_dates` - SUM-008 PR #77 rereview regression failed before fix because foresight extraction could not accept a user timezone for local date resolution.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_post_turn_hooks_skip_experience_capture_without_source_prompt` - SUM-009 PR #77 rereview regression failed before fix because promptless approval resumes scheduled a generic procedural experience extraction.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview timezone suite: 8 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 rereview consolidation suite: 11 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_pending_memory_ops.py` - SUM-008 PR #77 rereview timezone tool suite: 22 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 rereview agent service suite: 26 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_prioritizes_dated_rows_over_undated_rows` - SUM-008 PR #77 rereview regression failed before fix because an undated row was returned before an upcoming dated row.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview foresight suite: 7 passed, 6 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 rereview lint: passed.
@@ -332,9 +342,11 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/service.py
   - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/user_timezone.py
   - apps/server/tests/test_agent_consolidation.py
   - apps/server/tests/test_agent_experience.py
   - apps/server/tests/test_foresight.py
+  - apps/server/tests/test_agent_service.py
   - tickets/single-user-temporal-memory-v2/SUM-008-foresight-signals.md
   - tickets/single-user-temporal-memory-v2/SUM-009-procedural-experience-skill-memory.md
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
@@ -373,6 +385,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.
+  - SUM-009 PR #77 rereview fix leaves consolidation/reflection hooks intact on approval resume while preventing promptless tool-only turns from seeding generic experience memories.
   - SUM-008 PR #77 rereview fix ranks due rows first, dated rows next, and undated rows last so undated LLM foresight cannot starve upcoming dated events from prompt retrieval.
   - SUM-008 PR #77 rereview fix adds foresight schema/rules to the LLM memory extraction prompt and includes foresight in the extraction system message.
   - SUM-009 PR #77 rereview fix flags matched experience cluster JSON state as modified after centroid/count/activity mutations.

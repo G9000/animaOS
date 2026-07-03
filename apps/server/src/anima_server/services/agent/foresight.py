@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.models import ForesightSignal
 from anima_server.services.data_crypto import df, ef
+from anima_server.services.user_timezone import normalize_timezone_spec
 
 FORESIGHT_ACTIVE_STATUSES = frozenset({"active", "due", "occurred"})
 FORESIGHT_PROMPT_STATUSES = frozenset({"active", "due"})
@@ -68,6 +69,7 @@ def extract_regex_foresight_signals(
     text: str,
     *,
     observed_at: datetime | None = None,
+    timezone_name: str | None = None,
 ) -> tuple[ForesightCandidate, ...]:
     """Extract simple future events with deterministic relative-date handling."""
     prepared = _clean_evidence(text)
@@ -83,7 +85,11 @@ def extract_regex_foresight_signals(
             relative = _clean_text(match.group("relative"))
             if not raw_event or not relative:
                 continue
-            resolved = resolve_relative_date(relative, anchor=anchor)
+            resolved = resolve_relative_date(
+                relative,
+                anchor=anchor,
+                timezone_name=timezone_name,
+            )
             if resolved is None:
                 continue
             start, end = resolved
@@ -109,6 +115,7 @@ def parse_llm_foresight_payload(
     payload: object,
     *,
     observed_at: datetime | None = None,
+    timezone_name: str | None = None,
 ) -> tuple[ForesightCandidate, ...]:
     if not isinstance(payload, list):
         return ()
@@ -125,7 +132,11 @@ def parse_llm_foresight_payload(
         end = _parse_iso_date(raw.get("end_date")) or start
         relative = _clean_text(str(raw.get("relative_text") or "")) or None
         if start is None and relative and observed_at is not None:
-            resolved = resolve_relative_date(relative, anchor=observed_at)
+            resolved = resolve_relative_date(
+                relative,
+                anchor=observed_at,
+                timezone_name=timezone_name,
+            )
             if resolved is not None:
                 start, end = resolved
         duration = _coerce_positive_int(raw.get("duration_days"))
@@ -145,13 +156,27 @@ def parse_llm_foresight_payload(
     return tuple(candidates)
 
 
+def _local_anchor_date(anchor: datetime, *, timezone_name: str | None) -> date:
+    if not timezone_name:
+        return anchor.date()
+    try:
+        _normalized, tzinfo = normalize_timezone_spec(timezone_name)
+    except ValueError:
+        return anchor.date()
+
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+    return anchor.astimezone(tzinfo).date()
+
+
 def resolve_relative_date(
     relative_text: str,
     *,
     anchor: datetime,
+    timezone_name: str | None = None,
 ) -> tuple[date, date] | None:
     relative = _clean_text(relative_text).lower()
-    anchor_date = anchor.date()
+    anchor_date = _local_anchor_date(anchor, timezone_name=timezone_name)
     if relative == "today":
         return anchor_date, anchor_date
     if relative == "tomorrow":
@@ -239,8 +264,13 @@ def store_foresight_from_text(
     observed_at: datetime | None = None,
     source_thread_id: int | None = None,
     source_message_ids: list[int] | None = None,
+    timezone_name: str | None = None,
 ) -> int:
-    candidates = extract_regex_foresight_signals(text, observed_at=observed_at)
+    candidates = extract_regex_foresight_signals(
+        text,
+        observed_at=observed_at,
+        timezone_name=timezone_name,
+    )
     created_or_updated = 0
     for candidate in candidates:
         upsert_foresight_signal(

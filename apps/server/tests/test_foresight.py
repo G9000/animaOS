@@ -97,6 +97,21 @@ def test_foresight_extraction_does_not_cross_sentence_boundaries() -> None:
     assert [signal.content for signal in signals] == ["User has a product review"]
 
 
+def test_relative_foresight_extraction_uses_user_timezone_for_local_dates() -> None:
+    from anima_server.services.agent.foresight import extract_regex_foresight_signals
+
+    observed_at = datetime(2026, 7, 4, 6, 30, tzinfo=UTC)
+    signals = extract_regex_foresight_signals(
+        "I have a product review tomorrow.",
+        observed_at=observed_at,
+        timezone_name="America/Los_Angeles",
+    )
+
+    assert len(signals) == 1
+    assert signals[0].start_date == date(2026, 7, 4)
+    assert signals[0].end_date == date(2026, 7, 4)
+
+
 def test_foresight_upsert_deduplicates_overlapping_events() -> None:
     from anima_server.services.agent.foresight import ForesightCandidate, upsert_foresight_signal
 

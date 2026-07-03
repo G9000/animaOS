@@ -9,7 +9,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 11:05 MYT
+- Updated: 2026-07-03 11:45 MYT
 - Started: 2026-07-03 02:54 MYT
 - Completed: 2026-07-03 03:36 MYT
 
@@ -39,10 +39,16 @@ Let Anima learn reusable procedures from its own tool use, mistakes, recoveries,
 - 2026-07-03 03:36 MYT - Completed with agent experience storage, clustering, skill distillation, prompt retrieval, and validation.
 - 2026-07-03 10:49 MYT - Addressed PR #77 rereview feedback by leaving unembedded agent experiences unclustered so embedding outages cannot seed learned skill clusters.
 - 2026-07-03 11:05 MYT - Addressed PR #77 rereview feedback by explicitly persisting matched-cluster JSON state updates across sessions.
+- 2026-07-03 11:45 MYT - Addressed PR #77 rereview feedback by skipping procedural experience capture for approval resumes without an originating user prompt.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_post_turn_hooks_skip_experience_capture_without_source_prompt` - PR #77 rereview regression failed before fix because promptless approval resumes scheduled a generic procedural experience extraction.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - PR #77 rereview agent service suite: 26 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 rereview approval-resume lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - PR #77 rereview approval-resume build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - PR #77 rereview approval-resume whitespace check: passed.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_existing_experience_cluster_state_updates_persist_across_sessions` - PR #77 rereview regression failed before fix because matched cluster JSON state reloaded with count `1` after adding a second similar experience.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - PR #77 rereview experience suite: 6 passed, 6 warnings.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - PR #77 rereview lint: passed.
@@ -71,6 +77,8 @@ Let Anima learn reusable procedures from its own tool use, mistakes, recoveries,
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/service.py
   - apps/server/tests/test_agent_experience.py
+  - apps/server/tests/test_agent_service.py
 - Notes:
+  - PR #77 rereview fix leaves consolidation/reflection hooks intact on approval resume while preventing promptless tool-only turns from seeding generic experience memories.
   - PR #77 rereview fix flags `ExperienceClusterState.state_json` as modified after centroid/count/activity mutations so SQLAlchemy persists matched-cluster updates.
   - Raw past approaches are suppressed when a matching high-confidence distilled skill is available, keeping the prompt path compact.

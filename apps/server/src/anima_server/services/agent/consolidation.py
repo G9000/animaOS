@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
@@ -644,20 +645,29 @@ def _store_foresight_best_effort(
             store_foresight_from_text,
             upsert_foresight_signal,
         )
+        from anima_server.services.user_timezone import resolve_timezone_from_world_context
 
         observed_at = observed_at or datetime.now(UTC)
         factory = get_user_session_factory(user_id) if is_sqlite_mode() else SessionLocal
         with factory() as soul_db:
+            timezone_name = None
+            with suppress(ValueError):
+                timezone_name, _timezone = resolve_timezone_from_world_context(
+                    soul_db,
+                    user_id=user_id,
+                )
             count = store_foresight_from_text(
                 soul_db,
                 user_id=user_id,
                 text=user_message,
                 observed_at=observed_at,
                 source_message_ids=source_message_ids,
+                timezone_name=timezone_name,
             )
             for signal in parse_llm_foresight_payload(
                 llm_foresight or (),
                 observed_at=observed_at,
+                timezone_name=timezone_name,
             ):
                 upsert_foresight_signal(
                     soul_db,

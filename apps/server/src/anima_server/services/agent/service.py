@@ -2270,6 +2270,8 @@ def _schedule_agent_experience_extraction(
     result: AgentResult,
     db_factory: Callable[[], Session],
 ) -> None:
+    if run_id is None or not user_message.strip():
+        return
     if not _should_capture_agent_experience(result):
         return
     _track_background_task(
