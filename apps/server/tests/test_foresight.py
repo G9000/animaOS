@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 
 from anima_server.db.base import Base
-from anima_server.models import ForesightSignal, User
+from anima_server.models import ForesightSignal, SelfModelBlock, User
 from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -42,6 +42,19 @@ def _make_user(db: Session) -> User:
     db.add(user)
     db.flush()
     return user
+
+
+def _set_world_timezone(db: Session, *, user_id: int, timezone_name: str) -> None:
+    db.add(
+        SelfModelBlock(
+            user_id=user_id,
+            section="world",
+            content=f"Timezone: {timezone_name}",
+            version=1,
+            updated_by="test",
+        )
+    )
+    db.flush()
 
 
 def test_relative_foresight_extraction_uses_conversation_timestamp() -> None:
@@ -232,6 +245,50 @@ def test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled() -> None:
     assert cancelled.status == "cancelled"
 
 
+def test_foresight_lifecycle_defaults_to_user_local_date(
+    monkeypatch,
+) -> None:
+    from anima_server.services.agent import foresight as foresight_module
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        sweep_foresight_lifecycle,
+        upsert_foresight_signal,
+    )
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 7, 4, 6, 30, tzinfo=UTC)
+            if tz is None:
+                return value.replace(tzinfo=None)
+            return value.astimezone(tz)
+
+    monkeypatch.setattr(foresight_module, "datetime", FrozenDateTime)
+
+    with _db_session() as db:
+        user = _make_user(db)
+        _set_world_timezone(db, user_id=user.id, timezone_name="America/Los_Angeles")
+        signal = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has a review tomorrow",
+                evidence="I have a review tomorrow.",
+                relative_text="tomorrow",
+                start_date=date(2026, 7, 4),
+                end_date=date(2026, 7, 4),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 4, 6, 30, tzinfo=UTC),
+        )
+
+        transitions = sweep_foresight_lifecycle(db, user_id=user.id)
+        db.flush()
+
+    assert transitions == {"due": 0, "occurred": 0, "stale": 0}
+    assert signal.status == "active"
+
+
 def test_foresight_memory_block_renders_active_and_due_signals() -> None:
     from anima_server.services.agent.foresight import ForesightCandidate, upsert_foresight_signal
     from anima_server.services.agent.memory_blocks import build_foresight_memory_block
@@ -276,6 +333,47 @@ def test_foresight_memory_block_renders_active_and_due_signals() -> None:
     assert "due" in block.value
     assert "2026-07-07" in block.value
     assert "stale event" not in block.value
+
+
+def test_prompt_foresight_defaults_to_user_local_date(monkeypatch) -> None:
+    from anima_server.services.agent import foresight as foresight_module
+    from anima_server.services.agent.foresight import (
+        ForesightCandidate,
+        get_prompt_foresight_signals,
+        upsert_foresight_signal,
+    )
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 7, 4, 6, 30, tzinfo=UTC)
+            if tz is None:
+                return value.replace(tzinfo=None)
+            return value.astimezone(tz)
+
+    monkeypatch.setattr(foresight_module, "datetime", FrozenDateTime)
+
+    with _db_session() as db:
+        user = _make_user(db)
+        _set_world_timezone(db, user_id=user.id, timezone_name="America/Los_Angeles")
+        local_today = upsert_foresight_signal(
+            db,
+            user_id=user.id,
+            signal=ForesightCandidate(
+                content="User has a local-today review",
+                evidence="I have a review today.",
+                relative_text="today",
+                start_date=date(2026, 7, 3),
+                end_date=date(2026, 7, 3),
+                duration_days=1,
+            ),
+            observed_at=datetime(2026, 7, 4, 6, 30, tzinfo=UTC),
+        )
+        db.flush()
+
+        signals = get_prompt_foresight_signals(db, user_id=user.id, limit=1)
+
+    assert [signal.id for signal in signals] == [local_today.id]
 
 
 def test_prompt_foresight_skips_overdue_active_rows_before_limiting() -> None:

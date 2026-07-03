@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 
 from anima_server.models import ForesightSignal
 from anima_server.services.data_crypto import df, ef
-from anima_server.services.user_timezone import normalize_timezone_spec
+from anima_server.services.user_timezone import (
+    normalize_timezone_spec,
+    resolve_timezone_from_world_context,
+)
 
 FORESIGHT_ACTIVE_STATUSES = frozenset({"active", "due", "occurred"})
 FORESIGHT_PROMPT_STATUSES = frozenset({"active", "due"})
@@ -292,7 +295,7 @@ def sweep_foresight_lifecycle(
     today: date | None = None,
     stale_after_days: int = 7,
 ) -> dict[str, int]:
-    current = today or datetime.now(UTC).date()
+    current = today or _current_date_for_user(db, user_id=user_id)
     due = 0
     occurred = 0
     stale = 0
@@ -366,7 +369,7 @@ def get_prompt_foresight_signals(
     today: date | None = None,
     limit: int = 8,
 ) -> tuple[ForesightSignal, ...]:
-    current = today or datetime.now(UTC).date()
+    current = today or _current_date_for_user(db, user_id=user_id)
     rows = list(
         db.scalars(
             select(ForesightSignal)
@@ -392,6 +395,16 @@ def get_prompt_foresight_signals(
         ).all()
     )
     return tuple(rows)
+
+
+def _current_date_for_user(db: Session, *, user_id: int) -> date:
+    try:
+        _timezone_name, tzinfo = resolve_timezone_from_world_context(db, user_id=user_id)
+    except ValueError:
+        tzinfo = None
+    if tzinfo is None:
+        return datetime.now(UTC).date()
+    return datetime.now(UTC).astimezone(tzinfo).date()
 
 
 def _find_duplicate_signal(
