@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -18,11 +18,15 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import (
+    AgentExperience,
     AgentMessage,
     AgentRun,
+    AgentSkill,
     AgentStep,
     AgentThread,
     EmotionalSignal,
+    ExperienceClusterState,
+    ForesightSignal,
     KGEntity,
     KGRelation,
     MemoryEpisode,
@@ -122,6 +126,10 @@ _MEMORY_TABLES = frozenset(
         "kgRelations",
         "selfModelBlocks",
         "emotionalSignals",
+        "foresightSignals",
+        "agentExperiences",
+        "experienceClusterState",
+        "agentSkills",
     }
 )
 
@@ -157,6 +165,10 @@ _CAPSULE_CARD_TABLES = frozenset(
         "userProfileFieldEvidence",
         "selfModelBlocks",
         "emotionalSignals",
+        "foresightSignals",
+        "agentExperiences",
+        "experienceClusterState",
+        "agentSkills",
     }
 )
 
@@ -795,6 +807,24 @@ def export_database_snapshot(
         serialize_emotional_signal_record(s, deks=deks)
         for s in db.scalars(_scoped(select(EmotionalSignal), EmotionalSignal)).all()
     ]
+    foresight_signals = [
+        serialize_foresight_signal_record(s, deks=deks)
+        for s in db.scalars(_scoped(select(ForesightSignal), ForesightSignal)).all()
+    ]
+    agent_experiences = [
+        serialize_agent_experience_record(e, deks=deks)
+        for e in db.scalars(_scoped(select(AgentExperience), AgentExperience)).all()
+    ]
+    experience_cluster_state = [
+        serialize_experience_cluster_state_record(state)
+        for state in db.scalars(
+            _scoped(select(ExperienceClusterState), ExperienceClusterState)
+        ).all()
+    ]
+    agent_skills = [
+        serialize_agent_skill_record(skill, deks=deks)
+        for skill in db.scalars(_scoped(select(AgentSkill), AgentSkill)).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -808,6 +838,10 @@ def export_database_snapshot(
         "tasks": tasks,
         "selfModelBlocks": self_model_blocks,
         "emotionalSignals": emotional_signals,
+        "foresightSignals": foresight_signals,
+        "agentExperiences": agent_experiences,
+        "experienceClusterState": experience_cluster_state,
+        "agentSkills": agent_skills,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -836,6 +870,10 @@ def restore_database_snapshot(
     tasks_payload = snapshot.get("tasks", [])
     self_model_blocks_payload = snapshot.get("selfModelBlocks", [])
     emotional_signals_payload = snapshot.get("emotionalSignals", [])
+    foresight_signals_payload = snapshot.get("foresightSignals", [])
+    agent_experiences_payload = snapshot.get("agentExperiences", [])
+    experience_cluster_state_payload = snapshot.get("experienceClusterState", [])
+    agent_skills_payload = snapshot.get("agentSkills", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -845,6 +883,10 @@ def restore_database_snapshot(
     is_full = scope == "full"
 
     try:
+        db.query(AgentSkill).delete()
+        db.query(ExperienceClusterState).delete()
+        db.query(AgentExperience).delete()
+        db.query(ForesightSignal).delete()
         db.query(EmotionalSignal).delete()
         db.query(SelfModelBlock).delete()
         db.query(KGRelation).delete()
@@ -900,6 +942,118 @@ def restore_database_snapshot(
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
             )
+
+        for record in foresight_signals_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                ForesightSignal(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    content=str(record["content"]),
+                    evidence=str(record["evidence"]),
+                    relative_text=coerce_optional_str(record.get("relative_text")),
+                    start_date=parse_optional_date(record.get("start_date")),
+                    end_date=parse_optional_date(record.get("end_date")),
+                    duration_days=coerce_optional_int(record.get("duration_days")),
+                    status=str(record.get("status", "active")),
+                    confidence=float(record.get("confidence", 0.8)),
+                    source_thread_id=coerce_optional_int(record.get("source_thread_id")),
+                    source_message_ids_json=record.get("source_message_ids_json"),
+                    observed_at=parse_optional_datetime(record.get("observed_at")),
+                    last_seen_at=parse_optional_datetime(record.get("last_seen_at")),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        restored_experience_ids: set[int] = set()
+        experience_superseded_links: list[tuple[int, int]] = []
+        for record in agent_experiences_payload:
+            if not isinstance(record, dict):
+                continue
+            experience_id = int(record["id"])
+            superseded_by = coerce_optional_int(record.get("superseded_by"))
+            restored_experience_ids.add(experience_id)
+            if superseded_by is not None:
+                experience_superseded_links.append((experience_id, superseded_by))
+            db.add(
+                AgentExperience(
+                    id=experience_id,
+                    user_id=int(record["user_id"]),
+                    task_intent=str(record["task_intent"]),
+                    approach=str(record["approach"]),
+                    quality_score=float(record.get("quality_score", 0.5)),
+                    source_thread_id=coerce_optional_int(record.get("source_thread_id")),
+                    source_run_id=coerce_optional_int(record.get("source_run_id")),
+                    tool_names_json=record.get("tool_names_json"),
+                    turn_count=int(record.get("turn_count", 1)),
+                    embedding_json=record.get("embedding_json"),
+                    cluster_id=coerce_optional_str(record.get("cluster_id")),
+                    superseded_by=None,
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        db.flush()
+
+        for experience_id, superseded_by in experience_superseded_links:
+            if superseded_by not in restored_experience_ids:
+                continue
+            experience = db.get(AgentExperience, experience_id)
+            if experience is not None:
+                experience.superseded_by = superseded_by
+
+        for record in experience_cluster_state_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                ExperienceClusterState(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    state_json=record.get("state_json", {}),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        restored_skill_ids: set[int] = set()
+        skill_superseded_links: list[tuple[int, int]] = []
+        for record in agent_skills_payload:
+            if not isinstance(record, dict):
+                continue
+            skill_id = int(record["id"])
+            superseded_by = coerce_optional_int(record.get("superseded_by"))
+            restored_skill_ids.add(skill_id)
+            if superseded_by is not None:
+                skill_superseded_links.append((skill_id, superseded_by))
+            db.add(
+                AgentSkill(
+                    id=skill_id,
+                    user_id=int(record["user_id"]),
+                    cluster_id=str(record["cluster_id"]),
+                    name=str(record["name"]),
+                    description=str(record["description"]),
+                    content=str(record["content"]),
+                    confidence=float(record.get("confidence", 0.5)),
+                    experience_count=int(record.get("experience_count", 0)),
+                    last_refined_at=parse_optional_datetime(record.get("last_refined_at")),
+                    embedding_json=record.get("embedding_json"),
+                    superseded_by=None,
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        db.flush()
+
+        for skill_id, superseded_by in skill_superseded_links:
+            if superseded_by not in restored_skill_ids:
+                continue
+            skill = db.get(AgentSkill, skill_id)
+            if skill is not None:
+                skill.superseded_by = superseded_by
 
         for record in memory_items_payload:
             if not isinstance(record, dict):
@@ -1723,7 +1877,143 @@ def serialize_emotional_signal_record(
     }
 
 
+def serialize_foresight_signal_record(
+    signal: ForesightSignal,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": signal.id,
+        "user_id": signal.user_id,
+        "content": _decrypt_field_value(
+            signal.content,
+            deks,
+            table="foresight_signals",
+            field="content",
+            user_id=signal.user_id,
+        ),
+        "evidence": _decrypt_field_value(
+            signal.evidence,
+            deks,
+            table="foresight_signals",
+            field="evidence",
+            user_id=signal.user_id,
+        ),
+        "relative_text": _decrypt_field_value(
+            signal.relative_text,
+            deks,
+            table="foresight_signals",
+            field="relative_text",
+            user_id=signal.user_id,
+        ),
+        "start_date": serialize_optional_date(signal.start_date),
+        "end_date": serialize_optional_date(signal.end_date),
+        "duration_days": signal.duration_days,
+        "status": signal.status,
+        "confidence": signal.confidence,
+        "source_thread_id": signal.source_thread_id,
+        "source_message_ids_json": signal.source_message_ids_json,
+        "observed_at": serialize_optional_datetime(signal.observed_at),
+        "last_seen_at": serialize_optional_datetime(signal.last_seen_at),
+        "created_at": serialize_optional_datetime(signal.created_at),
+        "updated_at": serialize_optional_datetime(signal.updated_at),
+    }
+
+
+def serialize_agent_experience_record(
+    experience: AgentExperience,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": experience.id,
+        "user_id": experience.user_id,
+        "task_intent": _decrypt_field_value(
+            experience.task_intent,
+            deks,
+            table="agent_experiences",
+            field="task_intent",
+            user_id=experience.user_id,
+        ),
+        "approach": _decrypt_field_value(
+            experience.approach,
+            deks,
+            table="agent_experiences",
+            field="approach",
+            user_id=experience.user_id,
+        ),
+        "quality_score": experience.quality_score,
+        "source_thread_id": experience.source_thread_id,
+        "source_run_id": experience.source_run_id,
+        "tool_names_json": experience.tool_names_json,
+        "turn_count": experience.turn_count,
+        "embedding_json": experience.embedding_json,
+        "cluster_id": experience.cluster_id,
+        "superseded_by": experience.superseded_by,
+        "created_at": serialize_optional_datetime(experience.created_at),
+        "updated_at": serialize_optional_datetime(experience.updated_at),
+    }
+
+
+def serialize_experience_cluster_state_record(
+    state: ExperienceClusterState,
+) -> dict[str, Any]:
+    return {
+        "id": state.id,
+        "user_id": state.user_id,
+        "state_json": state.state_json,
+        "created_at": serialize_optional_datetime(state.created_at),
+        "updated_at": serialize_optional_datetime(state.updated_at),
+    }
+
+
+def serialize_agent_skill_record(
+    skill: AgentSkill,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": skill.id,
+        "user_id": skill.user_id,
+        "cluster_id": skill.cluster_id,
+        "name": _decrypt_field_value(
+            skill.name,
+            deks,
+            table="agent_skills",
+            field="name",
+            user_id=skill.user_id,
+        ),
+        "description": _decrypt_field_value(
+            skill.description,
+            deks,
+            table="agent_skills",
+            field="description",
+            user_id=skill.user_id,
+        ),
+        "content": _decrypt_field_value(
+            skill.content,
+            deks,
+            table="agent_skills",
+            field="content",
+            user_id=skill.user_id,
+        ),
+        "confidence": skill.confidence,
+        "experience_count": skill.experience_count,
+        "last_refined_at": serialize_optional_datetime(skill.last_refined_at),
+        "embedding_json": skill.embedding_json,
+        "superseded_by": skill.superseded_by,
+        "created_at": serialize_optional_datetime(skill.created_at),
+        "updated_at": serialize_optional_datetime(skill.updated_at),
+    }
+
+
 def serialize_optional_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def serialize_optional_date(value: date | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
@@ -1735,6 +2025,14 @@ def parse_optional_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str):
         raise ValueError("Vault timestamp is invalid.")
     return datetime.fromisoformat(value)
+
+
+def parse_optional_date(value: Any) -> date | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Vault date is invalid.")
+    return date.fromisoformat(value)
 
 
 def coerce_optional_str(value: Any) -> str | None:
@@ -1767,6 +2065,10 @@ def reset_identity_sequences(db: Session) -> None:
         "tasks",
         "self_model_blocks",
         "emotional_signals",
+        "foresight_signals",
+        "agent_experiences",
+        "experience_cluster_state",
+        "agent_skills",
         "agent_threads",
         "agent_runs",
         "agent_steps",
@@ -1917,6 +2219,59 @@ def _re_encrypt_snapshot_fields(
             if signal.get("topic"):
                 signal["topic"] = _re_encrypt_field_value(
                     signal["topic"], user_id, table="emotional_signals", field="topic"
+                )
+
+    for signal in snapshot.get("foresightSignals", []):
+        if isinstance(signal, dict):
+            if signal.get("content"):
+                signal["content"] = _re_encrypt_field_value(
+                    signal["content"], user_id, table="foresight_signals", field="content"
+                )
+            if signal.get("evidence"):
+                signal["evidence"] = _re_encrypt_field_value(
+                    signal["evidence"], user_id, table="foresight_signals", field="evidence"
+                )
+            if signal.get("relative_text"):
+                signal["relative_text"] = _re_encrypt_field_value(
+                    signal["relative_text"],
+                    user_id,
+                    table="foresight_signals",
+                    field="relative_text",
+                )
+
+    for experience in snapshot.get("agentExperiences", []):
+        if isinstance(experience, dict):
+            if experience.get("task_intent"):
+                experience["task_intent"] = _re_encrypt_field_value(
+                    experience["task_intent"],
+                    user_id,
+                    table="agent_experiences",
+                    field="task_intent",
+                )
+            if experience.get("approach"):
+                experience["approach"] = _re_encrypt_field_value(
+                    experience["approach"],
+                    user_id,
+                    table="agent_experiences",
+                    field="approach",
+                )
+
+    for skill in snapshot.get("agentSkills", []):
+        if isinstance(skill, dict):
+            if skill.get("name"):
+                skill["name"] = _re_encrypt_field_value(
+                    skill["name"], user_id, table="agent_skills", field="name"
+                )
+            if skill.get("description"):
+                skill["description"] = _re_encrypt_field_value(
+                    skill["description"],
+                    user_id,
+                    table="agent_skills",
+                    field="description",
+                )
+            if skill.get("content"):
+                skill["content"] = _re_encrypt_field_value(
+                    skill["content"], user_id, table="agent_skills", field="content"
                 )
 
     for msg in snapshot.get("agentMessages", []):

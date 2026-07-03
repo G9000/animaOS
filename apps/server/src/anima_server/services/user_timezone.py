@@ -68,6 +68,24 @@ def upsert_timezone_line(content: str, timezone_value: str) -> str:
     return f"{stripped}\nTimezone: {timezone_value}"
 
 
+def resolve_timezone_from_world_context(
+    db: Session,
+    *,
+    user_id: int,
+) -> tuple[str | None, tzinfo | None]:
+    from anima_server.services.agent.self_model import (
+        get_self_model_block,
+        render_self_model_section,
+    )
+
+    block = get_self_model_block(db, user_id=user_id, section="world")
+    content = render_self_model_section(block, user_id=user_id)
+    timezone_value = extract_timezone_value(content)
+    if timezone_value is None:
+        return None, None
+    return normalize_timezone_spec(timezone_value)
+
+
 def store_timezone_in_world_context(
     db: Session,
     *,

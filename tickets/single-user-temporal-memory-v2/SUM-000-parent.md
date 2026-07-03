@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/single-user-temporal-memory-v2.md
 - Plan: docs/superpowers/plans/2026-06-27-single-user-temporal-memory-v2.md
 - Created: 2026-06-27 12:40 MYT
-- Updated: 2026-07-03 02:36 MYT
+- Updated: 2026-07-03 14:32 MYT
 - Started: 2026-06-29 02:30 MYT
 - Completed:
 
@@ -27,8 +27,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 | `SUM-005` | Retrieval router and query plans | `backlog` | `SUM-003`, `SUM-004` |
 | `SUM-006` | Salience-aware decay and soft evolution | `done` | `SUM-003`, `SUM-004` |
 | `SUM-007` | Cross-episode pattern synthesis | `done` | `SUM-005`, `SUM-006` |
-| `SUM-008` | Foresight signals | `backlog` | `SUM-002` |
-| `SUM-009` | Procedural experience and skill memory | `backlog` | `SUM-005` |
+| `SUM-008` | Foresight signals | `done` | `SUM-002` |
+| `SUM-009` | Procedural experience and skill memory | `done` | `SUM-005` |
 | `SUM-010` | Optional external adapter seams | `backlog` | `SUM-003`, `SUM-005` |
 
 ## Deliverables
@@ -60,6 +60,8 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - `SUM-004` - Structured user profile (completed 2026-06-30 05:47 MYT)
 - `SUM-006` - Salience-aware decay and soft evolution (completed 2026-07-01 21:18 MYT)
 - `SUM-007` - Cross-episode pattern synthesis (completed 2026-07-02 22:59 MYT)
+- `SUM-008` - Foresight signals (completed 2026-07-03 03:36 MYT)
+- `SUM-009` - Procedural experience and skill memory (completed 2026-07-03 03:36 MYT)
 
 ## Activity Log
 
@@ -127,10 +129,104 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
 - 2026-07-03 02:01 MYT - `SUM-007` addressed Codex review feedback by scheduling retrieval/vector index cleanup when forget/suppression deletes derived pattern memories.
 - 2026-07-03 02:26 MYT - `SUM-007` addressed Codex review feedback by decrypting pattern evidence before matching forgotten text during derived pattern cleanup.
 - 2026-07-03 02:36 MYT - `SUM-007` addressed Codex review feedback by explicitly deleting derived pattern evidence rows before deleting derived pattern items.
+- 2026-07-03 02:54 MYT - `SUM-008` and `SUM-009` claimed by Codex on branch `codex/sum-008-009-foresight-procedural`, based on PR #67 head.
+- 2026-07-03 03:36 MYT - `SUM-008` and `SUM-009` completed with foresight signals, procedural experience memory, skill distillation, prompt integration, migration compatibility repair, and full validation.
+- 2026-07-03 10:21 MYT - `SUM-008` addressed PR #77 review feedback for sentence-bound foresight extraction and source-message timestamp anchoring.
+- 2026-07-03 10:49 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for scheduled foresight lifecycle, overdue prompt filtering, and unembedded experience clustering.
+- 2026-07-03 11:05 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for LLM foresight prompt schema and persisted matched-cluster JSON state.
+- 2026-07-03 11:29 MYT - `SUM-008` addressed PR #77 rereview feedback for prompt retrieval priority of dated foresight over undated signals.
+- 2026-07-03 11:45 MYT - `SUM-008` and `SUM-009` addressed PR #77 rereview feedback for saved-timezone foresight date resolution and promptless approval-resume experience capture.
+- 2026-07-03 12:07 MYT - `SUM-008` addressed PR #77 rereview feedback for saved-timezone lifecycle sweeps and prompt filtering.
+- 2026-07-03 13:33 MYT - `SUM-009` addressed PR #77 current-head review feedback by redacting raw tool outputs from procedural experience approach summaries.
+- 2026-07-03 13:52 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for recently occurred foresight prompt visibility and lower/equal-quality duplicate procedural capture supersession.
+- 2026-07-03 14:13 MYT - `SUM-008` and `SUM-009` addressed PR #77 current-head review feedback for vault portability, recently elapsed unswept foresight prompts, and task-verb article cleanup.
+- 2026-07-03 14:32 MYT - `SUM-008` addressed PR #77 current-head review feedback for short-event cancellation matching.
 
 ## Validation
 
 - Commands:
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens` - SUM-008 PR #77 current-head review regression failed before fix because `That meeting got cancelled.` did not cancel `User has a meeting`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_cancellation_matches_short_event_tokens apps/server/tests/test_foresight.py::test_foresight_lifecycle_marks_due_occurred_stale_and_cancelled` - SUM-008 PR #77 current-head review cancellation regressions: 2 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 current-head review foresight suite: 14 passed, 11 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs` - SUM-008 PR #77 current-head review regression failed before fix because task verb cleanup produced `User has an a report`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows` - SUM-008 PR #77 current-head review regression failed before fix because active/due rows that elapsed before sleep lifecycle ran were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regression failed before fix because vault exports omitted foresight and procedural memory tables.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_strips_articles_after_task_verbs apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_elapsed_unswept_rows apps/server/tests/test_vault.py::test_export_and_import_vault_restores_foresight_and_procedural_memory` - SUM-008/SUM-009 PR #77 current-head review regressions: 3 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_vault.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 current-head review focused backend set: 41 passed, 17 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review regression failed before fix because recently occurred rows were excluded from prompt retrieval.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review regression failed before fix because an equal-quality duplicate remained active with `superseded_by` unset.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_keeps_recently_occurred_followups` - SUM-008 PR #77 current-head review occurred-followup regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_duplicate_lower_or_equal_quality_experience_is_superseded` - SUM-009 PR #77 current-head review duplicate-supersession regression: 1 passed, 1 warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 PR #77 current-head review experience suite: 7 passed, 7 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py apps/server/tests/test_agent_service.py` - SUM-008/SUM-009 PR #77 current-head review focused backend set: 45 passed, 34 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression failed before fix because raw `recall_conversation` tool output was persisted in the procedural approach summary.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_experience_approach_redacts_raw_tool_outputs` - SUM-009 PR #77 current-head review regression: 1 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 current-head review agent service suite: 27 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 PR #77 current-head review experience suite: 6 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-009 PR #77 current-head review lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-009 PR #77 current-head review build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-009 PR #77 current-head review whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_lifecycle_defaults_to_user_local_date` - SUM-008 PR #77 rereview regression failed before fix because lifecycle sweeps defaulted to UTC instead of the saved user timezone.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_defaults_to_user_local_date` - SUM-008 PR #77 rereview regression failed before fix because prompt filtering defaulted to UTC instead of the saved user timezone.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview local-date suite: 10 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py` - SUM-008 PR #77 rereview lifecycle caller suite: 22 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 rereview local-date lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 rereview local-date build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 rereview local-date whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_relative_foresight_extraction_uses_user_timezone_for_local_dates` - SUM-008 PR #77 rereview regression failed before fix because foresight extraction could not accept a user timezone for local date resolution.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py::test_post_turn_hooks_skip_experience_capture_without_source_prompt` - SUM-009 PR #77 rereview regression failed before fix because promptless approval resumes scheduled a generic procedural experience extraction.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview timezone suite: 8 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 rereview consolidation suite: 11 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_pending_memory_ops.py` - SUM-008 PR #77 rereview timezone tool suite: 22 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_service.py` - SUM-009 PR #77 rereview agent service suite: 26 passed, 18 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_prioritizes_dated_rows_over_undated_rows` - SUM-008 PR #77 rereview regression failed before fix because an undated row was returned before an upcoming dated row.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 PR #77 rereview foresight suite: 7 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_llm_memory_extraction_prompt_requests_foresight` - SUM-008 PR #77 rereview regression failed before fix because the LLM extraction prompt/system message did not request foresight payloads.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_existing_experience_cluster_state_updates_persist_across_sessions` - SUM-009 PR #77 rereview regression failed before fix because matched cluster JSON state reloaded with count `1` after adding a second similar experience.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py` - SUM-008/SUM-009 PR #77 rereview consolidation suite: 11 passed, 2 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 rereview experience suite: 6 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py::test_scheduled_sleeptime_runs_foresight_lifecycle` - SUM-008 PR #77 rereview regression failed before fix because scheduled sleeptime did not run foresight lifecycle transitions.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_prompt_foresight_skips_overdue_active_rows_before_limiting` - SUM-008 PR #77 rereview regression failed before fix because overdue active foresight rows could consume the prompt query limit before filtering.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py::test_unembedded_experiences_do_not_enter_skill_clusters` - SUM-009 PR #77 rereview regression failed before fix because unembedded experiences were assigned to `cluster_{user}_000`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_sleep_agent.py` - SUM-008/SUM-009 PR #77 rereview sleep suite: 22 passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008/SUM-009 PR #77 rereview foresight suite: 6 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 PR #77 rereview experience suite: 5 passed, 5 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint` - SUM-008/SUM-009 PR #77 rereview lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 PR #77 rereview build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008/SUM-009 PR #77 rereview whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py::test_foresight_extraction_does_not_cross_sentence_boundaries` - SUM-008 PR #77 review regression failed before fix with a bogus cross-sentence foresight signal.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_consolidation.py::test_run_background_extraction_anchors_foresight_to_source_message_time` - SUM-008 PR #77 review regression failed before fix because source `RuntimeMessage.created_at` was not passed as `observed_at`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_consolidation.py` - SUM-008 PR #77 review focused suite: 15 passed, 6 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-008 PR #77 review fix lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008 PR #77 review fix build: passed with existing Vite chunk-size warning.
+  - `git diff --check` - SUM-008 PR #77 review fix whitespace check: passed.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py` - SUM-008 red suite failed before implementation because `ForesightSignal` was not exported from `anima_server.models`.
+  - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_experience.py` - SUM-009 red suite failed before implementation because `AgentExperience` was not exported from `anima_server.models`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_foresight.py apps/server/tests/test_agent_experience.py` - SUM-008/SUM-009 focused suite: 8 passed, 8 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server apps/server/tests/test_agent_memory_blocks.py apps/server/tests/test_prompt_budget.py apps/server/tests/test_sleep_agent.py apps/server/tests/test_agent_service.py` - SUM-008/SUM-009 adjacent suite: 64 passed, 24 warnings.
+  - `bun run db:server:heads` - SUM-008/SUM-009 migration head: `20260703_0002 (head)`.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run lint:server` - SUM-008/SUM-009 server lint: passed.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run build` - SUM-008/SUM-009 build: passed with existing Vite chunk-size warning.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test:server -- --maxfail=1 -q` - SUM-008/SUM-009 full backend suite after migration repair: 1775 passed, 1 skipped, 310 warnings.
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-008/SUM-009 health smoke for `GET /health`: 200 ok.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 red suite failed before implementation with missing pattern synthesis module, block renderer, and sleep task hook.
   - RED: `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py::test_synthesis_creates_evidence_backed_pattern_memory` - SUM-007 provenance regression failed before source evidence IDs were persisted in pattern metadata.
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test -- apps/server/tests/test_pattern_synthesis.py apps/server/tests/test_sleep_agent.py::TestForceMode::test_force_bypasses_heat_gate` - SUM-007 focused suite: 5 passed, 3 warnings.
@@ -276,6 +372,25 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run --project apps/server python -` - SUM-003 PR #70 self-supersession health smoke for `GET /health`: 200 ok.
   - not run for SUM-006 restack (verification not requested in this session)
 - Changed paths:
+  - apps/server/alembic_core/versions/20260701_0003_add_memory_salience.py
+  - apps/server/alembic_core/versions/20260703_0001_create_foresight_signals.py
+  - apps/server/alembic_core/versions/20260703_0002_create_agent_experience_memory.py
+  - apps/server/src/anima_server/models/__init__.py
+  - apps/server/src/anima_server/models/agent_runtime.py
+  - apps/server/src/anima_server/services/agent/agent_experience.py
+  - apps/server/src/anima_server/services/agent/consolidation.py
+  - apps/server/src/anima_server/services/agent/foresight.py
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/user_timezone.py
+  - apps/server/tests/test_agent_consolidation.py
+  - apps/server/tests/test_agent_experience.py
+  - apps/server/tests/test_foresight.py
+  - apps/server/tests/test_agent_service.py
+  - tickets/single-user-temporal-memory-v2/SUM-008-foresight-signals.md
+  - tickets/single-user-temporal-memory-v2/SUM-009-procedural-experience-skill-memory.md
   - tickets/single-user-temporal-memory-v2/SUM-000-parent.md
   - tickets/single-user-temporal-memory-v2/SUM-003-temporal-knowledge-graph-v2.md
   - apps/server/alembic_core/versions/dbbe99c1da3a_temporal_knowledge_graph_v2.py
@@ -300,6 +415,7 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_pending_memory_ops.py
   - apps/server/src/anima_server/services/agent/pattern_synthesis.py
   - apps/server/src/anima_server/services/agent/templates/prompts/pattern_synthesis.md.j2
+  - apps/server/src/anima_server/services/agent/templates/prompts/memory_extraction.md.j2
   - apps/server/src/anima_server/services/agent/memory_blocks.py
   - apps/server/src/anima_server/services/agent/prompt_budget.py
   - apps/server/src/anima_server/services/agent/prompt_loader.py
@@ -311,6 +427,27 @@ Track the single-user temporal memory v2 initiative from baseline audit through 
   - apps/server/tests/test_forgetting.py
   - tickets/single-user-temporal-memory-v2/SUM-007-cross-episode-pattern-synthesis.md
 - Notes:
+  - SUM-008 PR #77 current-head review fix cancels a signal when all stored event tokens appear in the cancellation sentence, preserving the older overlap threshold as fallback for longer phrasing.
+  - SUM-008/SUM-009 PR #77 current-head review fix adds foresight and procedural memory tables to vault JSON and anima capsule exports/imports with import-time field re-encryption.
+  - SUM-008 PR #77 current-head review fix includes recent elapsed `active`/`due` foresight rows during the follow-up window and strips articles after task verbs.
+  - SUM-008 PR #77 current-head review fix includes `occurred` foresight rows for seven days after their end date so the prompt can naturally follow up before stale cleanup.
+  - SUM-009 PR #77 current-head review fix supersedes lower/equal-quality near-duplicate procedural captures and prevents superseded experiences from entering cluster state.
+  - SUM-009 duplicate suppression now requires high embedding similarity plus near-identical decrypted procedural text, so distinct examples with coarse identical embeddings can still support skill distillation.
+  - SUM-009 PR #77 current-head review fix records only tool name and success/failure status in procedural summaries instead of copying raw tool output that can contain private conversation or memory content.
+  - SUM-008 PR #77 rereview fix uses the saved world-context timezone for default lifecycle and prompt dates, keeping extracted local dates and status/prompt filtering on the same calendar day.
+  - SUM-008 PR #77 rereview fix reads the saved `Timezone:` world-context value and passes it into regex/LLM foresight relative-date resolution.
+  - SUM-009 PR #77 rereview fix leaves consolidation/reflection hooks intact on approval resume while preventing promptless tool-only turns from seeding generic experience memories.
+  - SUM-008 PR #77 rereview fix ranks due rows first, dated rows next, and undated rows last so undated LLM foresight cannot starve upcoming dated events from prompt retrieval.
+  - SUM-008 PR #77 rereview fix adds foresight schema/rules to the LLM memory extraction prompt and includes foresight in the extraction system message.
+  - SUM-009 PR #77 rereview fix flags matched experience cluster JSON state as modified after centroid/count/activity mutations.
+  - SUM-008 PR #77 rereview fix runs foresight lifecycle transitions from scheduled sleeptime, not only the manual `/chat/sleep` path.
+  - SUM-008 PR #77 rereview fix applies overdue filtering in the foresight prompt query before limiting.
+  - SUM-009 PR #77 rereview fix keeps unembedded agent experiences out of clustering and learned skill distillation.
+  - SUM-008 PR #77 review fix prevents event extraction from spanning punctuation into a separate dated sentence.
+  - SUM-008 PR #77 review fix resolves relative dates against source runtime message timestamps instead of background extraction wall-clock time.
+  - SUM-008 adds evidence-backed future event memory with deterministic relative-date extraction, lifecycle transitions, and proactive prompt rendering.
+  - SUM-009 adds agent experience memory, stable embedding-based clustering, learned skill distillation, prompt retrieval, and growth-log entries for meaningful procedural learning.
+  - SUM-008/SUM-009 validation included a narrow guard in the inherited SUM-006 salience migration so stamped legacy soul databases missing `memory_items` can reach metadata repair.
   - Parent remains `in_progress` while later child tickets are still backlog.
   - SUM-002 did not require schema migration.
   - SUM-002 episode detail preservation now appends only grounded LLM-selected salient details, not ordinary turns.

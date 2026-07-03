@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.models import User
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
 from anima_server.services.agent.consolidation import (
     LLMExtractionResult,
@@ -130,6 +133,52 @@ async def test_run_background_extraction_normalizes_whitespace_before_regex() ->
 
 
 @pytest.mark.asyncio
+async def test_run_background_extraction_anchors_foresight_to_source_message_time() -> None:
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "scaffold"
+        source_time = datetime(2026, 7, 3, 23, 55, tzinfo=UTC)
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+            thread = RuntimeThread(user_id=1, status="active")
+            runtime_session.add(thread)
+            runtime_session.flush()
+            message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=1,
+                sequence_id=1,
+                role="user",
+                content_text="I have a product review tomorrow.",
+                created_at=source_time,
+            )
+            runtime_session.add(message)
+            runtime_session.commit()
+
+            with patch(
+                "anima_server.services.agent.consolidation._store_foresight_best_effort"
+            ) as store_foresight:
+                await run_background_extraction(
+                    user_id=1,
+                    user_message="I have a product review tomorrow.",
+                    assistant_response="Noted.",
+                    runtime_db_factory=rt_factory,
+                    source_message_ids=[message.id],
+                )
+
+        assert store_foresight.call_args.kwargs["observed_at"] == source_time
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
 async def test_run_background_extraction_attaches_source_ids_to_regex_candidates() -> None:
     from anima_server.models.runtime_memory import MemoryCandidate
 
@@ -166,6 +215,50 @@ async def test_run_background_extraction_attaches_source_ids_to_regex_candidates
         assert all(candidate.source_message_ids == [101, 102] for candidate in candidates)
     finally:
         settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_llm_memory_extraction_prompt_requests_foresight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.consolidation import extract_memories_via_llm
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_for_text(system_prompt: str, prompt: str, **_kwargs: object) -> str:
+        captured["system_prompt"] = system_prompt
+        captured["prompt"] = prompt
+        return json.dumps(
+            {
+                "memories": [],
+                "profile_updates": [],
+                "foresight": [],
+                "emotion": None,
+            }
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.llm_json.call_llm_for_text",
+            _fake_call_llm_for_text,
+        )
+
+        result = await extract_memories_via_llm(
+            user_message="I promised to send the launch deck next Friday.",
+            assistant_response="I will keep that in mind.",
+        )
+
+    finally:
+        settings.agent_provider = original_provider
+
+    assert result.foresight == []
+    assert "foresight" in captured["system_prompt"].lower()
+    assert '"foresight": a JSON array' in captured["prompt"]
+    assert '"start_date"' in captured["prompt"]
+    assert '"end_date"' in captured["prompt"]
+    assert '"evidence"' in captured["prompt"]
 
 
 @pytest.mark.asyncio

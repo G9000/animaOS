@@ -28,7 +28,7 @@ from anima_server.services.agent.prompt_budget import (
     PromptBudgetBlockDecision,
     PromptBudgetTrace,
 )
-from anima_server.services.agent.runtime_types import StepTrace
+from anima_server.services.agent.runtime_types import StepTrace, ToolExecutionResult
 from anima_server.services.agent.state import AgentResult
 from anima_server.services.documents.rag import DocumentRagResult
 from conftest_runtime import runtime_db_session
@@ -1124,6 +1124,85 @@ def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
     prompt_budget = step.request_json["prompt_budget"]
     assert prompt_budget["system_prompt_token_estimate"] == 30
     assert prompt_budget["decisions"][0]["label"] == "current_focus"
+
+
+def test_post_turn_hooks_skip_experience_capture_without_source_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduled: list[object] = []
+
+    def track_background_task(coro: object) -> None:
+        scheduled.append(coro)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+
+    monkeypatch.setattr(
+        agent_service,
+        "schedule_background_memory_consolidation",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(agent_service, "schedule_reflection", lambda **kwargs: None)
+    monkeypatch.setattr(agent_service, "_track_background_task", track_background_task)
+
+    result = AgentResult(
+        response="Approved tool completed.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="end_turn",
+        step_traces=[
+            StepTrace(
+                step_index=0,
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-1",
+                        name="write_file",
+                        output="ok",
+                    ),
+                ),
+            )
+        ],
+    )
+
+    agent_service._run_post_turn_hooks(
+        user_id=1,
+        thread_id=2,
+        conversation_turn_count=1,
+        user_message="",
+        result=result,
+        db_factory=lambda: None,  # type: ignore[return-value]
+        runtime_db_factory=lambda: None,  # type: ignore[return-value]
+        source_run_id=None,
+    )
+
+    assert scheduled == []
+
+
+def test_experience_approach_redacts_raw_tool_outputs() -> None:
+    result = AgentResult(
+        response="I found the relevant memory.",
+        model="test-model",
+        provider="test-provider",
+        stop_reason="end_turn",
+        step_traces=[
+            StepTrace(
+                step_index=0,
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-1",
+                        name="recall_conversation",
+                        output="PRIVATE MEMORY: the user shared a secret project name.",
+                    ),
+                ),
+            )
+        ],
+    )
+
+    approach = agent_service._experience_approach(result)
+
+    assert "Result: recall_conversation succeeded." in approach
+    assert "PRIVATE MEMORY" not in approach
+    assert "secret project name" not in approach
 
 
 def test_compaction_accounts_for_reserved_prompt_tokens() -> None:

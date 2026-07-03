@@ -452,6 +452,59 @@ class TestForceMode:
 # ── Heat gating ──────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio()
+async def test_scheduled_sleeptime_runs_foresight_lifecycle(db_factory, rt_factory):
+    with (
+        patch(
+            "anima_server.services.agent.sleep_agent._task_consolidation",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_embedding_backfill",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_graph_ingestion",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_heat_decay",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._task_episode_gen",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "anima_server.services.agent.sleep_agent._should_run_expensive",
+            return_value=False,
+        ),
+        patch(
+            "anima_server.services.agent.sleep_tasks._should_run_deep_monologue",
+            return_value=False,
+        ),
+        patch(
+            "anima_server.services.agent.companion.get_companion",
+            return_value=None,
+        ),
+    ):
+        run_ids = await run_sleeptime_agents(
+            user_id=1,
+            user_message="hello",
+            assistant_response="hi",
+            db_factory=db_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+    task_types = {run_id.split(":")[0] for run_id in run_ids}
+    assert "foresight_lifecycle" in task_types
+
+
 class TestHeatGating:
     def test_no_items_means_no_expensive(self, db_factory):
         with db_factory() as db:
@@ -766,19 +819,20 @@ class TestRunSleeptimeAgents:
                 runtime_db_factory=rt_factory,
             )
 
-        assert len(run_ids) == 5
+        assert len(run_ids) == 6
         task_types = {r.split(":")[0] for r in run_ids}
         assert task_types == {
             "consolidation",
             "embedding_backfill",
             "graph_ingestion",
             "heat_decay",
+            "foresight_lifecycle",
             "episode_gen",
         }
 
         with rt_factory() as db:
             runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
-            assert len(runs) == 5
+            assert len(runs) == 6
             assert all(r.status == "completed" for r in runs)
 
 
