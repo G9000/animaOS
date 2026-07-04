@@ -231,6 +231,44 @@ def test_stamped_soul_database_migration_repairs_missing_new_tables(
     assert inspect(engine).has_table("presence_configs")
 
 
+def test_runtime_migration_repairs_missing_profile_candidates_after_bad_stamp(
+    managed_tmp_path: Path,
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    runtime_db = managed_tmp_path / "stamped-runtime.db"
+    engine = create_engine(f"sqlite:///{runtime_db.as_posix()}", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE alembic_version (
+                    version_num VARCHAR(255) NOT NULL,
+                    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO alembic_version (version_num) "
+                "VALUES ('020_merge_image_assets_candidate_salience')"
+            )
+        )
+
+        cfg = Config(str(runtime_module._ALEMBIC_RUNTIME_INI))
+        cfg.attributes["connection"] = connection
+        command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    assert inspector.has_table("profile_update_candidates")
+    assert {
+        "ix_profile_update_candidates_hash",
+        "ix_profile_update_candidates_user_status",
+    }.issubset({index["name"] for index in inspector.get_indexes("profile_update_candidates")})
+
+
 def test_user_profile_migration_sets_source_fks_null_on_delete(
     managed_tmp_path: Path,
 ) -> None:
@@ -735,6 +773,11 @@ def test_ensure_pgvector_enables_vector_extension(
     engine.begin.return_value = context_manager
 
     monkeypatch.setattr(runtime_module, "get_runtime_engine", lambda: engine)
+    monkeypatch.setattr(
+        runtime_module,
+        "get_runtime_engine_name",
+        lambda: runtime_module.RuntimeDatabaseEngine.POSTGRES,
+    )
 
     runtime_module.ensure_pgvector()
 
@@ -750,6 +793,11 @@ def test_ensure_pgvector_logs_warning_when_extension_is_unavailable(
     warning = MagicMock()
 
     monkeypatch.setattr(runtime_module, "get_runtime_engine", lambda: engine)
+    monkeypatch.setattr(
+        runtime_module,
+        "get_runtime_engine_name",
+        lambda: runtime_module.RuntimeDatabaseEngine.POSTGRES,
+    )
     monkeypatch.setattr(runtime_module.logger, "warning", warning)
 
     runtime_module.ensure_pgvector()
