@@ -22,6 +22,7 @@ __pycache__/
 !apps/desktop/src-tauri/resources/.anima/.gitkeep
 .anima-cli-session
 .worktrees/
+.superpowers/
 .tmp-eval-*
 /snippet.tsx
 apps/server/eval/data/
