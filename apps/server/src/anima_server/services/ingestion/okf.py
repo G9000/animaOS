@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from anima_server.models.runtime import RuntimeKnowledgeConcept, RuntimeKnowledgeLink
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+_OKF_IMPORT_SOURCE = "okf_import"
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +146,8 @@ def _replace_imported_links(
             delete(RuntimeKnowledgeLink).where(
                 RuntimeKnowledgeLink.user_id == user_id,
                 RuntimeKnowledgeLink.source_concept_id.in_(concept_ids),
+                RuntimeKnowledgeLink.metadata_json["source"].as_string()
+                == _OKF_IMPORT_SOURCE,
             )
         )
         db.flush()
@@ -167,7 +170,7 @@ def _replace_imported_links(
                     target_concept_id=target.id,
                     link_type="related",
                     confidence=1.0,
-                    metadata_json={"source": "okf_import"},
+                    metadata_json={"source": _OKF_IMPORT_SOURCE},
                 )
             )
     db.add_all(links)

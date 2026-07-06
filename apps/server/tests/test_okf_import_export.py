@@ -213,6 +213,68 @@ def test_import_deduplicates_repeated_relative_links(runtime_db, tmp_path) -> No
     assert len(list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())) == 1
 
 
+def test_import_replaces_only_prior_okf_links(runtime_db, tmp_path) -> None:
+    source = _concept(slug="topic-existing", title="Existing topic")
+    target = _concept(slug="topic-target", title="Target topic")
+    stale_target = _concept(slug="topic-stale", title="Stale target")
+    runtime_db.add_all([source, target, stale_target])
+    runtime_db.flush()
+    runtime_db.add_all(
+        [
+            RuntimeKnowledgeLink(
+                user_id=1,
+                source_concept_id=source.id,
+                target_concept_id=target.id,
+                link_type="supports",
+                confidence=0.8,
+                metadata_json={"source": "llm_compiler"},
+            ),
+            RuntimeKnowledgeLink(
+                user_id=1,
+                source_concept_id=source.id,
+                target_concept_id=stale_target.id,
+                link_type="related",
+                confidence=1.0,
+                metadata_json={"source": "okf_import"},
+            ),
+        ]
+    )
+    runtime_db.commit()
+
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir(parents=True)
+    (concepts_dir / "topic-existing.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Existing topic\n"
+        "---\n\n"
+        "See [Target topic](topic-target.md).\n",
+        encoding="utf-8",
+    )
+    (concepts_dir / "topic-target.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Target topic\n"
+        "---\n\n"
+        "Target body.\n",
+        encoding="utf-8",
+    )
+
+    result = import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    links = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeLink).order_by(RuntimeKnowledgeLink.link_type)
+        ).all()
+    )
+    assert result.link_count == 1
+    assert [(link.link_type, link.metadata_json["source"]) for link in links] == [
+        ("related", "okf_import"),
+        ("supports", "llm_compiler"),
+    ]
+    assert {link.target_concept_id for link in links} == {target.id}
+
+
 def test_import_updates_existing_concept_by_slug(runtime_db, tmp_path) -> None:
     runtime_db.add(
         _concept(
