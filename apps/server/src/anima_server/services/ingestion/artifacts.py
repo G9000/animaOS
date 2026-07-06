@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
@@ -30,48 +30,83 @@ def replace_source_artifacts_and_spans(
         joined = ", ".join(missing_kinds)
         raise ValueError(f"Spans reference missing artifact kinds: {joined}")
 
-    db.execute(
-        delete(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)
+    now = datetime.now(UTC)
+    existing_artifacts = list(
+        db.scalars(
+            select(RuntimeSourceArtifact).where(RuntimeSourceArtifact.source_id == source.id)
+        ).all()
     )
-    db.execute(
-        delete(RuntimeSourceArtifact).where(RuntimeSourceArtifact.source_id == source.id)
-    )
-    db.flush()
+    artifacts_by_identity = {
+        (artifact.artifact_kind, artifact.content_hash): artifact
+        for artifact in existing_artifacts
+    }
 
-    inserted_artifacts = [
-        RuntimeSourceArtifact(
-            user_id=source.user_id,
-            source_id=source.id,
-            artifact_kind=artifact.artifact_kind,
-            content_text=artifact.content_text,
-            content_hash=artifact.content_hash,
-            metadata_json=_copy_metadata(artifact.metadata_json),
+    stored_artifacts: list[RuntimeSourceArtifact] = []
+    for artifact_input in artifacts:
+        artifact = artifacts_by_identity.get(
+            (artifact_input.artifact_kind, artifact_input.content_hash)
         )
-        for artifact in artifacts
-    ]
-    db.add_all(inserted_artifacts)
+        if artifact is None:
+            artifact = RuntimeSourceArtifact(
+                user_id=source.user_id,
+                source_id=source.id,
+                artifact_kind=artifact_input.artifact_kind,
+                content_hash=artifact_input.content_hash,
+            )
+        artifact.content_text = artifact_input.content_text
+        artifact.metadata_json = _copy_metadata(artifact_input.metadata_json)
+        artifact.updated_at = now
+        db.add(artifact)
+        stored_artifacts.append(artifact)
     db.flush()
 
     artifacts_by_kind = {
-        artifact.artifact_kind: artifact for artifact in inserted_artifacts
+        artifact.artifact_kind: artifact for artifact in stored_artifacts
     }
-    inserted_spans = [
-        RuntimeSourceSpan(
-            user_id=source.user_id,
-            source_id=source.id,
-            artifact_id=artifacts_by_kind[span.artifact_kind].id,
-            span_kind=span.span_kind,
-            locator_json=dict(span.locator_json),
-            locator_hash=span.locator_hash,
-            content_text=span.content_text,
-            content_hash=span.content_hash,
-            metadata_json=_copy_metadata(span.metadata_json),
-        )
-        for span in spans
-    ]
-    db.add_all(inserted_spans)
+    existing_spans = list(
+        db.scalars(
+            select(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)
+        ).all()
+    )
+    spans_by_identity = {
+        (span.artifact_id, span.locator_hash, span.content_hash): span
+        for span in existing_spans
+    }
 
-    now = datetime.now(UTC)
+    stored_spans: list[RuntimeSourceSpan] = []
+    for span_input in spans:
+        artifact = artifacts_by_kind[span_input.artifact_kind]
+        span = spans_by_identity.get(
+            (artifact.id, span_input.locator_hash, span_input.content_hash)
+        )
+        if span is None:
+            span = RuntimeSourceSpan(
+                user_id=source.user_id,
+                source_id=source.id,
+                artifact_id=artifact.id,
+                locator_hash=span_input.locator_hash,
+                content_hash=span_input.content_hash,
+            )
+        span.artifact_id = artifact.id
+        span.span_kind = span_input.span_kind
+        span.locator_json = dict(span_input.locator_json)
+        span.content_text = span_input.content_text
+        span.metadata_json = _copy_metadata(span_input.metadata_json)
+        span.updated_at = now
+        db.add(span)
+        stored_spans.append(span)
+    db.flush()
+
+    stored_span_ids = {span.id for span in stored_spans}
+    for stale_span in existing_spans:
+        if stale_span.id not in stored_span_ids:
+            db.delete(stale_span)
+
+    stored_artifact_ids = {artifact.id for artifact in stored_artifacts}
+    for stale_artifact in existing_artifacts:
+        if stale_artifact.id not in stored_artifact_ids:
+            db.delete(stale_artifact)
+
     source.status = "indexed"
     source.indexed_at = now
     source.updated_at = now

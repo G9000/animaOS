@@ -242,6 +242,61 @@ def test_later_compiler_failure_rolls_back_partial_concept_writes(runtime_db) ->
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
 
 
+def test_source_refresh_preserves_citations_for_unchanged_spans(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    concept = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="claim-source-evidence",
+        title="Source evidence",
+        description=None,
+        body_markdown="Source evidence claim.",
+        frontmatter_json={"type": "claim", "title": "Source evidence"},
+        content_hash=_sha("Source evidence claim."),
+        status="active",
+    )
+    runtime_db.add(concept)
+    runtime_db.flush()
+    citation = RuntimeKnowledgeConceptSource(
+        user_id=1,
+        concept_id=concept.id,
+        source_id=source.id,
+        span_id=spans[0].id,
+        citation_label="S1",
+        quote_text=spans[0].content_text,
+    )
+    runtime_db.add(citation)
+    runtime_db.flush()
+
+    _, refreshed_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Anima keeps source evidence.",
+                content_hash=_sha("Anima keeps source evidence."),
+                metadata_json={"refreshed": True},
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Anima keeps source evidence.",
+                content_hash=_sha("Anima keeps source evidence."),
+                metadata_json={"refreshed": True},
+            )
+        ],
+    )
+
+    runtime_db.refresh(citation)
+    assert [span.id for span in refreshed_spans] == [spans[0].id]
+    assert citation.span_id == spans[0].id
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 1
+
+
 def test_compiler_rejects_spans_from_a_different_source(runtime_db) -> None:
     first_source, _first_spans = _source_with_spans(runtime_db)
     second_source = register_source(
@@ -357,6 +412,88 @@ def test_lint_knowledge_bundle_reports_structured_findings(runtime_db) -> None:
         "orphan_source",
     }.issubset(codes)
     assert any(finding.source_id == source.id for finding in findings)
+
+
+def test_compiler_merging_existing_concept_retains_other_source_citations(runtime_db) -> None:
+    first_source, first_spans = _source_with_spans(runtime_db)
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[first_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
+                ]
+            }
+        ),
+    )
+    second_source = register_source(
+        runtime_db,
+        SourceIdentity(
+            user_id=1,
+            kind="markdown",
+            source_uri="file://second.md",
+            content_hash=_sha("second source"),
+            title="Second",
+            media_type="text/markdown",
+        ),
+    )
+    _, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=second_source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+    )
+
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[second_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [second_spans[0].id])
+                ]
+            }
+        ),
+    )
+
+    concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "shared-claim")
+    )
+    citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource)
+            .where(RuntimeKnowledgeConceptSource.concept_id == concept.id)
+            .order_by(RuntimeKnowledgeConceptSource.source_id)
+        ).all()
+    )
+
+    assert [citation.source_id for citation in citations] == [
+        first_source.id,
+        second_source.id,
+    ]
+    assert [citation.span_id for citation in citations] == [
+        first_spans[0].id,
+        second_spans[0].id,
+    ]
 
 
 def test_lint_knowledge_bundle_supports_concept_scope(runtime_db) -> None:

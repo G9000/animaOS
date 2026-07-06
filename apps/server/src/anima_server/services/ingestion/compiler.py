@@ -193,6 +193,7 @@ def _replace_concept_sources(
         delete(RuntimeKnowledgeConceptSource).where(
             RuntimeKnowledgeConceptSource.user_id == user_id,
             RuntimeKnowledgeConceptSource.concept_id == concept.id,
+            RuntimeKnowledgeConceptSource.source_id == source.id,
         )
     )
     citations: list[RuntimeKnowledgeConceptSource] = []
