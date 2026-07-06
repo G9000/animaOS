@@ -356,3 +356,59 @@ def test_sync_image_source_preserves_annotations_and_writes_image_locators(
     }
     assert spans[0].metadata_json["source_model"] == "test-ocr"
     assert runtime_db.scalar(select(func.count(RuntimeImageAnnotation.id))) == 1
+
+
+def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+
+    source, artifacts, spans = ingest_markdown_content(
+        runtime_db,
+        user_id=3,
+        content="# Architecture\n\nPortable core details.\n\n## Notes\n\nSpan evidence.",
+        filename="../Architecture Notes.md",
+        title="Architecture Notes",
+    )
+
+    assert source.kind == "markdown"
+    assert source.source_uri == "markdown://Architecture Notes.md"
+    assert artifacts[0].artifact_kind == "markdown"
+    assert [span.span_kind for span in spans] == [
+        "heading",
+        "paragraph",
+        "heading",
+        "paragraph",
+    ]
+    assert spans[1].metadata_json["heading"] == "Architecture"
+    assert spans[2].metadata_json["heading_level"] == 2
+
+
+def test_text_adapter_rejects_empty_content(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_text_content
+
+    with pytest.raises(ValueError, match="content must not be empty"):
+        ingest_text_content(
+            runtime_db,
+            user_id=3,
+            content=" \n\t",
+            filename="empty.txt",
+        )
+
+
+def test_web_capture_adapter_preserves_url_metadata(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.web import ingest_web_capture
+
+    source, artifacts, spans = ingest_web_capture(
+        runtime_db,
+        user_id=3,
+        url=" https://example.com/path?q=1 ",
+        readable_text="Intro paragraph.\n\nSecond paragraph.",
+        title="Example Page",
+        canonical_url="https://example.com/path",
+    )
+
+    assert source.kind == "web_capture"
+    assert source.source_uri == "https://example.com/path?q=1"
+    assert source.title == "Example Page"
+    assert source.metadata_json["canonical_url"] == "https://example.com/path"
+    assert artifacts[0].artifact_kind == "readable_text"
+    assert [span.locator_json["paragraph_index"] for span in spans] == [0, 1]

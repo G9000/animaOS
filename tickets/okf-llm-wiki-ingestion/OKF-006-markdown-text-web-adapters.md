@@ -1,17 +1,17 @@
 # OKF-006 - Markdown, text, and web adapters
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/ingestion/adapters`, `apps/server/src/anima_server/api/routes/knowledge.py`
 - Parent: `OKF-000`
 - Depends on: `OKF-002`, `OKF-004`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-06 23:23 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 00:57 MYT
+- Started: 2026-07-07 00:50 MYT
+- Completed: 2026-07-07 00:57 MYT
 
 ## Goal
 
@@ -34,12 +34,20 @@ Add first new source adapters for markdown, plain text, and web captures under t
 ## Activity Log
 
 - 2026-07-06 23:23 MYT - Ticket created.
+- 2026-07-07 00:50 MYT - Claimed by Codex; starting adapter and API tests before implementation.
+- 2026-07-07 00:57 MYT - Completed markdown, text, and web capture adapters plus knowledge source API routes.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_knowledge_api.py -q` - passed, 14 tests.
+  - `uv run --project apps/server ruff check apps/server/src/anima_server/services/ingestion/adapters/text.py apps/server/src/anima_server/services/ingestion/adapters/web.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/src/anima_server/main.py apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_knowledge_api.py` - passed.
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/ingestion/adapters/text.py`
+  - `apps/server/src/anima_server/services/ingestion/adapters/web.py`
+  - `apps/server/src/anima_server/api/routes/knowledge.py`
+  - `apps/server/src/anima_server/main.py`
+  - `apps/server/tests/test_source_ingestion_adapters.py`
+  - `apps/server/tests/test_knowledge_api.py`
 - Notes:
-  - Expected focused command: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_knowledge_api.py -q`
+  - Web capture ingestion is caller-supplied readable text only; no live network fetching is performed.
