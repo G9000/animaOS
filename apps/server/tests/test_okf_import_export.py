@@ -118,6 +118,32 @@ def test_import_round_trips_unknown_fields_and_unknown_types(runtime_db, tmp_pat
     assert body == "Body with an unknown OKF type.\n"
 
 
+def test_import_normalizes_yaml_timestamps_to_json_safe_strings(
+    runtime_db,
+    tmp_path,
+) -> None:
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir(parents=True)
+    (concepts_dir / "dated-note.md").write_text(
+        "---\n"
+        "type: note\n"
+        "title: Dated note\n"
+        "published_on: 2026-07-06\n"
+        "observed_at: 2026-07-06T01:00:00+08:00\n"
+        "---\n\n"
+        "Body with unquoted YAML timestamps.\n",
+        encoding="utf-8",
+    )
+
+    imported = import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+    runtime_db.commit()
+
+    concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
+    assert imported.concept_count == 1
+    assert concept.frontmatter_json["published_on"] == "2026-07-06"
+    assert concept.frontmatter_json["observed_at"] == "2026-07-06T01:00:00+08:00"
+
+
 def test_import_preserves_bundle_relative_links_and_creates_concept_links(
     runtime_db,
     tmp_path,

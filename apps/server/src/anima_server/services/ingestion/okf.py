@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import yaml
@@ -214,7 +214,33 @@ def _parse_markdown(path: Path) -> tuple[dict[str, object], str]:
     parsed = yaml.safe_load(yaml_text) or {}
     if not isinstance(parsed, dict):
         raise ValueError(f"Invalid OKF frontmatter in {path}")
-    return dict(parsed), body.lstrip("\n")
+    return _json_safe_frontmatter(parsed), body.lstrip("\n")
+
+
+def _json_safe_frontmatter(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): _json_safe_value(nested_value)
+        for key, nested_value in value.items()
+    }
+
+
+def _json_safe_value(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe_value(nested_value)
+            for key, nested_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
 
 
 def _render_index(concepts: list[RuntimeKnowledgeConcept]) -> str:
