@@ -9,7 +9,7 @@
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 00:26 MYT
+- Updated: 2026-07-07 00:30 MYT
 - Started: 2026-07-07 00:16 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
 | `OKF-001` | Runtime source and concept schema | done | none |
-| `OKF-002` | Source registry and adapter contract | backlog | `OKF-001` |
+| `OKF-002` | Source registry and adapter contract | done | `OKF-001` |
 | `OKF-003` | OKF import and export | backlog | `OKF-001`, `OKF-002` |
 | `OKF-004` | LLM-wiki compiler | backlog | `OKF-001`, `OKF-002` |
 | `OKF-005` | PDF and image adapter bridges | backlog | `OKF-002`, `OKF-004` |
@@ -56,12 +56,15 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 ## Completed Tickets
 
 - `OKF-001` - Runtime source and concept schema, completed 2026-07-07 00:26 MYT.
+- `OKF-002` - Source registry and adapter contract, completed 2026-07-07 00:30 MYT.
 
 ## Activity Log
 
 - 2026-07-06 23:23 MYT - Ticket created from `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`.
 - 2026-07-07 00:16 MYT - OKF-001 claimed by Codex and parent tracker moved to `in_progress`.
 - 2026-07-07 00:26 MYT - OKF-001 completed with focused model tests and ruff validation.
+- 2026-07-07 00:27 MYT - OKF-002 claimed by Codex.
+- 2026-07-07 00:30 MYT - OKF-002 completed with focused adapter tests and ruff validation.
 
 ## Validation
 
