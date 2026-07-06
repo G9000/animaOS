@@ -15,11 +15,13 @@ Key differences from the soul models:
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -445,6 +447,412 @@ class RuntimeImageAnnotation(RuntimeBase):
     def compute_content_hash(plaintext: str) -> str:
         """SHA-256 hex digest for annotation embedding staleness checks."""
         return hashlib.sha256(plaintext.encode()).hexdigest()
+
+
+class RuntimeSource(RuntimeBase):
+    __tablename__ = "runtime_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_runtime_sources_id_user",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "source_uri",
+            "content_hash",
+            name="uq_runtime_sources_user_uri_hash",
+        ),
+        Index("ix_runtime_sources_user_kind_status", "user_id", "kind", "status"),
+        Index("ix_runtime_sources_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    source_uri: Mapped[str] = mapped_column(String(1024), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="registered",
+        server_default=text("'registered'"),
+    )
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    indexed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+    artifacts: Mapped[list[RuntimeSourceArtifact]] = relationship(
+        back_populates="source",
+        cascade="all, delete-orphan",
+        order_by="RuntimeSourceArtifact.created_at",
+    )
+    spans: Mapped[list[RuntimeSourceSpan]] = relationship(
+        back_populates="source",
+        cascade="all, delete-orphan",
+        order_by="RuntimeSourceSpan.created_at",
+        overlaps="artifact,spans",
+    )
+
+
+class RuntimeSourceArtifact(RuntimeBase):
+    __tablename__ = "runtime_source_artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_id", "user_id"],
+            ["runtime_sources.id", "runtime_sources.user_id"],
+            name="fk_runtime_source_artifacts_source_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_runtime_source_artifacts_id_user",
+        ),
+        UniqueConstraint(
+            "source_id",
+            "artifact_kind",
+            "content_hash",
+            name="uq_runtime_source_artifacts_source_kind_hash",
+        ),
+        Index(
+            "ix_runtime_source_artifacts_user_source",
+            "user_id",
+            "source_id",
+        ),
+        Index(
+            "ix_runtime_source_artifacts_user_kind",
+            "user_id",
+            "artifact_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    source_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    artifact_kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    source: Mapped[RuntimeSource] = relationship(back_populates="artifacts")
+    spans: Mapped[list[RuntimeSourceSpan]] = relationship(
+        back_populates="artifact",
+        cascade="all, delete-orphan",
+        order_by="RuntimeSourceSpan.created_at",
+        overlaps="source,spans",
+    )
+
+
+class RuntimeSourceSpan(RuntimeBase):
+    __tablename__ = "runtime_source_spans"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_id", "user_id"],
+            ["runtime_sources.id", "runtime_sources.user_id"],
+            name="fk_runtime_source_spans_source_user",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["artifact_id", "user_id"],
+            ["runtime_source_artifacts.id", "runtime_source_artifacts.user_id"],
+            name="fk_runtime_source_spans_artifact_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_runtime_source_spans_id_user",
+        ),
+        UniqueConstraint(
+            "artifact_id",
+            "locator_hash",
+            "content_hash",
+            name="uq_runtime_source_spans_artifact_locator_hash",
+        ),
+        Index("ix_runtime_source_spans_user_source", "user_id", "source_id"),
+        Index("ix_runtime_source_spans_user_artifact", "user_id", "artifact_id"),
+        Index("ix_runtime_source_spans_user_kind", "user_id", "span_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    source_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    artifact_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    span_kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    locator_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    locator_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    source: Mapped[RuntimeSource] = relationship(
+        back_populates="spans",
+        overlaps="artifact,spans",
+    )
+    artifact: Mapped[RuntimeSourceArtifact] = relationship(
+        back_populates="spans",
+        overlaps="source,spans",
+    )
+
+    @staticmethod
+    def compute_locator_hash(locator_json: dict[str, object]) -> str:
+        payload = json.dumps(locator_json, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+
+class RuntimeKnowledgeConcept(RuntimeBase):
+    __tablename__ = "runtime_knowledge_concepts"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "user_id",
+            name="uq_runtime_knowledge_concepts_id_user",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "slug",
+            name="uq_runtime_knowledge_concepts_user_slug",
+        ),
+        Index(
+            "ix_runtime_knowledge_concepts_user_type_status",
+            "user_id",
+            "concept_type",
+            "status",
+        ),
+        Index("ix_runtime_knowledge_concepts_user_title", "user_id", "title"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    concept_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    frontmatter_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    compiled_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+    source_links: Mapped[list[RuntimeKnowledgeConceptSource]] = relationship(
+        back_populates="concept",
+        cascade="all, delete-orphan",
+        order_by="RuntimeKnowledgeConceptSource.created_at",
+        foreign_keys="RuntimeKnowledgeConceptSource.concept_id",
+    )
+    outgoing_links: Mapped[list[RuntimeKnowledgeLink]] = relationship(
+        back_populates="source_concept",
+        cascade="all, delete-orphan",
+        foreign_keys="RuntimeKnowledgeLink.source_concept_id",
+    )
+    incoming_links: Mapped[list[RuntimeKnowledgeLink]] = relationship(
+        back_populates="target_concept",
+        cascade="all, delete-orphan",
+        foreign_keys="RuntimeKnowledgeLink.target_concept_id",
+    )
+
+
+class RuntimeKnowledgeConceptSource(RuntimeBase):
+    __tablename__ = "runtime_knowledge_concept_sources"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["concept_id", "user_id"],
+            ["runtime_knowledge_concepts.id", "runtime_knowledge_concepts.user_id"],
+            name="fk_runtime_knowledge_concept_sources_concept_user",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "user_id"],
+            ["runtime_sources.id", "runtime_sources.user_id"],
+            name="fk_runtime_knowledge_concept_sources_source_user",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["span_id", "user_id"],
+            ["runtime_source_spans.id", "runtime_source_spans.user_id"],
+            name="fk_runtime_knowledge_concept_sources_span_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "concept_id",
+            "span_id",
+            name="uq_runtime_knowledge_concept_sources_concept_span",
+        ),
+        Index(
+            "ix_runtime_knowledge_concept_sources_user_concept",
+            "user_id",
+            "concept_id",
+        ),
+        Index(
+            "ix_runtime_knowledge_concept_sources_user_source",
+            "user_id",
+            "source_id",
+        ),
+        Index(
+            "ix_runtime_knowledge_concept_sources_user_span",
+            "user_id",
+            "span_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    concept_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    source_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    span_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    citation_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quote_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    concept: Mapped[RuntimeKnowledgeConcept] = relationship(
+        back_populates="source_links",
+        foreign_keys=[concept_id],
+    )
+
+
+class RuntimeKnowledgeLink(RuntimeBase):
+    __tablename__ = "runtime_knowledge_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_concept_id", "user_id"],
+            ["runtime_knowledge_concepts.id", "runtime_knowledge_concepts.user_id"],
+            name="fk_runtime_knowledge_links_source_concept_user",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["target_concept_id", "user_id"],
+            ["runtime_knowledge_concepts.id", "runtime_knowledge_concepts.user_id"],
+            name="fk_runtime_knowledge_links_target_concept_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "source_concept_id",
+            "target_concept_id",
+            "link_type",
+            name="uq_runtime_knowledge_links_user_source_target_type",
+        ),
+        Index("ix_runtime_knowledge_links_user_source", "user_id", "source_concept_id"),
+        Index("ix_runtime_knowledge_links_user_target", "user_id", "target_concept_id"),
+        Index("ix_runtime_knowledge_links_user_type", "user_id", "link_type"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    source_concept_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        index=True,
+    )
+    target_concept_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        index=True,
+    )
+    link_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    source_concept: Mapped[RuntimeKnowledgeConcept] = relationship(
+        back_populates="outgoing_links",
+        foreign_keys=[source_concept_id],
+    )
+    target_concept: Mapped[RuntimeKnowledgeConcept] = relationship(
+        back_populates="incoming_links",
+        foreign_keys=[target_concept_id],
+    )
+
+
+class RuntimeKnowledgeBundleRun(RuntimeBase):
+    __tablename__ = "runtime_knowledge_bundle_runs"
+    __table_args__ = (
+        Index("ix_runtime_knowledge_bundle_runs_user_type_status", "user_id", "run_type", "status"),
+        Index("ix_runtime_knowledge_bundle_runs_user_source", "user_id", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    run_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+    )
+    source_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    input_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    result_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    error_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class RuntimeStep(RuntimeBase):

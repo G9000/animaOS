@@ -1,0 +1,73 @@
+# OKF-000 - OKF LLM Wiki Ingestion Parent Tracker
+
+- Status: in_progress
+- Priority: P1
+- Scope: `apps/server`, `packages/api-client`, `apps/desktop`, `docs/architecture`
+- Parent: none
+- Depends on: none
+- Owner: Codex
+- PRD: none
+- Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
+- Created: 2026-07-06 23:23 MYT
+- Updated: 2026-07-07 00:26 MYT
+- Started: 2026-07-07 00:16 MYT
+- Completed:
+
+## Goal
+
+Track the source-type-agnostic ingestion initiative that turns files, media, web captures, transcripts, and app exports into OKF-compatible, LLM-wiki-style knowledge bundles with citations back to raw evidence.
+
+## Child Tickets
+
+| Ticket | Title | Status | Depends on |
+| --- | --- | --- | --- |
+| `OKF-001` | Runtime source and concept schema | done | none |
+| `OKF-002` | Source registry and adapter contract | backlog | `OKF-001` |
+| `OKF-003` | OKF import and export | backlog | `OKF-001`, `OKF-002` |
+| `OKF-004` | LLM-wiki compiler | backlog | `OKF-001`, `OKF-002` |
+| `OKF-005` | PDF and image adapter bridges | backlog | `OKF-002`, `OKF-004` |
+| `OKF-006` | Markdown, text, and web adapters | backlog | `OKF-002`, `OKF-004` |
+| `OKF-007` | Knowledge retrieval and agent tool | backlog | `OKF-003`, `OKF-004`, `OKF-005`, `OKF-006` |
+| `OKF-008` | Bundle linting and maintenance | backlog | `OKF-003`, `OKF-004` |
+| `OKF-009` | API client and desktop knowledge library | backlog | `OKF-007`, `OKF-008` |
+| `OKF-010` | Architecture docs and final validation | backlog | `OKF-001` through `OKF-009` |
+
+## Deliverables
+
+- Runtime source, artifact, span, concept, citation, link, and bundle-run schema.
+- Source registry and adapter contract that supports every source type through normalized artifacts and spans.
+- OKF-compatible import/export with permissive frontmatter handling.
+- LLM-wiki compiler that maintains concept pages, links, citations, questions, decisions, and contradictions.
+- Bridges from current PDF and image ingestion paths into the universal source model.
+- Markdown, plain text, and web capture adapters.
+- Retrieval over compiled concepts and raw evidence spans.
+- Bundle linting and maintenance checks.
+- API client and minimal desktop knowledge-library surface.
+- Architecture docs and validation records.
+
+## Acceptance
+
+- Every child ticket is completed with validation recorded.
+- Existing PDF document RAG and image annotation paths keep their current behavior while also syncing into the universal source/span model.
+- OKF import/export round-trips concept pages, frontmatter, links, `index.md`, and `log.md`.
+- Retrieval can search compiled knowledge and drill into citable source spans without promoting personal memory automatically.
+- Final validation commands are recorded in `OKF-010`.
+
+## Completed Tickets
+
+- `OKF-001` - Runtime source and concept schema, completed 2026-07-07 00:26 MYT.
+
+## Activity Log
+
+- 2026-07-06 23:23 MYT - Ticket created from `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`.
+- 2026-07-07 00:16 MYT - OKF-001 claimed by Codex and parent tracker moved to `in_progress`.
+- 2026-07-07 00:26 MYT - OKF-001 completed with focused model tests and ruff validation.
+
+## Validation
+
+- Commands:
+  - `not run yet`
+- Changed paths:
+  - none
+- Notes:
+  - Parent tracker only; child tickets define executable validation.
