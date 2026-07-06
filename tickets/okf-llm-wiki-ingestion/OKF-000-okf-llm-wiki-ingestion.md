@@ -9,7 +9,7 @@
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 00:37 MYT
+- Updated: 2026-07-07 00:48 MYT
 - Started: 2026-07-07 00:16 MYT
 - Completed:
 
@@ -25,7 +25,7 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 | `OKF-002` | Source registry and adapter contract | done | `OKF-001` |
 | `OKF-003` | OKF import and export | done | `OKF-001`, `OKF-002` |
 | `OKF-004` | LLM-wiki compiler | done | `OKF-001`, `OKF-002` |
-| `OKF-005` | PDF and image adapter bridges | backlog | `OKF-002`, `OKF-004` |
+| `OKF-005` | PDF and image adapter bridges | done | `OKF-002`, `OKF-004` |
 | `OKF-006` | Markdown, text, and web adapters | backlog | `OKF-002`, `OKF-004` |
 | `OKF-007` | Knowledge retrieval and agent tool | backlog | `OKF-003`, `OKF-004`, `OKF-005`, `OKF-006` |
 | `OKF-008` | Bundle linting and maintenance | backlog | `OKF-003`, `OKF-004` |
@@ -59,6 +59,7 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 - `OKF-002` - Source registry and adapter contract, completed 2026-07-07 00:30 MYT.
 - `OKF-003` - OKF import and export, completed 2026-07-07 00:33 MYT.
 - `OKF-004` - LLM-wiki compiler, completed 2026-07-07 00:37 MYT.
+- `OKF-005` - PDF and image adapter bridges, completed 2026-07-07 00:48 MYT.
 
 ## Activity Log
 
@@ -71,6 +72,8 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 - 2026-07-07 00:33 MYT - OKF-003 completed with OKF round-trip tests and ruff validation.
 - 2026-07-07 00:34 MYT - OKF-004 claimed by Codex.
 - 2026-07-07 00:37 MYT - OKF-004 completed with fake-model compiler tests and ruff validation.
+- 2026-07-07 00:40 MYT - OKF-005 claimed by Codex.
+- 2026-07-07 00:48 MYT - OKF-005 completed with document/image bridge tests and existing RAG/indexing regressions.
 
 ## Validation
 

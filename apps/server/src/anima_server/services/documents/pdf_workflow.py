@@ -33,6 +33,7 @@ from anima_server.services.documents.store import (
     replace_document_chunks,
     resolve_document_storage_path,
 )
+from anima_server.services.ingestion.adapters.documents import sync_document_source
 from anima_server.services.workflows import (
     append_checkpoint,
     load_resume_point,
@@ -387,6 +388,7 @@ def run_pdf_ingestion_until_wait_or_done(
             _commit_progress(db)
             document = context.require_document(refresh=True)
             _require_indexed_document(document)
+            sync_document_source(db, document=document)
             _append_completed(
                 db,
                 run,
