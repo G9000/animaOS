@@ -277,11 +277,18 @@ async def run_agent(
 
 async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> RuntimeRun | None:
     """Cancel a running agent turn by run id."""
-    run = cancel_run(runtime_db, run_id)
+    run = runtime_db.get(RuntimeRun, run_id)
     if run is None:
         return None
+    was_active = run.status not in ("completed", "failed", "cancelled")
+    run = cancel_run(runtime_db, run_id)
     companion = get_companion(user_id)
-    if companion is not None:
+    if companion is not None and (
+        was_active or companion.get_cancel_event(run_id) is not None
+    ):
+        # Only signal when a turn can still observe it: an in-flight turn
+        # pops its event in Stage 2's finally, but a pre-set event created
+        # for a long-terminal run would sit in the map forever.
         companion.set_cancel(run_id)
     runtime_db.commit()
     return run
@@ -570,7 +577,13 @@ async def stream_approve_or_deny(
                 "Approval resume failed for run %s (user %s)", run_id, user_id)
             await queue.put(build_error_event(client_error_message(exc)))
         finally:
-            await queue.put(None)
+            # Never block on the end-of-stream sentinel: if the consumer
+            # stopped reading while the bounded queue was full, an awaited
+            # put() would deadlock this worker (and the generator's
+            # finally awaits us).  The consumer treats worker completion
+            # as end-of-stream, so a dropped sentinel is safe.
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(None)
 
     worker_task = asyncio.create_task(worker())
     try:
@@ -707,14 +720,16 @@ async def _execute_agent_turn_locked(
     )
 
     # The run row is committed; tell streaming clients the id so they can
-    # cancel mid-turn.
-    if event_callback is not None:
-        await event_callback(
-            build_run_started_event(run_id=run.id, thread_id=thread.id))
-
-    # Stage 1b: Proactive context management — compact before the LLM call
-    # if estimated context usage already exceeds the threshold.
+    # cancel mid-turn.  The emit awaits the stream queue, so a client
+    # disconnect can cancel us right here — clean up or the run row stays
+    # "running" forever.
     try:
+        if event_callback is not None:
+            await event_callback(
+                build_run_started_event(run_id=run.id, thread_id=thread.id))
+
+        # Stage 1b: Proactive context management — compact before the LLM
+        # call if estimated context usage already exceeds the threshold.
         turn_ctx = await _proactive_compact_if_needed(
             runtime_db,
             thread=thread,
@@ -722,6 +737,16 @@ async def _execute_agent_turn_locked(
             turn_ctx=turn_ctx,
             user_id=user_id,
         )
+    except asyncio.CancelledError as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
     except Exception as exc:
         _fail_turn_setup(
             runtime_db,
@@ -823,6 +848,16 @@ async def _execute_agent_turn_locked(
                 source_message=user_msg,
             ),
         )
+    except asyncio.CancelledError as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
     except Exception as exc:
         _fail_turn_setup(
             runtime_db,
@@ -915,7 +950,10 @@ async def _consolidate_displaced_threads(
             await close_task
         else:
             try:
-                asyncio.get_running_loop().create_task(close_task)
+                # Strong-ref via the tracked set: the loop keeps only weak
+                # task references, so a bare create_task can be GC'd
+                # mid-flight and silently never consolidate.
+                _track_background_task(close_task)
             except RuntimeError:
                 await close_task
 
@@ -1076,6 +1114,18 @@ async def _prepare_turn_context(
             persisted_context_messages=persisted_context_messages,
             today_context=today_context,
         )
+    except asyncio.CancelledError as exc:
+        # Client disconnects cancel the request task; CancelledError is a
+        # BaseException, so the Exception handler below never sees it.
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=persisted_context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
     except Exception as exc:
         _fail_turn_setup(
             runtime_db,
@@ -1095,15 +1145,17 @@ def _fail_turn_setup(
     user_msg: RuntimeMessage,
     context_messages: Sequence[RuntimeMessage] = (),
     exc: BaseException,
+    cancelled: bool = False,
 ) -> None:
     """Best-effort cleanup when a turn fails after the run and user message
     were committed (early-commit in turn preparation) but before the run
     reached a terminal state.
 
     Evicts the orphaned user message (and any context messages) from
-    active context and marks the run failed, so the run does not stay
-    "running" forever and the message does not replay as unanswered
-    history on the next turn.
+    active context and marks the run failed (or cancelled, when
+    *cancelled* is set — e.g. a client disconnect during setup), so the
+    run does not stay "running" forever and the message does not replay
+    as unanswered history on the next turn.
 
     Rolls back any uncommitted partial work first, then re-reads the run
     from committed state and acts ONLY if it is still "running" — so it is
@@ -1125,7 +1177,10 @@ def _fail_turn_setup(
             user_msg=user_msg,
             context_messages=context_messages,
         )
-        mark_run_failed(runtime_db, run, str(exc))
+        if cancelled:
+            cancel_run(runtime_db, run.id)
+        else:
+            mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
     except Exception:
         logger.exception(
@@ -2757,7 +2812,13 @@ async def stream_agent(
             logger.exception("Agent turn failed for user %s", user_id)
             await queue.put(build_error_event(client_error_message(exc)))
         finally:
-            await queue.put(None)
+            # Never block on the end-of-stream sentinel: if the consumer
+            # stopped reading while the bounded queue was full, an awaited
+            # put() would deadlock this worker (and the generator's
+            # finally awaits us).  The consumer treats worker completion
+            # as end-of-stream, so a dropped sentinel is safe.
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(None)
 
     worker_task = asyncio.create_task(worker())
     try:
@@ -2822,7 +2883,7 @@ async def reset_agent_thread(
             if _runtime_db_is_sqlite(runtime_db):
                 await close_task
             else:
-                asyncio.get_running_loop().create_task(close_task)
+                _track_background_task(close_task)
     except RuntimeError:
         pass
 

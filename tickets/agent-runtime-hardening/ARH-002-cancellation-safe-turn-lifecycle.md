@@ -1,6 +1,6 @@
 # ARH-002 - Cancellation-safe turn lifecycle
 
-- Status: backlog
+- Status: in-review
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `ARH-000`
@@ -9,8 +9,8 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
+- Updated: 2026-07-07 01:20 MYT
+- Started: 2026-07-07 00:58 MYT
 - Completed:
 
 ## Goal
@@ -49,12 +49,16 @@ Three related gaps in `services/agent/service.py`:
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 01:20 MYT - Implemented on branch `worktree-agent-runtime-hardening-p1`: `_fail_turn_setup` gained a `cancelled` mode (uses idempotent `cancel_run` instead of `mark_run_failed`); `CancelledError` handlers added around context assembly, the run_started emit + Stage 1b, and Stage 3 persist; stream-worker sentinel switched to `put_nowait` in both pumps; all four fire-and-forget `on_thread_close` sites now go through `_track_background_task`; `cancel_agent_run` no longer inserts never-popped pre-set events for terminal runs.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_agent_service.py -q` → 34 passed, 1 pre-existing failure (`test_run_agent_persists_recalled_image_source_pill_on_assistant_reply`, fails identically on the unmodified base — tied to in-progress main-tree service.py changes, not this ticket)
+  - `uv run --directory apps/server pytest tests/test_concurrency.py tests/test_ws.py -q` → 15 passed
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/api/routes/threads.py
+  - apps/server/tests/test_agent_service.py
 - Notes:
-  - none
+  - 6 new tests: Stage 1 / Stage 1b / Stage 3 cancellation each mark the run cancelled and evict the user message; full-queue stream shutdown completes without deadlock; terminal-run cancel leaves no pre-set event while active-run cancel still signals.

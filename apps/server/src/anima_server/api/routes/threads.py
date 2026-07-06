@@ -17,6 +17,7 @@ from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
+from anima_server.services.agent.service import _track_background_task
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
 from anima_server.services.images.deletion import delete_thread_with_image_cleanup
 from anima_server.services.sessions import get_active_dek
@@ -102,7 +103,10 @@ async def create_new_thread(
 
     if old_thread_id is not None:
         soul_db_factory = build_session_factory_for_db(db)
-        asyncio.get_running_loop().create_task(
+        # Strong-ref via the tracked set: the loop keeps only weak task
+        # references, so a bare create_task can be GC'd mid-flight and
+        # silently never consolidate.
+        _track_background_task(
             on_thread_close(
                 thread_id=old_thread_id,
                 user_id=user_id,
@@ -159,7 +163,7 @@ async def close_thread_endpoint(
 
     if changed:
         soul_db_factory = build_session_factory_for_db(db)
-        asyncio.get_running_loop().create_task(
+        _track_background_task(
             on_thread_close(
                 thread_id=thread_id,
                 user_id=thread.user_id,

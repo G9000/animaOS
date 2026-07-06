@@ -1914,3 +1914,258 @@ async def test_stage3_persist_failure_marks_run_failed(
 
     assert run.status == "failed"
     assert user_msg.is_in_context is False
+
+
+# --------------------------------------------------------------------------- #
+# Cancellation-safe turn lifecycle (ARH-002)
+# --------------------------------------------------------------------------- #
+
+
+class _MinimalCompanion:
+    """Just enough companion surface for turn preparation."""
+
+    thread_id: int | None = None
+
+    def invalidate_history(self, *, thread_id: int) -> None:
+        del thread_id
+
+    def ensure_history_loaded(
+        self,
+        runtime_db: Session,
+        *,
+        thread_id: int,
+    ) -> list[agent_service.StoredMessage]:
+        del runtime_db, thread_id
+        return []
+
+
+@pytest.mark.asyncio
+async def test_stage1_cancellation_marks_run_cancelled_and_evicts_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client disconnect during context assembly (after the early commit)
+    raises CancelledError, which the Exception-only cleanup used to miss —
+    stranding the run as 'running' and replaying the user message."""
+
+    async def cancelled_assemble(**kwargs: object) -> None:
+        del kwargs
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        agent_service, "_get_companion", lambda user_id: _MinimalCompanion()
+    )
+    monkeypatch.setattr(agent_service, "_assemble_turn_context", cancelled_assemble)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stage1-cancel",
+            password_hash="not-used",
+            display_name="Stage1 Cancel",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_agent("hello", user.id, soul_session, runtime_session)
+
+        runtime_session.expire_all()
+        run = runtime_session.query(RuntimeRun).one()
+        user_msg = (
+            runtime_session.query(RuntimeMessage)
+            .filter(RuntimeMessage.role == "user")
+            .one()
+        )
+
+    assert run.status == "cancelled"
+    assert user_msg.is_in_context is False
+
+
+@pytest.mark.asyncio
+async def test_stage1b_cancellation_marks_run_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation during proactive compaction (or the run_started emit,
+    which shares the same handler) must not strand the run."""
+
+    async def cancelled_compact(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise asyncio.CancelledError
+
+    async def minimal_assemble(**kwargs: object) -> agent_service._TurnContext:
+        del kwargs
+        return agent_service._TurnContext(
+            history=[],
+            conversation_turn_count=1,
+            memory_blocks=(),
+        )
+
+    monkeypatch.setattr(
+        agent_service, "_get_companion", lambda user_id: _MinimalCompanion()
+    )
+    monkeypatch.setattr(agent_service, "_assemble_turn_context", minimal_assemble)
+    monkeypatch.setattr(
+        agent_service, "_proactive_compact_if_needed", cancelled_compact
+    )
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stage1b-cancel",
+            password_hash="not-used",
+            display_name="Stage1b Cancel",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_agent("hello", user.id, soul_session, runtime_session)
+
+        runtime_session.expire_all()
+        run = runtime_session.query(RuntimeRun).one()
+        user_msg = (
+            runtime_session.query(RuntimeMessage)
+            .filter(RuntimeMessage.role == "user")
+            .one()
+        )
+
+    assert run.status == "cancelled"
+    assert user_msg.is_in_context is False
+
+
+@pytest.mark.asyncio
+async def test_stage3_cancellation_marks_run_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation while persisting the result must not strand the run."""
+
+    class OkRunner:
+        async def invoke(self, *args, **kwargs) -> AgentResult:
+            del args, kwargs
+            return AgentResult(
+                response="hi there",
+                model="test-model",
+                provider="test-provider",
+                stop_reason="end_turn",
+                step_traces=[StepTrace(step_index=0, assistant_text="hi there")],
+            )
+
+    async def cancelled_persist(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise asyncio.CancelledError
+
+    agent_service.invalidate_agent_runtime_cache()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: OkRunner())
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(agent_service, "_persist_turn_result", cancelled_persist)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="stage3-cancel",
+            password_hash="not-used",
+            display_name="Stage3 Cancel",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_agent("hello", user.id, soul_session, runtime_session)
+
+        runtime_session.expire_all()
+        run = runtime_session.query(RuntimeRun).one()
+
+    assert run.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_stream_shutdown_does_not_deadlock_when_queue_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing the stream while the bounded queue is full must not deadlock:
+    the cancelled worker's finally used to await queue.put(None) on a full
+    queue nobody reads, hanging the generator's own finally forever."""
+
+    class FloodingRunner:
+        async def invoke(self, *args, **kwargs) -> AgentResult:
+            del args
+            event_callback = kwargs["event_callback"]
+            while True:
+                await event_callback(agent_service.build_error_event("flood"))
+
+    agent_service.invalidate_agent_runtime_cache()
+    monkeypatch.setattr(agent_service.settings, "agent_stream_queue_max_size", 1)
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: FloodingRunner())
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = User(
+            username="flood-stream",
+            password_hash="not-used",
+            display_name="Flood Stream",
+        )
+        soul_session.add(user)
+        soul_session.commit()
+
+        gen = agent_service.stream_agent(
+            "hello", user.id, soul_session, runtime_session
+        )
+        first = await asyncio.wait_for(anext(gen), timeout=5)
+        assert first is not None
+        # Let the worker fill the queue and block on its next put.
+        await asyncio.sleep(0.05)
+        await asyncio.wait_for(gen.aclose(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_cancel_agent_run_does_not_leak_preset_event_for_terminal_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling an already-terminal run must not insert a pre-set cancel
+    event that no turn will ever pop; cancelling an active run must still
+    signal the in-flight turn."""
+
+    class SpyCompanion:
+        def __init__(self) -> None:
+            self.events: dict[int, object] = {}
+            self.set_calls: list[int] = []
+
+        def get_cancel_event(self, run_id: int) -> object | None:
+            return self.events.get(run_id)
+
+        def set_cancel(self, run_id: int) -> None:
+            self.set_calls.append(run_id)
+
+    spy = SpyCompanion()
+    monkeypatch.setattr(agent_service, "get_companion", lambda user_id: spy)
+
+    with runtime_db_session() as session:
+        thread = RuntimeThread(user_id=7, status="active", next_message_sequence=1)
+        session.add(thread)
+        session.flush()
+
+        done_run = create_run(
+            session,
+            thread_id=thread.id,
+            user_id=7,
+            provider="test-provider",
+            model="test-model",
+            mode="blocking",
+        )
+        done_run.status = "completed"
+        session.commit()
+
+        result = await agent_service.cancel_agent_run(done_run.id, 7, session)
+        assert result is not None
+        assert spy.set_calls == []
+
+        active_run = create_run(
+            session,
+            thread_id=thread.id,
+            user_id=7,
+            provider="test-provider",
+            model="test-model",
+            mode="blocking",
+        )
+        session.commit()
+
+        result = await agent_service.cancel_agent_run(active_run.id, 7, session)
+        assert result is not None
+        assert spy.set_calls == [active_run.id]
