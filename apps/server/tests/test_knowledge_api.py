@@ -88,6 +88,26 @@ def test_web_capture_endpoint_preserves_canonical_metadata() -> None:
             assert source.metadata_json["canonical_url"] == "https://example.com/wiki"
 
 
+def test_web_capture_endpoint_rejects_urls_longer_than_source_uri_column() -> None:
+    with managed_test_client("anima-knowledge-web-long-url-") as client:
+        user_id, headers = _register(client, username="knowledge-web-long-url")
+        long_url = "https://example.com/" + ("a" * 1005)
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": long_url,
+                "title": "Long URL",
+                "readableText": "Readable body.",
+            },
+        )
+
+        assert len(long_url) > 1024
+        assert response.status_code == 422
+
+
 def test_text_source_endpoint_rejects_empty_content() -> None:
     with managed_test_client("anima-knowledge-empty-") as client:
         user_id, headers = _register(client, username="knowledge-empty")

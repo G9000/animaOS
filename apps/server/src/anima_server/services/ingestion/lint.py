@@ -39,14 +39,15 @@ def lint_knowledge_bundle(
     findings.extend(_stale_concepts(concepts))
     findings.extend(_duplicate_titles(db, user_id=user_id, concept_ids=concept_ids))
     findings.extend(_broken_links(db, user_id=user_id, concept_ids=concept_ids))
-    findings.extend(
-        _orphan_sources(
-            db,
-            user_id=user_id,
-            source_id=source_id,
-            concept_scope=set(concept_ids) if concept_id is not None else None,
+    if concept_id is None or source_id is not None:
+        findings.extend(
+            _orphan_sources(
+                db,
+                user_id=user_id,
+                source_id=source_id,
+                concept_scope=set(concept_ids) if concept_id is not None else None,
+            )
         )
-    )
     return findings
 
 

@@ -216,6 +216,32 @@ def test_malformed_model_output_records_failed_run_without_corrupting_concepts(r
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 1
 
 
+def test_later_compiler_failure_rolls_back_partial_concept_writes(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("topic", "partial-topic", "Partial", [spans[0].id])
+                ],
+                "links": ["not an object"],
+            }
+        ),
+    )
+
+    failed_run = runtime_db.scalar(select(RuntimeKnowledgeBundleRun))
+    assert result.status == "failed"
+    assert failed_run.status == "failed"
+    assert failed_run.error_json["type"] == "ValueError"
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 0
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
+
+
 def test_compiler_rejects_spans_from_a_different_source(runtime_db) -> None:
     first_source, _first_spans = _source_with_spans(runtime_db)
     second_source = register_source(
@@ -364,6 +390,92 @@ def test_lint_knowledge_bundle_supports_concept_scope(runtime_db) -> None:
     findings = lint_knowledge_bundle(runtime_db, user_id=1, concept_id=first.id)
 
     assert {finding.concept_id for finding in findings} == {first.id}
+
+
+def test_lint_concept_scope_does_not_mark_other_sources_orphaned(runtime_db) -> None:
+    from anima_server.services.ingestion.lint import lint_knowledge_bundle
+
+    first_source, first_spans = _source_with_spans(runtime_db)
+    second_source = register_source(
+        runtime_db,
+        SourceIdentity(
+            user_id=1,
+            kind="markdown",
+            source_uri="file://second.md",
+            content_hash=_sha("second source"),
+            title="Second",
+            media_type="text/markdown",
+        ),
+    )
+    _, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=second_source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+    )
+    first = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="first",
+        title="First",
+        description=None,
+        body_markdown="First claim.",
+        frontmatter_json={"type": "claim", "title": "First"},
+        content_hash=_sha("First claim."),
+        status="active",
+    )
+    second = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="second",
+        title="Second",
+        description=None,
+        body_markdown="Second claim.",
+        frontmatter_json={"type": "claim", "title": "Second"},
+        content_hash=_sha("Second claim."),
+        status="active",
+    )
+    runtime_db.add_all([first, second])
+    runtime_db.flush()
+    runtime_db.add_all(
+        [
+            RuntimeKnowledgeConceptSource(
+                user_id=1,
+                concept_id=first.id,
+                source_id=first_source.id,
+                span_id=first_spans[0].id,
+                citation_label="S1",
+                quote_text=first_spans[0].content_text,
+            ),
+            RuntimeKnowledgeConceptSource(
+                user_id=1,
+                concept_id=second.id,
+                source_id=second_source.id,
+                span_id=second_spans[0].id,
+                citation_label="S1",
+                quote_text=second_spans[0].content_text,
+            ),
+        ]
+    )
+    runtime_db.flush()
+
+    findings = lint_knowledge_bundle(runtime_db, user_id=1, concept_id=first.id)
+
+    assert all(finding.code != "orphan_source" for finding in findings)
 
 
 def _concept_payload(

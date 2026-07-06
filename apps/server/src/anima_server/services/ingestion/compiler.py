@@ -76,19 +76,20 @@ def compile_source_to_concepts(
             selected_concept_ids=selected_concept_ids,
         )
         payload = _parse_model_payload(model(request))
-        concepts = _merge_concepts(
-            db,
-            user_id=user_id,
-            source=source,
-            spans_by_id={span.id: span for span in spans},
-            concept_payloads=_require_list(payload, "concepts"),
-        )
-        link_count = _merge_links(
-            db,
-            user_id=user_id,
-            concepts_by_slug={concept.slug: concept for concept in concepts},
-            link_payloads=_optional_list(payload, "links"),
-        )
+        with db.begin_nested():
+            concepts = _merge_concepts(
+                db,
+                user_id=user_id,
+                source=source,
+                spans_by_id={span.id: span for span in spans},
+                concept_payloads=_require_list(payload, "concepts"),
+            )
+            link_count = _merge_links(
+                db,
+                user_id=user_id,
+                concepts_by_slug={concept.slug: concept for concept in concepts},
+                link_payloads=_optional_list(payload, "links"),
+            )
     except Exception as exc:
         fail_bundle_run(db, run=run, exc=exc)
         return CompileResult(status="failed", run_id=run.id)

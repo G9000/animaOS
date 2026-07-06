@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from threading import Thread
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,7 +21,7 @@ from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import generate_embedding
 
-EmbeddingFn = Callable[[str], list[float] | None]
+EmbeddingFn = Callable[[str], list[float] | None | Awaitable[list[float] | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +98,15 @@ def retrieve_knowledge(
     limit_concepts: int = 5,
     limit_spans: int = 5,
 ) -> KnowledgeRetrievalResult:
-    query_embedding = (embedding_fn or generate_embedding)(query)
+    query_embedding = _call_embedding_fn(embedding_fn or generate_embedding, query)
     if not query_embedding:
-        return KnowledgeRetrievalResult()
+        return retrieve_knowledge_text(
+            db,
+            user_id=user_id,
+            query=query,
+            limit_concepts=limit_concepts,
+            limit_spans=limit_spans,
+        )
 
     concept_hits = _concept_hits(
         db,
@@ -109,6 +118,44 @@ def retrieve_knowledge(
         db,
         user_id=user_id,
         query_embedding=query_embedding,
+        limit=limit_spans,
+    )
+    if not concept_hits and not evidence_hits:
+        return retrieve_knowledge_text(
+            db,
+            user_id=user_id,
+            query=query,
+            limit_concepts=limit_concepts,
+            limit_spans=limit_spans,
+        )
+    return KnowledgeRetrievalResult(
+        concepts=concept_hits,
+        evidence_spans=evidence_hits,
+        links=_links_for_concepts(db, user_id=user_id, concept_hits=concept_hits),
+    )
+
+
+def retrieve_knowledge_text(
+    db: Session,
+    *,
+    user_id: int,
+    query: str,
+    limit_concepts: int = 5,
+    limit_spans: int = 5,
+) -> KnowledgeRetrievalResult:
+    lowered = query.strip().lower()
+    if not lowered:
+        return KnowledgeRetrievalResult()
+    concept_hits = _text_concept_hits(
+        db,
+        user_id=user_id,
+        lowered_query=lowered,
+        limit=limit_concepts,
+    )
+    evidence_hits = _text_span_hits(
+        db,
+        user_id=user_id,
+        lowered_query=lowered,
         limit=limit_spans,
     )
     return KnowledgeRetrievalResult(
@@ -129,7 +176,7 @@ def _upsert_embedding(
     importance: int,
     embedding_fn: EmbeddingFn,
 ) -> RuntimeEmbedding | None:
-    embedding = embedding_fn(text)
+    embedding = _call_embedding_fn(embedding_fn, text)
     if not embedding:
         return None
     content_hash = RuntimeEmbedding.compute_content_hash(text)
@@ -164,6 +211,40 @@ def _upsert_embedding(
     db.add(existing)
     db.flush()
     return existing
+
+
+def _call_embedding_fn(embedding_fn: EmbeddingFn, text: str) -> list[float] | None:
+    result = embedding_fn(text)
+    if inspect.isawaitable(result):
+        return _run_awaitable_blocking(result)
+    return result
+
+
+def _run_awaitable_blocking(awaitable: Awaitable[list[float] | None]) -> list[float] | None:
+    async def _await_result() -> list[float] | None:
+        return await awaitable
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_await_result())
+
+    result: dict[str, list[float] | None] = {}
+    error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(_await_result())
+        except BaseException as exc:  # pragma: no cover - propagated to caller
+            error["value"] = exc
+
+    thread = Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
 
 
 def _concept_hits(
@@ -257,6 +338,95 @@ def _span_hits(
         for score, span, source in scored[:limit]
         if score > 0
     ]
+
+
+def _text_concept_hits(
+    db: Session,
+    *,
+    user_id: int,
+    lowered_query: str,
+    limit: int,
+) -> list[KnowledgeConceptHit]:
+    if limit <= 0:
+        return []
+    concepts = list(
+        db.scalars(
+            select(RuntimeKnowledgeConcept)
+            .where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                RuntimeKnowledgeConcept.status == "active",
+            )
+            .order_by(
+                RuntimeKnowledgeConcept.updated_at.desc(),
+                RuntimeKnowledgeConcept.id.desc(),
+            )
+        ).all()
+    )
+    return [
+        KnowledgeConceptHit(
+            concept_id=concept.id,
+            title=concept.title,
+            slug=concept.slug,
+            concept_type=concept.concept_type,
+            summary=concept.description or concept.body_markdown[:240],
+            score=1.0,
+        )
+        for concept in concepts
+        if _contains_text(
+            lowered_query,
+            concept.title,
+            concept.description,
+            concept.body_markdown,
+            concept.slug,
+            concept.concept_type,
+        )
+    ][:limit]
+
+
+def _text_span_hits(
+    db: Session,
+    *,
+    user_id: int,
+    lowered_query: str,
+    limit: int,
+) -> list[KnowledgeEvidenceSpanHit]:
+    if limit <= 0:
+        return []
+    rows = list(
+        db.execute(
+            select(RuntimeSourceSpan, RuntimeSource)
+            .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
+            .where(RuntimeSourceSpan.user_id == user_id, RuntimeSource.user_id == user_id)
+            .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
+        ).all()
+    )
+    return [
+        KnowledgeEvidenceSpanHit(
+            span_id=span.id,
+            source_id=source.id,
+            source_uri=source.source_uri,
+            span_kind=span.span_kind,
+            locator=span.locator_json,
+            content_text=span.content_text,
+            score=1.0,
+        )
+        for span, source in rows
+        if _contains_text(
+            lowered_query,
+            span.content_text,
+            span.span_kind,
+            source.title,
+            source.source_uri,
+        )
+    ][:limit]
+
+
+def _contains_text(lowered_query: str, *values: object) -> bool:
+    return any(
+        lowered_query in str(value).lower()
+        for value in values
+        if value is not None and str(value).strip()
+    )
 
 
 def _links_for_concepts(

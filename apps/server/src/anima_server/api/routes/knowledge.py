@@ -40,6 +40,7 @@ from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bu
 from anima_server.services.ingestion.sources import complete_bundle_run, start_bundle_run
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+SOURCE_URI_MAX_LENGTH = 1024
 
 
 class TextSourceRequest(BaseModel):
@@ -59,7 +60,7 @@ class TextSourceRequest(BaseModel):
 
 class WebCaptureRequest(BaseModel):
     userId: int = Field(ge=0)
-    url: str = Field(min_length=1, max_length=2048)
+    url: str = Field(min_length=1, max_length=SOURCE_URI_MAX_LENGTH)
     readableText: str = Field(min_length=1)
     title: str | None = Field(default=None, max_length=512)
     canonicalUrl: str | None = Field(default=None, max_length=2048)
