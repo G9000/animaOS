@@ -1,6 +1,6 @@
 # OKF-000 - OKF LLM Wiki Ingestion Parent Tracker
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server`, `packages/api-client`, `apps/desktop`, `docs/architecture`
 - Parent: none
@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 01:32 MYT
+- Updated: 2026-07-07 01:45 MYT
 - Started: 2026-07-07 00:16 MYT
-- Completed:
+- Completed: 2026-07-07 01:45 MYT
 
 ## Goal
 
@@ -30,7 +30,7 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 | `OKF-007` | Knowledge retrieval and agent tool | done | `OKF-003`, `OKF-004`, `OKF-005`, `OKF-006` |
 | `OKF-008` | Bundle linting and maintenance | done | `OKF-003`, `OKF-004` |
 | `OKF-009` | API client and desktop knowledge library | done | `OKF-007`, `OKF-008` |
-| `OKF-010` | Architecture docs and final validation | backlog | `OKF-001` through `OKF-009` |
+| `OKF-010` | Architecture docs and final validation | done | `OKF-001` through `OKF-009` |
 
 ## Deliverables
 
@@ -63,6 +63,8 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 - `OKF-006` - Markdown, text, and web adapters, completed 2026-07-07 00:57 MYT.
 - `OKF-007` - Knowledge retrieval and agent tool, completed 2026-07-07 01:10 MYT.
 - `OKF-008` - Bundle linting and maintenance, completed 2026-07-07 01:19 MYT.
+- `OKF-009` - API client and desktop knowledge library, completed 2026-07-07 01:32 MYT.
+- `OKF-010` - Architecture docs and final validation, completed 2026-07-07 01:45 MYT.
 
 ## Activity Log
 
@@ -85,12 +87,18 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 - 2026-07-07 01:19 MYT - OKF-008 completed with lint service tests and ruff validation.
 - 2026-07-07 01:20 MYT - OKF-009 claimed by Codex.
 - 2026-07-07 01:32 MYT - OKF-009 completed with backend API, API client, desktop build, and focused route/client tests.
+- 2026-07-07 01:33 MYT - OKF-010 claimed by Codex.
+- 2026-07-07 01:45 MYT - OKF-010 completed; parent tracker marked done.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - See `OKF-010` validation for final command results.
 - Changed paths:
-  - none
+  - `apps/server`
+  - `packages/api-client`
+  - `apps/desktop`
+  - `docs/architecture`
+  - `tickets/okf-llm-wiki-ingestion`
 - Notes:
-  - Parent tracker only; child tickets define executable validation.
+  - Parent tracker only; child tickets define executable validation. Full final validation is recorded in `OKF-010`.

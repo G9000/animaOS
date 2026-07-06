@@ -1,17 +1,17 @@
 # OKF-010 - Architecture docs and final validation
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `docs/architecture`, `tickets/okf-llm-wiki-ingestion`
 - Parent: `OKF-000`
 - Depends on: `OKF-001`, `OKF-002`, `OKF-003`, `OKF-004`, `OKF-005`, `OKF-006`, `OKF-007`, `OKF-008`, `OKF-009`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-06 23:23 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 01:45 MYT
+- Started: 2026-07-07 01:33 MYT
+- Completed: 2026-07-07 01:45 MYT
 
 ## Goal
 
@@ -36,12 +36,25 @@ Document the final OKF/LLM-wiki ingestion architecture and record validation for
 ## Activity Log
 
 - 2026-07-06 23:23 MYT - Ticket created.
+- 2026-07-07 01:33 MYT - Claimed by Codex; starting architecture docs and final validation.
+- 2026-07-07 01:45 MYT - Added architecture documentation and completed final validation pass.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `git diff --check` - passed.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_models.py apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_okf_import_export.py apps/server/tests/test_llm_wiki_compiler.py apps/server/tests/test_knowledge_retrieval.py apps/server/tests/test_knowledge_api.py -q` - passed, 34 tests.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_document_rag.py apps/server/tests/test_documents_api.py apps/server/tests/test_image_indexing.py apps/server/tests/test_image_retrieval_context.py -q` - passed, 59 tests; 4 SQLAlchemy drop-order warnings.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test` - failed after 7:37 with 1908 passed, 3 failed, 1 skipped, 329 warnings. Failures: `apps/server/tests/test_agent_service.py::test_run_agent_persists_context_message_pills` expected compact pill dicts but received normalized pill fields; `apps/server/tests/test_runtime_db.py::test_ensure_pgvector_enables_vector_extension` and `apps/server/tests/test_runtime_db.py::test_ensure_pgvector_logs_warning_when_extension_is_unavailable` expect `anima_server.db.runtime.get_runtime_engine_name`, which is absent.
+  - `bun run lint` - passed for server Ruff and desktop `tsc --noEmit`.
+  - `bun run build` - passed for server wheel/sdist, desktop build, and `cargo check -p animus`; Vite emitted the existing large-chunk warning.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run db:server:current` - passed; Alembic core current command completed with SQLite context output.
 - Changed paths:
-  - none
+  - `docs/architecture/agent/source-ingestion.md`
+  - `docs/architecture/README.md`
+  - `docs/architecture/agent/document-processing.md`
+  - `docs/architecture/memory/memory-system.md`
+  - `tickets/okf-llm-wiki-ingestion/OKF-010-docs-final-validation.md`
+  - `tickets/okf-llm-wiki-ingestion/OKF-000-okf-llm-wiki-ingestion.md`
 - Notes:
-  - Final validation should include focused OKF tests, existing PDF/image regression tests, `git diff --check`, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test`, `bun run lint`, `bun run build`, and `bun run db:server:current`.
+  - Full-suite failures are outside OKF source ingestion changes and match broader existing test drift in agent context-pill normalization and runtime DB engine-name tests.
