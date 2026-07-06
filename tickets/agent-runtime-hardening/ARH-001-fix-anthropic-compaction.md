@@ -1,4 +1,4 @@
-﻿# ARH-001 - Fix Anthropic LLM compaction endpoint
+# ARH-001 - Fix Anthropic LLM compaction endpoint
 
 - Status: in-review
 - Priority: P0
@@ -25,7 +25,7 @@ Make LLM-powered compaction summaries actually work on the Anthropic provider in
 
 1. Delete the raw httpx call. Route through the existing provider abstraction: build a client via `create_provider_chat_client(...)` and call it with the summarization prompt (or reuse `call_llm_for_text` from `llm_json.py` if it fits the message shape). This makes the code provider-agnostic for free.
 2. Raise the failure log from debug to WARNING on the `anima.runtime.degraded` logger (see plan cross-cutting decisions) so a broken summarizer is visible.
-3. Keep the `render_summary_text` fallback â€” the change is about routing and visibility, not removing the safety net.
+3. Keep the `render_summary_text` fallback — the change is about routing and visibility, not removing the safety net.
 4. After ARH-005 lands, this path picks up shared retry automatically; do not build bespoke retry here.
 
 ## Deliverables
@@ -44,12 +44,12 @@ Make LLM-powered compaction summaries actually work on the Anthropic provider in
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
-- 2026-07-07 00:55 MYT - Implemented on branch worktree-agent-runtime-hardening-p1: summarize_with_llm now builds a client via create_provider_chat_client and invokes through call_llm_for_text; raw httpx /chat/completions POST removed; failures and empty outputs log WARNING on anima.runtime.degraded. Temperature intentionally dropped (some current Anthropic models reject it; ARH-005 adds proper gating).
+- 2026-07-07 00:55 MYT - Implemented on branch `worktree-agent-runtime-hardening-p1`: `summarize_with_llm` now builds a client via `create_provider_chat_client` and invokes through `call_llm_for_text`; raw httpx `/chat/completions` POST removed; failures and empty outputs log WARNING on `anima.runtime.degraded`. Temperature intentionally dropped (some current Anthropic models reject it; ARH-005 adds proper gating).
 
 ## Validation
 
 - Commands:
-  - `uv run --directory apps/server pytest tests/test_agent_compaction.py -q` -> 26 passed
+  - `uv run --directory apps/server pytest tests/test_agent_compaction.py -q` → 26 passed
 - Changed paths:
   - apps/server/src/anima_server/services/agent/compaction.py
   - apps/server/tests/test_agent_compaction.py
