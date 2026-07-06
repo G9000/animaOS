@@ -216,6 +216,101 @@ def test_malformed_model_output_records_failed_run_without_corrupting_concepts(r
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 1
 
 
+def test_lint_knowledge_bundle_reports_structured_findings(runtime_db) -> None:
+    from anima_server.services.ingestion.lint import lint_knowledge_bundle
+
+    source, _spans = _source_with_spans(runtime_db)
+    first = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="portable-core",
+        title="Portable Core",
+        description=None,
+        body_markdown="Portable core claim.",
+        frontmatter_json={"type": "claim", "title": "Portable Core"},
+        content_hash=_sha("stale"),
+        status="active",
+    )
+    duplicate_title = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="portable-core-duplicate",
+        title="Portable Core",
+        description=None,
+        body_markdown="Second portable core claim.",
+        frontmatter_json={"type": "claim", "title": "Portable Core"},
+        content_hash=_sha("Second portable core claim."),
+        status="active",
+    )
+    deleted_target = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="deleted-target",
+        title="Deleted Target",
+        description=None,
+        body_markdown="Deleted target.",
+        frontmatter_json={"type": "claim", "title": "Deleted Target"},
+        content_hash=_sha("Deleted target."),
+        status="deleted",
+    )
+    runtime_db.add_all([first, duplicate_title, deleted_target])
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeLink(
+            user_id=1,
+            source_concept_id=first.id,
+            target_concept_id=deleted_target.id,
+            link_type="supports",
+        )
+    )
+    runtime_db.flush()
+
+    findings = lint_knowledge_bundle(runtime_db, user_id=1)
+    codes = {finding.code for finding in findings}
+
+    assert {
+        "uncited_claim",
+        "duplicate_concept_title",
+        "stale_concept_hash",
+        "broken_concept_link",
+        "orphan_source",
+    }.issubset(codes)
+    assert any(finding.source_id == source.id for finding in findings)
+
+
+def test_lint_knowledge_bundle_supports_concept_scope(runtime_db) -> None:
+    from anima_server.services.ingestion.lint import lint_knowledge_bundle
+
+    first = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="first",
+        title="First",
+        description=None,
+        body_markdown="First claim.",
+        frontmatter_json={"type": "claim", "title": "First"},
+        content_hash=_sha("First claim."),
+        status="active",
+    )
+    second = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="second",
+        title="Second",
+        description=None,
+        body_markdown="Second claim.",
+        frontmatter_json={"type": "claim", "title": "Second"},
+        content_hash=_sha("Second claim."),
+        status="active",
+    )
+    runtime_db.add_all([first, second])
+    runtime_db.flush()
+
+    findings = lint_knowledge_bundle(runtime_db, user_id=1, concept_id=first.id)
+
+    assert {finding.concept_id for finding in findings} == {first.id}
+
+
 def _concept_payload(
     concept_type: str,
     slug: str,

@@ -21,6 +21,7 @@ from anima_server.services.ingestion.adapters.text import (
     ingest_text_content,
 )
 from anima_server.services.ingestion.adapters.web import ingest_web_capture
+from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.sources import complete_bundle_run, start_bundle_run
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -55,6 +56,12 @@ class WebCaptureRequest(BaseModel):
         if not value.strip():
             raise ValueError("content must not be empty")
         return value
+
+
+class KnowledgeLintRequest(BaseModel):
+    userId: int = Field(ge=0)
+    sourceId: int | None = Field(default=None, ge=1)
+    conceptId: int | None = Field(default=None, ge=1)
 
 
 @router.post("/sources/text", status_code=status.HTTP_201_CREATED)
@@ -180,6 +187,34 @@ async def compile_source(
     run = _queue_compile_run(runtime_db, source=source)
     runtime_db.commit()
     return {"compileRun": _run_response(run)}
+
+
+@router.post("/lint")
+async def lint_knowledge(
+    request: Request,
+    payload: KnowledgeLintRequest,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, payload.userId)
+    findings = lint_knowledge_bundle(
+        runtime_db,
+        user_id=payload.userId,
+        source_id=payload.sourceId,
+        concept_id=payload.conceptId,
+    )
+    return {
+        "findings": [
+            {
+                "code": finding.code,
+                "severity": finding.severity,
+                "message": finding.message,
+                "conceptId": finding.concept_id,
+                "sourceId": finding.source_id,
+                "linkId": finding.link_id,
+            }
+            for finding in findings
+        ]
+    }
 
 
 def _queue_compile_run(

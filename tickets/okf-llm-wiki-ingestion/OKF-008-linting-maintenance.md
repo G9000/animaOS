@@ -1,17 +1,17 @@
 # OKF-008 - Bundle linting and maintenance
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/ingestion/lint.py`, `apps/server/src/anima_server/api/routes/knowledge.py`
 - Parent: `OKF-000`
 - Depends on: `OKF-003`, `OKF-004`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-06 23:23 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 01:19 MYT
+- Started: 2026-07-07 01:12 MYT
+- Completed: 2026-07-07 01:19 MYT
 
 ## Goal
 
@@ -35,12 +35,17 @@ Add linting and maintenance checks for OKF-compatible knowledge bundles.
 ## Activity Log
 
 - 2026-07-06 23:23 MYT - Ticket created.
+- 2026-07-07 01:12 MYT - Claimed by Codex; starting lint tests before implementation.
+- 2026-07-07 01:19 MYT - Completed structured lint service and knowledge API lint endpoint.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_okf_import_export.py apps/server/tests/test_llm_wiki_compiler.py -q` - passed, 10 tests.
+  - `uv run --project apps/server ruff check apps/server/src/anima_server/services/ingestion/lint.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/tests/test_llm_wiki_compiler.py apps/server/tests/test_okf_import_export.py` - passed.
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/ingestion/lint.py`
+  - `apps/server/src/anima_server/api/routes/knowledge.py`
+  - `apps/server/tests/test_llm_wiki_compiler.py`
 - Notes:
-  - Expected focused command: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_okf_import_export.py apps/server/tests/test_llm_wiki_compiler.py -q`
+  - Broken links include links to inactive target concepts; FK-invalid links are prevented by the runtime schema.
