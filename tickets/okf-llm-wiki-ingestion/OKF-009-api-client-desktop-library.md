@@ -1,17 +1,17 @@
 # OKF-009 - API client and desktop knowledge library
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `packages/api-client`, `apps/desktop/src/pages/knowledge`, `apps/desktop/src/components/knowledge`
 - Parent: `OKF-000`
 - Depends on: `OKF-007`, `OKF-008`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-06 23:23 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 01:32 MYT
+- Started: 2026-07-07 01:20 MYT
+- Completed: 2026-07-07 01:32 MYT
 
 ## Goal
 
@@ -35,12 +35,26 @@ Expose source and concept reads through the API client and add a minimal desktop
 ## Activity Log
 
 - 2026-07-06 23:23 MYT - Ticket created.
+- 2026-07-07 01:20 MYT - Claimed by Codex; starting API client and desktop knowledge-library implementation.
+- 2026-07-07 01:32 MYT - Added knowledge API list/search/import/export routes, API client methods, and the desktop knowledge-library surface.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_knowledge_api.py -q` - passed, 6 tests.
+  - `bun test packages/api-client/tests/client.test.ts` - passed, 17 tests.
+  - `bun run build:desktop` - passed; Vite emitted the existing large-chunk warning.
+  - `uv run --project . ruff check src/anima_server/api/routes/knowledge.py tests/test_knowledge_api.py` from `apps/server` - passed.
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/api/routes/knowledge.py`
+  - `apps/server/tests/test_knowledge_api.py`
+  - `packages/api-client/src/client.ts`
+  - `packages/api-client/src/types.ts`
+  - `packages/api-client/tests/client.test.ts`
+  - `apps/desktop/src/App.tsx`
+  - `apps/desktop/src/components/layout/nav-items.ts`
+  - `apps/desktop/src/components/knowledge/KnowledgeConceptViewer.tsx`
+  - `apps/desktop/src/components/knowledge/KnowledgeSourceList.tsx`
+  - `apps/desktop/src/pages/knowledge/KnowledgeLibrary.tsx`
 - Notes:
-  - Expected focused command: `bun run build:desktop`
+  - Added minimal backend read/list/search/export/import routes needed by the client and desktop surface because the prior backend only exposed individual source/concept read, source creation, compile queueing, and lint.

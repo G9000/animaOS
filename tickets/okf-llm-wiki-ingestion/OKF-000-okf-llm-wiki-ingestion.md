@@ -9,7 +9,7 @@
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 01:19 MYT
+- Updated: 2026-07-07 01:32 MYT
 - Started: 2026-07-07 00:16 MYT
 - Completed:
 
@@ -29,7 +29,7 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 | `OKF-006` | Markdown, text, and web adapters | done | `OKF-002`, `OKF-004` |
 | `OKF-007` | Knowledge retrieval and agent tool | done | `OKF-003`, `OKF-004`, `OKF-005`, `OKF-006` |
 | `OKF-008` | Bundle linting and maintenance | done | `OKF-003`, `OKF-004` |
-| `OKF-009` | API client and desktop knowledge library | backlog | `OKF-007`, `OKF-008` |
+| `OKF-009` | API client and desktop knowledge library | done | `OKF-007`, `OKF-008` |
 | `OKF-010` | Architecture docs and final validation | backlog | `OKF-001` through `OKF-009` |
 
 ## Deliverables
@@ -83,6 +83,8 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 - 2026-07-07 01:10 MYT - OKF-007 completed with targeted retrieval/tool tests; broader agent suite has one unrelated context-pill assertion failure recorded in the child ticket.
 - 2026-07-07 01:12 MYT - OKF-008 claimed by Codex.
 - 2026-07-07 01:19 MYT - OKF-008 completed with lint service tests and ruff validation.
+- 2026-07-07 01:20 MYT - OKF-009 claimed by Codex.
+- 2026-07-07 01:32 MYT - OKF-009 completed with backend API, API client, desktop build, and focused route/client tests.
 
 ## Validation
 

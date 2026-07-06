@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import tempfile
+import zipfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +24,8 @@ from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
     RuntimeKnowledgeBundleRun,
     RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
+    RuntimeKnowledgeLink,
     RuntimeSource,
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
@@ -22,6 +36,7 @@ from anima_server.services.ingestion.adapters.text import (
 )
 from anima_server.services.ingestion.adapters.web import ingest_web_capture
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
+from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
 from anima_server.services.ingestion.sources import complete_bundle_run, start_bundle_run
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -62,6 +77,26 @@ class KnowledgeLintRequest(BaseModel):
     userId: int = Field(ge=0)
     sourceId: int | None = Field(default=None, ge=1)
     conceptId: int | None = Field(default=None, ge=1)
+
+
+@router.get("/sources")
+async def list_sources(
+    request: Request,
+    userId: int,
+    limit: int = 50,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    safe_limit = min(max(limit, 1), 200)
+    sources = list(
+        runtime_db.scalars(
+            select(RuntimeSource)
+            .where(RuntimeSource.user_id == userId)
+            .order_by(RuntimeSource.created_at.desc(), RuntimeSource.id.desc())
+            .limit(safe_limit)
+        ).all()
+    )
+    return {"sources": [_source_summary(source) for source in sources]}
 
 
 @router.post("/sources/text", status_code=status.HTTP_201_CREATED)
@@ -147,6 +182,29 @@ async def get_source(
     )
 
 
+@router.get("/concepts")
+async def list_concepts(
+    request: Request,
+    userId: int,
+    limit: int = 50,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    safe_limit = min(max(limit, 1), 200)
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept)
+            .where(RuntimeKnowledgeConcept.user_id == userId)
+            .order_by(
+                RuntimeKnowledgeConcept.updated_at.desc(),
+                RuntimeKnowledgeConcept.id.desc(),
+            )
+            .limit(safe_limit)
+        ).all()
+    )
+    return {"concepts": [_concept_summary(concept) for concept in concepts]}
+
+
 @router.get("/concepts/{concept_id}")
 async def get_concept(
     request: Request,
@@ -172,6 +230,12 @@ async def get_concept(
         "frontmatter": concept.frontmatter_json,
         "metadata": concept.metadata_json,
         "status": concept.status,
+        "citations": _concept_citations(
+            runtime_db,
+            user_id=userId,
+            concept_id=concept.id,
+        ),
+        "links": _concept_links(runtime_db, user_id=userId, concept_id=concept.id),
     }
 
 
@@ -187,6 +251,116 @@ async def compile_source(
     run = _queue_compile_run(runtime_db, source=source)
     runtime_db.commit()
     return {"compileRun": _run_response(run)}
+
+
+@router.get("/search")
+async def search_knowledge(
+    request: Request,
+    userId: int,
+    q: str,
+    limit: int = 20,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    query = q.strip()
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="q must not be empty.",
+        )
+    safe_limit = min(max(limit, 1), 50)
+    lowered = query.lower()
+    concepts = [
+        _concept_summary(concept)
+        for concept in runtime_db.scalars(
+            select(RuntimeKnowledgeConcept)
+            .where(RuntimeKnowledgeConcept.user_id == userId)
+            .order_by(
+                RuntimeKnowledgeConcept.updated_at.desc(),
+                RuntimeKnowledgeConcept.id.desc(),
+            )
+        ).all()
+        if _contains_text(
+            lowered,
+            concept.title,
+            concept.description,
+            concept.body_markdown,
+            concept.slug,
+            concept.concept_type,
+        )
+    ][:safe_limit]
+    spans = [
+        _span_search_response(span, source)
+        for span, source in runtime_db.execute(
+            select(RuntimeSourceSpan, RuntimeSource)
+            .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
+            .where(RuntimeSourceSpan.user_id == userId, RuntimeSource.user_id == userId)
+            .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
+        ).all()
+        if _contains_text(
+            lowered,
+            span.content_text,
+            span.span_kind,
+            source.title,
+            source.source_uri,
+        )
+    ][:safe_limit]
+    return {"query": query, "concepts": concepts, "evidenceSpans": spans}
+
+
+@router.get("/export")
+async def export_knowledge(
+    request: Request,
+    userId: int,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> Response:
+    require_unlocked_user(request, userId)
+    with tempfile.TemporaryDirectory(prefix="anima-okf-export-") as temp_dir:
+        bundle_dir = Path(temp_dir) / "bundle"
+        export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        archive_path = Path(temp_dir) / "knowledge-bundle.zip"
+        with zipfile.ZipFile(
+            archive_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            for path in sorted(bundle_dir.rglob("*")):
+                if path.is_file():
+                    archive.write(path, path.relative_to(bundle_dir).as_posix())
+        return Response(
+            content=archive_path.read_bytes(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": 'attachment; filename="knowledge-bundle.zip"',
+            },
+        )
+
+
+@router.post("/import", status_code=status.HTTP_201_CREATED)
+async def import_knowledge(
+    request: Request,
+    userId: int,
+    file: UploadFile = File(...),
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    content = await file.read()
+    with tempfile.TemporaryDirectory(prefix="anima-okf-import-") as temp_dir:
+        bundle_dir = Path(temp_dir) / "bundle"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            archive_path = Path(temp_dir) / "bundle.zip"
+            archive_path.write_bytes(content)
+            with zipfile.ZipFile(archive_path) as archive:
+                _extract_zip_safely(archive, bundle_dir)
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid OKF bundle zip.",
+            ) from exc
+        result = import_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        runtime_db.commit()
+    return {"conceptCount": result.concept_count, "linkCount": result.link_count}
 
 
 @router.post("/lint")
@@ -292,6 +466,116 @@ def _source_response(
     return response
 
 
+def _source_summary(source: RuntimeSource) -> dict[str, Any]:
+    return {
+        "id": source.id,
+        "kind": source.kind,
+        "sourceUri": source.source_uri,
+        "contentHash": source.content_hash,
+        "title": source.title,
+        "mediaType": source.media_type,
+        "status": source.status,
+        "metadata": source.metadata_json,
+    }
+
+
+def _concept_summary(concept: RuntimeKnowledgeConcept) -> dict[str, Any]:
+    return {
+        "id": concept.id,
+        "slug": concept.slug,
+        "title": concept.title,
+        "description": concept.description,
+        "conceptType": concept.concept_type,
+        "status": concept.status,
+        "metadata": concept.metadata_json,
+    }
+
+
+def _concept_citations(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    concept_id: int,
+) -> list[dict[str, Any]]:
+    rows = runtime_db.execute(
+        select(RuntimeKnowledgeConceptSource, RuntimeSourceSpan, RuntimeSource)
+        .join(
+            RuntimeSourceSpan,
+            RuntimeKnowledgeConceptSource.span_id == RuntimeSourceSpan.id,
+        )
+        .join(RuntimeSource, RuntimeKnowledgeConceptSource.source_id == RuntimeSource.id)
+        .where(
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+            RuntimeKnowledgeConceptSource.concept_id == concept_id,
+            RuntimeSourceSpan.user_id == user_id,
+            RuntimeSource.user_id == user_id,
+        )
+        .order_by(
+            RuntimeKnowledgeConceptSource.created_at,
+            RuntimeKnowledgeConceptSource.id,
+        )
+    ).all()
+    return [
+        {
+            "id": link.id,
+            "sourceId": source.id,
+            "spanId": span.id,
+            "citationLabel": link.citation_label,
+            "quoteText": link.quote_text,
+            "sourceTitle": source.title,
+            "sourceUri": source.source_uri,
+            "spanKind": span.span_kind,
+            "locator": span.locator_json,
+            "contentText": span.content_text,
+            "metadata": link.metadata_json,
+        }
+        for link, span, source in rows
+    ]
+
+
+def _concept_links(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    concept_id: int,
+) -> list[dict[str, Any]]:
+    links = runtime_db.scalars(
+        select(RuntimeKnowledgeLink)
+        .where(
+            RuntimeKnowledgeLink.user_id == user_id,
+            RuntimeKnowledgeLink.source_concept_id == concept_id,
+        )
+        .order_by(RuntimeKnowledgeLink.created_at, RuntimeKnowledgeLink.id)
+    ).all()
+    return [
+        {
+            "id": link.id,
+            "sourceConceptId": link.source_concept_id,
+            "targetConceptId": link.target_concept_id,
+            "linkType": link.link_type,
+            "confidence": link.confidence,
+            "metadata": link.metadata_json,
+        }
+        for link in links
+    ]
+
+
+def _span_search_response(
+    span: RuntimeSourceSpan,
+    source: RuntimeSource,
+) -> dict[str, Any]:
+    return {
+        "id": span.id,
+        "sourceId": source.id,
+        "sourceTitle": source.title,
+        "sourceUri": source.source_uri,
+        "spanKind": span.span_kind,
+        "locator": span.locator_json,
+        "contentText": span.content_text,
+        "metadata": span.metadata_json,
+    }
+
+
 def _run_response(run: RuntimeKnowledgeBundleRun) -> dict[str, Any]:
     return {
         "id": run.id,
@@ -319,3 +603,19 @@ def _source_spans(runtime_db: Session, *, source_id: int) -> list[RuntimeSourceS
             .order_by(RuntimeSourceSpan.id)
         ).all()
     )
+
+
+def _contains_text(needle: str, *values: str | None) -> bool:
+    return any(needle in value.lower() for value in values if value)
+
+
+def _extract_zip_safely(archive: zipfile.ZipFile, target_dir: Path) -> None:
+    target_root = target_dir.resolve()
+    for member in archive.infolist():
+        destination = (target_root / member.filename).resolve()
+        if target_root not in destination.parents and destination != target_root:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid OKF bundle path.",
+            )
+        archive.extract(member, target_root)
