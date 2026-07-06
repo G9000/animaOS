@@ -635,13 +635,22 @@ def _serialize_usage(usage: UsageStats | None) -> dict[str, object] | None:
     return asdict(usage)
 
 
-def list_threads(db: Session, user_id: int) -> list[RuntimeThread]:
-    """Return all threads for a user sorted by last_message_at DESC."""
+def list_threads(db: Session, user_id: int) -> list[tuple[RuntimeThread, str | None]]:
+    """Return all threads for a user sorted by last_message_at DESC, with first message role."""
     from sqlalchemy import nulls_last
 
+    first_role = (
+        select(RuntimeMessage.role)
+        .where(RuntimeMessage.thread_id == RuntimeThread.id)
+        .order_by(RuntimeMessage.sequence_id)
+        .limit(1)
+        .correlate(RuntimeThread)
+        .scalar_subquery()
+    )
+
     return list(
-        db.scalars(
-            select(RuntimeThread)
+        db.execute(
+            select(RuntimeThread, first_role.label("first_role"))
             .where(RuntimeThread.user_id == user_id)
             .order_by(
                 nulls_last(desc(RuntimeThread.last_message_at)),

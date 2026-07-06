@@ -23,6 +23,7 @@ from anima_server.models.runtime import (
 from anima_server.schemas.chat import (
     ChatContextMessage,
     ChatRequestAttachment,
+    MessagePill,
     TodayContext,
 )
 from anima_server.services.agent.attachments import (
@@ -776,7 +777,10 @@ async def _execute_agent_turn_locked(
             run=run,
             result=result,
             initial_sequence_id=initial_sequence_id,
-            assistant_pills=_build_assistant_source_pills(turn_ctx),
+            assistant_pills=_build_assistant_source_pills(
+                turn_ctx,
+                source_message=user_msg,
+            ),
         )
         _refresh_companion_history(
             user_id=user_id,
@@ -814,7 +818,10 @@ async def _execute_agent_turn_locked(
             run=run,
             result=result,
             initial_sequence_id=initial_sequence_id,
-            assistant_pills=_build_assistant_source_pills(turn_ctx),
+            assistant_pills=_build_assistant_source_pills(
+                turn_ctx,
+                source_message=user_msg,
+            ),
         )
     except Exception as exc:
         _fail_turn_setup(
@@ -1005,7 +1012,10 @@ async def _prepare_turn_context(
         ):
             content_json = attach_serialized_pills(
                 None,
-                [pill.model_dump() for pill in context_message.pills],
+                [
+                    _serialize_context_message_pill(pill)
+                    for pill in context_message.pills
+                ],
             )
             persisted = append_message(
                 runtime_db,
@@ -1307,10 +1317,14 @@ async def _assemble_turn_context(
         if today_context_block is not None:
             memory_blocks = (*memory_blocks, today_context_block)
         document_source_pills = ()
-        recalled_image_source_pills = _build_recalled_image_source_pills(
-            runtime_db,
-            user_id=user_id,
-            query_embedding=query_embedding,
+        recalled_image_source_pills = (
+            ()
+            if prepared_attachments
+            else _build_recalled_image_source_pills(
+                runtime_db,
+                user_id=user_id,
+                query_embedding=query_embedding,
+            )
         )
 
     # Feedback signals (best-effort)
@@ -1498,6 +1512,8 @@ def _build_recalled_image_source_pills(
     pills: list[dict[str, object]] = []
     seen_assets: set[int] = set()
     for result in results:
+        if result.annotation_kind not in {"vision_caption", "ocr_text"}:
+            continue
         if result.image_asset_id in seen_assets or not result.attachment_url:
             continue
         seen_assets.add(result.image_asset_id)
@@ -1522,8 +1538,18 @@ def _build_recalled_image_source_pills(
     return tuple(pills)
 
 
+def _serialize_context_message_pill(pill: MessagePill) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in pill.model_dump().items()
+        if value is not None or key == "ref"
+    }
+
+
 def _build_assistant_source_pills(
     turn_ctx: _TurnContext,
+    *,
+    source_message: RuntimeMessage | None = None,
 ) -> tuple[dict[str, object], ...]:
     pills: list[dict[str, object]] = []
     if turn_ctx.has_document_context:
@@ -1534,14 +1560,24 @@ def _build_assistant_source_pills(
                 {"kind": "document_source", "label": "CITED DOCS", "ref": None}
             )
     for attachment in turn_ctx.attachments:
-        pills.append(
-            {
-                "kind": "image_source",
-                "label": _truncate_pill_label(attachment.filename or "Image"),
-                "ref": attachment.id,
-            }
-        )
-    pills.extend(turn_ctx.recalled_image_source_pills)
+        pill: dict[str, object] = {
+            "kind": "image_source",
+            "label": _truncate_pill_label(attachment.filename or "Image"),
+            "ref": attachment.id,
+            "mimeType": attachment.mime_type,
+        }
+        if attachment.asset_id is not None:
+            pill["assetId"] = attachment.asset_id
+        if source_message is not None:
+            pill["url"] = (
+                f"/api/chat/messages/{source_message.id}/attachments/{attachment.id}"
+            )
+            pill["messageId"] = source_message.id
+            pill["threadId"] = source_message.thread_id
+            pill["attachmentId"] = attachment.id
+        pills.append(pill)
+    if not turn_ctx.attachments:
+        pills.extend(turn_ctx.recalled_image_source_pills)
     return tuple(pills)
 
 

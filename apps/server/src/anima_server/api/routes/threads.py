@@ -26,7 +26,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["threads"])
 
 
-def _thread_to_dict(thread: RuntimeThread) -> dict[str, object]:
+def _thread_to_dict(thread: RuntimeThread, first_role: str | None = None) -> dict[str, object]:
+    initiated_by: str | None = None
+    if first_role == "user":
+        initiated_by = "user"
+    elif first_role is not None:
+        initiated_by = "agent"
     return {
         "id": thread.id,
         "userId": thread.user_id,
@@ -36,6 +41,7 @@ def _thread_to_dict(thread: RuntimeThread) -> dict[str, object]:
         "lastMessageAt": thread.last_message_at.isoformat() if thread.last_message_at else None,
         "closedAt": thread.closed_at.isoformat() if thread.closed_at else None,
         "isArchived": thread.is_archived,
+        "initiatedBy": initiated_by,
     }
 
 
@@ -62,9 +68,9 @@ async def list_user_threads(
 ) -> dict[str, object]:
     """List all threads for the authenticated user, newest first."""
     unlock_session = require_unlocked_session(request)
-    threads = list_threads(runtime_db, user_id=unlock_session.user_id)
+    rows = list_threads(runtime_db, user_id=unlock_session.user_id)
     return {
-        "threads": [_thread_to_dict(t) for t in threads]
+        "threads": [_thread_to_dict(t, first_role) for t, first_role in rows]
     }
 
 
