@@ -15,16 +15,9 @@ def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
     existing = db.scalar(
         select(RuntimeSource).where(
             RuntimeSource.user_id == identity.user_id,
-            RuntimeSource.content_hash == identity.content_hash,
-        )
-    )
-    if existing is not None:
-        return existing
-
-    existing = db.scalar(
-        select(RuntimeSource).where(
-            RuntimeSource.user_id == identity.user_id,
+            RuntimeSource.kind == identity.kind,
             RuntimeSource.source_uri == identity.source_uri,
+            RuntimeSource.content_hash == identity.content_hash,
         )
     )
     if existing is not None:

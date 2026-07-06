@@ -55,23 +55,33 @@ def _identity(
     )
 
 
-def test_register_source_is_idempotent_by_user_content_hash_or_source_uri(runtime_db) -> None:
+def test_register_source_is_idempotent_by_full_source_identity(runtime_db) -> None:
     original = register_source(runtime_db, _identity(source_uri="file://a.md"))
 
-    same_hash = register_source(runtime_db, _identity(source_uri="file://renamed.md"))
-    same_uri = register_source(
+    same_identity = register_source(runtime_db, _identity(source_uri="file://a.md"))
+    same_hash_different_uri = register_source(
+        runtime_db,
+        _identity(source_uri="file://renamed.md"),
+    )
+    same_uri_different_hash = register_source(
         runtime_db,
         _identity(source_uri="file://a.md", content_hash=_sha("changed content")),
+    )
+    same_uri_hash_different_kind = register_source(
+        runtime_db,
+        _identity(source_uri="file://a.md", kind="text"),
     )
     other_user = register_source(
         runtime_db,
         _identity(user_id=2, source_uri="file://a.md"),
     )
 
-    assert same_hash.id == original.id
-    assert same_uri.id == original.id
+    assert same_identity.id == original.id
+    assert same_hash_different_uri.id != original.id
+    assert same_uri_different_hash.id != original.id
+    assert same_uri_hash_different_kind.id != original.id
     assert other_user.id != original.id
-    assert runtime_db.scalar(select(func.count(RuntimeSource.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeSource.id))) == 5
 
 
 def test_adapter_result_stores_normalized_artifacts_and_spans(runtime_db) -> None:

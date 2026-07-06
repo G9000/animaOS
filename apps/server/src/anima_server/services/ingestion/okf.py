@@ -150,11 +150,16 @@ def _replace_imported_links(
         db.flush()
 
     links: list[RuntimeKnowledgeLink] = []
+    seen_links: set[tuple[int, int, str]] = set()
     for source in concepts.values():
         for target_slug in _extract_relative_link_slugs(source.body_markdown):
             target = concepts.get(target_slug)
             if target is None or target.id == source.id:
                 continue
+            link_key = (source.id, target.id, "related")
+            if link_key in seen_links:
+                continue
+            seen_links.add(link_key)
             links.append(
                 RuntimeKnowledgeLink(
                     user_id=user_id,

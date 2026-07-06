@@ -59,9 +59,10 @@ def upgrade() -> None:
         sa.UniqueConstraint("id", "user_id", name="uq_runtime_sources_id_user"),
         sa.UniqueConstraint(
             "user_id",
+            "kind",
             "source_uri",
             "content_hash",
-            name="uq_runtime_sources_user_uri_hash",
+            name="uq_runtime_sources_user_kind_uri_hash",
         ),
     )
     op.create_index("ix_runtime_sources_user_id", "runtime_sources", ["user_id"])

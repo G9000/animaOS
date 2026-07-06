@@ -459,9 +459,10 @@ class RuntimeSource(RuntimeBase):
         ),
         UniqueConstraint(
             "user_id",
+            "kind",
             "source_uri",
             "content_hash",
-            name="uq_runtime_sources_user_uri_hash",
+            name="uq_runtime_sources_user_kind_uri_hash",
         ),
         Index("ix_runtime_sources_user_kind_status", "user_id", "kind", "status"),
         Index("ix_runtime_sources_user_created", "user_id", "created_at"),

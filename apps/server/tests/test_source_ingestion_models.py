@@ -57,8 +57,9 @@ def test_source_ingestion_tables_are_registered(runtime_engine) -> None:
 
 
 def test_source_concept_constraints_and_indexes_are_registered() -> None:
-    assert _constraint_columns(RuntimeSource, "uq_runtime_sources_user_uri_hash") == (
+    assert _constraint_columns(RuntimeSource, "uq_runtime_sources_user_kind_uri_hash") == (
         "user_id",
+        "kind",
         "source_uri",
         "content_hash",
     )

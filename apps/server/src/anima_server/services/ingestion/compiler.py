@@ -58,7 +58,7 @@ def compile_source_to_concepts(
     selected_concept_ids: Sequence[int] | None = None,
 ) -> CompileResult:
     source = _get_source(db, user_id=user_id, source_id=source_id)
-    spans = _get_spans(db, user_id=user_id, span_ids=span_ids)
+    spans = _get_spans(db, user_id=user_id, source_id=source.id, span_ids=span_ids)
     run = start_bundle_run(
         db,
         user_id=user_id,
@@ -311,12 +311,14 @@ def _get_spans(
     db: Session,
     *,
     user_id: int,
+    source_id: int,
     span_ids: Sequence[int],
 ) -> list[RuntimeSourceSpan]:
     spans = list(
         db.scalars(
             select(RuntimeSourceSpan).where(
                 RuntimeSourceSpan.user_id == user_id,
+                RuntimeSourceSpan.source_id == source_id,
                 RuntimeSourceSpan.id.in_(list(span_ids)),
             )
         ).all()

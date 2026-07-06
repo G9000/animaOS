@@ -160,6 +160,33 @@ def test_import_preserves_bundle_relative_links_and_creates_concept_links(
     assert link.link_type == "related"
 
 
+def test_import_deduplicates_repeated_relative_links(runtime_db, tmp_path) -> None:
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir(parents=True)
+    (concepts_dir / "topic-a.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Topic A\n"
+        "---\n\n"
+        "See [Topic B](topic-b.md) and [Topic B again](topic-b.md#details).\n",
+        encoding="utf-8",
+    )
+    (concepts_dir / "topic-b.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Topic B\n"
+        "---\n\n"
+        "Target body.\n",
+        encoding="utf-8",
+    )
+
+    result = import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    assert result.concept_count == 2
+    assert result.link_count == 1
+    assert len(list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())) == 1
+
+
 def test_import_updates_existing_concept_by_slug(runtime_db, tmp_path) -> None:
     runtime_db.add(
         _concept(

@@ -306,7 +306,7 @@ Expected: a new runtime migration is generated under `apps/server/alembic_runtim
 Required constraints:
 
 ```text
-uq_runtime_sources_user_uri_hash
+uq_runtime_sources_user_kind_uri_hash
 uq_runtime_source_artifacts_source_kind_hash
 uq_runtime_source_spans_artifact_locator_hash
 uq_runtime_knowledge_concepts_user_slug
