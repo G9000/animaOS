@@ -1690,6 +1690,63 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
     assert embedding_count == 0
 
 
+def test_search_knowledge_bundle_tool_returns_concepts_and_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hashlib
+
+    from anima_server.models.runtime import RuntimeKnowledgeConcept
+    from anima_server.services.agent import tools as agent_tools
+    from anima_server.services.agent.tool_context import (
+        ToolContext,
+        clear_tool_context,
+        set_tool_context,
+    )
+    from anima_server.services.ingestion import retrieval as knowledge_retrieval
+    from anima_server.services.ingestion.adapters.text import ingest_text_content
+
+    def fake_embedding(text: str) -> list[float]:
+        if "portable" in text.lower():
+            return [1.0, *([0.0] * 767)]
+        return [0.0, 1.0, *([0.0] * 766)]
+
+    monkeypatch.setattr(knowledge_retrieval, "generate_embedding", fake_embedding)
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        concept = RuntimeKnowledgeConcept(
+            user_id=1,
+            concept_type="claim",
+            slug="portable-core",
+            title="Portable Core",
+            description="Portable continuity",
+            body_markdown="Portable continuity keeps the local core coherent.",
+            frontmatter_json={"type": "claim", "title": "Portable Core"},
+            content_hash=hashlib.sha256(b"portable").hexdigest(),
+            status="active",
+        )
+        runtime_session.add(concept)
+        runtime_session.flush()
+        _source, _artifacts, spans = ingest_text_content(
+            runtime_session,
+            user_id=1,
+            content="Portable evidence with a source citation.",
+            filename="portable.txt",
+        )
+        knowledge_retrieval.upsert_concept_embedding(runtime_session, concept=concept)
+        knowledge_retrieval.upsert_source_span_embedding(runtime_session, span=spans[0])
+
+        set_tool_context(
+            ToolContext(db=soul_session, runtime_db=runtime_session, user_id=1, thread_id=1)
+        )
+        try:
+            output = agent_tools.search_knowledge_bundle("portable continuity")
+        finally:
+            clear_tool_context()
+
+    assert "Portable Core" in output
+    assert "source_span:" in output
+    assert "Saved" not in output
+
+
 def test_inline_image_indexing_rolls_back_partial_rows_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
