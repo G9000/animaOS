@@ -1,17 +1,17 @@
 # OKF-003 - OKF import and export
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/ingestion/okf.py`
 - Parent: `OKF-000`
 - Depends on: `OKF-001`, `OKF-002`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-06 23:23 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 00:33 MYT
+- Started: 2026-07-07 00:31 MYT
+- Completed: 2026-07-07 00:33 MYT
 
 ## Goal
 
@@ -35,12 +35,16 @@ Implement OKF-compatible markdown bundle import and export for compiled knowledg
 ## Activity Log
 
 - 2026-07-06 23:23 MYT - Ticket created.
+- 2026-07-07 00:31 MYT - Claimed by Codex, set status to `in_progress`, and started OKF import/export tests.
+- 2026-07-07 00:33 MYT - Added OKF bundle serializer/parser, permissive import, export layout, and link resolution.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_models.py apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_okf_import_export.py -q` - passed, 15 tests.
+  - `uv run --project apps/server ruff check apps/server/src/anima_server/services/ingestion/okf.py apps/server/tests/test_okf_import_export.py` - passed.
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/ingestion/okf.py`
+  - `apps/server/tests/test_okf_import_export.py`
 - Notes:
-  - Expected focused command: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_okf_import_export.py -q`
+  - Import is permissive for unknown concept types and preserves unknown frontmatter fields in `frontmatter_json`.
