@@ -308,13 +308,19 @@ def _merge_links(
                 target_concept_id=target.id,
                 link_type=link_type,
             )
-        link.confidence = _optional_float(payload, "confidence")
-        link.metadata_json = {"compiler": "llm_wiki"}
-        link.updated_at = datetime.now(UTC)
-        db.add(link)
+        if link.id is None or _is_compiler_link(link):
+            link.confidence = _optional_float(payload, "confidence")
+            link.metadata_json = {"compiler": "llm_wiki"}
+            link.updated_at = datetime.now(UTC)
+            db.add(link)
         count += 1
     db.flush()
     return count
+
+
+def _is_compiler_link(link: RuntimeKnowledgeLink) -> bool:
+    metadata = link.metadata_json or {}
+    return metadata.get("compiler") == "llm_wiki"
 
 
 def _find_merge_target(

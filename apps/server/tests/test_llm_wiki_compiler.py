@@ -479,6 +479,75 @@ def test_compiler_recompile_drops_stale_compiler_links(runtime_db) -> None:
     ]
 
 
+def test_compiler_does_not_take_ownership_of_existing_manual_links(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    concepts = [
+        _concept_payload("topic", "topic-evidence", "Evidence", [spans[0].id]),
+        _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+    ]
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps({"concepts": concepts, "links": []}),
+    )
+    topic = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-evidence")
+    )
+    notes = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "source-notes")
+    )
+    runtime_db.add(
+        RuntimeKnowledgeLink(
+            user_id=1,
+            source_concept_id=topic.id,
+            target_concept_id=notes.id,
+            link_type="supports",
+            confidence=0.42,
+            metadata_json={"source": "manual"},
+        )
+    )
+    runtime_db.flush()
+
+    emitted_result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps(
+            {
+                "concepts": concepts,
+                "links": [
+                    {
+                        "source_slug": "topic-evidence",
+                        "target_slug": "source-notes",
+                        "link_type": "supports",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        ),
+    )
+    emitted_link = runtime_db.scalar(select(RuntimeKnowledgeLink))
+    assert emitted_result.link_count == 1
+    assert emitted_link.metadata_json == {"source": "manual"}
+    assert emitted_link.confidence == 0.42
+
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps({"concepts": concepts, "links": []}),
+    )
+
+    links = list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())
+    assert [(link.link_type, link.metadata_json, link.confidence) for link in links] == [
+        ("supports", {"source": "manual"}, 0.42)
+    ]
+
+
 def test_source_refresh_preserves_citations_for_unchanged_spans(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
     concept = RuntimeKnowledgeConcept(
