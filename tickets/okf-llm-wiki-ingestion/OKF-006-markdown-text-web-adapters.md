@@ -5,11 +5,12 @@
 - Scope: `apps/server/src/anima_server/services/ingestion/adapters`, `apps/server/src/anima_server/api/routes/knowledge.py`
 - Parent: `OKF-000`
 - Depends on: `OKF-002`, `OKF-004`
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 00:57 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 00:50 MYT
 - Completed: 2026-07-07 00:57 MYT
 
@@ -37,8 +38,9 @@ Add first new source adapters for markdown, plain text, and web captures under t
 - 2026-07-07 00:50 MYT - Claimed by Codex; starting adapter and API tests before implementation.
 - 2026-07-07 00:57 MYT - Completed markdown, text, and web capture adapters plus knowledge source API routes.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_knowledge_api.py -q` - passed, 14 tests.
   - `uv run --project apps/server ruff check apps/server/src/anima_server/services/ingestion/adapters/text.py apps/server/src/anima_server/services/ingestion/adapters/web.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/src/anima_server/main.py apps/server/tests/test_source_ingestion_adapters.py apps/server/tests/test_knowledge_api.py` - passed.

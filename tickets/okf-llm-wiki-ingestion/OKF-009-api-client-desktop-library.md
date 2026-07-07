@@ -5,11 +5,12 @@
 - Scope: `packages/api-client`, `apps/desktop/src/pages/knowledge`, `apps/desktop/src/components/knowledge`
 - Parent: `OKF-000`
 - Depends on: `OKF-007`, `OKF-008`
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 01:32 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 01:20 MYT
 - Completed: 2026-07-07 01:32 MYT
 
@@ -38,8 +39,9 @@ Expose source and concept reads through the API client and add a minimal desktop
 - 2026-07-07 01:20 MYT - Claimed by Codex; starting API client and desktop knowledge-library implementation.
 - 2026-07-07 01:32 MYT - Added knowledge API list/search/import/export routes, API client methods, and the desktop knowledge-library surface.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_knowledge_api.py -q` - passed, 6 tests.
   - `bun test packages/api-client/tests/client.test.ts` - passed, 17 tests.

@@ -5,11 +5,12 @@
 - Scope: `apps/server`, `packages/api-client`, `apps/desktop`, `docs/architecture`
 - Parent: none
 - Depends on: none
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 01:45 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 00:16 MYT
 - Completed: 2026-07-07 01:45 MYT
 
@@ -90,8 +91,9 @@ Track the source-type-agnostic ingestion initiative that turns files, media, web
 - 2026-07-07 01:33 MYT - OKF-010 claimed by Codex.
 - 2026-07-07 01:45 MYT - OKF-010 completed; parent tracker marked done.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - See `OKF-010` validation for final command results.
 - Changed paths:

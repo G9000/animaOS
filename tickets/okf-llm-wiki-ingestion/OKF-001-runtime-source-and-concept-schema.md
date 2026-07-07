@@ -5,11 +5,12 @@
 - Scope: `apps/server/src/anima_server/models`, `apps/server/alembic_runtime/versions`
 - Parent: `OKF-000`
 - Depends on: none
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 00:26 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 00:16 MYT
 - Completed: 2026-07-07 00:26 MYT
 
@@ -37,8 +38,9 @@ Create the runtime schema for universal sources, artifacts, spans, OKF-style con
 - 2026-07-07 00:16 MYT - Claimed by Codex, set status to `in_progress`, and started schema/model test work.
 - 2026-07-07 00:26 MYT - Added runtime source/concept models, runtime migration, focused model tests, and validation.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_models.py -q` - passed, 5 tests.
   - `uv run --project apps/server ruff check apps/server/src/anima_server/models/runtime.py apps/server/src/anima_server/models/__init__.py apps/server/alembic_runtime/versions/1c3df376a170_add_source_knowledge_ingestion.py apps/server/tests/test_source_ingestion_models.py` - passed.

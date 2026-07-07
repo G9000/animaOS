@@ -5,11 +5,12 @@
 - Scope: `apps/server/src/anima_server/services/ingestion`
 - Parent: `OKF-000`
 - Depends on: `OKF-001`
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 00:30 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 00:27 MYT
 - Completed: 2026-07-07 00:30 MYT
 
@@ -38,8 +39,9 @@ Create a source-type-agnostic ingestion package with a registry, artifact/span s
 - 2026-07-07 00:27 MYT - Claimed by Codex, set status to `in_progress`, and started adapter contract tests.
 - 2026-07-07 00:30 MYT - Added ingestion dataclasses, adapter base contract, registry helpers, artifact/span replacement helpers, and failure-run handling.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_models.py apps/server/tests/test_source_ingestion_adapters.py -q` - passed, 11 tests.
   - `uv run --project apps/server ruff check apps/server/src/anima_server/services/ingestion apps/server/tests/test_source_ingestion_adapters.py` - passed.

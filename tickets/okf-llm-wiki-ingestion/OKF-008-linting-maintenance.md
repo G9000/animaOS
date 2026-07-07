@@ -5,11 +5,12 @@
 - Scope: `apps/server/src/anima_server/services/ingestion/lint.py`, `apps/server/src/anima_server/api/routes/knowledge.py`
 - Parent: `OKF-000`
 - Depends on: `OKF-003`, `OKF-004`
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 01:19 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 01:12 MYT
 - Completed: 2026-07-07 01:19 MYT
 
@@ -38,8 +39,9 @@ Add linting and maintenance checks for OKF-compatible knowledge bundles.
 - 2026-07-07 01:12 MYT - Claimed by Codex; starting lint tests before implementation.
 - 2026-07-07 01:19 MYT - Completed structured lint service and knowledge API lint endpoint.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_okf_import_export.py apps/server/tests/test_llm_wiki_compiler.py -q` - passed, 10 tests.
   - `uv run --project apps/server ruff check apps/server/src/anima_server/services/ingestion/lint.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/tests/test_llm_wiki_compiler.py apps/server/tests/test_okf_import_export.py` - passed.

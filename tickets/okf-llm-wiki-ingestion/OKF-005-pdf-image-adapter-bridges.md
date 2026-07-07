@@ -5,11 +5,12 @@
 - Scope: `apps/server/src/anima_server/services/documents`, `apps/server/src/anima_server/services/images`, `apps/server/src/anima_server/services/ingestion/adapters`
 - Parent: `OKF-000`
 - Depends on: `OKF-002`, `OKF-004`
-- Owner: Codex
+- Owner: codex
+- Model: 5.5
 - PRD: none
 - Plan: `docs/superpowers/plans/2026-07-06-okf-llm-wiki-ingestion.md`
 - Created: 2026-07-06 23:23 MYT
-- Updated: 2026-07-07 00:48 MYT
+- Updated: 2026-07-07 13:02 MYT
 - Started: 2026-07-07 00:40 MYT
 - Completed: 2026-07-07 00:48 MYT
 
@@ -38,8 +39,9 @@ Bridge existing PDF document and image annotation ingestion into the universal s
 - 2026-07-07 00:40 MYT - Claimed by Codex; starting adapter bridge tests before implementation.
 - 2026-07-07 00:48 MYT - Completed document and image source bridges with workflow hooks and focused regression validation.
 
-## Validation
+- 2026-07-07 13:02 MYT - Ticket metadata normalized: status done, owner codex, model 5.5.
 
+## Validation
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_source_ingestion_adapters.py -q` - passed, 8 tests.
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test:server -- apps/server/tests/test_image_indexing.py::test_index_image_asset_creates_context_metadata_and_current_embeddings apps/server/tests/test_pdf_workflow_checkpoints.py::test_pdf_workflow_syncs_indexed_document_chunks_to_source_spans -q` - passed, 2 tests.
