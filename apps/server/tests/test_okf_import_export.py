@@ -129,6 +129,27 @@ def test_import_round_trips_unknown_fields_and_unknown_types(runtime_db, tmp_pat
     assert body == "Body with an unknown OKF type.\n"
 
 
+def test_import_rejects_concept_slugs_that_export_would_reject(
+    runtime_db,
+    tmp_path,
+) -> None:
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir(parents=True)
+    (concepts_dir / " topic-unsafe.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Unsafe topic\n"
+        "---\n\n"
+        "Body with an unsafe filename stem.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unsafe OKF concept slug"):
+        import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    assert list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all()) == []
+
+
 def test_import_normalizes_yaml_timestamps_to_json_safe_strings(
     runtime_db,
     tmp_path,

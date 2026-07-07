@@ -120,14 +120,25 @@ def retrieve_knowledge(
         query_embedding=query_embedding,
         limit=limit_spans,
     )
-    if not concept_hits and not evidence_hits:
-        return retrieve_knowledge_text(
-            db,
-            user_id=user_id,
-            query=query,
-            limit_concepts=limit_concepts,
-            limit_spans=limit_spans,
-        )
+    if not concept_hits or not evidence_hits:
+        lowered = query.strip().lower()
+        if lowered:
+            if not concept_hits:
+                concept_hits = _text_concept_hits(
+                    db,
+                    user_id=user_id,
+                    lowered_query=lowered,
+                    limit=limit_concepts,
+                )
+            if not evidence_hits:
+                evidence_hits = _text_span_hits(
+                    db,
+                    user_id=user_id,
+                    lowered_query=lowered,
+                    limit=limit_spans,
+                )
+        elif not concept_hits and not evidence_hits:
+            return KnowledgeRetrievalResult()
     return KnowledgeRetrievalResult(
         concepts=concept_hits,
         evidence_spans=evidence_hits,

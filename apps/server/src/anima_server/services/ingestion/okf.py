@@ -64,12 +64,14 @@ def import_okf_bundle(
     user_id: int,
     bundle_dir: Path,
 ) -> OKFImportResult:
-    concept_paths = sorted((bundle_dir / "concepts").glob("*.md"))
+    concepts_dir = bundle_dir / "concepts"
+    concept_paths = sorted(concepts_dir.glob("*.md"))
     imported_by_slug: dict[str, RuntimeKnowledgeConcept] = {}
 
     for path in concept_paths:
-        frontmatter, body = _parse_markdown(path)
         slug = path.stem
+        _concept_markdown_path(concepts_dir, slug)
+        frontmatter, body = _parse_markdown(path)
         concept_type = str(frontmatter.get("type") or "note")
         title = str(frontmatter.get("title") or _title_from_slug(slug))
         description_value = frontmatter.get("description")
