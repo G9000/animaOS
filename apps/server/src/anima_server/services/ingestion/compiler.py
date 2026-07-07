@@ -125,7 +125,7 @@ def _merge_concepts(
         if not isinstance(payload, dict):
             raise ValueError("Compiler concept entries must be objects.")
         concept_type = _required_str(payload, "type")
-        slug = _required_str(payload, "slug")
+        slug = _required_okf_slug(payload, "slug")
         title = _required_str(payload, "title")
         body_markdown = _required_str(payload, "body_markdown")
         description = _optional_str(payload, "description")
@@ -355,6 +355,15 @@ def _required_str(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Compiler output missing required string field {key!r}.")
     return value.strip()
+
+
+def _required_okf_slug(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Compiler output missing required string field {key!r}.")
+    if value != value.strip() or "/" in value or "\\" in value:
+        raise ValueError(f"Unsafe OKF concept slug: {value!r}")
+    return value
 
 
 def _optional_str(payload: dict[str, Any], key: str) -> str | None:

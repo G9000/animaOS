@@ -275,6 +275,30 @@ def test_malformed_model_output_records_failed_run_without_corrupting_concepts(r
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 1
 
 
+def test_compiler_rejects_slugs_that_are_not_okf_safe(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    unsafe_payload = _concept_payload(
+        "topic",
+        "bad/topic",
+        "Bad topic",
+        [spans[0].id],
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps({"concepts": [unsafe_payload]}),
+    )
+
+    failed_run = runtime_db.scalar(select(RuntimeKnowledgeBundleRun))
+    assert result.status == "failed"
+    assert failed_run.status == "failed"
+    assert failed_run.error_json["message"] == "Unsafe OKF concept slug: 'bad/topic'"
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 0
+
+
 def test_later_compiler_failure_rolls_back_partial_concept_writes(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
 
