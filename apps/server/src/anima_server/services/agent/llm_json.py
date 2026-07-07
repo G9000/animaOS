@@ -42,8 +42,14 @@ async def call_llm_for_text(
 
         client = create_llm()
 
-    response = await client.ainvoke(
-        [SystemMessage(content=system), HumanMessage(content=prompt)]
+    from anima_server.services.agent.llm import invoke_with_retry
+
+    # Every background extraction path funnels through here; without the
+    # retry a single transient 429/timeout silently lost the work.
+    messages = [SystemMessage(content=system), HumanMessage(content=prompt)]
+    response = await invoke_with_retry(
+        lambda: client.ainvoke(messages),
+        description="background LLM call",
     )
     content = getattr(response, "content", "")
     if not isinstance(content, str):

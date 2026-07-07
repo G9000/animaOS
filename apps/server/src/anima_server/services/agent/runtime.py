@@ -24,6 +24,8 @@ from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import (
     ContextWindowOverflowError,
     LLMInvocationError,
+    is_retryable_llm_error,
+    retry_backoff_delay,
 )
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.messages import (
@@ -77,29 +79,11 @@ from anima_server.services.health.event_logger import emit as health_emit
 logger = logging.getLogger(__name__)
 
 
-def _is_retryable_error(exc: Exception) -> bool:
-    """Return True if the exception is transient and worth retrying."""
-    if isinstance(exc, ContextWindowOverflowError):
-        return False
-    if isinstance(exc, asyncio.TimeoutError):
-        return True
-    if isinstance(exc, LLMInvocationError):
-        msg = str(exc).lower()
-        # Rate limits and server errors are retryable
-        for pattern in (
-            "429",
-            "500",
-            "502",
-            "503",
-            "504",
-            "rate limit",
-            "overloaded",
-            "temporarily unavailable",
-            "try again",
-        ):
-            if pattern in msg:
-                return True
-    return bool(isinstance(exc, (ConnectionError, OSError)))
+# Retry classification lives in llm.py (is_retryable_llm_error): it reads
+# the structured status_code set by wrap_llm_error instead of substring-
+# matching stringified exceptions, and covers 408/409/529 which the old
+# message patterns missed.
+_is_retryable_error = is_retryable_llm_error
 
 
 StreamEventCallback = Callable[[AgentStreamEvent], Awaitable[None]]
@@ -1383,7 +1367,12 @@ class AgentRuntime:
                         "retryable": _is_retryable_error(exc),
                     })
                     raise
-                delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                delay = retry_backoff_delay(
+                    exc,
+                    attempt=attempt,
+                    backoff_factor=backoff_factor,
+                    max_delay=max_delay,
+                )
                 logger.warning(
                     "LLM call failed (attempt %d/%d): %s. Retrying in %.1fs",
                     attempt,

@@ -19,10 +19,10 @@ _VISION_MODEL_PATTERNS = (
     "qwen2.5-vl",
     "qwen2.5vl",
     "llama3.2-vision",
-    "claude-3",
-    "claude-haiku-4",
-    "claude-sonnet-4",
-    "claude-opus-4",
+    # Every Claude 3+ model accepts image input; matching the bare prefix
+    # keeps new generations (sonnet-5, fable-5, ...) from silently losing
+    # attachments the way the old per-generation list did.
+    "claude-",
 )
 _VISION_MODEL_NAMES = {
     "qwen/qwen3.6-35b-a3b-fp8",

@@ -1,6 +1,6 @@
 # ARH-005 - LLM client robustness and capability gating
 
-- Status: backlog
+- Status: in-review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`
@@ -9,8 +9,8 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
+- Updated: 2026-07-07 03:10 MYT
+- Started: 2026-07-07 02:40 MYT
 - Completed:
 
 ## Goal
@@ -54,12 +54,20 @@ LLM error handling is structured (status codes, not substring matching), every L
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 03:10 MYT - Implemented on branch `worktree-agent-runtime-hardening-p2`: `LLMInvocationError` carries `status_code`/`retry_after` (set in `wrap_llm_error`, HTTP-date and delta-seconds both parsed); retryability decided on the integer (`{408,409,429,500,502,503,504,529}`) via shared `is_retryable_llm_error` with a narrow message fallback that no longer matches bare numeric substrings; `retry_backoff_delay` honors retry-after as the backoff floor (runtime loop updated); new `invoke_with_retry` wraps `call_llm_for_text`, so every `call_llm_for_json` extraction path now survives transient errors; vision gating matches the bare `claude-` prefix (all Claude 3+ models accept images); temperature dropped for models that reject sampling params (fable-5/mythos/opus-4-7/opus-4-8/sonnet-5, per the Anthropic API reference); `stop_reason` surfaced as a first-class `AnthropicResponse` field with WARNING on `max_tokens`/`refusal` (non-streaming and streaming); `strict` passes through Anthropic tool serialization as top-level `strict: true`. Official-SDK adoption evaluated and deferred: the retry/typing gaps are now closed in-tree, and the SDK swap belongs with the ARH-006 caching work if at all.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_llm_client_robustness.py -q` → 21 passed
+  - `uv run --directory apps/server pytest tests/test_agent_anthropic_client.py tests/test_agent_llm.py tests/test_agent_openai_compatible_adapter.py tests/test_agent_runtime.py tests/test_chat_attachments.py tests/test_llm_json.py tests/test_llm_retry.py tests/test_runtime_enhancements.py -q` → 129 passed
+  - `uv run --directory apps/server pytest tests/test_active_recall.py tests/test_agent_compaction.py tests/test_agent_consolidation.py -q` → 91 passed
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/llm.py
+  - apps/server/src/anima_server/services/agent/runtime.py
+  - apps/server/src/anima_server/services/agent/llm_json.py
+  - apps/server/src/anima_server/services/agent/model_capabilities.py
+  - apps/server/src/anima_server/services/agent/anthropic_client.py
+  - apps/server/tests/test_llm_client_robustness.py
 - Notes:
-  - none
+  - 21 new tests: status/retry-after attachment, 529/408/409 retryable, permanent-400-with-"429"-body not retryable, retry-after floor + cap, transient-then-success recovery, permanent errors raise immediately, `call_llm_for_json` survives one 429, current-generation vision, temperature gating, stop_reason surfacing + degraded warnings, strict passthrough.

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, TypeVar
 
 import httpx
 
@@ -48,7 +52,16 @@ class LLMConfigError(RuntimeError):
 
 
 class LLMInvocationError(RuntimeError):
-    """Raised when a configured provider cannot be reached or returns an error."""
+    """Raised when a configured provider cannot be reached or returns an error.
+
+    ``status_code`` and ``retry_after`` are populated by ``wrap_llm_error``
+    when the underlying failure carried an HTTP response, so retryability
+    can be decided on the integer instead of substring-matching the
+    stringified exception.
+    """
+
+    status_code: int | None = None
+    retry_after: float | None = None
 
 
 class ContextWindowOverflowError(LLMInvocationError):
@@ -258,8 +271,12 @@ def wrap_llm_error(exc: Exception, *, provider: str, base_url: str) -> LLMInvoca
             else f"{provider} returned {exc.response.status_code} from {base_url!r}."
         )
         if detail and _is_context_overflow_message(detail):
-            return ContextWindowOverflowError(msg)
-        return LLMInvocationError(msg)
+            error: LLMInvocationError = ContextWindowOverflowError(msg)
+        else:
+            error = LLMInvocationError(msg)
+        error.status_code = exc.response.status_code
+        error.retry_after = _parse_retry_after(exc.response.headers.get("retry-after"))
+        return error
 
     if isinstance(exc, httpx.HTTPError):
         return LLMInvocationError(f"Failed to reach {provider} at {base_url!r}: {exc}")
@@ -269,3 +286,136 @@ def wrap_llm_error(exc: Exception, *, provider: str, base_url: str) -> LLMInvoca
         return ContextWindowOverflowError(error_str)
 
     return LLMInvocationError(error_str)
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = (retry_at - datetime.now(UTC)).total_seconds()
+    return max(0.0, seconds)
+
+
+# Transient statuses worth retrying: request timeout, conflict, rate
+# limit, server errors, and Anthropic's 529 overloaded.
+RETRYABLE_STATUS_CODES: Final[frozenset[int]] = frozenset(
+    {408, 409, 429, 500, 502, 503, 504, 529}
+)
+
+# Fallback for errors that carry no HTTP status (local runtimes, transport
+# wrappers).  The "returned NNN" forms match wrap_llm_error's own message
+# format for older call sites; deliberately NOT bare numeric substrings —
+# a permanent 400 whose body happens to contain "429" must not retry.
+_RETRYABLE_MESSAGE_PATTERNS: Final[tuple[str, ...]] = (
+    "returned 408",
+    "returned 409",
+    "returned 429",
+    "returned 500",
+    "returned 502",
+    "returned 503",
+    "returned 504",
+    "returned 529",
+    "rate limit",
+    "overloaded",
+    "temporarily unavailable",
+    "try again",
+    "timed out",
+    "timeout",
+)
+
+
+def is_retryable_llm_error(exc: BaseException) -> bool:
+    """Return True if the exception is transient and worth retrying."""
+    if isinstance(exc, ContextWindowOverflowError):
+        return False
+    if isinstance(exc, LLMConfigError):
+        return False
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    if isinstance(exc, LLMInvocationError):
+        status = getattr(exc, "status_code", None)
+        if status is not None:
+            return status in RETRYABLE_STATUS_CODES
+        msg = str(exc).lower()
+        return any(pattern in msg for pattern in _RETRYABLE_MESSAGE_PATTERNS)
+    return isinstance(exc, (ConnectionError, OSError))
+
+
+def retry_backoff_delay(
+    exc: BaseException,
+    *,
+    attempt: int,
+    backoff_factor: float,
+    max_delay: float,
+) -> float:
+    """Exponential backoff with the provider's retry-after as the floor."""
+    delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after:
+        delay = max(delay, min(float(retry_after), max_delay))
+    return delay
+
+
+_T = TypeVar("_T")
+
+_retry_logger = logging.getLogger(__name__)
+
+
+async def invoke_with_retry(
+    operation: Callable[[], Awaitable[_T]],
+    *,
+    retry_limit: int | None = None,
+    backoff_factor: float | None = None,
+    max_delay: float | None = None,
+    description: str = "LLM call",
+) -> _T:
+    """Run *operation* with exponential backoff on transient LLM errors.
+
+    Shared by background call sites (extraction, consolidation, compaction)
+    that previously bypassed the interactive runtime's retry loop and lost
+    work on a single transient 429.  Defaults come from the same settings
+    the runtime uses.
+    """
+    limit = settings.agent_llm_retry_limit if retry_limit is None else retry_limit
+    factor = (
+        settings.agent_llm_retry_backoff_factor
+        if backoff_factor is None
+        else backoff_factor
+    )
+    ceiling = settings.agent_llm_retry_max_delay if max_delay is None else max_delay
+
+    last_exc: BaseException | None = None
+    for attempt in range(1, limit + 2):  # attempt 1 .. limit+1
+        try:
+            return await operation()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            if attempt > limit or not is_retryable_llm_error(exc):
+                raise
+            delay = retry_backoff_delay(
+                exc, attempt=attempt, backoff_factor=factor, max_delay=ceiling
+            )
+            _retry_logger.warning(
+                "%s failed (attempt %d/%d): %s. Retrying in %.1fs",
+                description,
+                attempt,
+                limit + 1,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    assert last_exc is not None  # unreachable; satisfies the type checker
+    raise last_exc
