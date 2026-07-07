@@ -4,12 +4,12 @@
 - Priority: P0
 - Scope: `apps/server`, `docs/superpowers/plans`, `tickets/agent-runtime-hardening`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
+- Updated: 2026-07-07 12:53 MYT
+- Started: 2026-07-07 00:45 MYT
 - Completed:
 
 ## Goal

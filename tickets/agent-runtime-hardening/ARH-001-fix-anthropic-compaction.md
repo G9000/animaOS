@@ -5,13 +5,13 @@
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:55 MYT
+- Updated: 2026-07-07 12:53 MYT
 - Started: 2026-07-07 00:45 MYT
-- Completed:
+- Completed: 2026-07-07 00:55 MYT
 
 ## Goal
 
