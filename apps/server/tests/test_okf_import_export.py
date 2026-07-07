@@ -189,6 +189,7 @@ def test_import_strips_generated_source_references_from_exported_body(
     assert imported.concept_count == 1
     assert concept.body_markdown == "Compiled notes with source-backed evidence.\n"
     assert "## Source References" not in concept.body_markdown
+    assert "x_anima_citations" not in concept.frontmatter_json
 
 
 def test_import_round_trips_unknown_fields_and_unknown_types(runtime_db, tmp_path) -> None:

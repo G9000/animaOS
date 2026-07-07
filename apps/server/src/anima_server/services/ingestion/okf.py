@@ -89,6 +89,7 @@ def import_okf_bundle(
         _concept_markdown_path(concepts_dir, slug)
         frontmatter, body = _parse_markdown(path)
         body = _strip_generated_source_references(body, frontmatter)
+        frontmatter = _frontmatter_for_import(frontmatter)
         concept_type = str(frontmatter.get("type") or "note")
         title = str(frontmatter.get("title") or _title_from_slug(slug))
         description_value = frontmatter.get("description")
@@ -322,6 +323,12 @@ def _strip_generated_source_references(
     if marker_index == -1:
         return body_markdown
     return stripped[:marker_index].rstrip() + "\n"
+
+
+def _frontmatter_for_import(frontmatter: dict[str, object]) -> dict[str, object]:
+    imported = dict(frontmatter)
+    imported.pop("x_anima_citations", None)
+    return imported
 
 
 def _concept_markdown_path(concepts_dir: Path, slug: str) -> Path:

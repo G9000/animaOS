@@ -77,17 +77,21 @@ def compile_source_to_concepts(
         )
         payload = _parse_model_payload(model(request))
         with db.begin_nested():
+            concept_payloads = _require_list(payload, "concepts")
             concepts = _merge_concepts(
                 db,
                 user_id=user_id,
                 source=source,
                 spans_by_id={span.id: span for span in spans},
-                concept_payloads=_require_list(payload, "concepts"),
+                concept_payloads=concept_payloads,
             )
             link_count = _merge_links(
                 db,
                 user_id=user_id,
-                concepts_by_slug={concept.slug: concept for concept in concepts},
+                concepts_by_slug=_concepts_by_payload_and_merged_slug(
+                    concepts,
+                    concept_payloads,
+                ),
                 link_payloads=_optional_list(payload, "links"),
             )
     except Exception as exc:
@@ -178,6 +182,17 @@ def _merge_concepts(
         )
         concepts.append(concept)
     return concepts
+
+
+def _concepts_by_payload_and_merged_slug(
+    concepts: list[RuntimeKnowledgeConcept],
+    concept_payloads: list[Any],
+) -> dict[str, RuntimeKnowledgeConcept]:
+    concepts_by_slug = {concept.slug: concept for concept in concepts}
+    for concept, payload in zip(concepts, concept_payloads, strict=True):
+        if isinstance(payload, dict):
+            concepts_by_slug[_required_str(payload, "slug")] = concept
+    return concepts_by_slug
 
 
 def _replace_concept_sources(
