@@ -184,9 +184,14 @@ def test_lists_sources_concepts_and_reads_concept_citations() -> None:
         assert sources_response.json()["sources"][0]["id"] == source_id
         assert concepts_response.status_code == 200
         assert concepts_response.json()["concepts"][0]["id"] == concept_id
+        assert (
+            concepts_response.json()["concepts"][0]["description"]
+            == "A compiled citation concept."
+        )
         assert concept_response.status_code == 200
         payload = concept_response.json()
         assert payload["id"] == concept_id
+        assert payload["description"] == "A compiled citation concept."
         assert payload["citations"][0]["sourceId"] == source_id
         assert payload["citations"][0]["contentText"] == "Citation evidence."
 

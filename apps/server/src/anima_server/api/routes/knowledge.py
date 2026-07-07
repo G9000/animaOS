@@ -249,6 +249,7 @@ async def get_concept(
         "id": concept.id,
         "slug": concept.slug,
         "title": concept.title,
+        "description": concept.description,
         "conceptType": concept.concept_type,
         "bodyMarkdown": concept.body_markdown,
         "frontmatter": concept.frontmatter_json,
