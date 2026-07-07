@@ -121,7 +121,7 @@ async def ingest_text_source(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _compile_source_now(runtime_db, source=source, spans=spans)
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -148,7 +148,7 @@ async def ingest_markdown_source(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _compile_source_now(runtime_db, source=source, spans=spans)
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -176,7 +176,7 @@ async def ingest_web_capture_source(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _compile_source_now(runtime_db, source=source, spans=spans)
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -439,6 +439,35 @@ def _compile_source_now(
             detail="Compile run was not persisted.",
     )
     return run
+
+
+def _existing_or_new_compile_run(
+    runtime_db: Session,
+    *,
+    source: RuntimeSource,
+    spans: list[RuntimeSourceSpan],
+) -> RuntimeKnowledgeBundleRun:
+    return _latest_source_compile_run(runtime_db, source=source) or _compile_source_now(
+        runtime_db,
+        source=source,
+        spans=spans,
+    )
+
+
+def _latest_source_compile_run(
+    runtime_db: Session,
+    *,
+    source: RuntimeSource,
+) -> RuntimeKnowledgeBundleRun | None:
+    return runtime_db.scalar(
+        select(RuntimeKnowledgeBundleRun)
+        .where(
+            RuntimeKnowledgeBundleRun.user_id == source.user_id,
+            RuntimeKnowledgeBundleRun.source_id == source.id,
+            RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
+        )
+        .order_by(RuntimeKnowledgeBundleRun.id.desc())
+    )
 
 
 def _owned_source(runtime_db: Session, *, user_id: int, source_id: int) -> RuntimeSource:

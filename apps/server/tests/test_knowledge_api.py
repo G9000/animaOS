@@ -102,6 +102,39 @@ def test_markdown_source_endpoint_compile_keeps_span_topics_active() -> None:
         assert len(active_summaries) == 1
 
 
+def test_markdown_source_endpoint_compile_reuses_adapter_compile_run() -> None:
+    with managed_test_client("anima-knowledge-markdown-single-compile-") as client:
+        user_id, headers = _register(client, username="knowledge-md-single-compile")
+
+        response = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "single-compile.md",
+                "title": "Single Compile",
+                "content": "# Heading\n\nParagraph body.",
+                "compile": True,
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+
+        with get_runtime_session_factory()() as runtime_db:
+            compile_runs = list(
+                runtime_db.scalars(
+                    select(RuntimeKnowledgeBundleRun)
+                    .where(RuntimeKnowledgeBundleRun.source_id == payload["source"]["id"])
+                    .order_by(RuntimeKnowledgeBundleRun.id)
+                ).all()
+            )
+
+        assert len(compile_runs) == 1
+        assert payload["compileRun"]["id"] == compile_runs[0].id
+        assert [run.run_type for run in compile_runs] == ["compile:initial"]
+
+
 def test_compile_source_endpoint_invokes_compiler_for_existing_source() -> None:
     with managed_test_client("anima-knowledge-compile-existing-") as client:
         user_id, headers = _register(client, username="knowledge-compile-existing")
