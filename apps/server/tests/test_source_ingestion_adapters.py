@@ -169,6 +169,72 @@ def test_adapter_result_embeds_stored_spans(runtime_db) -> None:
     assert embedding.content_preview == "semantic evidence"
 
 
+def test_artifact_replacement_can_compile_any_source_to_knowledge(runtime_db) -> None:
+    source = register_source(
+        runtime_db,
+        _identity(
+            kind="markdown",
+            source_uri="markdown://service-manual.md",
+            content_hash=_sha("service manual"),
+        ),
+    )
+
+    _stored_artifacts, stored_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="markdown",
+                content_text="# Pump Maintenance\n\nInspect relay timing.",
+                content_hash=_sha("# Pump Maintenance\n\nInspect relay timing."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="markdown",
+                span_kind="heading",
+                locator_json={"line_start": 1, "line_end": 1},
+                content_text="Pump Maintenance",
+                content_hash=_sha("Pump Maintenance"),
+                metadata_json={"heading": "Pump Maintenance"},
+            ),
+            SourceSpanInput(
+                artifact_kind="markdown",
+                span_kind="paragraph",
+                locator_json={"line_start": 3, "line_end": 3},
+                content_text="Inspect relay timing.",
+                content_hash=_sha("Inspect relay timing."),
+                metadata_json={"heading": "Pump Maintenance"},
+            ),
+        ],
+        compile_knowledge=True,
+    )
+
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept).order_by(RuntimeKnowledgeConcept.slug)
+        ).all()
+    )
+    citations = list(runtime_db.scalars(select(RuntimeKnowledgeConceptSource)).all())
+    compile_run = runtime_db.scalar(
+        select(RuntimeKnowledgeBundleRun).where(
+            RuntimeKnowledgeBundleRun.run_type == "compile:initial"
+        )
+    )
+
+    assert {concept.concept_type for concept in concepts} >= {"source_summary", "topic"}
+    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {
+        source.id
+    }
+    assert any("Inspect relay timing" in concept.body_markdown for concept in concepts)
+    assert {citation.span_id for citation in citations} == {
+        span.id for span in stored_spans
+    }
+    assert compile_run is not None
+    assert compile_run.source_id == source.id
+    assert compile_run.status == "completed"
+
+
 def test_span_inputs_support_page_time_line_row_cell_and_image_locators() -> None:
     locators = [
         {"page_start": 2, "page_end": 3},
@@ -495,6 +561,7 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
         content="# Architecture\n\nPortable core details.\n\n## Notes\n\nSpan evidence.",
         filename="../Architecture Notes.md",
         title="Architecture Notes",
+        embedding_fn=_embedding_for,
     )
 
     assert source.kind == "markdown"
@@ -508,6 +575,23 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
     ]
     assert spans[1].metadata_json["heading"] == "Architecture"
     assert spans[2].metadata_json["heading_level"] == 2
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) >= 2
+    assert (
+        runtime_db.scalar(
+            select(func.count(RuntimeEmbedding.id)).where(
+                RuntimeEmbedding.source_type == "source_span"
+            )
+        )
+        == len(spans)
+    )
+    assert (
+        runtime_db.scalar(
+            select(func.count(RuntimeEmbedding.id)).where(
+                RuntimeEmbedding.source_type == "knowledge_concept"
+            )
+        )
+        >= 2
+    )
 
 
 def test_text_adapter_rejects_empty_content(runtime_db) -> None:

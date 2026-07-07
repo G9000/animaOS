@@ -107,6 +107,7 @@ def _ingest_content(
             artifacts=artifacts,
             spans=spans,
             embedding_fn=embedding_fn,
+            compile_knowledge=True,
         ),
     )
 

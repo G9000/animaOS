@@ -1625,17 +1625,17 @@ def _build_document_context_block(
             )
             lines.append(_truncate_document_chunk(hit.summary, limit=700))
 
-    if results:
+    if results and not knowledge_hits:
         lines.append("")
         lines.append("Raw evidence excerpts from selected PDFs:")
-    for index, result in enumerate(results, start=1):
-        location = _format_document_location(result)
-        section = f", section {result.section_title}" if result.section_title else ""
-        lines.append(
-            f"[{index}] {result.filename}{location}{section} "
-            f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
-        )
-        lines.append(_truncate_document_chunk(result.content))
+        for index, result in enumerate(results, start=1):
+            location = _format_document_location(result)
+            section = f", section {result.section_title}" if result.section_title else ""
+            lines.append(
+                f"[{index}] {result.filename}{location}{section} "
+                f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
+            )
+            lines.append(_truncate_document_chunk(result.content))
 
     return MemoryBlock(
         label="document_context",

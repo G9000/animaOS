@@ -61,6 +61,7 @@ def ingest_web_capture(
             artifacts=artifacts,
             spans=spans,
             embedding_fn=embedding_fn,
+            compile_knowledge=True,
         ),
     )
 

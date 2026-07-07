@@ -134,6 +134,7 @@ def ingest_with_adapter(
             artifacts=result.artifacts,
             spans=result.spans,
             embedding_fn=embedding_fn,
+            compile_knowledge=True,
         )
     except Exception as exc:
         set_source_status(db, source=source, status="failed")

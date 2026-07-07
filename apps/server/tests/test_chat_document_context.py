@@ -187,6 +187,70 @@ def test_build_document_context_block_uses_compiled_document_knowledge_when_chun
     assert "relay and calibration" in block.value
 
 
+def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chunks(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="Raw relay instructions should stay out of the prompt.",
+                similarity=0.91,
+                page_start=2,
+                page_end=2,
+                section_title="Install",
+            )
+        ]
+
+    def fake_document_knowledge_hits(
+        runtime_db: object,
+        *,
+        user_id: int,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[KnowledgeConceptHit]:
+        return [
+            KnowledgeConceptHit(
+                concept_id=22,
+                title="Pump Maintenance",
+                slug="document-4-pump-maintenance",
+                concept_type="topic",
+                summary="Use the compiled maintenance concept.",
+                score=1.0,
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+    monkeypatch.setattr(
+        agent_service,
+        "_document_knowledge_hits",
+        fake_document_knowledge_hits,
+        raising=False,
+    )
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="maintenance schedule?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "Compiled knowledge from selected PDFs" in block.value
+    assert "Use the compiled maintenance concept" in block.value
+    assert "Raw evidence excerpts from selected PDFs" not in block.value
+    assert "Raw relay instructions" not in block.value
+
+
 def test_document_knowledge_hits_are_scoped_to_selected_document(
     runtime_db: Session,
 ) -> None:

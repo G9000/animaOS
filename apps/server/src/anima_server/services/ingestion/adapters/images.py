@@ -96,6 +96,7 @@ def sync_image_source(
             artifacts=artifacts,
             spans=spans,
             embedding_fn=embedding_fn,
+            compile_knowledge=True,
         ),
     )
 
