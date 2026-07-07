@@ -1412,19 +1412,13 @@ async def _assemble_turn_context(
             )
         )
 
-    # Feedback signals (best-effort) run in the background: they feed
-    # FUTURE turns (retrieval already ran for this one), and the
-    # correction path decrypts up to 50 memory items — inline it was pure
-    # time-to-first-token cost.
-    _track_background_task(
-        _process_feedback_signals_background(
-            user_id=user_id,
-            user_message=user_message,
-            thread_id=thread.id,
-            soul_db_factory=_build_db_factory(db),
-            runtime_db_factory=_build_runtime_db_factory(),
-        )
-    )
+    # Feedback signals (best-effort) feed FUTURE turns (retrieval already ran
+    # for this one) and the correction path decrypts up to 50 memory items, so
+    # they run in the background — but the spawn now lives in the post-turn
+    # hooks (Stage 4), which run only AFTER the turn's own rows are committed.
+    # Spawning here (pre-invoke) raced the turn's message writes: the feedback
+    # task opens its own runtime session and commits, and on a shared DB
+    # connection that interleaved with the in-flight message INSERTs.
 
     # Memory pressure warning: estimate total context usage and inject
     # a warning block when approaching the context window limit.
@@ -2658,6 +2652,22 @@ def _run_post_turn_hooks(
         db_factory=db_factory,
         runtime_db_factory=runtime_db_factory,
     )
+    # Feedback signals (corrections/confirmations) feed FUTURE turns and the
+    # correction path decrypts up to 50 memory items, so it runs in the
+    # background.  It lives here rather than in turn-context assembly so it
+    # fires only after the turn's rows are committed — spawning it mid-turn
+    # raced the turn's own message writes on a shared DB connection.  Skip the
+    # empty-message resume path (no new user turn → nothing to detect).
+    if user_message.strip():
+        _track_background_task(
+            _process_feedback_signals_background(
+                user_id=user_id,
+                user_message=user_message,
+                thread_id=thread_id,
+                soul_db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
+        )
 
 
 def _schedule_agent_experience_extraction(
