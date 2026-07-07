@@ -1,17 +1,17 @@
 # ARH-011 - TTFT: parallel assembly and single-decrypt retrieval
 
-- Status: backlog
+- Status: in-review
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 23:00 MYT
+- Started: 2026-07-07 22:18 MYT
+- Completed: 2026-07-07 23:00 MYT
 
 ## Goal
 
@@ -46,12 +46,19 @@ Cut time-to-first-token by parallelizing independent turn-context assembly work,
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 23:00 MYT - Implemented on branch `worktree-agent-runtime-hardening-p5`: the pre-turn ops-only Soul Writer now runs concurrently with `hybrid_search` (own sessions; awaited before static blocks load, and the LLM-backed candidate run is spawned only afterwards so it can't steal the per-user lock); feedback-signal collection/correction moved to a background task with its own session factories, running the decrypt-heavy sync work in a thread; `hybrid_search` decrypts each surviving item exactly once and returns the plaintexts on `HybridSearchResult` for fragment building; the second, differently-tokenized BM25 pass (`_bm25_rerank`) is replaced by `_blend_keyword_scores`, which reuses the keyword leg's scores with the same 0.7/0.3 weighting; `execute_parallel` now gathers delegated client tools concurrently (they run outside this process with no server session) while server tools stay sequential with the shared-session constraint documented.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_ttft_optimizations.py -q` → 5 passed
+  - Regression sweep (agent_service, hybrid_retrieval, active_recall, retrieval_feedback, agent_runtime, evidence_retrieval, scored retrieval, ws, concurrency) → 202 passed + 1 known pre-existing failure; one hybrid backfill test made order-agnostic (its intent is backfill coverage — the near-tie order legitimately changes when one item carries a real keyword-leg score)
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/embeddings.py
+  - apps/server/src/anima_server/services/agent/service.py
+  - apps/server/src/anima_server/services/agent/executor.py
+  - apps/server/tests/test_ttft_optimizations.py
+  - apps/server/tests/test_hybrid_retrieval.py
 - Notes:
-  - none
+  - 5 new tests: exactly-one-decrypt-per-item (counted), keyword-score blend behavior, two delegated tools complete in ~max not ~sum duration, server tools never run concurrently, background feedback processing with own sessions.
+  - Document RAG stays sequential: `_build_document_context_block` shares the request's runtime session with the retrieval leg, so gathering them would race one session.

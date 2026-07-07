@@ -1210,17 +1210,24 @@ async def _assemble_turn_context(
     # promotion makes per-candidate LLM extraction calls, so it runs in the
     # background instead of blocking time-to-first-token; unpromoted
     # candidates stay visible via the pending_memory_updates block.
+    #
+    # The ops-only promotion runs CONCURRENTLY with hybrid retrieval below
+    # (it uses its own sessions and touches soul blocks, not memory items)
+    # and is awaited before the static blocks load — the two used to run
+    # back-to-back on the TTFT critical path.
+    soul_ops_task: asyncio.Task[Any] | None = None
+    eligible_candidates = 0
     try:
         from anima_server.services.agent.candidate_ops import count_eligible_candidates
         from anima_server.services.agent.pending_ops import count_pending_ops
         from anima_server.services.agent.soul_writer import run_soul_writer
 
         pending = count_pending_ops(runtime_db, user_id=user_id)
+        eligible_candidates = count_eligible_candidates(runtime_db, user_id=user_id)
         if pending > 0:
-            await run_soul_writer(user_id, ops_only=True)
-        eligible = count_eligible_candidates(runtime_db, user_id=user_id)
-        if eligible > 0:
-            _track_background_task(run_soul_writer(user_id))
+            soul_ops_task = asyncio.get_running_loop().create_task(
+                run_soul_writer(user_id, ops_only=True)
+            )
     except Exception:
         logger.debug("Pre-turn Soul Writer check failed for user %s",
                      user_id, exc_info=True)
@@ -1272,8 +1279,14 @@ async def _assemble_turn_context(
             semantic_results = []
             citations: list[AgentCitation] = []
             context_fragments: list[AgentContextFragment] = []
+            plaintexts = search_result.plaintexts or {}
             for index, (item, score) in enumerate(filtered, start=1):
-                content = df(user_id, item.content, table="memory_items", field="content")
+                # hybrid_search already decrypted every surviving item —
+                # this loop used to be the third AEAD pass over the same
+                # rows before first token.
+                content = plaintexts.get(item.id) or df(
+                    user_id, item.content, table="memory_items", field="content"
+                )
                 semantic_results.append((item.id, content, score))
                 citations.append(
                     AgentCitation(
@@ -1317,6 +1330,23 @@ async def _assemble_turn_context(
             thread.id,
             exc_info=True,
         )
+
+    # Pending ops must be promoted before the static blocks load below;
+    # the full candidate run (LLM-backed) only starts afterwards so it
+    # can't steal the per-user soul-writer lock from the ops-only pass.
+    if soul_ops_task is not None:
+        try:
+            await soul_ops_task
+        except Exception:
+            logger.debug(
+                "Pre-turn ops-only Soul Writer failed for user %s",
+                user_id,
+                exc_info=True,
+            )
+    if eligible_candidates > 0:
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        _track_background_task(run_soul_writer(user_id))
 
     effective_document_ids = _resolve_turn_document_ids(
         runtime_db,
@@ -1382,38 +1412,19 @@ async def _assemble_turn_context(
             )
         )
 
-    # Feedback signals (best-effort)
-    try:
-        from anima_server.services.agent.feedback_signals import (
-            apply_memory_correction,
-            collect_feedback_signals,
-            record_feedback_signals,
-        )
-
-        signals = collect_feedback_signals(
+    # Feedback signals (best-effort) run in the background: they feed
+    # FUTURE turns (retrieval already ran for this one), and the
+    # correction path decrypts up to 50 memory items — inline it was pure
+    # time-to-first-token cost.
+    _track_background_task(
+        _process_feedback_signals_background(
             user_id=user_id,
             user_message=user_message,
             thread_id=thread.id,
-            runtime_db=runtime_db,
+            soul_db_factory=_build_db_factory(db),
+            runtime_db_factory=_build_runtime_db_factory(),
         )
-        if signals:
-            record_feedback_signals(
-                db, user_id=user_id, signals=signals, runtime_db=runtime_db,
-            )
-            # When a correction is detected, fix the underlying memory
-            if any(s.signal_type == "correction" for s in signals):
-                apply_memory_correction(
-                    db,
-                    user_id=user_id,
-                    user_message=user_message,
-                    thread_id=thread.id,
-                    runtime_db=runtime_db,
-                )
-    except Exception:
-        logger.warning(
-            "Feedback signal processing failed for user %s", user_id,
-            exc_info=True,
-        )
+    )
 
     # Memory pressure warning: estimate total context usage and inject
     # a warning block when approaching the context window limit.
@@ -1434,6 +1445,61 @@ async def _assemble_turn_context(
         document_source_pills=document_source_pills,
         recalled_image_source_pills=recalled_image_source_pills,
     )
+
+
+async def _process_feedback_signals_background(
+    *,
+    user_id: int,
+    user_message: str,
+    thread_id: int,
+    soul_db_factory: Callable[..., Session],
+    runtime_db_factory: Callable[..., Session],
+) -> None:
+    """Detect and apply feedback signals off the turn's critical path.
+
+    Runs the synchronous decrypt-heavy work in a thread with its own
+    sessions; results influence future turns, never the one in flight.
+    """
+
+    def _run() -> None:
+        from anima_server.services.agent.feedback_signals import (
+            apply_memory_correction,
+            collect_feedback_signals,
+            record_feedback_signals,
+        )
+
+        with soul_db_factory() as soul_db, runtime_db_factory() as bg_runtime_db:
+            signals = collect_feedback_signals(
+                user_id=user_id,
+                user_message=user_message,
+                thread_id=thread_id,
+                runtime_db=bg_runtime_db,
+            )
+            if not signals:
+                return
+            record_feedback_signals(
+                soul_db, user_id=user_id, signals=signals, runtime_db=bg_runtime_db,
+            )
+            # When a correction is detected, fix the underlying memory
+            if any(s.signal_type == "correction" for s in signals):
+                apply_memory_correction(
+                    soul_db,
+                    user_id=user_id,
+                    user_message=user_message,
+                    thread_id=thread_id,
+                    runtime_db=bg_runtime_db,
+                )
+            soul_db.commit()
+            bg_runtime_db.commit()
+
+    try:
+        await asyncio.to_thread(_run)
+    except Exception:
+        logger.warning(
+            "Background feedback signal processing failed for user %s",
+            user_id,
+            exc_info=True,
+        )
 
 
 def _resolve_turn_document_ids(

@@ -30,7 +30,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-008` | Context and token hygiene | `in-review` | none |
 | `ARH-009` | Embedding contract and store consistency | `in-review` | none |
 | `ARH-010` | Crash-durable memory extraction | `in-review` | `ARH-004` |
-| `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `backlog` | none |
+| `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `in-review` | none |
 | `ARH-012` | Retrieval scoring correctness | `backlog` | none |
 | `ARH-013` | Deduplicate drifted turn and sleep logic | `backlog` | `ARH-002` |
 
