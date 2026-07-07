@@ -224,6 +224,7 @@ def _merge_links(
     link_payloads: list[Any],
 ) -> int:
     count = 0
+    seen_links: set[tuple[int, int, str]] = set()
     for payload in link_payloads:
         if not isinstance(payload, dict):
             raise ValueError("Compiler link entries must be objects.")
@@ -232,6 +233,10 @@ def _merge_links(
         if source is None or target is None or source.id == target.id:
             continue
         link_type = _required_str(payload, "link_type")
+        link_key = (source.id, target.id, link_type)
+        if link_key in seen_links:
+            continue
+        seen_links.add(link_key)
         link = db.scalar(
             select(RuntimeKnowledgeLink).where(
                 RuntimeKnowledgeLink.user_id == user_id,
@@ -375,7 +380,18 @@ def _span_ids_from_payload(payload: dict[str, Any]) -> list[int]:
     value = payload.get("source_span_ids") or []
     if not isinstance(value, list) or not all(isinstance(item, int) for item in value):
         raise ValueError("Compiler field 'source_span_ids' must be a list of integers.")
-    return value
+    return _deduplicate_ints(value)
+
+
+def _deduplicate_ints(values: Sequence[int]) -> list[int]:
+    seen: set[int] = set()
+    result: list[int] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _normalize_title(title: str) -> str:

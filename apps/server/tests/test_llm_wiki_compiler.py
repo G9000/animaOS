@@ -242,6 +242,68 @@ def test_later_compiler_failure_rolls_back_partial_concept_writes(runtime_db) ->
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
 
 
+def test_compiler_deduplicates_repeated_source_span_ids(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    payload = _concept_payload(
+        "claim",
+        "claim-duplicate-evidence",
+        "Duplicate evidence",
+        [spans[0].id, spans[0].id],
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps({"concepts": [payload]}),
+    )
+
+    citations = list(runtime_db.scalars(select(RuntimeKnowledgeConceptSource)).all())
+    assert result.status == "completed"
+    assert len(citations) == 1
+    assert citations[0].span_id == spans[0].id
+    assert citations[0].citation_label == "S1"
+
+
+def test_compiler_deduplicates_repeated_link_payloads(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    payload = {
+        "concepts": [
+            _concept_payload("topic", "topic-evidence", "Evidence", [spans[0].id]),
+            _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+        ],
+        "links": [
+            {
+                "source_slug": "topic-evidence",
+                "target_slug": "source-notes",
+                "link_type": "supports",
+                "confidence": 0.8,
+            },
+            {
+                "source_slug": "topic-evidence",
+                "target_slug": "source-notes",
+                "link_type": "supports",
+                "confidence": 0.8,
+            },
+        ],
+    }
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps(payload),
+    )
+
+    links = list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())
+    assert result.status == "completed"
+    assert result.link_count == 1
+    assert len(links) == 1
+    assert links[0].link_type == "supports"
+
+
 def test_source_refresh_preserves_citations_for_unchanged_spans(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
     concept = RuntimeKnowledgeConcept(
