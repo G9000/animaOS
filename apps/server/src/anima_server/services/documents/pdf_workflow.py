@@ -34,6 +34,7 @@ from anima_server.services.documents.store import (
     resolve_document_storage_path,
 )
 from anima_server.services.ingestion.adapters.documents import sync_document_source
+from anima_server.services.ingestion.document_compiler import compile_document_source
 from anima_server.services.workflows import (
     append_checkpoint,
     load_resume_point,
@@ -388,10 +389,16 @@ def run_pdf_ingestion_until_wait_or_done(
             _commit_progress(db)
             document = context.require_document(refresh=True)
             _require_indexed_document(document)
-            sync_document_source(
+            source, _artifacts, spans = sync_document_source(
                 db,
                 document=document,
                 embedding_fn=dependencies.embedding_fn,
+            )
+            compile_result = compile_document_source(
+                db,
+                document=document,
+                source=source,
+                spans=spans,
             )
             _append_completed(
                 db,
@@ -400,6 +407,11 @@ def run_pdf_ingestion_until_wait_or_done(
                 output_json={
                     "document_id": document.id,
                     "embedded_count": embedded_count,
+                    "knowledge_compile": {
+                        "run_id": compile_result.run_id,
+                        "status": compile_result.status,
+                        "concept_count": compile_result.concept_count,
+                    },
                 },
                 artifact_refs_json={"document_id": document.id},
             )

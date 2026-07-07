@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
+from anima_server.models.runtime import RuntimeKnowledgeConcept, RuntimeSource
 from anima_server.services.agent import service as agent_service
 from anima_server.services.documents.rag import DocumentRagResult
+from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
+from sqlalchemy.orm import Session
+
+pytest_plugins = ("conftest_runtime",)
+
+
+def _sha(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def test_build_document_context_block_uses_selected_pdf_hits(monkeypatch: Any) -> None:
@@ -104,6 +114,153 @@ def test_build_document_context_block_defaults_document_only_query(
     assert calls == ["Summarize the selected document."]
     assert block is not None
     assert "selected document" in block.value
+
+
+def test_build_document_context_block_uses_compiled_document_knowledge_when_chunks_miss(
+    monkeypatch: Any,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return []
+
+    def fake_document_knowledge_hits(
+        runtime_db: object,
+        *,
+        user_id: int,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[KnowledgeConceptHit]:
+        calls.append(
+            {
+                "runtime_db": runtime_db,
+                "user_id": user_id,
+                "document_ids": document_ids,
+                "limit": limit,
+            }
+        )
+        return [
+            KnowledgeConceptHit(
+                concept_id=22,
+                title="Pump Maintenance",
+                slug="document-4-pump-maintenance",
+                concept_type="topic",
+                summary="Inspect the relay and calibration window before restart.",
+                score=1.0,
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+    monkeypatch.setattr(
+        agent_service,
+        "_document_knowledge_hits",
+        fake_document_knowledge_hits,
+        raising=False,
+    )
+
+    sentinel_db = object()
+    block = agent_service._build_document_context_block(
+        sentinel_db,
+        user_id=7,
+        user_message="maintenance schedule?",
+        document_ids=[4],
+    )
+
+    assert calls == [
+        {
+            "runtime_db": sentinel_db,
+            "user_id": 7,
+            "document_ids": [4],
+            "limit": 8,
+        }
+    ]
+    assert block is not None
+    assert "Compiled knowledge from selected PDFs" in block.value
+    assert "Pump Maintenance" in block.value
+    assert "relay and calibration" in block.value
+
+
+def test_document_knowledge_hits_are_scoped_to_selected_document(
+    runtime_db: Session,
+) -> None:
+    selected_source = RuntimeSource(
+        user_id=7,
+        kind="document",
+        source_uri="runtime-document://4",
+        content_hash=_sha("selected"),
+        title="manual.pdf",
+        media_type="application/pdf",
+        status="indexed",
+    )
+    other_source = RuntimeSource(
+        user_id=7,
+        kind="document",
+        source_uri="runtime-document://5",
+        content_hash=_sha("other"),
+        title="other.pdf",
+        media_type="application/pdf",
+        status="indexed",
+    )
+    runtime_db.add_all([selected_source, other_source])
+    runtime_db.flush()
+    runtime_db.add_all(
+        [
+            RuntimeKnowledgeConcept(
+                user_id=7,
+                concept_type="source_summary",
+                slug="document-4-manual-pdf",
+                title="manual.pdf",
+                description="Compiled source summary.",
+                body_markdown="# manual.pdf\n\n## Pump Maintenance\nInspect relay timing.",
+                frontmatter_json={"type": "source_summary"},
+                metadata_json={"compiled_from_source_id": selected_source.id},
+                content_hash=_sha("selected summary"),
+                status="active",
+            ),
+            RuntimeKnowledgeConcept(
+                user_id=7,
+                concept_type="topic",
+                slug="document-4-pump-maintenance",
+                title="Pump Maintenance",
+                description=None,
+                body_markdown="# Pump Maintenance\n\nInspect relay timing.",
+                frontmatter_json={"type": "topic"},
+                metadata_json={"compiled_from_source_id": selected_source.id},
+                content_hash=_sha("selected topic"),
+                status="active",
+            ),
+            RuntimeKnowledgeConcept(
+                user_id=7,
+                concept_type="topic",
+                slug="document-5-other",
+                title="Other document topic",
+                description=None,
+                body_markdown="# Other\n\nThis belongs to another document.",
+                frontmatter_json={"type": "topic"},
+                metadata_json={"compiled_from_source_id": other_source.id},
+                content_hash=_sha("other topic"),
+                status="active",
+            ),
+        ]
+    )
+    runtime_db.flush()
+
+    hits = agent_service._document_knowledge_hits(
+        runtime_db,
+        user_id=7,
+        document_ids=[4],
+        limit=8,
+    )
+
+    assert [hit.title for hit in hits] == ["manual.pdf", "Pump Maintenance"]
+    assert "Inspect relay timing" in hits[0].summary
 
 
 def test_build_document_context_block_skips_empty_selection() -> None:

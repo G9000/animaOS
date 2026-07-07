@@ -10,6 +10,9 @@ from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeDocument,
     RuntimeDocumentChunk,
+    RuntimeKnowledgeBundleRun,
+    RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
     RuntimeSource,
     RuntimeSourceSpan,
     RuntimeWorkflowCheckpoint,
@@ -286,6 +289,50 @@ def test_pdf_workflow_syncs_indexed_document_chunks_to_source_spans(
     assert [span.locator_json["chunk_index"] for span in spans] == [0, 1]
 
 
+def test_pdf_workflow_compiles_indexed_document_source_to_knowledge(
+    runtime_db: Session,
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _patch_pgvec_upsert(monkeypatch)
+    calls = _Calls()
+    run = start_pdf_ingestion_workflow(runtime_db, _request(thread_id=None))
+
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(calls),
+    )
+
+    source = runtime_db.scalar(
+        select(RuntimeSource).where(
+            RuntimeSource.user_id == 7,
+            RuntimeSource.kind == "document",
+        )
+    )
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept).order_by(RuntimeKnowledgeConcept.slug)
+        ).all()
+    )
+    citations = list(runtime_db.scalars(select(RuntimeKnowledgeConceptSource)).all())
+    compile_run = runtime_db.scalar(select(RuntimeKnowledgeBundleRun))
+    assert result.status == "awaiting_input"
+    assert source is not None
+    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {
+        source.id
+    }
+    assert {concept.concept_type for concept in concepts} >= {"source_summary", "topic"}
+    assert any(concept.title == "manual.pdf" for concept in concepts)
+    assert any("manual.pdf alpha" in concept.body_markdown for concept in concepts)
+    assert citations
+    assert compile_run is not None
+    assert compile_run.run_type == "compile:initial"
+    assert compile_run.status == "completed"
+    assert compile_run.source_id == source.id
+
+
 def _checkpoint(
     runtime_db: Session,
     *,
@@ -495,7 +542,7 @@ def test_start_pdf_ingestion_registers_file_then_pauses_for_approval(
     ]
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
     assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
@@ -575,6 +622,8 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     assert embedded_texts == [
         page_one_text,
         page_two_text,
+        page_one_text,
+        page_two_text,
     ]
     assert _checkpoint_names(runtime_db, run.id) == [
         "file_registered",
@@ -588,7 +637,7 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     ]
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
     assert runtime_db.scalar(select(func.count(MemoryCandidate.id))) == 0
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
@@ -616,7 +665,7 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     assert rerun.status == "awaiting_input"
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
 
@@ -638,8 +687,13 @@ def test_resume_from_approval_reembeds_unindexed_document(
     )
     assert document is not None
     assert document.status == "indexed"
-    assert first_calls.embedded == ["manual.pdf alpha", "beta"]
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert first_calls.embedded == [
+        "manual.pdf alpha",
+        "beta",
+        "manual.pdf alpha",
+        "beta",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
 
     for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
         runtime_db.delete(embedding)
@@ -659,11 +713,16 @@ def test_resume_from_approval_reembeds_unindexed_document(
     )
 
     assert rerun.status == "awaiting_input"
-    assert second_calls.embedded == ["manual.pdf alpha", "beta"]
+    assert second_calls.embedded == [
+        "manual.pdf alpha",
+        "beta",
+        "manual.pdf alpha",
+        "beta",
+    ]
     refreshed = runtime_db.get(RuntimeDocument, document.id)
     assert refreshed is not None
     assert refreshed.status == "indexed"
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
 
@@ -687,7 +746,7 @@ def test_duplicate_indexed_pdf_workflow_reuses_existing_index(
         chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
     assert document.status == "indexed"
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
 
     duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
     duplicate_calls = _Calls()
@@ -714,7 +773,7 @@ def test_duplicate_indexed_pdf_workflow_reuses_existing_index(
         chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
     assert duplicate_chunk_ids == original_chunk_ids
-    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 2
+    assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 4
     assert _checkpoint_names(runtime_db, duplicate_run.id) == [
         "file_registered",
         "text_extracted",
@@ -1041,7 +1100,7 @@ def test_existing_embedded_checkpoint_without_indexed_document_reembeds(
     )
 
     assert result.status == "awaiting_input"
-    assert calls.embedded == ["seed alpha", "seed beta"]
+    assert calls.embedded == ["seed alpha", "seed beta", "seed alpha", "seed beta"]
     assert calls.summarized == 1
     assert calls.proposed == 1
     refreshed = runtime_db.get(RuntimeDocument, document.id)
@@ -1158,7 +1217,12 @@ def test_resume_from_file_registered_continues_after_existing_document(
     assert result.current_state == "awaiting_approval"
     assert calls.extracted == 1
     assert calls.chunked == 1
-    assert calls.embedded == ["manual.pdf alpha", "beta"]
+    assert calls.embedded == [
+        "manual.pdf alpha",
+        "beta",
+        "manual.pdf alpha",
+        "beta",
+    ]
     assert calls.summarized == 1
     assert calls.proposed == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocument.id))) == 1
@@ -1186,7 +1250,7 @@ def test_resume_from_text_extracted_reuses_staged_pages(
     assert result.status == "awaiting_input"
     assert calls.extracted == 0
     assert calls.chunked == 1
-    assert calls.embedded == ["seed alpha", "seed beta"]
+    assert calls.embedded == ["seed alpha", "seed beta", "seed alpha", "seed beta"]
     chunk_texts = [
         chunk.content_text
         for chunk in list_document_chunks(runtime_db, document_id=document.id)
@@ -1217,7 +1281,7 @@ def test_resume_from_chunked_reuses_stored_chunks(
     assert result.status == "awaiting_input"
     assert calls.extracted == 0
     assert calls.chunked == 0
-    assert calls.embedded == ["seed alpha", "seed beta"]
+    assert calls.embedded == ["seed alpha", "seed beta", "seed alpha", "seed beta"]
     assert calls.summarized == 1
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
 
@@ -1309,7 +1373,12 @@ def test_resume_from_indexed_reembeds_unindexed_document_before_summary(
     )
 
     assert result.status == "awaiting_input"
-    assert calls.embedded == ["replacement alpha", "replacement beta"]
+    assert calls.embedded == [
+        "replacement alpha",
+        "replacement beta",
+        "replacement alpha",
+        "replacement beta",
+    ]
     assert calls.summarized == 1
     assert calls.proposed == 1
     refreshed = runtime_db.get(RuntimeDocument, document.id)

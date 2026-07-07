@@ -16,13 +16,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeImageMessageLink,
+    RuntimeKnowledgeConcept,
     RuntimeMessage,
     RuntimeRun,
+    RuntimeSource,
     RuntimeThread,
 )
 from anima_server.schemas.chat import (
     ChatContextMessage,
     ChatRequestAttachment,
+    MessagePill,
     TodayContext,
 )
 from anima_server.services.agent.attachments import (
@@ -124,6 +127,7 @@ from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.documents.store import get_document_for_user
 from anima_server.services.health.event_logger import emit as health_emit
+from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
 
 logger = logging.getLogger(__name__)
 
@@ -1005,7 +1009,7 @@ async def _prepare_turn_context(
         ):
             content_json = attach_serialized_pills(
                 None,
-                [pill.model_dump() for pill in context_message.pills],
+                [_serialize_context_pill(pill) for pill in context_message.pills],
             )
             persisted = append_message(
                 runtime_db,
@@ -1076,6 +1080,12 @@ async def _prepare_turn_context(
         )
         raise
     return thread, run, user_msg, initial_sequence_id, turn_ctx
+
+
+def _serialize_context_pill(pill: MessagePill) -> dict[str, object]:
+    payload = pill.model_dump(exclude_none=True)
+    payload.setdefault("ref", None)
+    return payload
 
 
 def _fail_turn_setup(
@@ -1582,12 +1592,42 @@ def _build_document_context_block(
             exc_info=True,
         )
         return None
-    if not results:
+
+    try:
+        knowledge_hits = _document_knowledge_hits(
+            runtime_db,
+            user_id=user_id,
+            document_ids=cleaned_document_ids,
+            limit=8,
+        )
+    except Exception:
+        logger.debug(
+            "Document knowledge retrieval failed for user %s documents %s",
+            user_id,
+            cleaned_document_ids,
+            exc_info=True,
+        )
+        knowledge_hits = []
+
+    if not results and not knowledge_hits:
         return None
 
     lines = [
         "Selected document context from indexed PDFs. Use this only when it is relevant.",
     ]
+    if knowledge_hits:
+        lines.append("")
+        lines.append("Compiled knowledge from selected PDFs:")
+        for index, hit in enumerate(knowledge_hits, start=1):
+            lines.append(
+                f"[K{index}] {hit.title} "
+                f"({hit.concept_type}, concept {hit.concept_id}, selected source)"
+            )
+            lines.append(_truncate_document_chunk(hit.summary, limit=700))
+
+    if results:
+        lines.append("")
+        lines.append("Raw evidence excerpts from selected PDFs:")
     for index, result in enumerate(results, start=1):
         location = _format_document_location(result)
         section = f", section {result.section_title}" if result.section_title else ""
@@ -1601,10 +1641,81 @@ def _build_document_context_block(
         label="document_context",
         value="\n".join(lines),
         description=(
-            "Query-relevant excerpts from PDFs the user explicitly selected for this chat turn. "
-            "Ground answers in these snippets when they apply; do not treat them as long-term memory."
+            "Compiled source knowledge and query-relevant excerpts from PDFs the user explicitly "
+            "selected for this chat turn. Ground answers in these snippets when they apply; "
+            "do not treat them as long-term memory."
         ),
     )
+
+
+def _document_knowledge_hits(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+    limit: int = 8,
+) -> list[KnowledgeConceptHit]:
+    if limit <= 0:
+        return []
+    source_ids = _document_source_ids(
+        runtime_db,
+        user_id=user_id,
+        document_ids=document_ids,
+    )
+    if not source_ids:
+        return []
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept)
+            .where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                RuntimeKnowledgeConcept.status == "active",
+                RuntimeKnowledgeConcept.metadata_json[
+                    "compiled_from_source_id"
+                ].as_integer().in_(source_ids),
+            )
+            .order_by(
+                RuntimeKnowledgeConcept.updated_at.desc(),
+                RuntimeKnowledgeConcept.id.desc(),
+            )
+        ).all()
+    )
+    concepts.sort(key=lambda concept: (concept.concept_type != "source_summary", concept.id))
+    return [
+        KnowledgeConceptHit(
+            concept_id=concept.id,
+            title=concept.title,
+            slug=concept.slug,
+            concept_type=concept.concept_type,
+            summary=_document_knowledge_summary(concept),
+            score=1.0 if concept.concept_type == "source_summary" else 0.8,
+        )
+        for concept in concepts[:limit]
+    ]
+
+
+def _document_source_ids(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+) -> list[int]:
+    source_uris = [f"runtime-document://{document_id}" for document_id in document_ids]
+    if not source_uris:
+        return []
+    return list(
+        runtime_db.scalars(
+            select(RuntimeSource.id).where(
+                RuntimeSource.user_id == user_id,
+                RuntimeSource.kind == "document",
+                RuntimeSource.source_uri.in_(source_uris),
+            )
+        ).all()
+    )
+
+
+def _document_knowledge_summary(concept: RuntimeKnowledgeConcept) -> str:
+    return concept.body_markdown or concept.description or concept.title
 
 
 def _build_document_turn_directive(
