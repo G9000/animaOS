@@ -25,7 +25,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-003` | Optimistic locking for soul-block writes | `in-review` | none |
 | `ARH-004` | Background retry hygiene and persisted gates | `in-review` | none |
 | `ARH-005` | LLM client robustness and capability gating | `in-review` | none |
-| `ARH-006` | Anthropic prompt caching with stable prefix | `backlog` | `ARH-005` |
+| `ARH-006` | Anthropic prompt caching with stable prefix | `in-review` | `ARH-005` |
 | `ARH-007` | Dirty-checks for background cognition | `backlog` | `ARH-004` |
 | `ARH-008` | Context and token hygiene | `backlog` | none |
 | `ARH-009` | Embedding contract and store consistency | `backlog` | none |

@@ -31,6 +31,8 @@ class PromptTemplateError(RuntimeError):
 
 TEMPLATES_DIR = Path(__file__).with_name("templates")
 SYSTEM_PROMPT_TEMPLATE_PATH = TEMPLATES_DIR / "system_prompt.md.j2"
+SYSTEM_PROMPT_STABLE_TEMPLATE_PATH = TEMPLATES_DIR / "system_prompt_stable.md.j2"
+SYSTEM_PROMPT_VOLATILE_TEMPLATE_PATH = TEMPLATES_DIR / "system_prompt_volatile.md.j2"
 SYSTEM_RULES_TEMPLATE_PATH = TEMPLATES_DIR / "system_rules.md.j2"
 GUARDRAILS_TEMPLATE_PATH = TEMPLATES_DIR / "guardrails.md.j2"
 MEMORY_BLOCKS_TEMPLATE_PATH = TEMPLATES_DIR / "memory_blocks.md.j2"
@@ -38,24 +40,51 @@ ORIGIN_TEMPLATE_PATH = TEMPLATES_DIR / "origin.md.j2"
 PERSONA_TEMPLATES_DIR = TEMPLATES_DIR / "persona"
 _TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# Separator between the stable and volatile sections of the assembled
+# prompt.  The stable section must stay byte-identical across turns —
+# it is the Anthropic prompt-cache prefix.
+_PROMPT_SECTION_SEPARATOR = "\n\n"
+
+
+@dataclass(frozen=True, slots=True)
+class SystemPromptParts:
+    """System prompt split at the prompt-cache boundary.
+
+    ``stable`` holds content that must not change between turns (rules,
+    guardrails, persona, identity, tool instructions); ``volatile`` holds
+    per-turn content (time, retrieved memory blocks, user context).  The
+    Anthropic client places a cache_control breakpoint at the end of the
+    stable section.
+    """
+
+    stable: str
+    volatile: str
+
+    @property
+    def full(self) -> str:
+        if not self.volatile:
+            return self.stable
+        return f"{self.stable}{_PROMPT_SECTION_SEPARATOR}{self.volatile}"
+
+    @property
+    def stable_prefix_chars(self) -> int:
+        """Boundary index into ``full``: everything before it is cacheable."""
+        return len(self.stable)
+
 
 def build_system_prompt(
     context: SystemPromptContext | None = None,
 ) -> str:
+    return build_system_prompt_parts(context).full
+
+
+def build_system_prompt_parts(
+    context: SystemPromptContext | None = None,
+) -> SystemPromptParts:
     resolved = context or SystemPromptContext()
     now = resolved.now or datetime.now(UTC)
-    system_rules = render_template(
-        SYSTEM_RULES_TEMPLATE_PATH,
-        {
-            "now_iso": now.isoformat(),
-        },
-    )
-    guardrails = render_template(
-        GUARDRAILS_TEMPLATE_PATH,
-        {
-            "now_iso": now.isoformat(),
-        },
-    )
+    system_rules = render_template(SYSTEM_RULES_TEMPLATE_PATH, {})
+    guardrails = render_template(GUARDRAILS_TEMPLATE_PATH, {})
     persona = (
         resolved.persona_content.strip()
         if resolved.persona_content.strip()
@@ -75,22 +104,35 @@ def build_system_prompt(
             persona = persona_from_blocks
 
     memory_blocks = serialize_memory_blocks(filtered_blocks)
-    template_context = {
-        "system_rules": system_rules,
-        "guardrails": guardrails,
-        "persona": persona,
-        "dynamic_identity": dynamic_identity,
-        "persona_template": resolved.persona_template,
-        "tool_summaries": [item.strip() for item in resolved.tool_summaries if item.strip()],
-        "memory_blocks": memory_blocks,
-        "memory_blocks_text": render_memory_blocks_template(memory_blocks),
-        "user_context": resolved.user_context.strip(),
-        "additional_instructions": [
-            item.strip() for item in resolved.additional_instructions if item.strip()
-        ],
-        "now_iso": now.isoformat(),
-    }
-    return render_system_prompt_template(template_context)
+    stable = render_template(
+        SYSTEM_PROMPT_STABLE_TEMPLATE_PATH,
+        {
+            "system_rules": system_rules,
+            "guardrails": guardrails,
+            "persona": persona,
+            "dynamic_identity": dynamic_identity,
+            "persona_template": resolved.persona_template,
+            "tool_summaries": [
+                item.strip() for item in resolved.tool_summaries if item.strip()
+            ],
+        },
+    )
+    # Minute precision keeps the volatile section stable within a burst of
+    # requests; the exact time lives behind the current_datetime tool.
+    now_minute = now.replace(second=0, microsecond=0)
+    volatile = render_template(
+        SYSTEM_PROMPT_VOLATILE_TEMPLATE_PATH,
+        {
+            "now_minute_iso": now_minute.isoformat(),
+            "memory_blocks": memory_blocks,
+            "memory_blocks_text": render_memory_blocks_template(memory_blocks),
+            "user_context": resolved.user_context.strip(),
+            "additional_instructions": [
+                item.strip() for item in resolved.additional_instructions if item.strip()
+            ],
+        },
+    )
+    return SystemPromptParts(stable=stable, volatile=volatile)
 
 
 def invalidate_system_prompt_template_cache() -> None:

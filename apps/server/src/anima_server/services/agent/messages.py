@@ -14,6 +14,10 @@ _TOOL_RULE_VIOLATION_PREFIX = "Tool rule violation:"
 class SystemMessage:
     content: str
     type: str = "system"
+    # Prompt-cache boundary: content[:stable_prefix_chars] is byte-stable
+    # across turns and safe to cache; 0 means no boundary (whole message
+    # treated as volatile).  Only the leading system message carries it.
+    stable_prefix_chars: int = 0
 
 
 @dataclass
@@ -44,9 +48,14 @@ def build_conversation_messages(
     user_message: str | None,
     *,
     system_prompt: str,
+    system_stable_prefix_chars: int = 0,
     user_attachments: Sequence[StoredAttachment] = (),
 ) -> list[Any]:
-    messages: list[Any] = [make_system_message(system_prompt)]
+    messages: list[Any] = [
+        make_system_message(
+            system_prompt, stable_prefix_chars=system_stable_prefix_chars
+        )
+    ]
     messages.extend(
         to_runtime_message(message)
         for message in history
@@ -120,8 +129,8 @@ def to_runtime_message(message: StoredMessage) -> Any:
     return make_user_message(message.content, attachments=message.attachments)
 
 
-def make_system_message(content: str) -> Any:
-    return SystemMessage(content=content)
+def make_system_message(content: str, *, stable_prefix_chars: int = 0) -> Any:
+    return SystemMessage(content=content, stable_prefix_chars=stable_prefix_chars)
 
 
 def make_summary_message(content: str) -> Any:

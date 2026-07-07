@@ -1,0 +1,18 @@
+Current UTC time: {{ now_minute_iso }} (minute precision; use `current_datetime` for exact time)
+{% if memory_blocks %}
+
+Memory Blocks:
+{{ memory_blocks_text }}
+
+{% endif %}
+{% if user_context %}
+User Context:
+- {{ user_context }}
+
+{% endif %}
+{% if additional_instructions %}
+Additional Instructions:
+{% for instruction in additional_instructions %}
+- {{ instruction }}
+{% endfor %}
+{% endif %}

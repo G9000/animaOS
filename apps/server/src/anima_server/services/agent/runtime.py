@@ -70,7 +70,8 @@ from anima_server.services.agent.streaming import (
 )
 from anima_server.services.agent.system_prompt import (
     SystemPromptContext,
-    build_system_prompt,
+    SystemPromptParts,
+    build_system_prompt_parts,
     split_prompt_memory_blocks,
 )
 from anima_server.services.agent.tools import get_tool_rules, get_tool_summaries, get_tools
@@ -143,6 +144,18 @@ class AgentRuntime:
         memory_blocks: Sequence[MemoryBlock] = (),
         conversation_turn_count: int | None = None,
     ) -> tuple[str, PromptBudgetTrace | None]:
+        parts, prompt_budget = self.build_system_prompt_parts_with_budget(
+            memory_blocks=memory_blocks,
+            conversation_turn_count=conversation_turn_count,
+        )
+        return parts.full, prompt_budget
+
+    def build_system_prompt_parts_with_budget(
+        self,
+        *,
+        memory_blocks: Sequence[MemoryBlock] = (),
+        conversation_turn_count: int | None = None,
+    ) -> tuple[SystemPromptParts, PromptBudgetTrace | None]:
         self._adapter.prepare()
         relationship_policy = detect_relationship_policy(
             memory_blocks=tuple(memory_blocks),
@@ -153,7 +166,7 @@ class AgentRuntime:
         )
         budget_plan = plan_prompt_budget(
             prompt_memory_blocks, budget=resolve_budget_config())
-        system_prompt = build_system_prompt(
+        parts = build_system_prompt_parts(
             SystemPromptContext(
                 persona_template=self._persona_template,
                 persona_content=persona_content,
@@ -165,6 +178,7 @@ class AgentRuntime:
                 ),
             )
         )
+        system_prompt = parts.full
         prompt_budget = replace(
             budget_plan.trace,
             dynamic_identity_chars=len(dynamic_identity),
@@ -180,7 +194,7 @@ class AgentRuntime:
                 tool_name=None,
             ),
         )
-        return system_prompt, prompt_budget
+        return parts, prompt_budget
 
     async def invoke(
         self,
@@ -199,7 +213,7 @@ class AgentRuntime:
         user_attachments: Sequence[StoredAttachment] = (),
     ) -> AgentResult | DryRunResult:
         executor = tool_executor or self._tool_executor
-        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
+        prompt_parts, prompt_budget = self.build_system_prompt_parts_with_budget(
             memory_blocks=memory_blocks,
             conversation_turn_count=conversation_turn_count,
         )
@@ -208,16 +222,25 @@ class AgentRuntime:
             conversation_turn_count=conversation_turn_count,
         )
 
-        system_prompt = _append_action_tool_prompt(
-            system_prompt,
-            extra_tool_schemas,
+        # Action tools are session-scoped (they change when a client
+        # connects/disconnects), so they belong in the volatile section —
+        # appending them after the cache boundary keeps the stable prefix
+        # byte-identical across sessions.
+        prompt_parts = replace(
+            prompt_parts,
+            volatile=_append_action_tool_prompt(
+                prompt_parts.volatile,
+                extra_tool_schemas,
+            ),
         )
+        system_prompt = prompt_parts.full
         extra_tool_names = _action_tool_names(extra_tool_schemas)
 
         messages = build_conversation_messages(
             history,
             user_message,
             system_prompt=system_prompt,
+            system_stable_prefix_chars=prompt_parts.stable_prefix_chars,
             user_attachments=user_attachments,
         )
 
@@ -615,9 +638,12 @@ class AgentRuntime:
                 try:
                     fresh_blocks = await memory_refresher()
                     if fresh_blocks is not None:
-                        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
-                            memory_blocks=fresh_blocks,
+                        refreshed_parts, prompt_budget = (
+                            self.build_system_prompt_parts_with_budget(
+                                memory_blocks=fresh_blocks,
+                            )
                         )
+                        system_prompt = refreshed_parts.full
                         # Replace the system message (always first in the list).
                         if (
                             messages
@@ -626,7 +652,10 @@ class AgentRuntime:
                         ):
                             from anima_server.services.agent.messages import make_system_message
 
-                            messages[0] = make_system_message(system_prompt)
+                            messages[0] = make_system_message(
+                                system_prompt,
+                                stable_prefix_chars=refreshed_parts.stable_prefix_chars,
+                            )
                 except Exception:
                     logger.debug(
                         "Memory refresh between steps failed", exc_info=True)
@@ -761,10 +790,11 @@ class AgentRuntime:
         one LLM call so the companion can acknowledge the denial.
         """
         executor = tool_executor or self._tool_executor
-        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
+        prompt_parts, prompt_budget = self.build_system_prompt_parts_with_budget(
             memory_blocks=memory_blocks,
             conversation_turn_count=conversation_turn_count,
         )
+        system_prompt = prompt_parts.full
         relationship_policy = detect_relationship_policy(
             memory_blocks=tuple(memory_blocks),
             conversation_turn_count=conversation_turn_count,
@@ -773,6 +803,7 @@ class AgentRuntime:
             history,
             user_message=None,
             system_prompt=system_prompt,
+            system_stable_prefix_chars=prompt_parts.stable_prefix_chars,
         )
         rules_solver = ToolRulesSolver(self._tool_rules)
 

@@ -1,17 +1,17 @@
 # ARH-006 - Anthropic prompt caching with stable prefix
 
-- Status: backlog
+- Status: in-review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: `ARH-005`
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 13:20 MYT
+- Started: 2026-07-07 12:53 MYT
+- Completed: 2026-07-07 13:20 MYT
 
 ## Goal
 
@@ -51,12 +51,21 @@ Stop re-paying full input price for the mostly-static system prompt on every Ant
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 13:20 MYT - Implemented on branch `worktree-agent-runtime-hardening-p3`: system prompt split into `system_prompt_stable.md.j2` (rules, guardrails, persona, identity, cognitive loop, memory instructions) and `system_prompt_volatile.md.j2` (minute-rounded time, memory blocks, user context, stage instructions); `SystemPromptParts` carries the cache boundary through `SystemMessage.stable_prefix_chars`; the Anthropic client sends `system` as two text blocks with `cache_control: {type: ephemeral}` on the stable one (plain string when no boundary — other providers unchanged); mid-conversation summary messages join the volatile block, never the cached prefix; action-tool prompts append to the volatile section; tools are serialized in sorted order so the position-0 cache prefix is byte-stable; cache read/creation tokens logged per request. Mid-turn memory refresh rebuilds via the same parts path, so an unchanged persona keeps the prefix identical.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_prompt_caching.py -q` → 11 passed
+  - `uv run --directory apps/server pytest tests/test_agent_service.py tests/test_ws.py tests/test_concurrency.py tests/test_agent_runtime.py tests/test_runtime_enhancements.py tests/test_agent_system_prompt.py tests/test_agent_anthropic_client.py -q` → 126 passed, 1 known pre-existing failure (image-pill)
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/templates/system_prompt_stable.md.j2
+  - apps/server/src/anima_server/services/agent/templates/system_prompt_volatile.md.j2
+  - apps/server/src/anima_server/services/agent/system_prompt.py
+  - apps/server/src/anima_server/services/agent/messages.py
+  - apps/server/src/anima_server/services/agent/runtime.py
+  - apps/server/src/anima_server/services/agent/anthropic_client.py
+  - apps/server/tests/test_prompt_caching.py
 - Notes:
-  - none
+  - 11 new tests including the two-turn byte-identical prefix assertions (parts level and serialized-payload level).
+  - Pending manual smoke: observe `cache_read_input_tokens > 0` on the second of two consecutive live Anthropic turns (needs an API key; the counter is logged by `_log_cache_usage`).

@@ -137,6 +137,7 @@ class AnthropicChatClient:
         response.raise_for_status()
         normalized = _normalize_response(response.json())
         _warn_on_abnormal_stop(normalized.stop_reason, model=self.model)
+        _log_cache_usage(normalized.usage_metadata, model=self.model)
         return normalized
 
     async def astream(
@@ -188,7 +189,12 @@ class AnthropicChatClient:
         if system_prompt:
             payload["system"] = system_prompt
         if self._tools:
-            payload["tools"] = [_serialize_anthropic_tool(tool) for tool in self._tools]
+            # Tools render at position 0 of the cache prefix: their order
+            # must be byte-stable across requests or nothing caches.
+            payload["tools"] = sorted(
+                (_serialize_anthropic_tool(tool) for tool in self._tools),
+                key=lambda tool: str(tool.get("name", "")),
+            )
         if self._tool_choice is not None:
             payload["tool_choice"] = self._tool_choice
         if self._temperature is not None:
@@ -210,8 +216,10 @@ class AnthropicChatClient:
         }
 
 
-def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, object]]]:
-    system_parts: list[str] = []
+def _serialize_messages(
+    messages: Sequence[Any],
+) -> tuple[str | list[dict[str, object]], list[dict[str, object]]]:
+    system_parts: list[tuple[str, int]] = []
     serialized: list[dict[str, object]] = []
 
     for message in messages:
@@ -219,7 +227,9 @@ def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, ob
         if message_type == "system":
             content = _serialize_text(getattr(message, "content", ""))
             if content:
-                system_parts.append(content)
+                raw_boundary = getattr(message, "stable_prefix_chars", 0)
+                boundary = raw_boundary if isinstance(raw_boundary, int) else 0
+                system_parts.append((content, boundary))
             continue
 
         if message_type == "human":
@@ -250,7 +260,45 @@ def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, ob
             }
         )
 
-    return "\n\n".join(system_parts), _merge_adjacent_messages(serialized)
+    return _build_system_payload(system_parts), _merge_adjacent_messages(serialized)
+
+
+def _build_system_payload(
+    system_parts: list[tuple[str, int]],
+) -> str | list[dict[str, object]]:
+    """Assemble the ``system`` request value, splitting at the cache boundary.
+
+    When the leading system message carries a stable-prefix boundary, the
+    prompt is sent as two text blocks with ``cache_control`` on the stable
+    one — the Anthropic prompt cache then covers tools + rules + persona
+    on every turn instead of re-billing them at full input price.
+    Mid-conversation summary messages (also serialized as system parts)
+    join the volatile block so they never sit inside the cached prefix.
+    """
+    if not system_parts:
+        return ""
+
+    first_content, boundary = system_parts[0]
+    trailing = "\n\n".join(content for content, _ in system_parts[1:])
+
+    if 0 < boundary <= len(first_content):
+        stable = first_content[:boundary]
+        volatile = first_content[boundary:]
+        if trailing:
+            volatile = f"{volatile}\n\n{trailing}" if volatile.strip() else trailing
+        blocks: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": stable,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        if volatile.strip():
+            blocks.append({"type": "text", "text": volatile})
+        return blocks
+
+    contents = [first_content] + [content for content, _ in system_parts[1:]]
+    return "\n\n".join(contents)
 
 
 def _serialize_assistant_content(message: Any) -> str | list[dict[str, object]]:
@@ -481,6 +529,22 @@ def _normalize_response(payload: object) -> AnthropicResponse:
         redacted_reasoning_content="\n".join(redacted_reasoning_parts) or None,
         stop_reason=stop_reason if isinstance(stop_reason, str) else None,
     )
+
+
+def _log_cache_usage(usage: dict[str, object] | None, *, model: str) -> None:
+    """Make the prompt-cache hit rate observable per request."""
+    if not usage:
+        return
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_write = usage.get("cache_creation_input_tokens")
+    if cache_read or cache_write:
+        logging.getLogger(__name__).debug(
+            "Anthropic prompt cache (model %s): read=%s created=%s uncached=%s",
+            model,
+            cache_read or 0,
+            cache_write or 0,
+            usage.get("input_tokens", 0),
+        )
 
 
 def _warn_on_abnormal_stop(stop_reason: str | None, *, model: str) -> None:
