@@ -63,6 +63,45 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
             assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource)) is not None
 
 
+def test_markdown_source_endpoint_compile_keeps_span_topics_active() -> None:
+    with managed_test_client("anima-knowledge-markdown-compile-topics-") as client:
+        user_id, headers = _register(client, username="knowledge-md-compile-topics")
+
+        response = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "release-notes.md",
+                "title": "Release Notes",
+                "content": "# Alpha\n\nFirst note.\n\n## Beta\n\nSecond note.",
+                "compile": True,
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+
+        with get_runtime_session_factory()() as runtime_db:
+            concepts = list(
+                runtime_db.scalars(select(RuntimeKnowledgeConcept)).all()
+            )
+            active_topics = [
+                concept
+                for concept in concepts
+                if concept.concept_type == "topic" and concept.status == "active"
+            ]
+            active_summaries = [
+                concept
+                for concept in concepts
+                if concept.concept_type == "source_summary"
+                and concept.status == "active"
+            ]
+
+        assert len(active_topics) == len(payload["spans"])
+        assert len(active_summaries) == 1
+
+
 def test_compile_source_endpoint_invokes_compiler_for_existing_source() -> None:
     with managed_test_client("anima-knowledge-compile-existing-") as client:
         user_id, headers = _register(client, username="knowledge-compile-existing")
