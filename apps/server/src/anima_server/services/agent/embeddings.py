@@ -314,6 +314,14 @@ def clear_embedding_cache() -> None:
     from anima_server.config import clear_detected_embedding_dim
 
     clear_detected_embedding_dim()
+    # A config change must also re-arm the one-shot cold-start sync and
+    # re-read the persisted contract — otherwise stale-model embeddings
+    # keep serving searches until a process restart.
+    from anima_server.services.agent.embedding_contract import reset_contract_cache
+    from anima_server.services.agent.vector_store import clear_synced_users
+
+    clear_synced_users()
+    reset_contract_cache()
 
 
 def get_embedding_cache_stats() -> dict[str, int]:
@@ -405,6 +413,17 @@ async def generate_embedding(text: str) -> list[float] | None:
                 "Auto-detected embedding dimension: %d (model=%s)",
                 len(result),
                 _resolve_embedding_model(),
+            )
+            # Verify the detected pair against the persisted contract —
+            # a model switch used to surface only as swallowed pgvector
+            # errors, silently degrading retrieval to keyword-only.
+            from anima_server.services.agent.embedding_contract import (
+                check_embedding_contract,
+            )
+
+            check_embedding_contract(
+                model=_resolve_embedding_model(),
+                dim=len(result),
             )
     return result
 
@@ -511,6 +530,17 @@ def _semantic_ranked_ids(
     similarity_threshold: float,
     runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
+    from anima_server.services.agent.embedding_contract import is_reembed_required
+
+    if is_reembed_required():
+        # The stores were built with a different model/dimension —
+        # comparing against them would be wrong or raise.  Degrade
+        # loudly (once per process the contract check logged ERROR).
+        logger.debug(
+            "Semantic leg skipped for user %d: re-embed required", user_id
+        )
+        return []
+
     rust_ranked = _semantic_ranked_ids_via_rust(
         db=db,
         user_id=user_id,
@@ -670,9 +700,28 @@ async def embed_memory_item(
             db=db,
         )
     except Exception:
-        logger.debug("Failed to upsert item %d into vector store", item.id)
+        _mark_vector_upsert_failed(item.user_id, item.id)
 
     return True
+
+
+def _mark_vector_upsert_failed(user_id: int, item_id: int) -> None:
+    """A failed pgvector write leaves the item searchable in one backend
+    and invisible in another — flag the user so the next backfill task
+    re-syncs instead of the failure being swallowed at debug level."""
+    degraded_logger = logging.getLogger("anima.runtime.degraded")
+    degraded_logger.warning(
+        "Vector-store upsert failed for item %d (user %d); "
+        "flagged for re-sync on the next embedding backfill",
+        item_id,
+        user_id,
+    )
+    try:
+        from anima_server.services.agent.vector_store import mark_vector_store_dirty
+
+        mark_vector_store_dirty(user_id)
+    except Exception:
+        pass
 
 
 async def backfill_embeddings(
@@ -726,7 +775,7 @@ async def backfill_embeddings(
                 db=db,
             )
         except Exception:
-            logger.debug("Failed to upsert item %d into vector store", item.id)
+            _mark_vector_upsert_failed(item.user_id, item.id)
         count += 1
 
     if count > 0:

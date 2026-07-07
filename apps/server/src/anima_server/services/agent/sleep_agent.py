@@ -661,13 +661,102 @@ async def _task_embedding_backfill(
     user_id: int,
     db_factory: Callable[..., object] | None = None,
 ) -> None:
-    """Backfill embeddings for existing user memories."""
+    """Backfill embeddings; also the recovery path for the embedding
+    contract (re-embed after a model switch), failed vector-store writes,
+    and orphaned pgvector rows."""
     from anima_server.services.agent.consolidation import _backfill_user_embeddings
+    from anima_server.services.agent.embedding_contract import (
+        complete_reembed,
+        is_reembed_required,
+        reset_derived_embedding_stores,
+        sweep_orphaned_runtime_embeddings,
+    )
+
+    reembedding = False
+    try:
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+        if is_reembed_required():
+            reembedding = True
+            with factory() as db:
+                cleared = reset_derived_embedding_stores(db, user_id=user_id)
+                db.commit()
+            logger.info(
+                "Re-embed started for user %s: %d items reset after an "
+                "embedding model/dimension change",
+                user_id,
+                cleared,
+            )
+    except Exception:
+        logger.exception("Re-embed reset failed for user %s", user_id)
+        reembedding = False
 
     try:
         await _backfill_user_embeddings(user_id, db_factory=db_factory)
     except Exception:
         logger.debug("Embedding backfill skipped for user %s", user_id)
+        return
+
+    try:
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+
+        if reembedding:
+            # All items re-embedded with the active model: adopt the new
+            # contract so semantic search comes back.
+            from anima_server.config import resolve_embedding_dim
+            from anima_server.services.agent.embeddings import (
+                _resolve_embedding_model,
+            )
+
+            with factory() as db:
+                from sqlalchemy import func as sa_func
+                from sqlalchemy import select
+
+                from anima_server.models import MemoryItem
+
+                remaining = db.scalar(
+                    select(sa_func.count())
+                    .select_from(MemoryItem)
+                    .where(
+                        MemoryItem.user_id == user_id,
+                        MemoryItem.superseded_by.is_(None),
+                        MemoryItem.embedding_json.is_(None),
+                    )
+                )
+            if not remaining:
+                complete_reembed(
+                    model=_resolve_embedding_model(),
+                    dim=resolve_embedding_dim(),
+                )
+
+        from anima_server.services.agent.vector_store import (
+            consume_vector_store_dirty,
+        )
+
+        if consume_vector_store_dirty(user_id):
+            from anima_server.services.agent.embeddings import sync_to_vector_store
+
+            with factory() as db:
+                resynced = sync_to_vector_store(db, user_id=user_id)
+            logger.info(
+                "Re-synced %d embeddings to the vector store for user %s "
+                "after a failed upsert",
+                resynced,
+                user_id,
+            )
+
+        with factory() as db:
+            sweep_orphaned_runtime_embeddings(db, user_id=user_id)
+    except Exception:
+        logger.debug(
+            "Embedding maintenance (contract/re-sync/orphan sweep) failed "
+            "for user %s",
+            user_id,
+            exc_info=True,
+        )
 
 
 async def _task_graph_ingestion(

@@ -28,7 +28,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-006` | Anthropic prompt caching with stable prefix | `in-review` | `ARH-005` |
 | `ARH-007` | Dirty-checks for background cognition | `in-review` | `ARH-004` |
 | `ARH-008` | Context and token hygiene | `in-review` | none |
-| `ARH-009` | Embedding contract and store consistency | `backlog` | none |
+| `ARH-009` | Embedding contract and store consistency | `in-review` | none |
 | `ARH-010` | Crash-durable memory extraction | `in-review` | `ARH-004` |
 | `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `backlog` | none |
 | `ARH-012` | Retrieval scoring correctness | `backlog` | none |

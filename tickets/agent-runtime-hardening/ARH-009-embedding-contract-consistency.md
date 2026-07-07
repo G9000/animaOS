@@ -1,17 +1,17 @@
 # ARH-009 - Embedding contract and store consistency
 
-- Status: backlog
+- Status: in-review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 22:30 MYT
+- Started: 2026-07-07 21:56 MYT
+- Completed: 2026-07-07 22:30 MYT
 
 ## Goal
 
@@ -54,12 +54,22 @@ Changing the embedding model can no longer silently kill semantic search, and th
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 22:30 MYT - Implemented on branch `worktree-agent-runtime-hardening-p4`: migration `024_embedding_config` + `EmbeddingConfig` model persist the active `(model, dim)` pair; `generate_embedding` verifies the detected pair against the contract on first embed (mismatch → ERROR on `anima.runtime.degraded` + persisted `reembed_required`, old pair kept recorded until recovery completes); `_semantic_ranked_ids` skips both semantic backends while the flag is set (explicitly degraded, never a swallowed pgvector exception); the embedding-backfill task is the recovery path — it resets derived stores (`embedding_json`/checksum nulled, user's pgvector rows deleted, retrieval indexes invalidated), re-embeds progressively via the existing backfill, and adopts the new contract when zero items remain unembedded; vector-store upsert failures log WARNING on the degraded logger and flag the user for a `sync_to_vector_store` re-sync on the next backfill; an orphan sweep deletes pgvector rows whose source item no longer exists; `clear_embedding_cache` now re-arms the cold-start sync (`_synced_users`) and the contract cache.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_embedding_contract.py -q` → 9 passed
+  - Embedding/retrieval regression sweep (embedding_sync, vector_store, hybrid_retrieval, scored retrieval, forgetting, rebuild, router, evidence, feedback, sleep_agent) → 157 passed
+  - Migration chain validated: single head `024_embedding_config`
 - Changed paths:
-  - none
+  - apps/server/alembic_runtime/versions/024_embedding_config.py
+  - apps/server/src/anima_server/models/runtime_memory.py
+  - apps/server/src/anima_server/services/agent/embedding_contract.py (new)
+  - apps/server/src/anima_server/services/agent/embeddings.py
+  - apps/server/src/anima_server/services/agent/vector_store.py
+  - apps/server/src/anima_server/services/agent/sleep_agent.py
+  - apps/server/tests/test_embedding_contract.py
 - Notes:
-  - none
+  - 9 new tests: contract adoption/match/mismatch (loud + restart-safe), re-embed completion, degraded semantic leg, derived-store reset, orphan sweep, upsert-failure re-sync flag, cache-clear re-arming.
+  - Scope notes: the rust index is invalidated (rebuilt from soul state) rather than doc-by-doc cleaned; deep `content_hash` staleness detection is partially covered — the cold-start sync refreshes every pgvector row from soul state, but detecting a soul-side embedding that predates a content edit would need an embedded-text hash column on `MemoryItem` (deferred).

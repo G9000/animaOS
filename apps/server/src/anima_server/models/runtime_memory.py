@@ -204,6 +204,29 @@ class MemoryAccessLog(RuntimeBase):
     synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class EmbeddingConfig(RuntimeBase):
+    """The active embedding contract: which model and dimension the derived
+    embedding stores were built with.
+
+    Switching embedding models used to silently kill semantic search: the
+    pgvector column stayed at the old dimension, every query raised, and
+    the exception was swallowed — retrieval degraded to keyword-only
+    forever.  A persisted contract makes the mismatch loud and recoverable.
+    """
+
+    __tablename__ = "embedding_config"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    reembed_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
 class ContradictionCheck(RuntimeBase):
     """Persisted contradiction-scan verdict for a pair of memory items.
 
