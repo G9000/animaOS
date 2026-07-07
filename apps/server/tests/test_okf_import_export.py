@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-from anima_server.models.runtime import RuntimeKnowledgeConcept, RuntimeKnowledgeLink
+from anima_server.models.runtime import (
+    RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
+    RuntimeKnowledgeLink,
+    RuntimeSource,
+    RuntimeSourceArtifact,
+    RuntimeSourceSpan,
+)
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
 from sqlalchemy import select
 
@@ -88,6 +95,77 @@ def test_export_rejects_concept_slugs_that_escape_concepts_dir(runtime_db, tmp_p
         export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
 
     assert not (tmp_path / "log.md").exists()
+
+
+def test_export_preserves_concept_citations(runtime_db, tmp_path) -> None:
+    concept = _concept(
+        slug="topic-citable",
+        title="Citable topic",
+        body_markdown="Compiled notes with source-backed evidence.",
+    )
+    source = RuntimeSource(
+        user_id=1,
+        kind="text",
+        source_uri="text://evidence.txt",
+        content_hash=_sha("Evidence quote."),
+        title="Evidence source",
+        media_type="text/plain",
+        status="indexed",
+    )
+    runtime_db.add_all([concept, source])
+    runtime_db.flush()
+    artifact = RuntimeSourceArtifact(
+        user_id=1,
+        source_id=source.id,
+        artifact_kind="plain_text",
+        content_text="Evidence quote.",
+        content_hash=_sha("Evidence quote."),
+    )
+    runtime_db.add(artifact)
+    runtime_db.flush()
+    span = RuntimeSourceSpan(
+        user_id=1,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="paragraph",
+        locator_json={"paragraph_index": 0},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 0}),
+        content_text="Evidence quote.",
+        content_hash=_sha("Evidence quote."),
+    )
+    runtime_db.add(span)
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeConceptSource(
+            user_id=1,
+            concept_id=concept.id,
+            source_id=source.id,
+            span_id=span.id,
+            citation_label="S1",
+            quote_text="Evidence quote.",
+            metadata_json={"reason": "supports"},
+        )
+    )
+    runtime_db.commit()
+
+    export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    frontmatter, body = _read_frontmatter(tmp_path / "concepts" / "topic-citable.md")
+    assert frontmatter["x_anima_citations"] == [
+        {
+            "citation_label": "S1",
+            "source_uri": "text://evidence.txt",
+            "source_title": "Evidence source",
+            "source_kind": "text",
+            "span_kind": "paragraph",
+            "locator": {"paragraph_index": 0},
+            "quote_text": "Evidence quote.",
+            "metadata": {"reason": "supports"},
+        }
+    ]
+    assert "## Source References" in body
+    assert "- [S1] Evidence source (text://evidence.txt)" in body
+    assert "> Evidence quote." in body
 
 
 def test_import_round_trips_unknown_fields_and_unknown_types(runtime_db, tmp_path) -> None:

@@ -10,7 +10,13 @@ import yaml
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from anima_server.models.runtime import RuntimeKnowledgeConcept, RuntimeKnowledgeLink
+from anima_server.models.runtime import (
+    RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
+    RuntimeKnowledgeLink,
+    RuntimeSource,
+    RuntimeSourceSpan,
+)
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _OKF_IMPORT_SOURCE = "okf_import"
@@ -47,7 +53,16 @@ def export_okf_bundle(
 
     for concept in concepts:
         frontmatter = _frontmatter_for_export(concept)
+        citations = _citation_records_for_export(
+            db,
+            user_id=user_id,
+            concept_id=concept.id,
+        )
+        if citations:
+            frontmatter["x_anima_citations"] = citations
         body = _ensure_trailing_newline(concept.body_markdown)
+        if citations:
+            body = _append_source_references(body, citations)
         _concept_markdown_path(concepts_dir, concept.slug).write_text(
             _render_markdown(frontmatter, body),
             encoding="utf-8",
@@ -221,6 +236,67 @@ def _frontmatter_for_export(concept: RuntimeKnowledgeConcept) -> dict[str, objec
     if concept.description and "description" not in frontmatter:
         frontmatter["description"] = concept.description
     return frontmatter
+
+
+def _citation_records_for_export(
+    db: Session,
+    *,
+    user_id: int,
+    concept_id: int,
+) -> list[dict[str, object]]:
+    rows = list(
+        db.execute(
+            select(RuntimeKnowledgeConceptSource, RuntimeSource, RuntimeSourceSpan)
+            .join(
+                RuntimeSource,
+                RuntimeKnowledgeConceptSource.source_id == RuntimeSource.id,
+            )
+            .join(
+                RuntimeSourceSpan,
+                RuntimeKnowledgeConceptSource.span_id == RuntimeSourceSpan.id,
+            )
+            .where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept_id,
+                RuntimeSource.user_id == user_id,
+                RuntimeSourceSpan.user_id == user_id,
+            )
+            .order_by(
+                RuntimeKnowledgeConceptSource.created_at,
+                RuntimeKnowledgeConceptSource.id,
+            )
+        ).all()
+    )
+    return [
+        {
+            "citation_label": citation.citation_label or f"S{index}",
+            "source_uri": source.source_uri,
+            "source_title": source.title,
+            "source_kind": source.kind,
+            "span_kind": span.span_kind,
+            "locator": _json_safe_value(span.locator_json),
+            "quote_text": citation.quote_text or span.content_text,
+            "metadata": _json_safe_value(citation.metadata_json or {}),
+        }
+        for index, (citation, source, span) in enumerate(rows, start=1)
+    ]
+
+
+def _append_source_references(
+    body_markdown: str,
+    citations: list[dict[str, object]],
+) -> str:
+    lines = [_ensure_trailing_newline(body_markdown).rstrip(), "", "## Source References", ""]
+    for citation in citations:
+        label = str(citation.get("citation_label") or "S?")
+        source_uri = str(citation.get("source_uri") or "")
+        source_title = str(citation.get("source_title") or source_uri or "Untitled source")
+        lines.append(f"- [{label}] {source_title} ({source_uri})")
+        quote = str(citation.get("quote_text") or "").strip()
+        if quote:
+            for quote_line in quote.splitlines():
+                lines.append(f"  > {quote_line}")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _concept_markdown_path(concepts_dir: Path, slug: str) -> Path:
