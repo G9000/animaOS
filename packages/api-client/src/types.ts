@@ -322,6 +322,118 @@ export interface DocumentWorkflowActionResponse {
   document?: DocumentUploadInfo;
 }
 
+export interface KnowledgeSource {
+  id: number;
+  kind: string;
+  sourceUri: string;
+  contentHash: string;
+  title?: string | null;
+  mediaType?: string | null;
+  status: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeSourceArtifact {
+  id: number;
+  artifactKind: string;
+  contentHash: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeSourceSpan {
+  id: number;
+  spanKind: string;
+  locator: Record<string, unknown>;
+  contentText: string;
+  contentHash: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeSourceResponse {
+  source: KnowledgeSource;
+  artifacts: KnowledgeSourceArtifact[];
+  spans: KnowledgeSourceSpan[];
+  compileRun?: KnowledgeBundleRun;
+}
+
+export interface KnowledgeConceptSummary {
+  id: number;
+  slug: string;
+  title: string;
+  description?: string | null;
+  conceptType: string;
+  status: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeConceptCitation {
+  id: number;
+  sourceId: number;
+  spanId: number;
+  citationLabel?: string | null;
+  quoteText?: string | null;
+  sourceTitle?: string | null;
+  sourceUri: string;
+  spanKind: string;
+  locator: Record<string, unknown>;
+  contentText: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeConceptLink {
+  id: number;
+  sourceConceptId: number;
+  targetConceptId: number;
+  linkType: string;
+  confidence?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeConcept extends KnowledgeConceptSummary {
+  bodyMarkdown: string;
+  frontmatter: Record<string, unknown>;
+  citations: KnowledgeConceptCitation[];
+  links: KnowledgeConceptLink[];
+}
+
+export interface KnowledgeBundleRun {
+  id: number;
+  status: string;
+  runType: string;
+  sourceId?: number | null;
+}
+
+export interface KnowledgeLintFinding {
+  code: string;
+  severity: "info" | "warning" | "error" | string;
+  message: string;
+  conceptId?: number | null;
+  sourceId?: number | null;
+  linkId?: number | null;
+}
+
+export interface KnowledgeSearchEvidenceSpan {
+  id: number;
+  sourceId: number;
+  sourceTitle?: string | null;
+  sourceUri: string;
+  spanKind: string;
+  locator: Record<string, unknown>;
+  contentText: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface KnowledgeSearchResponse {
+  query: string;
+  concepts: KnowledgeConceptSummary[];
+  evidenceSpans: KnowledgeSearchEvidenceSpan[];
+}
+
+export interface KnowledgeImportResponse {
+  conceptCount: number;
+  linkCount: number;
+}
+
 export interface ProviderInfo {
   name: string;
   defaultModel: string;

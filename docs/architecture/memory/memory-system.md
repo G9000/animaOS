@@ -19,23 +19,24 @@ This document traces every path through AnimaOS's memory system: how memories ar
 1. [Architecture Overview](#architecture-overview)
 2. [Memory Taxonomy](#memory-taxonomy)
 3. [Document RAG Boundary](#document-rag-boundary)
-4. [Write Path: How Memories Are Created](#write-path-how-memories-are-created)
-5. [Read Path: How Memories Are Retrieved](#read-path-how-memories-are-retrieved)
-6. [Memory Blocks: The System Prompt Interface](#memory-blocks-the-system-prompt-interface)
-7. [Embedding & Vector Search](#embedding--vector-search)
-8. [Retrieval Scoring](#retrieval-scoring)
-9. [Consolidation Pipeline](#consolidation-pipeline)
-10. [Conflict Resolution & Deduplication](#conflict-resolution--deduplication)
-11. [Structured Claims](#structured-claims)
-12. [Session Memory (Working Notes)](#session-memory-working-notes)
-13. [Episodic Memory](#episodic-memory)
-14. [Self-Model (Agent Identity)](#self-model-agent-identity)
-15. [Emotional Intelligence](#emotional-intelligence)
-16. [Sleep Tasks (Background Maintenance)](#sleep-tasks-background-maintenance)
-17. [Reflection & Inner Monologue](#reflection--inner-monologue)
-18. [Context Window Integration](#context-window-integration)
-19. [Encryption & Portability](#encryption--portability)
-20. [File Reference](#file-reference)
+4. [Source Ingestion Boundary](#source-ingestion-boundary)
+5. [Write Path: How Memories Are Created](#write-path-how-memories-are-created)
+6. [Read Path: How Memories Are Retrieved](#read-path-how-memories-are-retrieved)
+7. [Memory Blocks: The System Prompt Interface](#memory-blocks-the-system-prompt-interface)
+8. [Embedding & Vector Search](#embedding--vector-search)
+9. [Retrieval Scoring](#retrieval-scoring)
+10. [Consolidation Pipeline](#consolidation-pipeline)
+11. [Conflict Resolution & Deduplication](#conflict-resolution--deduplication)
+12. [Structured Claims](#structured-claims)
+13. [Session Memory (Working Notes)](#session-memory-working-notes)
+14. [Episodic Memory](#episodic-memory)
+15. [Self-Model (Agent Identity)](#self-model-agent-identity)
+16. [Emotional Intelligence](#emotional-intelligence)
+17. [Sleep Tasks (Background Maintenance)](#sleep-tasks-background-maintenance)
+18. [Reflection & Inner Monologue](#reflection--inner-monologue)
+19. [Context Window Integration](#context-window-integration)
+20. [Encryption & Portability](#encryption--portability)
+21. [File Reference](#file-reference)
 
 > **See also:** [F1-F7 Memory System Implementation](memory-f1-f7-implementation.md) — BM25 hybrid search, heat scoring, predict-calibrate, knowledge graph, async orchestrator, batch segmentation, intentional forgetting
 
@@ -118,6 +119,8 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `embeddings` | pgvector-backed search rows for `MemoryItem` content | Cache derived from `MemoryItem.embedding_json` and rebuildable |
 | `runtime_documents`, `runtime_document_chunks` | Uploaded document metadata and chunk text for RAG | Runtime context; not durable memory unless conclusions are promoted |
 | `runtime_image_assets`, `runtime_image_message_links`, `runtime_image_annotations` | Central per-user image binaries, chat provenance links, and searchable image-derived text | Runtime visual memory assets; not durable SQLCipher memory unless a future explicit promotion flow creates memory candidates |
+| `runtime_sources`, `runtime_source_artifacts`, `runtime_source_spans` | Universal source-ingestion evidence registry and citable spans for files, media, web captures, and connector exports | Runtime evidence; rebuildable or portable through OKF export, not the SQLCipher memory authority |
+| `runtime_knowledge_concepts`, `runtime_knowledge_concept_sources`, `runtime_knowledge_links`, `runtime_knowledge_bundle_runs` | OKF/LLM-wiki concept pages, citations, links, and maintenance run records | Runtime compiled knowledge; may ground answers but does not become memory without explicit promotion |
 
 ### Memory Categories
 
@@ -154,6 +157,14 @@ Active annotations are embedded into runtime `embeddings` rows with `source_type
 Deletion is explicit. Removing an image from a chat deletes the message link and attachment metadata; orphaned transient assets are deleted with their annotations, embeddings, row, and safe-to-delete file. Reused or retained assets survive link removal. Forgetting an image globally removes all links, annotations, `image_annotation` embeddings, the asset row, and the local file when path validation succeeds. Thread deletion uses the same cleanup rule for orphaned transient images.
 
 This is separate from the document path. PDFs continue to use `runtime_documents` and `runtime_document_chunks`; GIF uploads are stored as image assets without frame-level analysis in v1; video, audio, timecoded media, and generic media annotation should be planned as separate work rather than folded into the image tables.
+
+## Source Ingestion Boundary
+
+Source ingestion generalizes document chunks, image annotations, markdown/text inputs, web captures, and future connector exports into a shared evidence model. The runtime source tables hold source rows, extracted artifacts, and citable spans. The knowledge tables hold compiled OKF/LLM-wiki concept pages, citation links back to spans, concept-to-concept links, and run records for compiler/import/export/lint work.
+
+This layer is intentionally not the same thing as memory. A compiled concept can be searched by the agent, shown in the desktop Knowledge Library, exported as an OKF bundle, or used as evidence in a response. It does not update `memory_items`, `memory_claims`, `self_model_blocks`, or the human profile by itself.
+
+If a future workflow should turn source knowledge into durable personal memory, it must create explicit `MemoryCandidate` rows or another approved promotion artifact and pass through the existing Soul Writer boundary. Until that happens, source-ingestion data remains runtime knowledge and evidence.
 
 ---
 

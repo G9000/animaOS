@@ -15,6 +15,7 @@ from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.extractors import ImageCaptioner, ImageTextExtractor
 from anima_server.services.images.store import resolve_image_storage_path
+from anima_server.services.ingestion.adapters.images import sync_image_source
 
 EmbeddingResult = list[float] | None
 EmbeddingFn = Callable[[str], EmbeddingResult] | Callable[[str], Awaitable[EmbeddingResult]]
@@ -89,11 +90,12 @@ def index_image_asset(
         for kind, content_text, source_model in annotation_inputs
         if content_text.strip()
     ]
+    resolved_embedding_fn = embedding_fn or generate_embedding
     embedding_count = embed_image_annotations(
         runtime_db,
         user_id=user_id,
         annotations=annotations,
-        embedding_fn=embedding_fn or generate_embedding,
+        embedding_fn=resolved_embedding_fn,
     )
 
     if _all_active_annotations_embedded(
@@ -106,6 +108,12 @@ def index_image_asset(
         asset.indexed_at = now
         asset.updated_at = now
         runtime_db.add(asset)
+        runtime_db.flush()
+        sync_image_source(
+            runtime_db,
+            asset=asset,
+            embedding_fn=resolved_embedding_fn,
+        )
 
     runtime_db.flush()
     return ImageIndexingResult(

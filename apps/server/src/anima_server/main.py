@@ -27,6 +27,7 @@ from .api.routes.forgetting import router as forgetting_router
 from .api.routes.graph import router as graph_router
 from .api.routes.health import router as health_router
 from .api.routes.images import router as images_router
+from .api.routes.knowledge import router as knowledge_router
 from .api.routes.memory import router as memory_router
 from .api.routes.presence import router as presence_router
 from .api.routes.soul import router as soul_router
@@ -329,6 +330,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router)
     app.include_router(health_router)
     app.include_router(images_router)
+    app.include_router(knowledge_router)
     app.include_router(memory_router)
     app.include_router(presence_router)
     app.include_router(soul_router)
