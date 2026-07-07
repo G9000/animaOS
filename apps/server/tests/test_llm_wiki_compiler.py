@@ -479,6 +479,53 @@ def test_compiler_recompile_drops_stale_compiler_links(runtime_db) -> None:
     ]
 
 
+def test_compiler_recompile_retires_stale_source_concepts(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+                    _concept_payload("topic", "topic-current", "Current", [spans[0].id]),
+                    _concept_payload("topic", "topic-stale", "Stale", [spans[1].id]),
+                ],
+                "links": [],
+            }
+        ),
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+                    _concept_payload("topic", "topic-current", "Current", [spans[0].id]),
+                ],
+                "links": [],
+            }
+        ),
+    )
+
+    current = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-current")
+    )
+    stale = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-stale")
+    )
+    assert result.status == "completed"
+    assert current.status == "active"
+    assert stale.status == "inactive"
+
+
 def test_compiler_does_not_take_ownership_of_existing_manual_links(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
     concepts = [
@@ -800,6 +847,338 @@ def test_compiler_merging_existing_concept_retains_other_source_citations(runtim
         first_spans[0].id,
         second_spans[0].id,
     ]
+
+
+def test_compiler_recompile_keeps_shared_concept_active_for_other_sources(
+    runtime_db,
+) -> None:
+    first_source, first_spans = _source_with_spans(runtime_db)
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[first_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
+                ]
+            }
+        ),
+    )
+    second_source = register_source(
+        runtime_db,
+        SourceIdentity(
+            user_id=1,
+            kind="markdown",
+            source_uri="file://second.md",
+            content_hash=_sha("second source"),
+            title="Second",
+            media_type="text/markdown",
+        ),
+    )
+    _, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=second_source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+    )
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[second_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [second_spans[0].id])
+                ]
+            }
+        ),
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[second_spans[0].id],
+        model=lambda request: json.dumps({"concepts": [], "links": []}),
+    )
+
+    concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "shared-claim")
+    )
+    citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource)
+            .where(RuntimeKnowledgeConceptSource.concept_id == concept.id)
+            .order_by(RuntimeKnowledgeConceptSource.source_id)
+        ).all()
+    )
+
+    assert result.status == "completed"
+    assert concept.status == "active"
+    assert concept.metadata_json["compiled_from_source_id"] == first_source.id
+    assert [citation.source_id for citation in citations] == [first_source.id]
+
+
+def test_compiler_recompile_clears_stale_links_for_shared_concepts(
+    runtime_db,
+) -> None:
+    first_source, first_spans = _source_with_spans(runtime_db)
+    second_source = register_source(
+        runtime_db,
+        SourceIdentity(
+            user_id=1,
+            kind="markdown",
+            source_uri="file://second.md",
+            content_hash=_sha("second source"),
+            title="Second",
+            media_type="text/markdown",
+        ),
+    )
+    _, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=second_source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Second alpha.\n\nSecond beta.",
+                content_hash=_sha("Second alpha.\n\nSecond beta."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Second alpha.",
+                content_hash=_sha("Second alpha."),
+            ),
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 1},
+                content_text="Second beta.",
+                content_hash=_sha("Second beta."),
+            ),
+        ],
+    )
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[span.id for span in second_spans],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-alpha", "Shared Alpha", [second_spans[0].id]),
+                    _concept_payload("claim", "shared-beta", "Shared Beta", [second_spans[1].id]),
+                ],
+                "links": [],
+            }
+        ),
+    )
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[span.id for span in first_spans],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-alpha", "Shared Alpha", [first_spans[0].id]),
+                    _concept_payload("claim", "shared-beta", "Shared Beta", [first_spans[1].id]),
+                ],
+                "links": [
+                    {
+                        "source_slug": "shared-alpha",
+                        "target_slug": "shared-beta",
+                        "link_type": "supports",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        ),
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[span.id for span in first_spans],
+        model=lambda request: json.dumps({"concepts": [], "links": []}),
+    )
+
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept)
+            .where(RuntimeKnowledgeConcept.slug.in_(["shared-alpha", "shared-beta"]))
+            .order_by(RuntimeKnowledgeConcept.slug)
+        ).all()
+    )
+    links = list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())
+
+    assert result.status == "completed"
+    assert [concept.status for concept in concepts] == ["active", "active"]
+    assert {
+        concept.metadata_json["compiled_from_source_id"] for concept in concepts
+    } == {second_source.id}
+    assert links == []
+
+
+def test_compiler_recompile_removes_stale_citation_when_other_source_owns_metadata(
+    runtime_db,
+) -> None:
+    first_source, first_spans = _source_with_spans(runtime_db)
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[first_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
+                ]
+            }
+        ),
+    )
+    second_source = register_source(
+        runtime_db,
+        SourceIdentity(
+            user_id=1,
+            kind="markdown",
+            source_uri="file://second.md",
+            content_hash=_sha("second source"),
+            title="Second",
+            media_type="text/markdown",
+        ),
+    )
+    _, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=second_source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+    )
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[second_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [second_spans[0].id])
+                ]
+            }
+        ),
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[first_spans[0].id],
+        model=lambda request: json.dumps({"concepts": [], "links": []}),
+    )
+
+    concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "shared-claim")
+    )
+    citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource)
+            .where(RuntimeKnowledgeConceptSource.concept_id == concept.id)
+            .order_by(RuntimeKnowledgeConceptSource.source_id)
+        ).all()
+    )
+
+    assert result.status == "completed"
+    assert concept.status == "active"
+    assert concept.metadata_json["compiled_from_source_id"] == second_source.id
+    assert [citation.source_id for citation in citations] == [second_source.id]
+
+
+def test_compiler_recompile_preserves_user_concept_citing_refreshed_source(
+    runtime_db,
+) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    user_concept = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="user-claim",
+        title="User claim",
+        description=None,
+        body_markdown="User-authored claim.",
+        frontmatter_json={"type": "claim", "title": "User claim"},
+        content_hash=_sha("User-authored claim."),
+        status="active",
+    )
+    runtime_db.add(user_concept)
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeConceptSource(
+            user_id=1,
+            concept_id=user_concept.id,
+            source_id=source.id,
+            span_id=spans[0].id,
+            citation_label="U1",
+            quote_text=spans[0].content_text,
+            metadata_json={"origin": "import"},
+        )
+    )
+    runtime_db.flush()
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps({"concepts": [], "links": []}),
+    )
+
+    concept = runtime_db.get(RuntimeKnowledgeConcept, user_concept.id)
+    citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource).where(
+                RuntimeKnowledgeConceptSource.concept_id == user_concept.id
+            )
+        ).all()
+    )
+
+    assert result.status == "completed"
+    assert concept.status == "active"
+    assert len(citations) == 1
+    assert citations[0].metadata_json == {"origin": "import"}
 
 
 def test_lint_knowledge_bundle_supports_concept_scope(runtime_db) -> None:

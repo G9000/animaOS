@@ -28,6 +28,7 @@ def replace_source_artifacts_and_spans(
     artifacts: Sequence[SourceArtifactInput],
     spans: Sequence[SourceSpanInput],
     embedding_fn: EmbeddingFn | None = None,
+    compile_knowledge: bool = False,
 ) -> tuple[list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     artifact_kinds = {artifact.artifact_kind for artifact in artifacts}
     missing_kinds = sorted({span.artifact_kind for span in spans} - artifact_kinds)
@@ -138,6 +139,17 @@ def replace_source_artifacts_and_spans(
     db.add(source)
     db.flush()
     _embed_source_spans(db, spans=stored_spans, embedding_fn=embedding_fn)
+    if compile_knowledge:
+        from anima_server.services.ingestion.document_compiler import (
+            compile_source_knowledge,
+        )
+
+        compile_source_knowledge(
+            db,
+            source=source,
+            spans=stored_spans,
+            embedding_fn=embedding_fn,
+        )
 
     return (
         _ordered_artifacts(db, source_id=source.id),

@@ -63,6 +63,127 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
             assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource)) is not None
 
 
+def test_markdown_source_endpoint_compile_keeps_span_topics_active() -> None:
+    with managed_test_client("anima-knowledge-markdown-compile-topics-") as client:
+        user_id, headers = _register(client, username="knowledge-md-compile-topics")
+
+        response = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "release-notes.md",
+                "title": "Release Notes",
+                "content": "# Alpha\n\nFirst note.\n\n## Beta\n\nSecond note.",
+                "compile": True,
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+
+        with get_runtime_session_factory()() as runtime_db:
+            concepts = list(
+                runtime_db.scalars(select(RuntimeKnowledgeConcept)).all()
+            )
+            active_topics = [
+                concept
+                for concept in concepts
+                if concept.concept_type == "topic" and concept.status == "active"
+            ]
+            active_summaries = [
+                concept
+                for concept in concepts
+                if concept.concept_type == "source_summary"
+                and concept.status == "active"
+            ]
+
+        assert len(active_topics) == len(payload["spans"])
+        assert len(active_summaries) == 1
+
+
+def test_markdown_source_endpoint_compile_reuses_adapter_compile_run() -> None:
+    with managed_test_client("anima-knowledge-markdown-single-compile-") as client:
+        user_id, headers = _register(client, username="knowledge-md-single-compile")
+
+        response = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "single-compile.md",
+                "title": "Single Compile",
+                "content": "# Heading\n\nParagraph body.",
+                "compile": True,
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+
+        with get_runtime_session_factory()() as runtime_db:
+            compile_runs = list(
+                runtime_db.scalars(
+                    select(RuntimeKnowledgeBundleRun)
+                    .where(RuntimeKnowledgeBundleRun.source_id == payload["source"]["id"])
+                    .order_by(RuntimeKnowledgeBundleRun.id)
+                ).all()
+            )
+
+        assert len(compile_runs) == 1
+        assert payload["compileRun"]["id"] == compile_runs[0].id
+        assert [run.run_type for run in compile_runs] == ["compile:initial"]
+
+
+def test_source_endpoint_compile_false_skips_knowledge_compile() -> None:
+    with managed_test_client("anima-knowledge-compile-false-") as client:
+        user_id, headers = _register(client, username="knowledge-compile-false")
+
+        text_response = client.post(
+            "/api/knowledge/sources/text",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "plain.txt",
+                "title": "Plain Text",
+                "content": "Plain text evidence.",
+                "compile": False,
+            },
+        )
+        markdown_response = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "notes.md",
+                "title": "Markdown Notes",
+                "content": "# Notes\n\nMarkdown evidence.",
+            },
+        )
+        web_response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/compile-false",
+                "title": "Compile False Web",
+                "readableText": "Captured web evidence.",
+                "compile": False,
+            },
+        )
+
+        assert text_response.status_code == 201
+        assert markdown_response.status_code == 201
+        assert web_response.status_code == 201
+        assert "compileRun" not in text_response.json()
+        assert "compileRun" not in markdown_response.json()
+        assert "compileRun" not in web_response.json()
+
+        with get_runtime_session_factory()() as runtime_db:
+            assert runtime_db.scalar(select(RuntimeKnowledgeBundleRun)) is None
+            assert runtime_db.scalar(select(RuntimeKnowledgeConcept)) is None
+
+
 def test_compile_source_endpoint_invokes_compiler_for_existing_source() -> None:
     with managed_test_client("anima-knowledge-compile-existing-") as client:
         user_id, headers = _register(client, username="knowledge-compile-existing")

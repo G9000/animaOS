@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
-import re
 import tempfile
 import zipfile
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +37,7 @@ from anima_server.services.ingestion.adapters.text import (
     ingest_text_content,
 )
 from anima_server.services.ingestion.adapters.web import ingest_web_capture
-from anima_server.services.ingestion.compiler import (
-    CompilerRequest,
-    compile_source_to_concepts,
-)
+from anima_server.services.ingestion.document_compiler import compile_source_knowledge
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
 
@@ -123,11 +117,12 @@ async def ingest_text_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
+            compile_knowledge=payload.compile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _compile_source_now(runtime_db, source=source, spans=spans)
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -150,11 +145,12 @@ async def ingest_markdown_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
+            compile_knowledge=payload.compile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _compile_source_now(runtime_db, source=source, spans=spans)
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -178,11 +174,12 @@ async def ingest_web_capture_source(
             title=payload.title,
             canonical_url=payload.canonicalUrl,
             embedding_fn=generate_embedding,
+            compile_knowledge=payload.compile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _compile_source_now(runtime_db, source=source, spans=spans)
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -432,12 +429,10 @@ def _compile_source_now(
     source: RuntimeSource,
     spans: list[RuntimeSourceSpan],
 ) -> RuntimeKnowledgeBundleRun:
-    result = compile_source_to_concepts(
+    result = compile_source_knowledge(
         runtime_db,
-        user_id=source.user_id,
-        source_id=source.id,
-        span_ids=[span.id for span in spans],
-        model=_compile_model,
+        source=source,
+        spans=spans,
         embedding_fn=generate_embedding,
     )
     run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
@@ -445,46 +440,37 @@ def _compile_source_now(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Compile run was not persisted.",
-        )
+    )
     return run
 
 
-def _compile_model(request: CompilerRequest) -> str:
-    span_ids = [span.id for span in request.spans]
-    title = request.source.title or request.source.source_uri or f"Source {request.source.id}"
-    return json.dumps(
-        {
-            "concepts": [
-                {
-                    "type": "source_summary",
-                    "slug": _source_summary_slug(request.source),
-                    "title": title,
-                    "description": f"Compiled source summary for {title}.",
-                    "body_markdown": _source_summary_body(request.spans),
-                    "source_span_ids": span_ids,
-                    "tags": ["compiled", "source_summary"],
-                }
-            ],
-            "links": [],
-        },
-        ensure_ascii=True,
+def _existing_or_new_compile_run(
+    runtime_db: Session,
+    *,
+    source: RuntimeSource,
+    spans: list[RuntimeSourceSpan],
+) -> RuntimeKnowledgeBundleRun:
+    return _latest_source_compile_run(runtime_db, source=source) or _compile_source_now(
+        runtime_db,
+        source=source,
+        spans=spans,
     )
 
 
-def _source_summary_slug(source: RuntimeSource) -> str:
-    base = source.title or source.source_uri or f"source-{source.id}"
-    normalized = re.sub(r"[^a-z0-9]+", "-", base.casefold()).strip("-")
-    suffix = normalized[:180].strip("-") or "summary"
-    return f"source-{source.id}-{suffix}"[:255].rstrip("-")
-
-
-def _source_summary_body(spans: Sequence[RuntimeSourceSpan]) -> str:
-    lines = [
-        f"- {' '.join(span.content_text.split())}"
-        for span in spans[:20]
-        if span.content_text.strip()
-    ]
-    return "\n".join(lines) or "No source spans were available."
+def _latest_source_compile_run(
+    runtime_db: Session,
+    *,
+    source: RuntimeSource,
+) -> RuntimeKnowledgeBundleRun | None:
+    return runtime_db.scalar(
+        select(RuntimeKnowledgeBundleRun)
+        .where(
+            RuntimeKnowledgeBundleRun.user_id == source.user_id,
+            RuntimeKnowledgeBundleRun.source_id == source.id,
+            RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
+        )
+        .order_by(RuntimeKnowledgeBundleRun.id.desc())
+    )
 
 
 def _owned_source(runtime_db: Session, *, user_id: int, source_id: int) -> RuntimeSource:

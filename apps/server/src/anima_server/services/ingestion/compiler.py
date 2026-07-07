@@ -90,7 +90,17 @@ def compile_source_to_concepts(
                 spans_by_id={span.id: span for span in spans},
                 concept_payloads=concept_payloads,
             )
-            _clear_compiler_links(db, user_id=user_id, concepts=concepts)
+            stale_concepts = _retire_stale_source_concepts(
+                db,
+                user_id=user_id,
+                source=source,
+                active_concepts=concepts,
+            )
+            _clear_compiler_links(
+                db,
+                user_id=user_id,
+                concepts=[*concepts, *stale_concepts],
+            )
             link_count = _merge_links(
                 db,
                 user_id=user_id,
@@ -189,6 +199,73 @@ def _merge_concepts(
         )
         concepts.append(concept)
     return concepts
+
+
+def _retire_stale_source_concepts(
+    db: Session,
+    *,
+    user_id: int,
+    source: RuntimeSource,
+    active_concepts: Sequence[RuntimeKnowledgeConcept],
+) -> list[RuntimeKnowledgeConcept]:
+    active_ids = {concept.id for concept in active_concepts}
+    source_citation_concept_ids = select(
+        RuntimeKnowledgeConceptSource.concept_id
+    ).where(
+        RuntimeKnowledgeConceptSource.user_id == user_id,
+        RuntimeKnowledgeConceptSource.source_id == source.id,
+        RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string()
+        == "llm_wiki",
+    )
+    stmt = select(RuntimeKnowledgeConcept).where(
+        RuntimeKnowledgeConcept.user_id == user_id,
+        RuntimeKnowledgeConcept.status == "active",
+        or_(
+            RuntimeKnowledgeConcept.metadata_json[
+                "compiled_from_source_id"
+            ].as_integer()
+            == source.id,
+            RuntimeKnowledgeConcept.id.in_(source_citation_concept_ids),
+        ),
+    )
+    if active_ids:
+        stmt = stmt.where(RuntimeKnowledgeConcept.id.not_in(active_ids))
+    stale_concepts = list(db.scalars(stmt).all())
+    now = datetime.now(UTC)
+    for concept in stale_concepts:
+        db.execute(
+            delete(RuntimeKnowledgeConceptSource).where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept.id,
+                RuntimeKnowledgeConceptSource.source_id == source.id,
+                RuntimeKnowledgeConceptSource.metadata_json[
+                    "compiler"
+                ].as_string()
+                == "llm_wiki",
+            )
+        )
+        remaining_source_id = db.scalar(
+            select(RuntimeKnowledgeConceptSource.source_id)
+            .where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept.id,
+            )
+            .order_by(
+                RuntimeKnowledgeConceptSource.created_at,
+                RuntimeKnowledgeConceptSource.id,
+            )
+            .limit(1)
+        )
+        if remaining_source_id is None:
+            concept.status = "inactive"
+        else:
+            metadata = dict(concept.metadata_json or {})
+            metadata["compiled_from_source_id"] = remaining_source_id
+            concept.metadata_json = metadata
+        concept.updated_at = now
+        db.add(concept)
+    db.flush()
+    return stale_concepts
 
 
 def _embed_concepts(

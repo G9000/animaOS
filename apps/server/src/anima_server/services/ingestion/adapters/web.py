@@ -21,6 +21,7 @@ def ingest_web_capture(
     title: str | None = None,
     canonical_url: str | None = None,
     embedding_fn: EmbeddingFn | None = None,
+    compile_knowledge: bool = True,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     source_url = _normalize_url(url)
     canonical = _normalize_url(canonical_url) if canonical_url else None
@@ -61,6 +62,7 @@ def ingest_web_capture(
             artifacts=artifacts,
             spans=spans,
             embedding_fn=embedding_fn,
+            compile_knowledge=compile_knowledge,
         ),
     )
 

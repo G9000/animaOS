@@ -69,7 +69,7 @@ def test_retrieve_knowledge_returns_concepts_and_evidence_spans(runtime_db) -> N
         embedding_fn=_embedding_for,
     )
 
-    assert [item.concept_id for item in result.concepts] == [concept.id]
+    assert concept.id in [item.concept_id for item in result.concepts]
     assert [item.span_id for item in result.evidence_spans] == [spans[0].id]
     assert result.evidence_spans[0].source_id == spans[0].source_id
     assert result.concepts[0].score >= result.evidence_spans[0].score
@@ -136,8 +136,8 @@ def test_retrieve_knowledge_fills_missing_concept_hits_from_text(runtime_db) -> 
         embedding_fn=_embedding_for,
     )
 
-    assert [item.concept_id for item in result.concepts] == [concept.id]
-    assert result.concepts[0].score == 1.0
+    concept_hit = next(item for item in result.concepts if item.concept_id == concept.id)
+    assert concept_hit.score == 1.0
     assert [item.span_id for item in result.evidence_spans] == [spans[0].id]
 
 

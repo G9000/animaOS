@@ -169,6 +169,209 @@ def test_adapter_result_embeds_stored_spans(runtime_db) -> None:
     assert embedding.content_preview == "semantic evidence"
 
 
+def test_adapter_result_refreshes_span_embeddings_on_reindex(runtime_db) -> None:
+    source = register_source(runtime_db, _identity())
+    first_vector = [1.0, *([0.0] * 767)]
+    second_vector = [0.0, 1.0, *([0.0] * 766)]
+
+    _stored_artifacts, first_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        embedding_fn=lambda _text: first_vector,
+    )
+
+    _updated_artifacts, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        embedding_fn=lambda _text: second_vector,
+    )
+
+    embedding = runtime_db.scalar(select(RuntimeEmbedding))
+
+    assert [span.id for span in second_spans] == [first_spans[0].id]
+    assert embedding.source_id == first_spans[0].id
+    assert embedding.embedding_checksum == RuntimeEmbedding.compute_embedding_checksum(
+        second_vector
+    )
+
+
+def test_artifact_replacement_can_compile_any_source_to_knowledge(runtime_db) -> None:
+    source = register_source(
+        runtime_db,
+        _identity(
+            kind="markdown",
+            source_uri="markdown://service-manual.md",
+            content_hash=_sha("service manual"),
+        ),
+    )
+
+    _stored_artifacts, stored_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="markdown",
+                content_text="# Pump Maintenance\n\nInspect relay timing.",
+                content_hash=_sha("# Pump Maintenance\n\nInspect relay timing."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="markdown",
+                span_kind="heading",
+                locator_json={"line_start": 1, "line_end": 1},
+                content_text="Pump Maintenance",
+                content_hash=_sha("Pump Maintenance"),
+                metadata_json={"heading": "Pump Maintenance"},
+            ),
+            SourceSpanInput(
+                artifact_kind="markdown",
+                span_kind="paragraph",
+                locator_json={"line_start": 3, "line_end": 3},
+                content_text="Inspect relay timing.",
+                content_hash=_sha("Inspect relay timing."),
+                metadata_json={"heading": "Pump Maintenance"},
+            ),
+        ],
+        compile_knowledge=True,
+    )
+
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept).order_by(RuntimeKnowledgeConcept.slug)
+        ).all()
+    )
+    citations = list(runtime_db.scalars(select(RuntimeKnowledgeConceptSource)).all())
+    compile_run = runtime_db.scalar(
+        select(RuntimeKnowledgeBundleRun).where(
+            RuntimeKnowledgeBundleRun.run_type == "compile:initial"
+        )
+    )
+
+    assert {concept.concept_type for concept in concepts} >= {"source_summary", "topic"}
+    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {
+        source.id
+    }
+    assert any("Inspect relay timing" in concept.body_markdown for concept in concepts)
+    assert {citation.span_id for citation in citations} == {
+        span.id for span in stored_spans
+    }
+    assert compile_run is not None
+    assert compile_run.source_id == source.id
+    assert compile_run.status == "completed"
+
+
+def test_artifact_replacement_recompiles_empty_sources_to_retire_stale_concepts(
+    runtime_db,
+) -> None:
+    source = register_source(
+        runtime_db,
+        _identity(
+            kind="markdown",
+            source_uri="markdown://empty-refresh.md",
+            content_hash=_sha("source with evidence"),
+        ),
+    )
+
+    replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="markdown",
+                content_text="# Retired Evidence\n\nOld finding.",
+                content_hash=_sha("# Retired Evidence\n\nOld finding."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="markdown",
+                span_kind="heading",
+                locator_json={"line_start": 1, "line_end": 1},
+                content_text="Retired Evidence",
+                content_hash=_sha("Retired Evidence"),
+                metadata_json={"heading": "Retired Evidence"},
+            )
+        ],
+        compile_knowledge=True,
+    )
+
+    replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="markdown",
+                content_text="",
+                content_hash=_sha(""),
+            )
+        ],
+        spans=[],
+        compile_knowledge=True,
+    )
+
+    active_topics = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept).where(
+                RuntimeKnowledgeConcept.concept_type == "topic",
+                RuntimeKnowledgeConcept.status == "active",
+            )
+        ).all()
+    )
+    active_summary = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(
+            RuntimeKnowledgeConcept.concept_type == "source_summary",
+            RuntimeKnowledgeConcept.status == "active",
+        )
+    )
+
+    assert active_topics == []
+    assert active_summary is not None
+    assert "Retired Evidence" not in active_summary.body_markdown
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
+    assert (
+        runtime_db.scalar(
+            select(func.count(RuntimeKnowledgeBundleRun.id)).where(
+                RuntimeKnowledgeBundleRun.run_type == "compile:initial",
+                RuntimeKnowledgeBundleRun.status == "completed",
+            )
+        )
+        == 2
+    )
+
+
 def test_span_inputs_support_page_time_line_row_cell_and_image_locators() -> None:
     locators = [
         {"page_start": 2, "page_end": 3},
@@ -495,6 +698,7 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
         content="# Architecture\n\nPortable core details.\n\n## Notes\n\nSpan evidence.",
         filename="../Architecture Notes.md",
         title="Architecture Notes",
+        embedding_fn=_embedding_for,
     )
 
     assert source.kind == "markdown"
@@ -508,6 +712,73 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
     ]
     assert spans[1].metadata_json["heading"] == "Architecture"
     assert spans[2].metadata_json["heading_level"] == 2
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) >= 2
+    assert (
+        runtime_db.scalar(
+            select(func.count(RuntimeEmbedding.id)).where(
+                RuntimeEmbedding.source_type == "source_span"
+            )
+        )
+        == len(spans)
+    )
+    assert (
+        runtime_db.scalar(
+            select(func.count(RuntimeEmbedding.id)).where(
+                RuntimeEmbedding.source_type == "knowledge_concept"
+            )
+        )
+        >= 2
+    )
+
+
+def test_markdown_adapter_compiles_unique_topic_for_each_span(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+
+    _source, _artifacts, spans = ingest_markdown_content(
+        runtime_db,
+        user_id=3,
+        content="# Alpha\n\nFirst paragraph.\n\n## Beta\n\nSecond paragraph.",
+        filename="mixed.md",
+        title="Mixed Markdown",
+    )
+
+    concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
+    topic_concepts = [
+        concept for concept in concepts if concept.concept_type == "topic"
+    ]
+    topic_concept_ids = {concept.id for concept in topic_concepts}
+    topic_citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource).where(
+                RuntimeKnowledgeConceptSource.concept_id.in_(topic_concept_ids)
+            )
+        ).all()
+    )
+
+    assert len(topic_concepts) == len(spans)
+    assert len({concept.slug for concept in concepts}) == len(concepts)
+    assert sorted(citation.span_id for citation in topic_citations) == sorted(
+        span.id for span in spans
+    )
+
+
+def test_markdown_adapter_caps_generated_concept_slugs(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+
+    long_title = "Long Safety Manual " * 32
+
+    ingest_markdown_content(
+        runtime_db,
+        user_id=3,
+        content="# Overview\n\nCalibrate the pump relay before startup.",
+        filename="long-title.md",
+        title=long_title,
+    )
+
+    slugs = list(runtime_db.scalars(select(RuntimeKnowledgeConcept.slug)).all())
+
+    assert slugs
+    assert all(len(slug) <= 255 for slug in slugs)
 
 
 def test_text_adapter_rejects_empty_content(runtime_db) -> None:
@@ -540,3 +811,21 @@ def test_web_capture_adapter_preserves_url_metadata(runtime_db) -> None:
     assert source.metadata_json["canonical_url"] == "https://example.com/path"
     assert artifacts[0].artifact_kind == "readable_text"
     assert [span.locator_json["paragraph_index"] for span in spans] == [0, 1]
+
+
+def test_web_capture_adapter_caps_generated_concept_titles(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.web import ingest_web_capture
+
+    long_url = f"https://example.com/{'a' * 900}"
+
+    ingest_web_capture(
+        runtime_db,
+        user_id=3,
+        url=long_url,
+        readable_text="Captured page evidence.",
+    )
+
+    titles = list(runtime_db.scalars(select(RuntimeKnowledgeConcept.title)).all())
+
+    assert titles
+    assert all(len(title) <= 512 for title in titles)

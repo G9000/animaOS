@@ -25,6 +25,7 @@ def ingest_text_content(
     filename: str | None = None,
     title: str | None = None,
     embedding_fn: EmbeddingFn | None = None,
+    compile_knowledge: bool = True,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     return _ingest_content(
         db,
@@ -35,6 +36,7 @@ def ingest_text_content(
         filename=filename,
         title=title,
         embedding_fn=embedding_fn,
+        compile_knowledge=compile_knowledge,
     )
 
 
@@ -46,6 +48,7 @@ def ingest_markdown_content(
     filename: str | None = None,
     title: str | None = None,
     embedding_fn: EmbeddingFn | None = None,
+    compile_knowledge: bool = True,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     return _ingest_content(
         db,
@@ -56,6 +59,7 @@ def ingest_markdown_content(
         filename=filename,
         title=title,
         embedding_fn=embedding_fn,
+        compile_knowledge=compile_knowledge,
     )
 
 
@@ -69,6 +73,7 @@ def _ingest_content(
     filename: str | None,
     title: str | None,
     embedding_fn: EmbeddingFn | None,
+    compile_knowledge: bool,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     normalized = content.strip()
     if not normalized:
@@ -107,6 +112,7 @@ def _ingest_content(
             artifacts=artifacts,
             spans=spans,
             embedding_fn=embedding_fn,
+            compile_knowledge=compile_knowledge,
         ),
     )
 
