@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import (
     APIRouter,
     Depends,
@@ -381,7 +382,13 @@ async def import_knowledge(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle zip.",
             ) from exc
-        result = import_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        try:
+            result = import_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        except (ValueError, yaml.YAMLError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid OKF bundle contents.",
+            ) from exc
         runtime_db.commit()
     return {"conceptCount": result.concept_count, "linkCount": result.link_count}
 

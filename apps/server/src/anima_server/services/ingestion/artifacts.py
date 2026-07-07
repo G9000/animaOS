@@ -63,6 +63,9 @@ def replace_source_artifacts_and_spans(
     artifacts_by_kind = {
         artifact.artifact_kind: artifact for artifact in stored_artifacts
     }
+    artifact_kind_by_id = {
+        artifact.id: artifact.artifact_kind for artifact in existing_artifacts
+    }
     existing_spans = list(
         db.scalars(
             select(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)
@@ -72,6 +75,15 @@ def replace_source_artifacts_and_spans(
         (span.artifact_id, span.locator_hash, span.content_hash): span
         for span in existing_spans
     }
+    spans_by_stable_identity = {
+        (
+            artifact_kind_by_id[span.artifact_id],
+            span.locator_hash,
+            span.content_hash,
+        ): span
+        for span in existing_spans
+        if span.artifact_id in artifact_kind_by_id
+    }
 
     stored_spans: list[RuntimeSourceSpan] = []
     for span_input in spans:
@@ -79,6 +91,14 @@ def replace_source_artifacts_and_spans(
         span = spans_by_identity.get(
             (artifact.id, span_input.locator_hash, span_input.content_hash)
         )
+        if span is None:
+            span = spans_by_stable_identity.get(
+                (
+                    span_input.artifact_kind,
+                    span_input.locator_hash,
+                    span_input.content_hash,
+                )
+            )
         if span is None:
             span = RuntimeSourceSpan(
                 user_id=source.user_id,

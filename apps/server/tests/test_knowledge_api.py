@@ -240,6 +240,30 @@ def test_exports_and_imports_okf_bundle_zip() -> None:
         assert import_response.json()["conceptCount"] == 1
 
 
+def test_import_okf_bundle_zip_returns_422_for_invalid_contents() -> None:
+    with managed_test_client("anima-knowledge-invalid-okf-") as client:
+        user_id, headers = _register(client, username="knowledge-invalid-okf")
+        bundle_zip = BytesIO()
+        with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "concepts/ topic-unsafe.md",
+                "---\n"
+                "type: topic\n"
+                "title: Unsafe topic\n"
+                "---\n\n"
+                "Body.\n",
+            )
+
+        response = client.post(
+            f"/api/knowledge/import?userId={user_id}",
+            headers=headers,
+            files={"file": ("bundle.zip", bundle_zip.getvalue(), "application/zip")},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"] == "Invalid OKF bundle contents."
+
+
 def _seed_source_concept(
     runtime_db,
     *,

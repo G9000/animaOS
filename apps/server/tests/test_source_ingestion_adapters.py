@@ -7,6 +7,8 @@ from anima_server.models.runtime import (
     RuntimeDocumentChunk,
     RuntimeImageAnnotation,
     RuntimeKnowledgeBundleRun,
+    RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
     RuntimeSource,
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
@@ -203,6 +205,85 @@ def test_replace_source_artifacts_and_spans_removes_stale_rows(runtime_db) -> No
     assert runtime_db.scalar(select(func.count(RuntimeSourceArtifact.id))) == 1
     assert runtime_db.scalar(select(func.count(RuntimeSourceSpan.id))) == 1
     assert new_spans[0].content_text == "new"
+
+
+def test_replace_source_artifacts_and_spans_reuses_stable_spans_after_artifact_refresh(
+    runtime_db,
+) -> None:
+    source = register_source(runtime_db, _identity())
+    old_artifacts, old_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Stable evidence with old wrapper.",
+                content_hash=_sha("old wrapper"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Stable evidence.",
+                content_hash=_sha("Stable evidence."),
+            )
+        ],
+    )
+    concept = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="topic",
+        slug="topic-stable-evidence",
+        title="Stable evidence",
+        body_markdown="Compiled stable evidence.",
+        frontmatter_json={"type": "topic"},
+        content_hash=_sha("Compiled stable evidence."),
+        status="active",
+    )
+    runtime_db.add(concept)
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeConceptSource(
+            user_id=1,
+            concept_id=concept.id,
+            source_id=source.id,
+            span_id=old_spans[0].id,
+            citation_label="S1",
+            quote_text="Stable evidence.",
+        )
+    )
+    runtime_db.flush()
+
+    new_artifacts, new_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Stable evidence with new annotation.",
+                content_hash=_sha("new wrapper"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Stable evidence.",
+                content_hash=_sha("Stable evidence."),
+            )
+        ],
+    )
+
+    citation = runtime_db.scalar(select(RuntimeKnowledgeConceptSource))
+    assert old_artifacts[0].id != new_artifacts[0].id
+    assert [span.id for span in new_spans] == [old_spans[0].id]
+    assert new_spans[0].artifact_id == new_artifacts[0].id
+    assert citation is not None
+    assert citation.span_id == old_spans[0].id
+    assert runtime_db.scalar(select(func.count(RuntimeSourceArtifact.id))) == 1
+    assert runtime_db.scalar(select(func.count(RuntimeSourceSpan.id))) == 1
 
 
 def test_failed_adapter_records_failed_run_without_half_written_spans(runtime_db) -> None:
