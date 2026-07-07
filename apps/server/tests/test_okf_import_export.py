@@ -286,6 +286,51 @@ def test_import_replaces_only_prior_okf_links(runtime_db, tmp_path) -> None:
     assert {link.target_concept_id for link in links} == {target.id}
 
 
+def test_import_reuses_existing_non_okf_related_links(runtime_db, tmp_path) -> None:
+    source = _concept(slug="topic-existing", title="Existing topic")
+    target = _concept(slug="topic-target", title="Target topic")
+    runtime_db.add_all([source, target])
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeLink(
+            user_id=1,
+            source_concept_id=source.id,
+            target_concept_id=target.id,
+            link_type="related",
+            confidence=0.7,
+            metadata_json={"source": "llm_compiler"},
+        )
+    )
+    runtime_db.commit()
+
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir(parents=True)
+    (concepts_dir / "topic-existing.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Existing topic\n"
+        "---\n\n"
+        "See [Target topic](topic-target.md).\n",
+        encoding="utf-8",
+    )
+    (concepts_dir / "topic-target.md").write_text(
+        "---\n"
+        "type: topic\n"
+        "title: Target topic\n"
+        "---\n\n"
+        "Target body.\n",
+        encoding="utf-8",
+    )
+
+    result = import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    links = list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())
+    assert result.link_count == 1
+    assert len(links) == 1
+    assert links[0].link_type == "related"
+    assert links[0].metadata_json == {"source": "llm_compiler"}
+
+
 def test_import_updates_existing_concept_by_slug(runtime_db, tmp_path) -> None:
     runtime_db.add(
         _concept(

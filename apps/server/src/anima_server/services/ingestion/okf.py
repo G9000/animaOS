@@ -152,6 +152,7 @@ def _replace_imported_links(
         )
         db.flush()
 
+    link_count = 0
     links: list[RuntimeKnowledgeLink] = []
     seen_links: set[tuple[int, int, str]] = set()
     for source in concepts.values():
@@ -163,6 +164,9 @@ def _replace_imported_links(
             if link_key in seen_links:
                 continue
             seen_links.add(link_key)
+            if _find_existing_link(db, user_id=user_id, link_key=link_key) is not None:
+                link_count += 1
+                continue
             links.append(
                 RuntimeKnowledgeLink(
                     user_id=user_id,
@@ -173,9 +177,27 @@ def _replace_imported_links(
                     metadata_json={"source": _OKF_IMPORT_SOURCE},
                 )
             )
+            link_count += 1
     db.add_all(links)
     db.flush()
-    return len(links)
+    return link_count
+
+
+def _find_existing_link(
+    db: Session,
+    *,
+    user_id: int,
+    link_key: tuple[int, int, str],
+) -> RuntimeKnowledgeLink | None:
+    source_concept_id, target_concept_id, link_type = link_key
+    return db.scalar(
+        select(RuntimeKnowledgeLink).where(
+            RuntimeKnowledgeLink.user_id == user_id,
+            RuntimeKnowledgeLink.source_concept_id == source_concept_id,
+            RuntimeKnowledgeLink.target_concept_id == target_concept_id,
+            RuntimeKnowledgeLink.link_type == link_type,
+        )
+    )
 
 
 def _extract_relative_link_slugs(body_markdown: str) -> list[str]:
