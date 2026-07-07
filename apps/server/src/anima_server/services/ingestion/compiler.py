@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
@@ -90,6 +90,7 @@ def compile_source_to_concepts(
                 spans_by_id={span.id: span for span in spans},
                 concept_payloads=concept_payloads,
             )
+            _clear_compiler_links(db, user_id=user_id, concepts=concepts)
             link_count = _merge_links(
                 db,
                 user_id=user_id,
@@ -200,6 +201,28 @@ def _embed_concepts(
         return
     for concept in concepts:
         upsert_concept_embedding(db, concept=concept, embedding_fn=embedding_fn)
+
+
+def _clear_compiler_links(
+    db: Session,
+    *,
+    user_id: int,
+    concepts: Sequence[RuntimeKnowledgeConcept],
+) -> None:
+    concept_ids = [concept.id for concept in concepts]
+    if not concept_ids:
+        return
+    db.execute(
+        delete(RuntimeKnowledgeLink).where(
+            RuntimeKnowledgeLink.user_id == user_id,
+            RuntimeKnowledgeLink.metadata_json["compiler"].as_string() == "llm_wiki",
+            or_(
+                RuntimeKnowledgeLink.source_concept_id.in_(concept_ids),
+                RuntimeKnowledgeLink.target_concept_id.in_(concept_ids),
+            ),
+        )
+    )
+    db.flush()
 
 
 def _concepts_by_payload_and_merged_slug(

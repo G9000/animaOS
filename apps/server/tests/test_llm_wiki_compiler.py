@@ -420,6 +420,65 @@ def test_compiler_deduplicates_repeated_link_payloads(runtime_db) -> None:
     assert links[0].link_type == "supports"
 
 
+def test_compiler_recompile_drops_stale_compiler_links(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    concepts = [
+        _concept_payload("topic", "topic-evidence", "Evidence", [spans[0].id]),
+        _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+    ]
+
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps(
+            {
+                "concepts": concepts,
+                "links": [
+                    {
+                        "source_slug": "topic-evidence",
+                        "target_slug": "source-notes",
+                        "link_type": "supports",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        ),
+    )
+    topic = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-evidence")
+    )
+    notes = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "source-notes")
+    )
+    runtime_db.add(
+        RuntimeKnowledgeLink(
+            user_id=1,
+            source_concept_id=notes.id,
+            target_concept_id=topic.id,
+            link_type="related",
+            metadata_json={"source": "manual"},
+        )
+    )
+    runtime_db.flush()
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps({"concepts": concepts, "links": []}),
+    )
+
+    links = list(runtime_db.scalars(select(RuntimeKnowledgeLink)).all())
+    assert result.status == "completed"
+    assert result.link_count == 0
+    assert [(link.link_type, link.metadata_json) for link in links] == [
+        ("related", {"source": "manual"})
+    ]
+
+
 def test_source_refresh_preserves_citations_for_unchanged_spans(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
     concept = RuntimeKnowledgeConcept(
