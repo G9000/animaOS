@@ -218,13 +218,39 @@ def _retire_stale_source_concepts(
     if active_ids:
         stmt = stmt.where(RuntimeKnowledgeConcept.id.not_in(active_ids))
     stale_concepts = list(db.scalars(stmt).all())
+    retired_concepts: list[RuntimeKnowledgeConcept] = []
     now = datetime.now(UTC)
     for concept in stale_concepts:
-        concept.status = "inactive"
+        db.execute(
+            delete(RuntimeKnowledgeConceptSource).where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept.id,
+                RuntimeKnowledgeConceptSource.source_id == source.id,
+            )
+        )
+        remaining_source_id = db.scalar(
+            select(RuntimeKnowledgeConceptSource.source_id)
+            .where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept.id,
+            )
+            .order_by(
+                RuntimeKnowledgeConceptSource.created_at,
+                RuntimeKnowledgeConceptSource.id,
+            )
+            .limit(1)
+        )
+        if remaining_source_id is None:
+            concept.status = "inactive"
+            retired_concepts.append(concept)
+        else:
+            metadata = dict(concept.metadata_json or {})
+            metadata["compiled_from_source_id"] = remaining_source_id
+            concept.metadata_json = metadata
         concept.updated_at = now
         db.add(concept)
     db.flush()
-    return stale_concepts
+    return retired_concepts
 
 
 def _embed_concepts(

@@ -674,3 +674,21 @@ def test_web_capture_adapter_preserves_url_metadata(runtime_db) -> None:
     assert source.metadata_json["canonical_url"] == "https://example.com/path"
     assert artifacts[0].artifact_kind == "readable_text"
     assert [span.locator_json["paragraph_index"] for span in spans] == [0, 1]
+
+
+def test_web_capture_adapter_caps_generated_concept_titles(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.web import ingest_web_capture
+
+    long_url = f"https://example.com/{'a' * 900}"
+
+    ingest_web_capture(
+        runtime_db,
+        user_id=3,
+        url=long_url,
+        readable_text="Captured page evidence.",
+    )
+
+    titles = list(runtime_db.scalars(select(RuntimeKnowledgeConcept.title)).all())
+
+    assert titles
+    assert all(len(title) <= 512 for title in titles)

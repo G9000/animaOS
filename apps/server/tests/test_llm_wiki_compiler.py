@@ -849,6 +849,93 @@ def test_compiler_merging_existing_concept_retains_other_source_citations(runtim
     ]
 
 
+def test_compiler_recompile_keeps_shared_concept_active_for_other_sources(
+    runtime_db,
+) -> None:
+    first_source, first_spans = _source_with_spans(runtime_db)
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=first_source.id,
+        span_ids=[first_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
+                ]
+            }
+        ),
+    )
+    second_source = register_source(
+        runtime_db,
+        SourceIdentity(
+            user_id=1,
+            kind="markdown",
+            source_uri="file://second.md",
+            content_hash=_sha("second source"),
+            title="Second",
+            media_type="text/markdown",
+        ),
+    )
+    _, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=second_source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="Second source evidence.",
+                content_hash=_sha("Second source evidence."),
+            )
+        ],
+    )
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[second_spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("claim", "shared-claim", "Shared", [second_spans[0].id])
+                ]
+            }
+        ),
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=second_source.id,
+        span_ids=[second_spans[0].id],
+        model=lambda request: json.dumps({"concepts": [], "links": []}),
+    )
+
+    concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "shared-claim")
+    )
+    citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource)
+            .where(RuntimeKnowledgeConceptSource.concept_id == concept.id)
+            .order_by(RuntimeKnowledgeConceptSource.source_id)
+        ).all()
+    )
+
+    assert result.status == "completed"
+    assert concept.status == "active"
+    assert concept.metadata_json["compiled_from_source_id"] == first_source.id
+    assert [citation.source_id for citation in citations] == [first_source.id]
+
+
 def test_lint_knowledge_bundle_supports_concept_scope(runtime_db) -> None:
     from anima_server.services.ingestion.lint import lint_knowledge_bundle
 

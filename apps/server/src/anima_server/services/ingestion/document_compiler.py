@@ -11,6 +11,7 @@ from anima_server.services.ingestion.compiler import CompileResult, compile_sour
 from anima_server.services.ingestion.retrieval import EmbeddingFn
 
 _MAX_CONCEPT_SLUG_LENGTH = 255
+_MAX_CONCEPT_TITLE_LENGTH = 512
 
 
 def compile_source_knowledge(
@@ -34,9 +35,10 @@ def _source_payload(
     source: RuntimeSource,
     spans: Sequence[RuntimeSourceSpan],
 ) -> dict[str, object]:
-    title = _source_title(source)
+    raw_title = _source_title(source)
+    title = _limit_title(raw_title)
     kind_tag = _slugify(source.kind)
-    summary_slug = _source_summary_slug(source, title)
+    summary_slug = _source_summary_slug(source, raw_title)
     concepts: list[dict[str, object]] = [
         {
             "type": "source_summary",
@@ -122,10 +124,10 @@ def _span_title(source: RuntimeSource, span: RuntimeSourceSpan) -> str:
     for key in ("section_title", "heading", "annotation_kind"):
         value = metadata.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _limit_title(value.strip())
     span_index = _span_index(span)
     span_kind = span.span_kind.replace("_", " ").title()
-    return f"{_source_title(source)} {span_kind} {span_index + 1}"
+    return _limit_title(f"{_source_title(source)} {span_kind} {span_index + 1}")
 
 
 def _source_title(source: RuntimeSource) -> str:
@@ -199,3 +201,9 @@ def _limit_slug(value: str) -> str:
     if len(value) <= _MAX_CONCEPT_SLUG_LENGTH:
         return value
     return value[:_MAX_CONCEPT_SLUG_LENGTH].rstrip("-") or "source"
+
+
+def _limit_title(value: str) -> str:
+    if len(value) <= _MAX_CONCEPT_TITLE_LENGTH:
+        return value
+    return value[:_MAX_CONCEPT_TITLE_LENGTH].rstrip()
