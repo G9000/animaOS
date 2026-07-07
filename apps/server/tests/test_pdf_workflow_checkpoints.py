@@ -806,6 +806,58 @@ def test_duplicate_indexed_pdf_workflow_reuses_existing_index(
     ]
 
 
+def test_duplicate_indexed_pdf_backfills_missing_source_embeddings(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    request = _request()
+    original_run_id, document = _seed_run_with_document(runtime_db, request)
+    _seed_text_extracted(
+        runtime_db,
+        workflow_run_id=original_run_id,
+        document=document,
+    )
+    _seed_chunked(
+        runtime_db,
+        workflow_run_id=original_run_id,
+        document=document,
+    )
+    _seed_indexed(
+        runtime_db,
+        monkeypatch,
+        workflow_run_id=original_run_id,
+        document=document,
+    )
+
+    assert document.status == "indexed"
+    assert _embedding_count(runtime_db, "document_chunk") == 2
+    assert _embedding_count(runtime_db, "source_span") == 0
+    assert _embedding_count(runtime_db, "knowledge_concept") == 0
+
+    duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
+    duplicate_calls = _Calls()
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=duplicate_run.id,
+        dependencies=_dependencies(
+            duplicate_calls,
+            fail_extract=True,
+            fail_chunk=True,
+        ),
+    )
+
+    runtime_db.refresh(document)
+    assert result.status == "awaiting_input"
+    assert duplicate_calls.extracted == 0
+    assert duplicate_calls.chunked == 0
+    assert duplicate_calls.embedded is not None
+    assert duplicate_calls.embedded[:2] == ["seed alpha", "seed beta"]
+    assert len(duplicate_calls.embedded) == 5
+    assert document.status == "indexed"
+    _assert_pdf_embedding_rows(runtime_db)
+
+
 def test_resume_original_duplicate_owner_reuses_existing_index(
     runtime_db: Session,
     monkeypatch: Any,

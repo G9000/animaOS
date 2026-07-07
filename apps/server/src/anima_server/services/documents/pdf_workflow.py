@@ -4,12 +4,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
     RuntimeDocument,
     RuntimeDocumentChunk,
+    RuntimeKnowledgeConcept,
+    RuntimeSource,
+    RuntimeSourceSpan,
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
@@ -388,10 +391,14 @@ def run_pdf_ingestion_until_wait_or_done(
             _commit_progress(db)
             document = context.require_document(refresh=True)
             _require_indexed_document(document)
+            sync_source_embeddings = embedded_count > 0 or _document_source_needs_embeddings(
+                db,
+                document=document,
+            )
             sync_document_source(
                 db,
                 document=document,
-                embedding_fn=dependencies.embedding_fn if embedded_count > 0 else None,
+                embedding_fn=dependencies.embedding_fn if sync_source_embeddings else None,
             )
             _append_completed(
                 db,
@@ -599,6 +606,84 @@ def _require_indexed_document(document: RuntimeDocument) -> None:
             f"PDF document {document.id} was not fully indexed; "
             "resume after missing embeddings are available."
         )
+
+
+def _document_source_needs_embeddings(
+    db: Session,
+    *,
+    document: RuntimeDocument,
+) -> bool:
+    source = db.scalar(
+        select(RuntimeSource).where(
+            RuntimeSource.user_id == document.user_id,
+            RuntimeSource.kind == "document",
+            RuntimeSource.source_uri == f"runtime-document://{document.id}",
+            RuntimeSource.content_hash == document.sha256,
+        )
+    )
+    if source is None:
+        return True
+
+    span_ids = list(
+        db.scalars(
+            select(RuntimeSourceSpan.id).where(
+                RuntimeSourceSpan.user_id == document.user_id,
+                RuntimeSourceSpan.source_id == source.id,
+            )
+        ).all()
+    )
+    concept_ids = list(
+        db.scalars(
+            select(RuntimeKnowledgeConcept.id).where(
+                RuntimeKnowledgeConcept.user_id == document.user_id,
+                RuntimeKnowledgeConcept.status == "active",
+                RuntimeKnowledgeConcept.metadata_json[
+                    "compiled_from_source_id"
+                ].as_integer()
+                == source.id,
+            )
+        ).all()
+    )
+    if not concept_ids:
+        return True
+
+    return (
+        _embedding_row_count(
+            db,
+            user_id=document.user_id,
+            source_type="source_span",
+            source_ids=span_ids,
+        )
+        < len(span_ids)
+        or _embedding_row_count(
+            db,
+            user_id=document.user_id,
+            source_type="knowledge_concept",
+            source_ids=concept_ids,
+        )
+        < len(concept_ids)
+    )
+
+
+def _embedding_row_count(
+    db: Session,
+    *,
+    user_id: int,
+    source_type: str,
+    source_ids: Sequence[int],
+) -> int:
+    if not source_ids:
+        return 0
+    return (
+        db.scalar(
+            select(func.count(RuntimeEmbedding.id)).where(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == source_type,
+                RuntimeEmbedding.source_id.in_(list(source_ids)),
+            )
+        )
+        or 0
+    )
 
 
 def _reusable_indexed_document_chunks(
