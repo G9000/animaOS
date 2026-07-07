@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 import tempfile
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +38,12 @@ from anima_server.services.ingestion.adapters.text import (
     ingest_text_content,
 )
 from anima_server.services.ingestion.adapters.web import ingest_web_capture
+from anima_server.services.ingestion.compiler import (
+    CompilerRequest,
+    compile_source_to_concepts,
+)
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
-from anima_server.services.ingestion.sources import complete_bundle_run, start_bundle_run
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 SOURCE_URI_MAX_LENGTH = 1024
@@ -117,7 +123,11 @@ async def ingest_text_source(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = _queue_compile_run(runtime_db, source=source) if payload.compile else None
+    compile_run = (
+        _compile_source_now(runtime_db, source=source, spans=spans)
+        if payload.compile
+        else None
+    )
     runtime_db.commit()
     return _source_response(source, artifacts, spans, compile_run=compile_run)
 
@@ -139,7 +149,11 @@ async def ingest_markdown_source(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = _queue_compile_run(runtime_db, source=source) if payload.compile else None
+    compile_run = (
+        _compile_source_now(runtime_db, source=source, spans=spans)
+        if payload.compile
+        else None
+    )
     runtime_db.commit()
     return _source_response(source, artifacts, spans, compile_run=compile_run)
 
@@ -162,7 +176,11 @@ async def ingest_web_capture_source(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = _queue_compile_run(runtime_db, source=source) if payload.compile else None
+    compile_run = (
+        _compile_source_now(runtime_db, source=source, spans=spans)
+        if payload.compile
+        else None
+    )
     runtime_db.commit()
     return _source_response(source, artifacts, spans, compile_run=compile_run)
 
@@ -249,7 +267,11 @@ async def compile_source(
 ) -> dict[str, Any]:
     require_unlocked_user(request, userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
-    run = _queue_compile_run(runtime_db, source=source)
+    run = _compile_source_now(
+        runtime_db,
+        source=source,
+        spans=_source_spans(runtime_db, source_id=source.id),
+    )
     runtime_db.commit()
     return {"compileRun": _run_response(run)}
 
@@ -392,23 +414,64 @@ async def lint_knowledge(
     }
 
 
-def _queue_compile_run(
+def _compile_source_now(
     runtime_db: Session,
     *,
     source: RuntimeSource,
+    spans: list[RuntimeSourceSpan],
 ) -> RuntimeKnowledgeBundleRun:
-    run = start_bundle_run(
+    result = compile_source_to_concepts(
         runtime_db,
         user_id=source.user_id,
-        run_type="compiler:queued",
         source_id=source.id,
-        input_json={"source_id": source.id},
+        span_ids=[span.id for span in spans],
+        model=_compile_model,
     )
-    return complete_bundle_run(
-        runtime_db,
-        run=run,
-        result_json={"queued": True, "source_id": source.id},
+    run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Compile run was not persisted.",
+        )
+    return run
+
+
+def _compile_model(request: CompilerRequest) -> str:
+    span_ids = [span.id for span in request.spans]
+    title = request.source.title or request.source.source_uri or f"Source {request.source.id}"
+    return json.dumps(
+        {
+            "concepts": [
+                {
+                    "type": "source_summary",
+                    "slug": _source_summary_slug(request.source),
+                    "title": title,
+                    "description": f"Compiled source summary for {title}.",
+                    "body_markdown": _source_summary_body(request.spans),
+                    "source_span_ids": span_ids,
+                    "tags": ["compiled", "source_summary"],
+                }
+            ],
+            "links": [],
+        },
+        ensure_ascii=True,
     )
+
+
+def _source_summary_slug(source: RuntimeSource) -> str:
+    base = source.title or source.source_uri or f"source-{source.id}"
+    normalized = re.sub(r"[^a-z0-9]+", "-", base.casefold()).strip("-")
+    suffix = normalized[:180].strip("-") or "summary"
+    return f"source-{source.id}-{suffix}"[:255].rstrip("-")
+
+
+def _source_summary_body(spans: Sequence[RuntimeSourceSpan]) -> str:
+    lines = [
+        f"- {' '.join(span.content_text.split())}"
+        for span in spans[:20]
+        if span.content_text.strip()
+    ]
+    return "\n".join(lines) or "No source spans were available."
 
 
 def _owned_source(runtime_db: Session, *, user_id: int, source_id: int) -> RuntimeSource:

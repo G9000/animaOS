@@ -48,7 +48,7 @@ def export_okf_bundle(
     for concept in concepts:
         frontmatter = _frontmatter_for_export(concept)
         body = _ensure_trailing_newline(concept.body_markdown)
-        (concepts_dir / f"{concept.slug}.md").write_text(
+        _concept_markdown_path(concepts_dir, concept.slug).write_text(
             _render_markdown(frontmatter, body),
             encoding="utf-8",
         )
@@ -197,6 +197,13 @@ def _frontmatter_for_export(concept: RuntimeKnowledgeConcept) -> dict[str, objec
     if concept.description and "description" not in frontmatter:
         frontmatter["description"] = concept.description
     return frontmatter
+
+
+def _concept_markdown_path(concepts_dir: Path, slug: str) -> Path:
+    candidate = (concepts_dir / f"{slug}.md").resolve()
+    if not slug or slug != slug.strip() or candidate.parent != concepts_dir.resolve():
+        raise ValueError(f"Unsafe OKF concept slug: {slug!r}")
+    return candidate
 
 
 def _render_markdown(frontmatter: dict[str, object], body_markdown: str) -> str:

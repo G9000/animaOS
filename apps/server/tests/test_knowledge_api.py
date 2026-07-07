@@ -49,12 +49,49 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
         assert payload["source"]["sourceUri"] == "markdown://notes.md"
         assert [span["spanKind"] for span in payload["spans"]] == ["heading", "paragraph"]
         assert payload["compileRun"]["status"] == "completed"
+        assert payload["compileRun"]["runType"] == "compile:initial"
 
         with get_runtime_session_factory()() as runtime_db:
             run = runtime_db.get(RuntimeKnowledgeBundleRun, payload["compileRun"]["id"])
             assert run is not None
-            assert run.run_type == "compiler:queued"
+            assert run.run_type == "compile:initial"
             assert run.source_id == payload["source"]["id"]
+            concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
+            assert concept is not None
+            assert concept.concept_type == "source_summary"
+            assert concept.metadata_json["compiled_from_source_id"] == payload["source"]["id"]
+            assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource)) is not None
+
+
+def test_compile_source_endpoint_invokes_compiler_for_existing_source() -> None:
+    with managed_test_client("anima-knowledge-compile-existing-") as client:
+        user_id, headers = _register(client, username="knowledge-compile-existing")
+        source_response = client.post(
+            "/api/knowledge/sources/text",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "notes.txt",
+                "title": "Existing Notes",
+                "content": "Compiler evidence.",
+            },
+        )
+        source_id = source_response.json()["source"]["id"]
+
+        response = client.post(
+            f"/api/knowledge/sources/{source_id}/compile?userId={user_id}",
+            headers=headers,
+        )
+
+        assert response.status_code == 202
+        payload = response.json()
+        assert payload["compileRun"]["status"] == "completed"
+        assert payload["compileRun"]["runType"] == "compile:initial"
+        with get_runtime_session_factory()() as runtime_db:
+            concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
+            assert concept is not None
+            assert concept.title == "Existing Notes"
+            assert "Compiler evidence." in concept.body_markdown
 
 
 def test_web_capture_endpoint_preserves_canonical_metadata() -> None:

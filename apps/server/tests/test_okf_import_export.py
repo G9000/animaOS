@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
 import yaml
 from anima_server.models.runtime import RuntimeKnowledgeConcept, RuntimeKnowledgeLink
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
@@ -77,6 +78,16 @@ def test_export_writes_okf_bundle_layout_and_required_type(runtime_db, tmp_path)
     assert frontmatter["timestamp"] == "2026-07-06T00:00:00+08:00"
     assert frontmatter["x_anima_unknown"] == {"kept": True}
     assert body == "Compiled notes.\n"
+
+
+def test_export_rejects_concept_slugs_that_escape_concepts_dir(runtime_db, tmp_path) -> None:
+    runtime_db.add(_concept(slug="../log", title="Unsafe path"))
+    runtime_db.commit()
+
+    with pytest.raises(ValueError, match="Unsafe OKF concept slug"):
+        export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    assert not (tmp_path / "log.md").exists()
 
 
 def test_import_round_trips_unknown_fields_and_unknown_types(runtime_db, tmp_path) -> None:
