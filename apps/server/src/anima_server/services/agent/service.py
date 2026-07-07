@@ -1628,10 +1628,16 @@ def _build_document_context_block(
             )
             lines.append(_truncate_document_chunk(hit.summary, limit=700))
 
-    if results and not knowledge_hits:
+    raw_results = _raw_document_results_without_compiled_coverage(
+        runtime_db,
+        user_id=user_id,
+        results=results,
+        knowledge_hits=knowledge_hits,
+    )
+    if raw_results:
         lines.append("")
         lines.append("Raw evidence excerpts from selected PDFs:")
-        for index, result in enumerate(results, start=1):
+        for index, result in enumerate(raw_results, start=1):
             location = _format_document_location(result)
             section = f", section {result.section_title}" if result.section_title else ""
             lines.append(
@@ -1649,6 +1655,73 @@ def _build_document_context_block(
             "do not treat them as long-term memory."
         ),
     )
+
+
+def _raw_document_results_without_compiled_coverage(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    results: Sequence[DocumentRagResult],
+    knowledge_hits: Sequence[KnowledgeConceptHit],
+) -> list[DocumentRagResult]:
+    if not results:
+        return []
+    if not knowledge_hits:
+        return list(results)
+    result_chunk_ids = {result.chunk_id for result in results if result.chunk_id > 0}
+    concept_ids = _dedupe_positive_ids([hit.concept_id for hit in knowledge_hits])
+    if not result_chunk_ids or not concept_ids:
+        return list(results)
+    try:
+        covered_chunk_ids = _compiled_document_chunk_ids(
+            runtime_db,
+            user_id=user_id,
+            concept_ids=concept_ids,
+            document_chunk_ids=result_chunk_ids,
+        )
+    except Exception:
+        logger.debug(
+            "Document compiled chunk coverage lookup failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+        return []
+    return [
+        result
+        for result in results
+        if result.chunk_id not in covered_chunk_ids
+    ]
+
+
+def _compiled_document_chunk_ids(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    concept_ids: Sequence[int],
+    document_chunk_ids: set[int],
+) -> set[int]:
+    if not concept_ids or not document_chunk_ids:
+        return set()
+    rows = runtime_db.execute(
+        select(RuntimeSourceSpan.locator_json)
+        .join(
+            RuntimeKnowledgeConceptSource,
+            (RuntimeKnowledgeConceptSource.span_id == RuntimeSourceSpan.id)
+            & (RuntimeKnowledgeConceptSource.user_id == RuntimeSourceSpan.user_id),
+        )
+        .where(
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+            RuntimeKnowledgeConceptSource.concept_id.in_(list(concept_ids)),
+        )
+    ).all()
+    covered_chunk_ids: set[int] = set()
+    for (locator,) in rows:
+        if not isinstance(locator, dict):
+            continue
+        chunk_id = locator.get("runtime_document_chunk_id")
+        if isinstance(chunk_id, int) and chunk_id in document_chunk_ids:
+            covered_chunk_ids.add(chunk_id)
+    return covered_chunk_ids
 
 
 def _document_knowledge_hits(

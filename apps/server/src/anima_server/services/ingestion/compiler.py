@@ -209,11 +209,22 @@ def _retire_stale_source_concepts(
     active_concepts: Sequence[RuntimeKnowledgeConcept],
 ) -> list[RuntimeKnowledgeConcept]:
     active_ids = {concept.id for concept in active_concepts}
+    source_citation_concept_ids = select(
+        RuntimeKnowledgeConceptSource.concept_id
+    ).where(
+        RuntimeKnowledgeConceptSource.user_id == user_id,
+        RuntimeKnowledgeConceptSource.source_id == source.id,
+    )
     stmt = select(RuntimeKnowledgeConcept).where(
         RuntimeKnowledgeConcept.user_id == user_id,
         RuntimeKnowledgeConcept.status == "active",
-        RuntimeKnowledgeConcept.metadata_json["compiled_from_source_id"].as_integer()
-        == source.id,
+        or_(
+            RuntimeKnowledgeConcept.metadata_json[
+                "compiled_from_source_id"
+            ].as_integer()
+            == source.id,
+            RuntimeKnowledgeConcept.id.in_(source_citation_concept_ids),
+        ),
     )
     if active_ids:
         stmt = stmt.where(RuntimeKnowledgeConcept.id.not_in(active_ids))

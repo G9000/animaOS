@@ -420,6 +420,127 @@ def test_build_document_context_block_uses_query_matched_compiled_pdf_concept(
     assert "Raw relay timing answer" not in block.value
 
 
+def test_build_document_context_block_keeps_raw_excerpts_for_unmatched_chunks(
+    monkeypatch: Any,
+    runtime_db: Session,
+) -> None:
+    source = RuntimeSource(
+        user_id=7,
+        kind="document",
+        source_uri="runtime-document://4",
+        content_hash=_sha("selected"),
+        title="manual.pdf",
+        media_type="application/pdf",
+        status="indexed",
+    )
+    runtime_db.add(source)
+    runtime_db.flush()
+    artifact = RuntimeSourceArtifact(
+        user_id=7,
+        source_id=source.id,
+        artifact_kind="document_text",
+        content_text="Compiled relay timing.\n\nUncompiled torque setting.",
+        content_hash=_sha("artifact"),
+    )
+    runtime_db.add(artifact)
+    runtime_db.flush()
+    compiled_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="document_chunk",
+        locator_json={"runtime_document_chunk_id": 12, "chunk_index": 0},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash(
+            {"runtime_document_chunk_id": 12, "chunk_index": 0}
+        ),
+        content_text="Compiled relay timing.",
+        content_hash=_sha("compiled"),
+    )
+    unmatched_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="document_chunk",
+        locator_json={"runtime_document_chunk_id": 13, "chunk_index": 1},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash(
+            {"runtime_document_chunk_id": 13, "chunk_index": 1}
+        ),
+        content_text="Uncompiled torque setting.",
+        content_hash=_sha("unmatched"),
+    )
+    runtime_db.add_all([compiled_span, unmatched_span])
+    runtime_db.flush()
+    topic = RuntimeKnowledgeConcept(
+        user_id=7,
+        concept_type="topic",
+        slug="source-4-relay",
+        title="Relay Timing",
+        description=None,
+        body_markdown="# Relay Timing\n\nCompiled relay timing answer.",
+        frontmatter_json={"type": "topic"},
+        metadata_json={"compiled_from_source_id": source.id},
+        content_hash=_sha("topic"),
+        status="active",
+    )
+    runtime_db.add(topic)
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeConceptSource(
+            user_id=7,
+            concept_id=topic.id,
+            source_id=source.id,
+            span_id=compiled_span.id,
+            citation_label="S1",
+        )
+    )
+    runtime_db.flush()
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="Raw relay timing answer should stay out of the prompt.",
+                similarity=0.91,
+                page_start=None,
+                page_end=None,
+                section_title=None,
+            ),
+            DocumentRagResult(
+                chunk_id=13,
+                document_id=4,
+                filename="manual.pdf",
+                content="Raw torque answer should stay in the prompt.",
+                similarity=0.89,
+                page_start=None,
+                page_end=None,
+                section_title=None,
+            ),
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="How should I set the relay and torque?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "Compiled relay timing answer" in block.value
+    assert "Raw torque answer should stay in the prompt." in block.value
+    assert "Raw relay timing answer should stay out of the prompt." not in block.value
+
+
 def test_document_knowledge_hits_are_scoped_to_selected_document(
     runtime_db: Session,
 ) -> None:
