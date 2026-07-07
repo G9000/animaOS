@@ -594,6 +594,56 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
     )
 
 
+def test_markdown_adapter_compiles_unique_topic_for_each_span(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+
+    _source, _artifacts, spans = ingest_markdown_content(
+        runtime_db,
+        user_id=3,
+        content="# Alpha\n\nFirst paragraph.\n\n## Beta\n\nSecond paragraph.",
+        filename="mixed.md",
+        title="Mixed Markdown",
+    )
+
+    concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
+    topic_concepts = [
+        concept for concept in concepts if concept.concept_type == "topic"
+    ]
+    topic_concept_ids = {concept.id for concept in topic_concepts}
+    topic_citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource).where(
+                RuntimeKnowledgeConceptSource.concept_id.in_(topic_concept_ids)
+            )
+        ).all()
+    )
+
+    assert len(topic_concepts) == len(spans)
+    assert len({concept.slug for concept in concepts}) == len(concepts)
+    assert sorted(citation.span_id for citation in topic_citations) == sorted(
+        span.id for span in spans
+    )
+
+
+def test_markdown_adapter_caps_generated_concept_slugs(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+
+    long_title = "Long Safety Manual " * 32
+
+    ingest_markdown_content(
+        runtime_db,
+        user_id=3,
+        content="# Overview\n\nCalibrate the pump relay before startup.",
+        filename="long-title.md",
+        title=long_title,
+    )
+
+    slugs = list(runtime_db.scalars(select(RuntimeKnowledgeConcept.slug)).all())
+
+    assert slugs
+    assert all(len(slug) <= 255 for slug in slugs)
+
+
 def test_text_adapter_rejects_empty_content(runtime_db) -> None:
     from anima_server.services.ingestion.adapters.text import ingest_text_content
 

@@ -10,6 +10,8 @@ from anima_server.models.runtime import RuntimeSource, RuntimeSourceSpan
 from anima_server.services.ingestion.compiler import CompileResult, compile_source_to_concepts
 from anima_server.services.ingestion.retrieval import EmbeddingFn
 
+_MAX_CONCEPT_SLUG_LENGTH = 255
+
 
 def compile_source_knowledge(
     db: Session,
@@ -34,7 +36,7 @@ def _source_payload(
 ) -> dict[str, object]:
     title = _source_title(source)
     kind_tag = _slugify(source.kind)
-    summary_slug = f"source-{source.id}-{_slugify(title)}"
+    summary_slug = _source_summary_slug(source, title)
     concepts: list[dict[str, object]] = [
         {
             "type": "source_summary",
@@ -49,7 +51,7 @@ def _source_payload(
     links: list[dict[str, object]] = []
     for span in spans:
         span_title = _span_title(source, span)
-        slug = f"source-{source.id}-span-{_span_index(span)}"
+        slug = _span_slug(source, span)
         concepts.append(
             {
                 "type": "topic",
@@ -130,6 +132,16 @@ def _source_title(source: RuntimeSource) -> str:
     return source.title or source.source_uri or f"Source {source.id}"
 
 
+def _source_summary_slug(source: RuntimeSource, title: str) -> str:
+    return _limit_slug(f"source-{source.id}-{_slugify(title)}")
+
+
+def _span_slug(source: RuntimeSource, span: RuntimeSourceSpan) -> str:
+    return _limit_slug(
+        f"source-{source.id}-span-{_slugify(span.span_kind)}-{span.id}"
+    )
+
+
 def _span_index(span: RuntimeSourceSpan) -> int:
     locator = span.locator_json or {}
     for key in ("chunk_index", "paragraph_index", "line_start", "row_start"):
@@ -181,3 +193,9 @@ def _compact_text(value: str, *, limit: int) -> str:
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "document"
+
+
+def _limit_slug(value: str) -> str:
+    if len(value) <= _MAX_CONCEPT_SLUG_LENGTH:
+        return value
+    return value[:_MAX_CONCEPT_SLUG_LENGTH].rstrip("-") or "source"
