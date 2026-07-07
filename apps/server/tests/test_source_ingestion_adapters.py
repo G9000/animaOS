@@ -169,6 +169,64 @@ def test_adapter_result_embeds_stored_spans(runtime_db) -> None:
     assert embedding.content_preview == "semantic evidence"
 
 
+def test_adapter_result_refreshes_span_embeddings_on_reindex(runtime_db) -> None:
+    source = register_source(runtime_db, _identity())
+    first_vector = [1.0, *([0.0] * 767)]
+    second_vector = [0.0, 1.0, *([0.0] * 766)]
+
+    _stored_artifacts, first_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        embedding_fn=lambda _text: first_vector,
+    )
+
+    _updated_artifacts, second_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        embedding_fn=lambda _text: second_vector,
+    )
+
+    embedding = runtime_db.scalar(select(RuntimeEmbedding))
+
+    assert [span.id for span in second_spans] == [first_spans[0].id]
+    assert embedding.source_id == first_spans[0].id
+    assert embedding.embedding_checksum == RuntimeEmbedding.compute_embedding_checksum(
+        second_vector
+    )
+
+
 def test_artifact_replacement_can_compile_any_source_to_knowledge(runtime_db) -> None:
     source = register_source(
         runtime_db,
@@ -233,6 +291,85 @@ def test_artifact_replacement_can_compile_any_source_to_knowledge(runtime_db) ->
     assert compile_run is not None
     assert compile_run.source_id == source.id
     assert compile_run.status == "completed"
+
+
+def test_artifact_replacement_recompiles_empty_sources_to_retire_stale_concepts(
+    runtime_db,
+) -> None:
+    source = register_source(
+        runtime_db,
+        _identity(
+            kind="markdown",
+            source_uri="markdown://empty-refresh.md",
+            content_hash=_sha("source with evidence"),
+        ),
+    )
+
+    replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="markdown",
+                content_text="# Retired Evidence\n\nOld finding.",
+                content_hash=_sha("# Retired Evidence\n\nOld finding."),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="markdown",
+                span_kind="heading",
+                locator_json={"line_start": 1, "line_end": 1},
+                content_text="Retired Evidence",
+                content_hash=_sha("Retired Evidence"),
+                metadata_json={"heading": "Retired Evidence"},
+            )
+        ],
+        compile_knowledge=True,
+    )
+
+    replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="markdown",
+                content_text="",
+                content_hash=_sha(""),
+            )
+        ],
+        spans=[],
+        compile_knowledge=True,
+    )
+
+    active_topics = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept).where(
+                RuntimeKnowledgeConcept.concept_type == "topic",
+                RuntimeKnowledgeConcept.status == "active",
+            )
+        ).all()
+    )
+    active_summary = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(
+            RuntimeKnowledgeConcept.concept_type == "source_summary",
+            RuntimeKnowledgeConcept.status == "active",
+        )
+    )
+
+    assert active_topics == []
+    assert active_summary is not None
+    assert "Retired Evidence" not in active_summary.body_markdown
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
+    assert (
+        runtime_db.scalar(
+            select(func.count(RuntimeKnowledgeBundleRun.id)).where(
+                RuntimeKnowledgeBundleRun.run_type == "compile:initial",
+                RuntimeKnowledgeBundleRun.status == "completed",
+            )
+        )
+        == 2
+    )
 
 
 def test_span_inputs_support_page_time_line_row_cell_and_image_locators() -> None:

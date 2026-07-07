@@ -11,7 +11,6 @@ from anima_server.models.runtime import (
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
 )
-from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.ingestion.models import (
     SourceArtifactInput,
     SourceSpanInput,
@@ -140,7 +139,7 @@ def replace_source_artifacts_and_spans(
     db.add(source)
     db.flush()
     _embed_source_spans(db, spans=stored_spans, embedding_fn=embedding_fn)
-    if compile_knowledge and stored_spans:
+    if compile_knowledge:
         from anima_server.services.ingestion.document_compiler import (
             compile_source_knowledge,
         )
@@ -167,23 +166,7 @@ def _embed_source_spans(
     if embedding_fn is None:
         return
     for span in spans:
-        if _has_current_source_span_embedding(db, span=span):
-            continue
         upsert_source_span_embedding(db, span=span, embedding_fn=embedding_fn)
-
-
-def _has_current_source_span_embedding(db: Session, *, span: RuntimeSourceSpan) -> bool:
-    embedding = db.scalar(
-        select(RuntimeEmbedding).where(
-            RuntimeEmbedding.user_id == span.user_id,
-            RuntimeEmbedding.source_type == "source_span",
-            RuntimeEmbedding.source_id == span.id,
-        )
-    )
-    return (
-        embedding is not None
-        and embedding.content_hash == RuntimeEmbedding.compute_content_hash(span.content_text)
-    )
 
 
 def _ordered_artifacts(db: Session, *, source_id: int) -> list[RuntimeSourceArtifact]:

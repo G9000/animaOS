@@ -391,7 +391,7 @@ def run_pdf_ingestion_until_wait_or_done(
             sync_document_source(
                 db,
                 document=document,
-                embedding_fn=dependencies.embedding_fn,
+                embedding_fn=dependencies.embedding_fn if embedded_count > 0 else None,
             )
             _append_completed(
                 db,
