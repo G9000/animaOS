@@ -23,6 +23,44 @@ from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
 
+# Reflection updates dropped because the target block changed while the
+# LLM was thinking (see SoulBlockConflict) log here so silent identity
+# drift stays greppable.
+degraded_logger = logging.getLogger("anima.runtime.degraded")
+
+
+def _block_version(block: object | None) -> int:
+    """Version of a snapshot block (0 = block absent at read time)."""
+    if block is None:
+        return 0
+    return int(getattr(block, "version", 0) or 0)
+
+
+def _apply_working_memory_updates(base_text: str, wm_updates: list) -> str:
+    """Apply add/remove working-memory deltas to *base_text*.
+
+    Kept as a pure function so a conflicted write can re-apply the same
+    deltas onto freshly-read content instead of clobbering it with the
+    stale snapshot.
+    """
+    current_wm = base_text
+    for update in wm_updates:
+        if not isinstance(update, dict):
+            continue
+        action = update.get("action", "")
+        item = update.get("item", "")
+        if not item:
+            continue
+        expires = update.get("expires")
+        if action == "add":
+            entry = f"- {item}"
+            if expires:
+                entry += f" [expires: {expires}]"
+            current_wm += f"\n{entry}"
+        elif action == "remove":
+            current_wm = current_wm.replace(f"- {item}", "")
+    return current_wm
+
 
 @dataclass(slots=True)
 class QuickReflectionResult:
@@ -90,6 +128,7 @@ async def run_quick_reflection(
             set_self_model_block,
             set_working_context,
         )
+        from anima_server.services.agent.soul_blocks import SoulBlockConflict
 
         factory = db_factory or SessionLocal
         runtime_factory = _get_runtime_factory(runtime_db_factory)
@@ -117,6 +156,21 @@ async def run_quick_reflection(
                     )
                     working_memory_block = working_context.get(
                         "working_memory")
+
+            # Snapshot versions for optimistic locking: the LLM call below
+            # is slow, and a turn-driven write landing meanwhile must win.
+            inner_state_version = _block_version(inner_state_block)
+            emotional_synthesis_version = _block_version(emotional_synthesis_block)
+            working_memory_version = _block_version(working_memory_block)
+
+            def _drop_stale(section: str) -> None:
+                degraded_logger.warning(
+                    "Quick reflection dropped stale '%s' update for user %s: "
+                    "block changed during reflection",
+                    section,
+                    user_id,
+                )
+                result.errors.append(f"stale {section} update dropped")
 
             inner_state_text = (
                 render_self_model_section(
@@ -190,55 +244,76 @@ async def run_quick_reflection(
                 else "# Things I'm Holding in Mind\n"
             )
             if wm_updates and isinstance(wm_updates, list):
-                for update in wm_updates:
-                    if not isinstance(update, dict):
-                        continue
-                    action = update.get("action", "")
-                    item = update.get("item", "")
-                    if not item:
-                        continue
-                    expires = update.get("expires")
-                    if action == "add":
-                        entry = f"- {item}"
-                        if expires:
-                            entry += f" [expires: {expires}]"
-                        current_wm += f"\n{entry}"
-                    elif action == "remove":
-                        current_wm = current_wm.replace(f"- {item}", "")
+                current_wm = _apply_working_memory_updates(current_wm, wm_updates)
 
             # Record emotional signal
             emotional = parsed.get("emotional_read", {})
             if runtime_factory is None:
                 if inner_state_data and isinstance(inner_state_data, dict):
                     new_inner_state = _format_inner_state(inner_state_data)
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="inner_state",
-                        content=new_inner_state,
-                        updated_by="post_turn",
-                    )
-                    result.inner_state_updated = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="inner_state",
+                            content=new_inner_state,
+                            updated_by="post_turn",
+                            expected_version=inner_state_version,
+                        )
+                        result.inner_state_updated = True
+                    except SoulBlockConflict:
+                        _drop_stale("inner_state")
 
                 if wm_updates and isinstance(wm_updates, list):
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="working_memory",
-                        content=current_wm.strip(),
-                        updated_by="post_turn",
-                    )
-                    result.working_memory_updated = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="working_memory",
+                            content=current_wm.strip(),
+                            updated_by="post_turn",
+                            expected_version=working_memory_version,
+                        )
+                        result.working_memory_updated = True
+                    except SoulBlockConflict:
+                        # Delta-shaped update: re-apply onto the fresh
+                        # content once instead of dropping it.
+                        fresh_block = get_self_model_block(
+                            db, user_id=user_id, section="working_memory"
+                        )
+                        fresh_text = (
+                            render_self_model_section(fresh_block, user_id=user_id)
+                            or "# Things I'm Holding in Mind\n"
+                        )
+                        retry_wm = _apply_working_memory_updates(
+                            fresh_text, wm_updates
+                        )
+                        try:
+                            set_self_model_block(
+                                db,
+                                user_id=user_id,
+                                section="working_memory",
+                                content=retry_wm.strip(),
+                                updated_by="post_turn",
+                                expected_version=_block_version(fresh_block),
+                            )
+                            result.working_memory_updated = True
+                        except SoulBlockConflict:
+                            _drop_stale("working_memory")
 
                 if self_feelings and isinstance(self_feelings, str):
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="emotional_synthesis",
-                        content=self_feelings,
-                        updated_by="post_turn",
-                    )
-                    result.emotional_synthesis_updated = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="emotional_synthesis",
+                            content=self_feelings,
+                            updated_by="post_turn",
+                            expected_version=emotional_synthesis_version,
+                        )
+                        result.emotional_synthesis_updated = True
+                    except SoulBlockConflict:
+                        _drop_stale("emotional_synthesis")
 
                 if isinstance(emotional, dict) and emotional.get("emotion"):
                     signal = record_emotional_signal(
@@ -256,34 +331,71 @@ async def run_quick_reflection(
                 with runtime_factory() as pg_db:
                     if inner_state_data and isinstance(inner_state_data, dict):
                         new_inner_state = _format_inner_state(inner_state_data)
-                        set_working_context(
-                            pg_db,
-                            user_id=user_id,
-                            section="inner_state",
-                            content=new_inner_state,
-                            updated_by="post_turn",
-                        )
-                        result.inner_state_updated = True
+                        try:
+                            set_working_context(
+                                pg_db,
+                                user_id=user_id,
+                                section="inner_state",
+                                content=new_inner_state,
+                                updated_by="post_turn",
+                                expected_version=inner_state_version,
+                            )
+                            result.inner_state_updated = True
+                        except SoulBlockConflict:
+                            _drop_stale("inner_state")
 
                     if wm_updates and isinstance(wm_updates, list):
-                        set_working_context(
-                            pg_db,
-                            user_id=user_id,
-                            section="working_memory",
-                            content=current_wm.strip(),
-                            updated_by="post_turn",
-                        )
-                        result.working_memory_updated = True
+                        try:
+                            set_working_context(
+                                pg_db,
+                                user_id=user_id,
+                                section="working_memory",
+                                content=current_wm.strip(),
+                                updated_by="post_turn",
+                                expected_version=working_memory_version,
+                            )
+                            result.working_memory_updated = True
+                        except SoulBlockConflict:
+                            # Delta-shaped update: re-apply onto the fresh
+                            # content once instead of dropping it.
+                            fresh_block = get_working_context(
+                                pg_db, user_id=user_id
+                            ).get("working_memory")
+                            fresh_text = (
+                                render_self_model_section(
+                                    fresh_block, user_id=user_id
+                                )
+                                or "# Things I'm Holding in Mind\n"
+                            )
+                            retry_wm = _apply_working_memory_updates(
+                                fresh_text, wm_updates
+                            )
+                            try:
+                                set_working_context(
+                                    pg_db,
+                                    user_id=user_id,
+                                    section="working_memory",
+                                    content=retry_wm.strip(),
+                                    updated_by="post_turn",
+                                    expected_version=_block_version(fresh_block),
+                                )
+                                result.working_memory_updated = True
+                            except SoulBlockConflict:
+                                _drop_stale("working_memory")
 
                     if self_feelings and isinstance(self_feelings, str):
-                        set_working_context(
-                            pg_db,
-                            user_id=user_id,
-                            section="emotional_synthesis",
-                            content=self_feelings,
-                            updated_by="post_turn",
-                        )
-                        result.emotional_synthesis_updated = True
+                        try:
+                            set_working_context(
+                                pg_db,
+                                user_id=user_id,
+                                section="emotional_synthesis",
+                                content=self_feelings,
+                                updated_by="post_turn",
+                                expected_version=emotional_synthesis_version,
+                            )
+                            result.emotional_synthesis_updated = True
+                        except SoulBlockConflict:
+                            _drop_stale("emotional_synthesis")
 
                     if isinstance(emotional, dict) and emotional.get("emotion"):
                         signal = record_emotional_signal(
@@ -671,6 +783,10 @@ async def run_deep_monologue(
 
             persona_block = get_self_model_block(
                 db, user_id=user_id, section="persona")
+            # Snapshot versions for optimistic locking: the reflection LLM
+            # call is slow, and a turn-driven write landing meanwhile must
+            # win over this stale snapshot.
+            persona_version = _block_version(persona_block)
             persona_text = (
                 render_self_model_section(persona_block, user_id=user_id)
                 if persona_block
@@ -694,6 +810,13 @@ async def run_deep_monologue(
                 )
                 intentions_block = get_self_model_block(
                     db, user_id=user_id, section="intentions")
+
+                inner_state_version = _block_version(inner_state_block)
+                working_memory_version = _block_version(working_memory_block)
+                intentions_version = _block_version(intentions_block)
+                emotional_synthesis_version = _block_version(
+                    emotional_synthesis_block
+                )
 
                 inner_state_text = (
                     render_self_model_section(
@@ -742,6 +865,14 @@ async def run_deep_monologue(
                         pg_db, user_id=user_id)
                     signals = get_recent_signals(
                         pg_db, user_id=user_id, limit=10)
+
+                    inner_state_version = _block_version(
+                        working_context.get("inner_state"))
+                    working_memory_version = _block_version(
+                        working_context.get("working_memory"))
+                    intentions_version = _block_version(intentions_block)
+                    emotional_synthesis_version = _block_version(
+                        working_context.get("emotional_synthesis"))
 
                     inner_state_text = (
                         render_self_model_section(
@@ -804,7 +935,20 @@ async def run_deep_monologue(
             return result
 
         with factory() as db:
-            from anima_server.services.agent.soul_blocks import set_soul_block
+            from anima_server.services.agent.intentions import merge_learned_rules
+            from anima_server.services.agent.soul_blocks import (
+                SoulBlockConflict,
+                set_soul_block,
+            )
+
+            def _drop_stale(section: str) -> None:
+                degraded_logger.warning(
+                    "Deep monologue dropped stale '%s' update for user %s: "
+                    "block changed during reflection",
+                    section,
+                    user_id,
+                )
+                result.errors.append(f"stale {section} update dropped")
 
             if parsed.get("identity_update"):
                 set_self_model_block(
@@ -817,14 +961,18 @@ async def run_deep_monologue(
                 result.identity_updated = True
 
             if parsed.get("persona_update"):
-                set_soul_block(
-                    db,
-                    user_id=user_id,
-                    section="persona",
-                    content=parsed["persona_update"],
-                    updated_by="sleep_time",
-                )
-                result.persona_updated = True
+                try:
+                    set_soul_block(
+                        db,
+                        user_id=user_id,
+                        section="persona",
+                        content=parsed["persona_update"],
+                        updated_by="sleep_time",
+                        expected_version=persona_version,
+                    )
+                    result.persona_updated = True
+                except SoulBlockConflict:
+                    _drop_stale("persona")
 
             if parsed.get("growth_log_entry"):
                 append_growth_log_entry(
@@ -835,113 +983,156 @@ async def run_deep_monologue(
                 result.growth_log_entry_added = True
 
             updated_intentions_text = intentions_text if intentions_text != "None." else "# Intentions\n"
+            # Tracks the expected intentions version across the two
+            # sequential writes below (update, then learned rules).
+            intentions_expected = intentions_version
 
             if runtime_factory is None:
                 if parsed.get("inner_state_update"):
                     _inner_val = parsed["inner_state_update"]
                     if not isinstance(_inner_val, str):
                         _inner_val = json.dumps(_inner_val, indent=2)
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="inner_state",
-                        content=_inner_val,
-                        updated_by="sleep_time",
-                    )
-                    result.inner_state_updated = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="inner_state",
+                            content=_inner_val,
+                            updated_by="sleep_time",
+                            expected_version=inner_state_version,
+                        )
+                        result.inner_state_updated = True
+                    except SoulBlockConflict:
+                        _drop_stale("inner_state")
 
                 if parsed.get("working_memory_update"):
                     _wm_val = parsed["working_memory_update"]
                     if not isinstance(_wm_val, str):
                         _wm_val = json.dumps(_wm_val, indent=2)
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="working_memory",
-                        content=_wm_val,
-                        updated_by="sleep_time",
-                    )
-                    result.working_memory_updated = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="working_memory",
+                            content=_wm_val,
+                            updated_by="sleep_time",
+                            expected_version=working_memory_version,
+                        )
+                        result.working_memory_updated = True
+                    except SoulBlockConflict:
+                        _drop_stale("working_memory")
 
                 if parsed.get("intentions_update"):
                     updated_intentions_text = str(parsed["intentions_update"])
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="intentions",
-                        content=updated_intentions_text,
-                        updated_by="sleep_time",
-                    )
-                    result.intentions_updated = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="intentions",
+                            content=updated_intentions_text,
+                            updated_by="sleep_time",
+                            expected_version=intentions_expected,
+                        )
+                        result.intentions_updated = True
+                        intentions_expected += 1
+                    except SoulBlockConflict:
+                        _drop_stale("intentions")
 
                 rules = parsed.get("new_procedural_rules", [])
                 if rules and isinstance(rules, list):
-                    rules_text = "\n".join(
+                    rule_lines = [
                         f"- {rule.get('rule', '')} [confidence: {rule.get('confidence', 'medium')}]"
                         for rule in rules
-                        if isinstance(rule, dict)
-                    )
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="intentions",
-                        content=updated_intentions_text + "\n\n## Learned Rules\n" + rules_text,
-                        updated_by="sleep_time",
-                    )
-                    result.procedural_rules_added = len(rules)
+                        if isinstance(rule, dict) and rule.get("rule")
+                    ]
+                    if rule_lines:
+                        try:
+                            set_self_model_block(
+                                db,
+                                user_id=user_id,
+                                section="intentions",
+                                content=merge_learned_rules(
+                                    updated_intentions_text, rule_lines
+                                ),
+                                updated_by="sleep_time",
+                                expected_version=intentions_expected,
+                            )
+                            result.procedural_rules_added = len(rule_lines)
+                        except SoulBlockConflict:
+                            _drop_stale("intentions")
             else:
                 with runtime_factory() as pg_db:
                     if parsed.get("inner_state_update"):
                         _inner_val = parsed["inner_state_update"]
                         if not isinstance(_inner_val, str):
                             _inner_val = json.dumps(_inner_val, indent=2)
-                        set_working_context(
-                            pg_db,
-                            user_id=user_id,
-                            section="inner_state",
-                            content=_inner_val,
-                            updated_by="sleep_time",
-                        )
-                        result.inner_state_updated = True
+                        try:
+                            set_working_context(
+                                pg_db,
+                                user_id=user_id,
+                                section="inner_state",
+                                content=_inner_val,
+                                updated_by="sleep_time",
+                                expected_version=inner_state_version,
+                            )
+                            result.inner_state_updated = True
+                        except SoulBlockConflict:
+                            _drop_stale("inner_state")
 
                     if parsed.get("working_memory_update"):
                         _wm_val = parsed["working_memory_update"]
                         if not isinstance(_wm_val, str):
                             _wm_val = json.dumps(_wm_val, indent=2)
-                        set_working_context(
-                            pg_db,
-                            user_id=user_id,
-                            section="working_memory",
-                            content=_wm_val,
-                            updated_by="sleep_time",
-                        )
-                        result.working_memory_updated = True
+                        try:
+                            set_working_context(
+                                pg_db,
+                                user_id=user_id,
+                                section="working_memory",
+                                content=_wm_val,
+                                updated_by="sleep_time",
+                                expected_version=working_memory_version,
+                            )
+                            result.working_memory_updated = True
+                        except SoulBlockConflict:
+                            _drop_stale("working_memory")
 
                     if parsed.get("intentions_update"):
                         updated_intentions_text = str(
                             parsed["intentions_update"])
-                        set_active_intentions(
-                            pg_db,
-                            user_id=user_id,
-                            content=updated_intentions_text,
-                            updated_by="sleep_time",
-                        )
-                        result.intentions_updated = True
+                        try:
+                            set_active_intentions(
+                                pg_db,
+                                user_id=user_id,
+                                content=updated_intentions_text,
+                                updated_by="sleep_time",
+                                expected_version=intentions_expected,
+                            )
+                            result.intentions_updated = True
+                            intentions_expected += 1
+                        except SoulBlockConflict:
+                            _drop_stale("intentions")
 
                     rules = parsed.get("new_procedural_rules", [])
                     if rules and isinstance(rules, list):
-                        rules_text = "\n".join(
+                        rule_lines = [
                             f"- {rule.get('rule', '')} [confidence: {rule.get('confidence', 'medium')}]"
                             for rule in rules
-                            if isinstance(rule, dict)
-                        )
-                        set_active_intentions(
-                            pg_db,
-                            user_id=user_id,
-                            content=updated_intentions_text + "\n\n## Learned Rules\n" + rules_text,
-                            updated_by="sleep_time",
-                        )
-                        result.procedural_rules_added = len(rules)
+                            if isinstance(rule, dict) and rule.get("rule")
+                        ]
+                        if rule_lines:
+                            try:
+                                set_active_intentions(
+                                    pg_db,
+                                    user_id=user_id,
+                                    content=merge_learned_rules(
+                                        updated_intentions_text, rule_lines
+                                    ),
+                                    updated_by="sleep_time",
+                                    expected_version=intentions_expected,
+                                )
+                                result.procedural_rules_added = len(rule_lines)
+                            except SoulBlockConflict:
+                                _drop_stale("intentions")
 
                     pg_db.commit()
 
@@ -957,9 +1148,12 @@ async def run_deep_monologue(
                                 section="emotional_synthesis",
                                 content=emotional_synthesis,
                                 updated_by="sleep_time",
+                                expected_version=emotional_synthesis_version,
                             )
                             pg_db.commit()
                             result.emotional_synthesis_stored = True
+                    except SoulBlockConflict:
+                        _drop_stale("emotional_synthesis")
                     except Exception:
                         logger.warning(
                             "Emotional synthesis storage failed for user %s",
@@ -967,14 +1161,18 @@ async def run_deep_monologue(
                             exc_info=True,
                         )
                 else:
-                    set_self_model_block(
-                        db,
-                        user_id=user_id,
-                        section="emotional_synthesis",
-                        content=emotional_synthesis,
-                        updated_by="sleep_time",
-                    )
-                    result.emotional_synthesis_stored = True
+                    try:
+                        set_self_model_block(
+                            db,
+                            user_id=user_id,
+                            section="emotional_synthesis",
+                            content=emotional_synthesis,
+                            updated_by="sleep_time",
+                            expected_version=emotional_synthesis_version,
+                        )
+                        result.emotional_synthesis_stored = True
+                    except SoulBlockConflict:
+                        _drop_stale("emotional_synthesis")
 
             # Promote recurring emotional signals to enduring soul patterns
             if runtime_factory is not None:

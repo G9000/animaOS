@@ -1,6 +1,6 @@
 # ARH-003 - Optimistic locking for soul-block writes
 
-- Status: backlog
+- Status: in-review
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `ARH-000`
@@ -9,8 +9,8 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
+- Updated: 2026-07-07 01:55 MYT
+- Started: 2026-07-07 01:25 MYT
 - Completed:
 
 ## Goal
@@ -45,12 +45,18 @@ The deep monologue snapshots persona/intentions/working_memory (`services/agent/
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 01:55 MYT - Implemented on branch `worktree-agent-runtime-hardening-p1`: `SoulBlockConflict` + `expected_version` on `_write_soul_block`/`set_soul_block`/`full_replace_soul_block`; same check on `set_working_context`/`set_active_intentions` (both legacy and modern tables — `version` columns already existed, no migration) and threaded through `set_self_model_block`; deep monologue and quick reflection snapshot versions at read and drop stale updates with a WARNING on `anima.runtime.degraded` (quick reflection re-applies its working-memory add/remove deltas onto fresh content once before dropping); Learned Rules section now replaced via `merge_learned_rules` (dedup + `MAX_PROCEDURAL_RULES` cap) instead of appended without bound. Soul-writer pending ops stay unversioned by design (delta ops against fresh reads — the authoritative writer).
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_soul_block_locking.py -q` → 14 passed
+  - `uv run --directory apps/server pytest tests/test_p3_self_model_split.py tests/test_soul_writer.py tests/test_agent_reflection.py -q` → 58 passed
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/soul_blocks.py
+  - apps/server/src/anima_server/services/agent/self_model.py
+  - apps/server/src/anima_server/services/agent/intentions.py
+  - apps/server/src/anima_server/services/agent/inner_monologue.py
+  - apps/server/tests/test_soul_block_locking.py
 - Notes:
-  - none
+  - 14 new tests including the motivating race (concurrent append survives a stale full-replace) and an end-to-end quick-reflection test where a mid-LLM concurrent write survives and the reflection's deltas are re-applied.

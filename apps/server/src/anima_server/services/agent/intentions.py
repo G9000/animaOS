@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -168,6 +169,55 @@ def complete_intention(
         updated_by="post_turn",
     )
     return True
+
+
+_LEARNED_RULES_HEADER = "## Learned Rules"
+
+
+def merge_learned_rules(base_text: str, new_rule_lines: Sequence[str]) -> str:
+    """Replace (not append) the ``## Learned Rules`` section of an
+    intentions block.
+
+    Strips every existing Learned Rules section from *base_text*, merges
+    its rule lines with *new_rule_lines* (deduplicated case-insensitively,
+    newest last), caps the result at ``MAX_PROCEDURAL_RULES`` keeping the
+    most recent, and appends a single section.  The deep monologue used to
+    append a fresh section onto text that already contained the previous
+    one, growing the block without bound.
+    """
+    kept_lines: list[str] = []
+    existing_rules: list[str] = []
+    in_rules = False
+    for line in base_text.splitlines():
+        stripped = line.strip()
+        if stripped == _LEARNED_RULES_HEADER:
+            in_rules = True
+            continue
+        if in_rules and stripped.startswith("#"):
+            in_rules = False
+        if in_rules:
+            if stripped.startswith("- "):
+                existing_rules.append(stripped)
+            continue
+        kept_lines.append(line)
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for rule in (*existing_rules, *(r.strip() for r in new_rule_lines)):
+        if not rule:
+            continue
+        key = rule.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(rule)
+    merged = merged[-MAX_PROCEDURAL_RULES:]
+
+    base = "\n".join(kept_lines).rstrip()
+    if not merged:
+        return base
+    section = _LEARNED_RULES_HEADER + "\n" + "\n".join(merged)
+    return (base + "\n\n" + section).strip() if base else section
 
 
 def add_procedural_rule(

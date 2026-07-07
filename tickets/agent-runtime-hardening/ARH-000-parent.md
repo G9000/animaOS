@@ -20,9 +20,9 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `ARH-001` | Fix Anthropic LLM compaction endpoint | `backlog` | none |
-| `ARH-002` | Cancellation-safe turn lifecycle | `backlog` | none |
-| `ARH-003` | Optimistic locking for soul-block writes | `backlog` | none |
+| `ARH-001` | Fix Anthropic LLM compaction endpoint | `in-review` | none |
+| `ARH-002` | Cancellation-safe turn lifecycle | `in-review` | none |
+| `ARH-003` | Optimistic locking for soul-block writes | `in-review` | none |
 | `ARH-004` | Background retry hygiene and persisted gates | `backlog` | none |
 | `ARH-005` | LLM client robustness and capability gating | `backlog` | none |
 | `ARH-006` | Anthropic prompt caching with stable prefix | `backlog` | `ARH-005` |
@@ -65,6 +65,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Parent tracker created from the 2026-07-07 runtime review.
+- 2026-07-07 01:55 MYT - Phase 1 (ARH-001..003) implemented on branch `worktree-agent-runtime-hardening-p1`, all in review.
 
 ## Validation
 

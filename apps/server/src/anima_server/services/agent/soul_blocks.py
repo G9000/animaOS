@@ -9,6 +9,24 @@ from anima_server.models import SelfModelBlock
 from anima_server.services.data_crypto import df, ef
 
 
+class SoulBlockConflict(Exception):
+    """A version-checked block write lost a race with a concurrent writer.
+
+    Raised instead of silently overwriting: a slow reflection that read a
+    block before a user-driven write landed must not full-replace it with
+    its stale snapshot.
+    """
+
+    def __init__(self, *, section: str, expected_version: int, actual_version: int) -> None:
+        self.section = section
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+        super().__init__(
+            f"soul block '{section}' is at version {actual_version}, "
+            f"writer expected {expected_version}"
+        )
+
+
 def _get_soul_block(
     soul_db: Session,
     *,
@@ -31,9 +49,26 @@ def _write_soul_block(
     content: str,
     updated_by: str,
     metadata: dict | None = None,
+    expected_version: int | None = None,
 ) -> SelfModelBlock:
+    """Write a block, optionally with optimistic locking.
+
+    *expected_version* is the version the writer read its snapshot from
+    (0 = the block did not exist yet).  On mismatch the write is refused
+    with :class:`SoulBlockConflict` so the caller can re-read and decide;
+    ``None`` skips the check (delta-shaped writers that read fresh state
+    in the same session, like the soul writer's pending ops).
+    """
     encrypted_content = ef(user_id, content, table="self_model_blocks", field="content")
     block = _get_soul_block(soul_db, user_id=user_id, section=section)
+    if expected_version is not None:
+        actual_version = block.version if block is not None else 0
+        if actual_version != expected_version:
+            raise SoulBlockConflict(
+                section=section,
+                expected_version=expected_version,
+                actual_version=actual_version,
+            )
     if block is None:
         block = SelfModelBlock(
             user_id=user_id,
@@ -65,6 +100,7 @@ def set_soul_block(
     content: str,
     updated_by: str,
     metadata: dict | None = None,
+    expected_version: int | None = None,
 ) -> SelfModelBlock:
     """Create or overwrite a soul-tier block."""
     return _write_soul_block(
@@ -74,6 +110,7 @@ def set_soul_block(
         content=content.strip(),
         updated_by=updated_by,
         metadata=metadata,
+        expected_version=expected_version,
     )
 
 
@@ -138,12 +175,14 @@ def full_replace_soul_block(
     section: str,
     content: str,
     updated_by: str = "consolidation",
+    expected_version: int | None = None,
 ) -> SelfModelBlock:
-    """Unconditionally replace a soul block's plaintext content."""
+    """Replace a soul block's plaintext content (version-checked if asked)."""
     return _write_soul_block(
         soul_db,
         user_id=user_id,
         section=section,
         content=content.strip(),
         updated_by=updated_by,
+        expected_version=expected_version,
     )

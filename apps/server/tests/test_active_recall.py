@@ -637,41 +637,30 @@ class TestSummarizeWithLlm:
             )
             db.commit()
 
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "User greeted the assistant."}}],
-            }
-            mock_response.raise_for_status = MagicMock()
+            class _FakeChatClient:
+                async def ainvoke(self, messages):
+                    class _Response:
+                        content = "User greeted the assistant."
+
+                    return _Response()
 
             with (
                 patch("anima_server.config.settings") as mock_settings,
                 patch(
-                    "anima_server.services.agent.llm.resolve_base_url",
-                    return_value="http://localhost:8000/v1",
+                    "anima_server.services.agent.llm.create_provider_chat_client",
+                    return_value=_FakeChatClient(),
                 ),
-                patch(
-                    "anima_server.services.agent.llm.build_provider_headers",
-                    return_value={"Authorization": "Bearer test"},
-                ),
-                patch("httpx.AsyncClient") as mock_client_cls,
             ):
                 mock_settings.agent_provider = "openrouter"
                 mock_settings.agent_extraction_model = "test-model"
                 mock_settings.agent_model = "test-model"
-
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=False)
-                mock_client.post = AsyncMock(return_value=mock_response)
-                mock_client_cls.return_value = mock_client
 
                 result = await summarize_with_llm([msg])
                 assert result == "User greeted the assistant."
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_none(self):
-        """LLM summarization returns None on HTTP failure."""
+        """LLM summarization returns None on client failure."""
         with _db_session() as db:
             user = _create_user(db)
             thread = _create_thread(db, user_id=user.id)
@@ -680,28 +669,20 @@ class TestSummarizeWithLlm:
             )
             db.commit()
 
+            class _FailingChatClient:
+                async def ainvoke(self, messages):
+                    raise RuntimeError("Connection failed")
+
             with (
                 patch("anima_server.config.settings") as mock_settings,
                 patch(
-                    "anima_server.services.agent.llm.resolve_base_url",
-                    return_value="http://localhost:8000/v1",
+                    "anima_server.services.agent.llm.create_provider_chat_client",
+                    return_value=_FailingChatClient(),
                 ),
-                patch(
-                    "anima_server.services.agent.llm.build_provider_headers",
-                    return_value={"Authorization": "Bearer test"},
-                ),
-                patch("httpx.AsyncClient") as mock_client_cls,
             ):
                 mock_settings.agent_provider = "openrouter"
                 mock_settings.agent_extraction_model = ""
                 mock_settings.agent_model = "test-model"
-
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=False)
-                mock_client.post = AsyncMock(
-                    side_effect=RuntimeError("Connection failed"))
-                mock_client_cls.return_value = mock_client
 
                 result = await summarize_with_llm([msg])
                 assert result is None
@@ -1138,34 +1119,27 @@ class TestSummarizeWithLlmTranscriptOverride:
             )
             db.commit()
 
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "choices": [{"message": {"content": "Summary from clamped."}}],
-            }
-            mock_response.raise_for_status = MagicMock()
+            captured_messages: list = []
+
+            class _RecordingChatClient:
+                async def ainvoke(self, messages):
+                    captured_messages.extend(messages)
+
+                    class _Response:
+                        content = "Summary from clamped."
+
+                    return _Response()
 
             with (
                 patch("anima_server.config.settings") as mock_settings,
                 patch(
-                    "anima_server.services.agent.llm.resolve_base_url",
-                    return_value="http://localhost:8000/v1",
+                    "anima_server.services.agent.llm.create_provider_chat_client",
+                    return_value=_RecordingChatClient(),
                 ),
-                patch(
-                    "anima_server.services.agent.llm.build_provider_headers",
-                    return_value={"Authorization": "Bearer test"},
-                ),
-                patch("httpx.AsyncClient") as mock_client_cls,
             ):
                 mock_settings.agent_provider = "openrouter"
                 mock_settings.agent_extraction_model = "test-model"
                 mock_settings.agent_model = "test-model"
-
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=False)
-                mock_client.post = AsyncMock(return_value=mock_response)
-                mock_client_cls.return_value = mock_client
 
                 result = await summarize_with_llm(
                     [msg],
@@ -1173,9 +1147,7 @@ class TestSummarizeWithLlmTranscriptOverride:
                 )
                 assert result == "Summary from clamped."
                 # Verify the override was used in the prompt
-                call_args = mock_client.post.call_args
-                body = call_args.kwargs.get("json") or call_args[1].get("json")
-                user_msg = body["messages"][1]["content"]
+                user_msg = captured_messages[1].content
                 assert "Clamped: User said hello" in user_msg
                 assert "This should not appear" not in user_msg
 
