@@ -385,7 +385,15 @@ async def run_background_extraction(
     except RuntimeError:
         return
 
+    llm_enabled = settings.agent_provider != "scaffold"
+    intent_id: int | None = None
+
     try:
+        # Phase A — durable pre-LLM work.  Regex candidates, foresight, and
+        # a retryable intent row are committed BEFORE the slow LLM call, so
+        # a crash, shutdown, or cancellation mid-extraction loses at most
+        # the LLM enrichment (which the Soul Writer's retry loop recovers
+        # from the intent row).
         with rt_factory() as rt_db:
             # 1. Regex extraction
             extracted = extract_turn_memory(user_message)
@@ -432,118 +440,153 @@ async def run_background_extraction(
                 observed_at=foresight_observed_at,
             )
 
-            # 2. LLM extraction
-            if settings.agent_provider != "scaffold":
-                try:
-                    llm_result = await extract_memories_via_llm(
-                        user_message=user_message,
-                        assistant_response=assistant_response,
+            if llm_enabled:
+                intent = record_memory_extraction_failure(
+                    rt_db,
+                    user_id=user_id,
+                    source_message_ids=source_message_ids,
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                    failure_reason="LLM extraction pending (crash-recovery guard)",
+                )
+                rt_db.commit()
+                intent_id = intent.id
+            else:
+                rt_db.commit()
+
+        # Phase B — the LLM call runs with NO session held: it used to pin
+        # a pool connection per concurrent turn for the multi-second call.
+        llm_result = None
+        if llm_enabled:
+            try:
+                llm_result = await extract_memories_via_llm(
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                )
+            except Exception:
+                logger.exception(
+                    "LLM extraction pipeline failed for user %s. "
+                    "User message preview: %.100s",
+                    user_id,
+                    user_message[:100],
+                )
+
+        # Phase C — persist LLM results and resolve (or keep) the intent
+        # row in a fresh session; results and resolution commit atomically.
+        with rt_factory() as rt_db:
+            if llm_enabled:
+                from anima_server.models.runtime_memory import (
+                    MemoryExtractionFailure,
+                )
+
+                intent = (
+                    rt_db.get(MemoryExtractionFailure, intent_id)
+                    if intent_id is not None
+                    else None
+                )
+                now = datetime.now(UTC)
+                if llm_result is None or llm_result.failed:
+                    reason = (
+                        (llm_result.error if llm_result is not None else None)
+                        or "LLM memory extraction failed"
                     )
-                    if llm_result.failed:
-                        record_memory_extraction_failure(
-                            rt_db,
-                            user_id=user_id,
-                            source_message_ids=source_message_ids,
-                            user_message=user_message,
-                            assistant_response=assistant_response,
-                            failure_reason=llm_result.error
-                            or "LLM memory extraction failed",
-                        )
-                        health_emit(
-                            "memory",
-                            "extraction_failed",
-                            "warn",
-                            user_id=user_id,
-                            data={
-                                "error": llm_result.error,
-                                "source_message_ids": source_message_ids or [],
-                            },
-                        )
-                        logger.warning(
-                            "LLM extraction failed for user %s; preserved retry work",
-                            user_id,
-                        )
-                    else:
-                        for item in llm_result.memories:
-                            content = item.get("content", "")
-                            if not content or not isinstance(content, str):
-                                continue
-                            create_memory_candidate(
-                                rt_db,
-                                user_id=user_id,
-                                content=content,
-                                category=item.get("category", "fact"),
-                                importance=item.get("importance", 3),
-                                importance_source="llm",
-                                source="llm",
-                                source_message_ids=source_message_ids,
-                                salience=item.get("salience")
-                                if isinstance(item.get("salience"), dict)
-                                else None,
-                            )
-                        llm_count = len(llm_result.memories)
-                        profile_update_count = create_profile_update_candidates_from_payload(
-                            rt_db,
-                            user_id=user_id,
-                            profile_updates=llm_result.profile_updates,
-                            source_message_ids=source_message_ids,
-                        )
-                        _store_foresight_best_effort(
-                            user_id=user_id,
-                            user_message=user_message,
-                            source_message_ids=source_message_ids,
-                            observed_at=foresight_observed_at,
-                            llm_foresight=llm_result.foresight,
-                        )
-
-                        emotion_payload = (
-                            llm_result.emotion
-                            if isinstance(llm_result.emotion, dict)
-                            else None
-                        )
-                        raw_emotion = (
-                            emotion_payload.get("emotion") if emotion_payload else None
-                        )
-                        emotion_name = (
-                            raw_emotion.strip()
-                            if isinstance(raw_emotion, str)
-                            else None
-                        )
-
-                        # Persist detected emotion (was previously only logged)
-                        if emotion_payload and emotion_name:
-                            record_emotional_signal(
-                                rt_db,
-                                user_id=user_id,
-                                emotion=emotion_name,
-                                confidence=float(
-                                    emotion_payload.get("confidence", 0.5)
-                                ),
-                                evidence_type="linguistic",
-                                evidence=str(
-                                    emotion_payload.get("evidence", "")
-                                ),
-                                trajectory=str(
-                                    emotion_payload.get("trajectory", "stable")
-                                ),
-                            )
-
-                        logger.info(
-                            (
-                                "LLM extraction for user %s: %d memories, "
-                                "%d profile updates extracted%s"
-                            ),
-                            user_id,
-                            llm_count,
-                            profile_update_count,
-                            f" (emotion: {emotion_name})" if emotion_name else "",
-                        )
-                except Exception:
-                    logger.exception(
-                        "LLM extraction pipeline failed for user %s. "
-                        "User message preview: %.100s",
+                    if intent is not None:
+                        intent.failure_reason = reason[:2000]
+                        intent.last_attempt_at = now
+                        intent.updated_at = now
+                    health_emit(
+                        "memory",
+                        "extraction_failed",
+                        "warn",
+                        user_id=user_id,
+                        data={
+                            "error": reason,
+                            "source_message_ids": source_message_ids or [],
+                        },
+                    )
+                    logger.warning(
+                        "LLM extraction failed for user %s; preserved retry work",
                         user_id,
-                        user_message[:100],
+                    )
+                else:
+                    for item in llm_result.memories:
+                        content = item.get("content", "")
+                        if not content or not isinstance(content, str):
+                            continue
+                        create_memory_candidate(
+                            rt_db,
+                            user_id=user_id,
+                            content=content,
+                            category=item.get("category", "fact"),
+                            importance=item.get("importance", 3),
+                            importance_source="llm",
+                            source="llm",
+                            source_message_ids=source_message_ids,
+                            salience=item.get("salience")
+                            if isinstance(item.get("salience"), dict)
+                            else None,
+                        )
+                    llm_count = len(llm_result.memories)
+                    profile_update_count = create_profile_update_candidates_from_payload(
+                        rt_db,
+                        user_id=user_id,
+                        profile_updates=llm_result.profile_updates,
+                        source_message_ids=source_message_ids,
+                    )
+                    _store_foresight_best_effort(
+                        user_id=user_id,
+                        user_message=user_message,
+                        source_message_ids=source_message_ids,
+                        observed_at=foresight_observed_at,
+                        llm_foresight=llm_result.foresight,
+                    )
+
+                    emotion_payload = (
+                        llm_result.emotion
+                        if isinstance(llm_result.emotion, dict)
+                        else None
+                    )
+                    raw_emotion = (
+                        emotion_payload.get("emotion") if emotion_payload else None
+                    )
+                    emotion_name = (
+                        raw_emotion.strip()
+                        if isinstance(raw_emotion, str)
+                        else None
+                    )
+
+                    # Persist detected emotion (was previously only logged)
+                    if emotion_payload and emotion_name:
+                        record_emotional_signal(
+                            rt_db,
+                            user_id=user_id,
+                            emotion=emotion_name,
+                            confidence=float(
+                                emotion_payload.get("confidence", 0.5)
+                            ),
+                            evidence_type="linguistic",
+                            evidence=str(
+                                emotion_payload.get("evidence", "")
+                            ),
+                            trajectory=str(
+                                emotion_payload.get("trajectory", "stable")
+                            ),
+                        )
+
+                    if intent is not None:
+                        intent.status = "resolved"
+                        intent.resolved_at = now
+                        intent.updated_at = now
+
+                    logger.info(
+                        (
+                            "LLM extraction for user %s: %d memories, "
+                            "%d profile updates extracted%s"
+                        ),
+                        user_id,
+                        llm_count,
+                        profile_update_count,
+                        f" (emotion: {emotion_name})" if emotion_name else "",
                     )
 
             rt_db.commit()
@@ -582,10 +625,22 @@ async def run_background_extraction(
                     pending_count,
                 )
 
+    except asyncio.CancelledError:
+        # Shutdown cancellation: Phase A already committed the regex
+        # candidates and the retry intent, so nothing is lost — the Soul
+        # Writer recovers the LLM phase on its next run.
+        logger.info(
+            "Background extraction cancelled for user %s; "
+            "pre-LLM work is committed and the intent row will be retried",
+            user_id,
+        )
+        raise
     except Exception as exc:
         logger.exception(
-            "Background memory consolidation FAILED for user %s — all extraction for this turn lost",
+            "Background memory consolidation FAILED for user %s "
+            "(pre-LLM work committed: %s)",
             user_id,
+            intent_id is not None or not llm_enabled,
         )
         health_emit(
             "memory",
@@ -612,21 +667,21 @@ def record_memory_extraction_failure(
     assistant_response: str,
     failure_reason: str,
     extraction_model: str | None = None,
-) -> None:
+):
     from anima_server.models.runtime_memory import MemoryExtractionFailure
 
-    runtime_db.add(
-        MemoryExtractionFailure(
-            user_id=user_id,
-            source_message_ids=[int(message_id) for message_id in source_message_ids or []],
-            user_message_preview=_preview_text(user_message),
-            assistant_response_preview=_preview_text(assistant_response),
-            failure_reason=failure_reason[:2000],
-            extraction_model=extraction_model,
-            last_attempt_at=datetime.now(UTC),
-        )
+    failure = MemoryExtractionFailure(
+        user_id=user_id,
+        source_message_ids=[int(message_id) for message_id in source_message_ids or []],
+        user_message_preview=_preview_text(user_message),
+        assistant_response_preview=_preview_text(assistant_response),
+        failure_reason=failure_reason[:2000],
+        extraction_model=extraction_model,
+        last_attempt_at=datetime.now(UTC),
     )
+    runtime_db.add(failure)
     runtime_db.flush()
+    return failure
 
 
 def _store_foresight_best_effort(

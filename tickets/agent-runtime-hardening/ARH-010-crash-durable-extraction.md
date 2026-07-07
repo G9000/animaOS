@@ -1,17 +1,17 @@
 # ARH-010 - Crash-durable memory extraction
 
-- Status: backlog
+- Status: in-review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: `ARH-004`
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 21:55 MYT
+- Started: 2026-07-07 21:26 MYT
+- Completed: 2026-07-07 21:55 MYT
 
 ## Goal
 
@@ -50,12 +50,15 @@ A crash, shutdown, or cancellation during per-turn memory extraction loses at mo
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 21:55 MYT - Implemented on branch `worktree-agent-runtime-hardening-p4`: `run_background_extraction` is now three-phase — Phase A commits regex candidates, foresight, and a retryable `MemoryExtractionFailure` intent row (reason "LLM extraction pending (crash-recovery guard)") *before* the LLM call; Phase B runs the LLM with no session held; Phase C persists LLM results and resolves the intent atomically in a fresh session. `CancelledError` is handled distinctly (INFO, re-raised) — shutdown mid-LLM loses nothing. The intent row is recovered by the Soul Writer's existing Phase 1.5 retry loop (status `failed`, capped at `MAX_RETRY_COUNT=3` per ARH-004 conventions); duplicate recovery is safe via the candidate content-hash dedupe.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_extraction_durability.py tests/test_agent_consolidation.py tests/test_soul_writer.py -q` → 39 passed
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/consolidation.py
+  - apps/server/tests/test_extraction_durability.py
 - Notes:
-  - none
+  - 4 new tests: cancellation mid-LLM keeps regex candidates + intent; success resolves the intent; LLM failure keeps it with the real reason; scaffold provider writes no intent.
+  - Known benign race: an eager soul-writer run may pick up the pending intent while Phase B is in flight, costing one duplicate LLM call; content-hash dedupe makes the outcome idempotent.
