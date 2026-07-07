@@ -3,7 +3,13 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from anima_server.models.runtime import RuntimeKnowledgeConcept, RuntimeSource
+from anima_server.models.runtime import (
+    RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
+    RuntimeSource,
+    RuntimeSourceArtifact,
+    RuntimeSourceSpan,
+)
 from anima_server.services.agent import service as agent_service
 from anima_server.services.documents.rag import DocumentRagResult
 from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
@@ -136,6 +142,7 @@ def test_build_document_context_block_uses_compiled_document_knowledge_when_chun
         *,
         user_id: int,
         document_ids: list[int],
+        document_chunk_ids: list[int],
         limit: int,
     ) -> list[KnowledgeConceptHit]:
         calls.append(
@@ -143,6 +150,7 @@ def test_build_document_context_block_uses_compiled_document_knowledge_when_chun
                 "runtime_db": runtime_db,
                 "user_id": user_id,
                 "document_ids": document_ids,
+                "document_chunk_ids": document_chunk_ids,
                 "limit": limit,
             }
         )
@@ -178,6 +186,7 @@ def test_build_document_context_block_uses_compiled_document_knowledge_when_chun
             "runtime_db": sentinel_db,
             "user_id": 7,
             "document_ids": [4],
+            "document_chunk_ids": [],
             "limit": 8,
         }
     ]
@@ -216,6 +225,7 @@ def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chu
         *,
         user_id: int,
         document_ids: list[int],
+        document_chunk_ids: list[int],
         limit: int,
     ) -> list[KnowledgeConceptHit]:
         return [
@@ -249,6 +259,165 @@ def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chu
     assert "Use the compiled maintenance concept" in block.value
     assert "Raw evidence excerpts from selected PDFs" not in block.value
     assert "Raw relay instructions" not in block.value
+
+
+def test_build_document_context_block_uses_query_matched_compiled_pdf_concept(
+    monkeypatch: Any,
+    runtime_db: Session,
+) -> None:
+    source = RuntimeSource(
+        user_id=7,
+        kind="document",
+        source_uri="runtime-document://4",
+        content_hash=_sha("selected"),
+        title="manual.pdf",
+        media_type="application/pdf",
+        status="indexed",
+    )
+    runtime_db.add(source)
+    runtime_db.flush()
+    artifact = RuntimeSourceArtifact(
+        user_id=7,
+        source_id=source.id,
+        artifact_kind="document_text",
+        content_text="Broad overview.\n\nCalibrate relay timing.",
+        content_hash=_sha("artifact"),
+    )
+    runtime_db.add(artifact)
+    runtime_db.flush()
+    broad_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="document_chunk",
+        locator_json={"runtime_document_chunk_id": 99, "chunk_index": 0},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash(
+            {"runtime_document_chunk_id": 99, "chunk_index": 0}
+        ),
+        content_text="Broad overview.",
+        content_hash=_sha("broad"),
+    )
+    matched_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="document_chunk",
+        locator_json={"runtime_document_chunk_id": 12, "chunk_index": 1},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash(
+            {"runtime_document_chunk_id": 12, "chunk_index": 1}
+        ),
+        content_text="Calibrate relay timing.",
+        content_hash=_sha("matched"),
+    )
+    runtime_db.add_all([broad_span, matched_span])
+    runtime_db.flush()
+    broad_summary = RuntimeKnowledgeConcept(
+        user_id=7,
+        concept_type="source_summary",
+        slug="source-4-manual",
+        title="manual.pdf",
+        description="Broad compiled source summary.",
+        body_markdown="# manual.pdf\n\nBroad overview only.",
+        frontmatter_json={"type": "source_summary"},
+        metadata_json={"compiled_from_source_id": source.id},
+        content_hash=_sha("summary"),
+        status="active",
+    )
+    matched_topic = RuntimeKnowledgeConcept(
+        user_id=7,
+        concept_type="topic",
+        slug="source-4-calibration",
+        title="Calibration Procedure",
+        description=None,
+        body_markdown="# Calibration Procedure\n\nCompiled relay timing answer.",
+        frontmatter_json={"type": "topic"},
+        metadata_json={"compiled_from_source_id": source.id},
+        content_hash=_sha("matched topic"),
+        status="active",
+    )
+    broad_topic = RuntimeKnowledgeConcept(
+        user_id=7,
+        concept_type="topic",
+        slug="source-4-overview",
+        title="Overview",
+        description=None,
+        body_markdown="# Overview\n\nGeneral overview only.",
+        frontmatter_json={"type": "topic"},
+        metadata_json={"compiled_from_source_id": source.id},
+        content_hash=_sha("broad topic"),
+        status="active",
+    )
+    runtime_db.add_all([broad_summary, matched_topic, broad_topic])
+    runtime_db.flush()
+    runtime_db.add_all(
+        [
+            RuntimeKnowledgeConceptSource(
+                user_id=7,
+                concept_id=broad_summary.id,
+                source_id=source.id,
+                span_id=broad_span.id,
+                citation_label="S1",
+            ),
+            RuntimeKnowledgeConceptSource(
+                user_id=7,
+                concept_id=broad_summary.id,
+                source_id=source.id,
+                span_id=matched_span.id,
+                citation_label="S2",
+            ),
+            RuntimeKnowledgeConceptSource(
+                user_id=7,
+                concept_id=matched_topic.id,
+                source_id=source.id,
+                span_id=matched_span.id,
+                citation_label="S1",
+            ),
+            RuntimeKnowledgeConceptSource(
+                user_id=7,
+                concept_id=broad_topic.id,
+                source_id=source.id,
+                span_id=broad_span.id,
+                citation_label="S1",
+            ),
+        ]
+    )
+    runtime_db.flush()
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="Raw relay timing answer should stay out of the prompt.",
+                similarity=0.91,
+                page_start=None,
+                page_end=None,
+                section_title=None,
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="How should I calibrate the relay?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "Compiled relay timing answer" in block.value
+    assert "Broad overview only" not in block.value
+    assert "General overview only" not in block.value
+    assert "Raw relay timing answer" not in block.value
 
 
 def test_document_knowledge_hits_are_scoped_to_selected_document(

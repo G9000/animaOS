@@ -90,7 +90,17 @@ def compile_source_to_concepts(
                 spans_by_id={span.id: span for span in spans},
                 concept_payloads=concept_payloads,
             )
-            _clear_compiler_links(db, user_id=user_id, concepts=concepts)
+            stale_concepts = _retire_stale_source_concepts(
+                db,
+                user_id=user_id,
+                source=source,
+                active_concepts=concepts,
+            )
+            _clear_compiler_links(
+                db,
+                user_id=user_id,
+                concepts=[*concepts, *stale_concepts],
+            )
             link_count = _merge_links(
                 db,
                 user_id=user_id,
@@ -189,6 +199,32 @@ def _merge_concepts(
         )
         concepts.append(concept)
     return concepts
+
+
+def _retire_stale_source_concepts(
+    db: Session,
+    *,
+    user_id: int,
+    source: RuntimeSource,
+    active_concepts: Sequence[RuntimeKnowledgeConcept],
+) -> list[RuntimeKnowledgeConcept]:
+    active_ids = {concept.id for concept in active_concepts}
+    stmt = select(RuntimeKnowledgeConcept).where(
+        RuntimeKnowledgeConcept.user_id == user_id,
+        RuntimeKnowledgeConcept.status == "active",
+        RuntimeKnowledgeConcept.metadata_json["compiled_from_source_id"].as_integer()
+        == source.id,
+    )
+    if active_ids:
+        stmt = stmt.where(RuntimeKnowledgeConcept.id.not_in(active_ids))
+    stale_concepts = list(db.scalars(stmt).all())
+    now = datetime.now(UTC)
+    for concept in stale_concepts:
+        concept.status = "inactive"
+        concept.updated_at = now
+        db.add(concept)
+    db.flush()
+    return stale_concepts
 
 
 def _embed_concepts(

@@ -17,9 +17,11 @@ from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeImageMessageLink,
     RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
     RuntimeMessage,
     RuntimeRun,
     RuntimeSource,
+    RuntimeSourceSpan,
     RuntimeThread,
 )
 from anima_server.schemas.chat import (
@@ -1598,6 +1600,7 @@ def _build_document_context_block(
             runtime_db,
             user_id=user_id,
             document_ids=cleaned_document_ids,
+            document_chunk_ids=[result.chunk_id for result in results],
             limit=8,
         )
     except Exception:
@@ -1653,6 +1656,7 @@ def _document_knowledge_hits(
     *,
     user_id: int,
     document_ids: Sequence[int],
+    document_chunk_ids: Sequence[int] | None = None,
     limit: int = 8,
 ) -> list[KnowledgeConceptHit]:
     if limit <= 0:
@@ -1680,7 +1684,18 @@ def _document_knowledge_hits(
             )
         ).all()
     )
-    concepts.sort(key=lambda concept: (concept.concept_type != "source_summary", concept.id))
+    query_matched = _query_matched_document_concepts(
+        runtime_db,
+        user_id=user_id,
+        concepts=concepts,
+        document_chunk_ids=document_chunk_ids,
+    )
+    if document_chunk_ids:
+        concepts = query_matched
+    elif not query_matched:
+        concepts.sort(key=lambda concept: (concept.concept_type != "source_summary", concept.id))
+    else:
+        concepts = query_matched
     return [
         KnowledgeConceptHit(
             concept_id=concept.id,
@@ -1691,6 +1706,52 @@ def _document_knowledge_hits(
             score=1.0 if concept.concept_type == "source_summary" else 0.8,
         )
         for concept in concepts[:limit]
+    ]
+
+
+def _query_matched_document_concepts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    concepts: Sequence[RuntimeKnowledgeConcept],
+    document_chunk_ids: Sequence[int] | None,
+) -> list[RuntimeKnowledgeConcept]:
+    chunk_ids = set(_dedupe_positive_ids(document_chunk_ids or ()))
+    if not chunk_ids:
+        return []
+    concepts_by_id = {
+        concept.id: concept
+        for concept in concepts
+        if concept.concept_type != "source_summary"
+    }
+    if not concepts_by_id:
+        return []
+    matched_ids: set[int] = set()
+    rows = runtime_db.execute(
+        select(
+            RuntimeKnowledgeConceptSource.concept_id,
+            RuntimeSourceSpan.locator_json,
+        )
+        .join(
+            RuntimeSourceSpan,
+            (RuntimeSourceSpan.id == RuntimeKnowledgeConceptSource.span_id)
+            & (RuntimeSourceSpan.user_id == RuntimeKnowledgeConceptSource.user_id),
+        )
+        .where(
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+            RuntimeKnowledgeConceptSource.concept_id.in_(list(concepts_by_id)),
+        )
+    ).all()
+    for concept_id, locator in rows:
+        if not isinstance(locator, dict):
+            continue
+        chunk_id = locator.get("runtime_document_chunk_id")
+        if isinstance(chunk_id, int) and chunk_id in chunk_ids:
+            matched_ids.add(concept_id)
+    return [
+        concept
+        for concept in concepts
+        if concept.id in matched_ids and concept.concept_type != "source_summary"
     ]
 
 

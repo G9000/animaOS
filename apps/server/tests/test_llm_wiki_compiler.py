@@ -479,6 +479,53 @@ def test_compiler_recompile_drops_stale_compiler_links(runtime_db) -> None:
     ]
 
 
+def test_compiler_recompile_retires_stale_source_concepts(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+
+    compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+                    _concept_payload("topic", "topic-current", "Current", [spans[0].id]),
+                    _concept_payload("topic", "topic-stale", "Stale", [spans[1].id]),
+                ],
+                "links": [],
+            }
+        ),
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+                    _concept_payload("topic", "topic-current", "Current", [spans[0].id]),
+                ],
+                "links": [],
+            }
+        ),
+    )
+
+    current = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-current")
+    )
+    stale = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-stale")
+    )
+    assert result.status == "completed"
+    assert current.status == "active"
+    assert stale.status == "inactive"
+
+
 def test_compiler_does_not_take_ownership_of_existing_manual_links(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
     concepts = [
