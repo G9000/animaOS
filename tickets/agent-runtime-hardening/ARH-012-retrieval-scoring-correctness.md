@@ -90,13 +90,16 @@ Retrieval gates do what their names claim: absolute thresholds act on raw simila
   - Regression sweep (hybrid_retrieval, ttft_optimizations, heat_scoring,
     forgetting, anima_core_retrieval, memory_scored_retrieval, active_recall,
     evidence_retrieval, optional_rust_imports) → 187 passed
-  - Full server suite → 1970 passed, 1 skipped, 11 failed — all 11 pre-existing
-    and unrelated to this ticket: the documented 8 (recalled-image pill,
+  - Full server suite (initial ARH-012 run) → 1970 passed, 11 failed. Three of
+    those failures (`test_chat.py`: persists_runtime_rows, tracks_turns,
+    compacts_thread_context) were traced to an ARH-011 regression — the
+    feedback task, backgrounded during turn-context assembly, raced the turn's
+    own `runtime_messages` writes on a shared DB connection — and fixed in a
+    follow-up commit on this branch (feedback spawn moved to the post-commit
+    Stage-4 hooks). After that fix the full suite is 1973 passed, 1 skipped, 8
+    failed — exactly the documented pre-existing set (recalled-image pill,
     multi_thread ×2, p5_transcript_archive ×3 needing untracked diary
-    migrations, runtime_db pgvector ×2) plus 3 `test_chat.py` runtime-message
-    `sequence_id` UNIQUE-collision failures that reproduce identically on the
-    clean p5 branch with these four files stashed (they originate in the
-    ARH-011 parallel-assembly work already on this branch, not here).
+    migrations, runtime_db pgvector ×2), none in ARH-012's scope.
 - Changed paths:
   - apps/server/src/anima_server/services/agent/adaptive_retrieval.py
   - apps/server/src/anima_server/services/agent/heat_scoring.py
