@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Index, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,4 +46,10 @@ class PendingMemoryOp(RuntimeBase):
         server_default=text("false"),
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

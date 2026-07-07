@@ -23,7 +23,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-001` | Fix Anthropic LLM compaction endpoint | `in-review` | none |
 | `ARH-002` | Cancellation-safe turn lifecycle | `in-review` | none |
 | `ARH-003` | Optimistic locking for soul-block writes | `in-review` | none |
-| `ARH-004` | Background retry hygiene and persisted gates | `backlog` | none |
+| `ARH-004` | Background retry hygiene and persisted gates | `in-review` | none |
 | `ARH-005` | LLM client robustness and capability gating | `backlog` | none |
 | `ARH-006` | Anthropic prompt caching with stable prefix | `backlog` | `ARH-005` |
 | `ARH-007` | Dirty-checks for background cognition | `backlog` | `ARH-004` |

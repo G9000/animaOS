@@ -79,6 +79,25 @@ class RuntimeThread(RuntimeBase):
         default=False,
         server_default=text("false"),
     )
+    # Archival retry state: closed-but-unarchived threads are retried by
+    # the inactivity sweep with exponential backoff instead of once per
+    # minute forever; archive_failed marks a terminal give-up.
+    archive_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    archive_next_retry_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=True,
+    )
+    archive_failed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     next_message_sequence: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

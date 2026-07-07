@@ -442,19 +442,74 @@ def _should_run_deep_monologue(
     user_id: int,
     *,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> bool:
     """Return True if enough time has passed since the last deep monologue.
 
     Does NOT update the timestamp — call ``mark_deep_monologue_done()``
     after the monologue succeeds.
+
+    The process-local dict is only a fast path: on a fresh process (this is
+    a desktop app — restarts are frequent) the gate is recovered from the
+    newest completed ``deep_monologue`` RuntimeBackgroundTaskRun so a
+    restart does not re-arm the most expensive reflection.
     """
+    del db_factory
     last = _last_deep_monologue.get(user_id)
+    if last is None:
+        last = _last_completed_deep_monologue_at(
+            user_id, runtime_db_factory=runtime_db_factory
+        )
+        if last is not None:
+            _last_deep_monologue[user_id] = last
     if last is not None:
         now = datetime.now(UTC)
         hours_since = (now - last).total_seconds() / 3600
         if hours_since < _DEEP_MONOLOGUE_INTERVAL_HOURS:
             return False
     return True
+
+
+def _last_completed_deep_monologue_at(
+    user_id: int,
+    *,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> datetime | None:
+    """Completion time of the newest successful deep-monologue task run."""
+    from sqlalchemy import desc, select
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            run = rt_db.scalar(
+                select(RuntimeBackgroundTaskRun)
+                .where(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
+                    RuntimeBackgroundTaskRun.task_type == "deep_monologue",
+                    RuntimeBackgroundTaskRun.status == "completed",
+                )
+                .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
+                .limit(1)
+            )
+    except Exception:
+        logger.debug(
+            "Could not read deep-monologue gate from task runs", exc_info=True
+        )
+        return None
+    if run is None or run.completed_at is None:
+        return None
+    if (run.result_json or {}).get("errors"):
+        # Task completed but the monologue itself failed — let it run again.
+        return None
+    completed = run.completed_at
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=UTC)
+    return completed
 
 
 def mark_deep_monologue_done(user_id: int) -> None:

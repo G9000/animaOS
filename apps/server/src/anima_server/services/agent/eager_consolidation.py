@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
@@ -26,6 +26,16 @@ from anima_server.services.agent.transcript_archive import (
 from anima_server.services.data_crypto import df, get_active_dek
 
 logger = logging.getLogger(__name__)
+
+# Terminal archival give-ups log here so permanently-unarchived threads
+# stay greppable instead of retrying every sweep forever.
+degraded_logger = logging.getLogger("anima.runtime.degraded")
+
+# Archival retry policy: exponential backoff (1m, 2m, 4m, ... capped at
+# 60m) and a terminal archive_failed state after this many attempts.
+_ARCHIVE_MAX_RETRIES = 8
+_ARCHIVE_BACKOFF_BASE_MINUTES = 1
+_ARCHIVE_BACKOFF_CAP_MINUTES = 60
 
 
 def _get_transcripts_dir() -> Path:
@@ -177,12 +187,18 @@ async def inactivity_sweep(
                 )
             ).all()
         ]
+        now = datetime.now(UTC)
         retry_threads = [
             (int(thread_id), int(user_id))
             for thread_id, user_id in db.execute(
                 select(RuntimeThread.id, RuntimeThread.user_id).where(
                     RuntimeThread.status == "closed",
                     RuntimeThread.is_archived.is_(False),
+                    RuntimeThread.archive_failed.is_(False),
+                    or_(
+                        RuntimeThread.archive_next_retry_at.is_(None),
+                        RuntimeThread.archive_next_retry_at <= now,
+                    ),
                 )
             ).all()
         ]
@@ -217,12 +233,66 @@ async def inactivity_sweep(
                 thread_id,
                 exc_info=True,
             )
+        _update_archival_retry_state(
+            resolved_runtime_db_factory, thread_id=thread_id
+        )
 
     if stale_threads:
         logger.info("Inactivity sweep closed %d threads", len(stale_threads))
     if retry_threads:
         logger.info("Inactivity sweep retried archival for %d closed threads", len(retry_threads))
     return len(stale_threads)
+
+
+def _update_archival_retry_state(
+    runtime_db_factory: Callable[..., Session],
+    *,
+    thread_id: int,
+) -> None:
+    """Record the outcome of an archival attempt.
+
+    Success (thread archived) clears the retry state; failure schedules the
+    next attempt with exponential backoff and, at the cap, marks the thread
+    terminally `archive_failed` so the sweep stops retrying it every minute.
+    """
+    db = runtime_db_factory()
+    try:
+        thread = db.get(RuntimeThread, thread_id)
+        if thread is None:
+            return
+        if thread.is_archived or thread.status != "closed":
+            if thread.archive_retry_count or thread.archive_next_retry_at:
+                thread.archive_retry_count = 0
+                thread.archive_next_retry_at = None
+                db.commit()
+            return
+
+        thread.archive_retry_count = (thread.archive_retry_count or 0) + 1
+        if thread.archive_retry_count >= _ARCHIVE_MAX_RETRIES:
+            thread.archive_failed = True
+            thread.archive_next_retry_at = None
+            degraded_logger.warning(
+                "Thread %d archival permanently failed after %d attempts; "
+                "giving up (clear archive_failed to retry manually)",
+                thread_id,
+                thread.archive_retry_count,
+            )
+        else:
+            delay_minutes = min(
+                _ARCHIVE_BACKOFF_BASE_MINUTES * 2 ** (thread.archive_retry_count - 1),
+                _ARCHIVE_BACKOFF_CAP_MINUTES,
+            )
+            thread.archive_next_retry_at = datetime.now(UTC) + timedelta(
+                minutes=delay_minutes
+            )
+        db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to update archival retry state for thread %d", thread_id
+        )
+        db.rollback()
+    finally:
+        db.close()
 
 
 async def prune_expired_messages(

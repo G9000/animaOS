@@ -12,10 +12,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# Ops/candidates dropped at their retry cap log here so poison-pill rows
+# stay greppable instead of silently starving the queue.
+degraded_logger = logging.getLogger("anima.runtime.degraded")
 
 # Per-user locks — prevents concurrent Soul Writer runs for the same user
 _user_locks: dict[int, asyncio.Lock] = {}
@@ -232,7 +236,9 @@ def _run_soul_writer_inner(
 
         pending_ops = get_pending_ops(runtime_db, user_id=user_id)
 
-        # Also retry previously-failed ops (transient errors like SQLCipher busy)
+        # Also retry previously-failed ops (transient errors like SQLCipher
+        # busy) — but only below the retry cap: a deterministically-failing
+        # op must not churn on every run and starve the 50-row queue.
         from anima_server.models.pending_memory_op import PendingMemoryOp as _PendingOp
 
         failed_ops = list(
@@ -242,6 +248,7 @@ def _run_soul_writer_inner(
                     _PendingOp.user_id == user_id,
                     _PendingOp.consolidated.is_(False),
                     _PendingOp.failed.is_(True),
+                    _PendingOp.retry_count < MAX_RETRY_COUNT,
                 )
                 .order_by(_PendingOp.id.asc())
                 .limit(MAX_ITEMS_PER_RUN)
@@ -253,6 +260,24 @@ def _run_soul_writer_inner(
         if failed_ops:
             runtime_db.flush()
             pending_ops.extend(failed_ops)
+
+        dead_op_count = runtime_db.scalar(
+            select(func.count())
+            .select_from(_PendingOp)
+            .where(
+                _PendingOp.user_id == user_id,
+                _PendingOp.consolidated.is_(False),
+                _PendingOp.failed.is_(True),
+                _PendingOp.retry_count >= MAX_RETRY_COUNT,
+            )
+        )
+        if dead_op_count:
+            degraded_logger.warning(
+                "Soul Writer skipping %d pending op(s) at the retry cap "
+                "for user %s (permanently failed identity writes)",
+                dead_op_count,
+                user_id,
+            )
 
         for op in pending_ops:
             try:
@@ -267,6 +292,7 @@ def _run_soul_writer_inner(
                 logger.exception("Soul Writer op %s failed", op.id)
                 op.failed = True
                 op.failure_reason = str(e)[:500]
+                op.retry_count = (op.retry_count or 0) + 1
                 result.ops_failed += 1
                 result.errors.append(f"op {op.id}: {e}")
 
@@ -330,25 +356,28 @@ def _run_soul_writer_inner(
             runtime_db.flush()
         except Exception:
             # A concurrent writer may have created an active duplicate since
-            # our read above.  Fall back to per-row updates, skipping any
-            # that violate the unique constraint.
+            # our read above.  Fall back to per-row savepoints so a single
+            # collision fails only that candidate (with its retry_count
+            # incremented) instead of aborting the whole batch mid-state.
             runtime_db.rollback()
             from sqlalchemy.exc import IntegrityError as _IE
 
+            queued: list = []
             for candidate in candidates:
-                candidate.status = "queued"
                 try:
-                    runtime_db.flush()
+                    with runtime_db.begin_nested():
+                        candidate.status = "queued"
+                        runtime_db.flush()
+                    queued.append(candidate)
                 except _IE:
-                    runtime_db.rollback()
                     logger.debug(
                         "Skipping candidate %s: active duplicate hash %s",
                         candidate.id, candidate.content_hash,
                     )
                     candidate.status = "failed"
-                    candidates = [
-                        c for c in candidates if c.status == "queued"]
-                    break
+                    candidate.last_error = "active duplicate content_hash"
+                    candidate.retry_count = (candidate.retry_count or 0) + 1
+            candidates = queued
 
         for candidate in candidates:
             try:

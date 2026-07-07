@@ -317,7 +317,11 @@ async def run_sleeptime_agents(
     try:
         from anima_server.services.agent.sleep_tasks import _should_run_deep_monologue
 
-        if _should_run_deep_monologue(user_id, db_factory=db_factory):
+        if _should_run_deep_monologue(
+            user_id,
+            db_factory=db_factory,
+            runtime_db_factory=runtime_db_factory,
+        ):
             rid = await _issue_background_task(
                 user_id=user_id,
                 task_type="deep_monologue",
