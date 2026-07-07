@@ -13,6 +13,7 @@ from anima_server.models.runtime import (
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
 )
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents.models import DocumentRegistration, ExtractedDocumentChunk
 from anima_server.services.documents.store import register_document, replace_document_chunks
 from anima_server.services.images.store import register_image_asset
@@ -37,6 +38,10 @@ def _enable_foreign_keys_for_adapter_tests(runtime_db) -> None:
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _embedding_for(text: str) -> list[float]:
+    return [1.0, *([0.0] * 767)]
 
 
 def _identity(
@@ -130,6 +135,38 @@ def test_adapter_result_stores_normalized_artifacts_and_spans(runtime_db) -> Non
     assert stored_spans[0].locator_json == {"page_start": 1, "page_end": 1}
     assert source.status == "indexed"
     assert source.indexed_at is not None
+
+
+def test_adapter_result_embeds_stored_spans(runtime_db) -> None:
+    source = register_source(runtime_db, _identity())
+
+    _stored_artifacts, stored_spans = replace_source_artifacts_and_spans(
+        runtime_db,
+        source=source,
+        artifacts=[
+            SourceArtifactInput(
+                artifact_kind="plain_text",
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        spans=[
+            SourceSpanInput(
+                artifact_kind="plain_text",
+                span_kind="paragraph",
+                locator_json={"paragraph_index": 0},
+                content_text="semantic evidence",
+                content_hash=_sha("semantic evidence"),
+            )
+        ],
+        embedding_fn=_embedding_for,
+    )
+
+    embedding = runtime_db.scalar(select(RuntimeEmbedding))
+    assert embedding.source_type == "source_span"
+    assert embedding.source_id == stored_spans[0].id
+    assert embedding.category == "source"
+    assert embedding.content_preview == "semantic evidence"
 
 
 def test_span_inputs_support_page_time_line_row_cell_and_image_locators() -> None:

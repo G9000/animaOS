@@ -18,6 +18,7 @@ from anima_server.services.ingestion.models import (
     SourceIdentity,
     SourceSpanInput,
 )
+from anima_server.services.ingestion.retrieval import EmbeddingFn
 from anima_server.services.ingestion.sources import register_source
 
 IMAGE_ARTIFACT_KIND = "image_annotations"
@@ -27,6 +28,7 @@ def sync_image_source(
     db: Session,
     *,
     asset: RuntimeImageAsset,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     annotations = list(
         db.scalars(
@@ -86,7 +88,16 @@ def sync_image_source(
         )
         for annotation in annotations
     ]
-    return (source, *replace_source_artifacts_and_spans(db, source=source, artifacts=artifacts, spans=spans))
+    return (
+        source,
+        *replace_source_artifacts_and_spans(
+            db,
+            source=source,
+            artifacts=artifacts,
+            spans=spans,
+            embedding_fn=embedding_fn,
+        ),
+    )
 
 
 def _annotation_metadata(annotation: RuntimeImageAnnotation) -> dict[str, object]:

@@ -18,6 +18,7 @@ from anima_server.services.ingestion.models import (
     SourceIdentity,
     SourceSpanInput,
 )
+from anima_server.services.ingestion.retrieval import EmbeddingFn
 from anima_server.services.ingestion.sources import register_source
 
 DOCUMENT_ARTIFACT_KIND = "document_text"
@@ -27,6 +28,7 @@ def sync_document_source(
     db: Session,
     *,
     document: RuntimeDocument,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     chunks = list(
         db.scalars(
@@ -81,7 +83,16 @@ def sync_document_source(
         )
         for chunk in chunks
     ]
-    return (source, *replace_source_artifacts_and_spans(db, source=source, artifacts=artifacts, spans=spans))
+    return (
+        source,
+        *replace_source_artifacts_and_spans(
+            db,
+            source=source,
+            artifacts=artifacts,
+            spans=spans,
+            embedding_fn=embedding_fn,
+        ),
+    )
 
 
 def _document_chunk_locator(

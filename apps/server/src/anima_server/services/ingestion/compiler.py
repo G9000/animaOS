@@ -18,6 +18,10 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.services.agent.json_utils import parse_json_object
+from anima_server.services.ingestion.retrieval import (
+    EmbeddingFn,
+    upsert_concept_embedding,
+)
 from anima_server.services.ingestion.sources import (
     complete_bundle_run,
     fail_bundle_run,
@@ -56,6 +60,7 @@ def compile_source_to_concepts(
     model: ModelCompiler,
     mode: CompileMode = "initial",
     selected_concept_ids: Sequence[int] | None = None,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> CompileResult:
     source = _get_source(db, user_id=user_id, source_id=source_id)
     spans = _get_spans(db, user_id=user_id, source_id=source.id, span_ids=span_ids)
@@ -94,6 +99,7 @@ def compile_source_to_concepts(
                 ),
                 link_payloads=_optional_list(payload, "links"),
             )
+            _embed_concepts(db, concepts=concepts, embedding_fn=embedding_fn)
     except Exception as exc:
         fail_bundle_run(db, run=run, exc=exc)
         return CompileResult(status="failed", run_id=run.id)
@@ -182,6 +188,18 @@ def _merge_concepts(
         )
         concepts.append(concept)
     return concepts
+
+
+def _embed_concepts(
+    db: Session,
+    *,
+    concepts: Sequence[RuntimeKnowledgeConcept],
+    embedding_fn: EmbeddingFn | None,
+) -> None:
+    if embedding_fn is None:
+        return
+    for concept in concepts:
+        upsert_concept_embedding(db, concept=concept, embedding_fn=embedding_fn)
 
 
 def _concepts_by_payload_and_merged_slug(

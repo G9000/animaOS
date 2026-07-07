@@ -9,6 +9,7 @@ from anima_server.models.runtime import RuntimeKnowledgeBundleRun, RuntimeSource
 from anima_server.services.ingestion.adapters.base import IngestionAdapter
 from anima_server.services.ingestion.artifacts import replace_source_artifacts_and_spans
 from anima_server.services.ingestion.models import SourceIdentity
+from anima_server.services.ingestion.retrieval import EmbeddingFn
 
 
 def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
@@ -113,6 +114,7 @@ def ingest_with_adapter(
     *,
     adapter: IngestionAdapter,
     identity: SourceIdentity,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[RuntimeSource, RuntimeKnowledgeBundleRun]:
     source = register_source(db, identity)
     set_source_status(db, source=source, status="extracting")
@@ -131,6 +133,7 @@ def ingest_with_adapter(
             source=source,
             artifacts=result.artifacts,
             spans=result.spans,
+            embedding_fn=embedding_fn,
         )
     except Exception as exc:
         set_source_status(db, source=source, status="failed")

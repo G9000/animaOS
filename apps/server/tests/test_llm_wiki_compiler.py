@@ -13,6 +13,7 @@ from anima_server.models.runtime import (
     RuntimeSource,
     RuntimeSourceSpan,
 )
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.ingestion.artifacts import replace_source_artifacts_and_spans
 from anima_server.services.ingestion.compiler import compile_source_to_concepts
 from anima_server.services.ingestion.models import (
@@ -33,6 +34,10 @@ def _enable_foreign_keys_for_compiler_tests(runtime_db) -> None:
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _embedding_for(text: str) -> list[float]:
+    return [1.0, *([0.0] * 767)]
 
 
 def _source_with_spans(runtime_db) -> tuple[RuntimeSource, list[RuntimeSourceSpan]]:
@@ -122,6 +127,34 @@ def test_compiler_creates_concepts_citations_links_and_completed_run(runtime_db)
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 6
     assert runtime_db.scalar(select(RuntimeKnowledgeLink)).link_type == "supports"
     assert runtime_db.scalar(select(RuntimeKnowledgeBundleRun)).status == "completed"
+
+
+def test_compiler_embeds_completed_concepts(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps(
+            {
+                "concepts": [
+                    _concept_payload("topic", "topic-evidence", "Evidence", [spans[0].id])
+                ],
+                "links": [],
+            }
+        ),
+        embedding_fn=_embedding_for,
+    )
+
+    concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
+    embedding = runtime_db.scalar(select(RuntimeEmbedding))
+    assert result.status == "completed"
+    assert embedding.source_type == "knowledge_concept"
+    assert embedding.source_id == concept.id
+    assert embedding.category == "knowledge"
+    assert "Compiled Evidence with citations." in embedding.content_preview
 
 
 def test_compiler_updates_existing_concept_by_exact_slug(runtime_db) -> None:

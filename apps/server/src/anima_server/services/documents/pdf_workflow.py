@@ -388,7 +388,11 @@ def run_pdf_ingestion_until_wait_or_done(
             _commit_progress(db)
             document = context.require_document(refresh=True)
             _require_indexed_document(document)
-            sync_document_source(db, document=document)
+            sync_document_source(
+                db,
+                document=document,
+                embedding_fn=dependencies.embedding_fn,
+            )
             _append_completed(
                 db,
                 run,

@@ -34,6 +34,7 @@ from anima_server.models.runtime import (
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
 )
+from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.ingestion.adapters.text import (
     ingest_markdown_content,
     ingest_text_content,
@@ -121,6 +122,7 @@ async def ingest_text_source(
             content=payload.content,
             filename=payload.filename,
             title=payload.title,
+            embedding_fn=generate_embedding,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -147,6 +149,7 @@ async def ingest_markdown_source(
             content=payload.content,
             filename=payload.filename,
             title=payload.title,
+            embedding_fn=generate_embedding,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -174,6 +177,7 @@ async def ingest_web_capture_source(
             readable_text=payload.readableText,
             title=payload.title,
             canonical_url=payload.canonicalUrl,
+            embedding_fn=generate_embedding,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -433,6 +437,7 @@ def _compile_source_now(
         source_id=source.id,
         span_ids=[span.id for span in spans],
         model=_compile_model,
+        embedding_fn=generate_embedding,
     )
     run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
     if run is None:

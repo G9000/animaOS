@@ -15,6 +15,10 @@ from anima_server.services.ingestion.models import (
     SourceArtifactInput,
     SourceSpanInput,
 )
+from anima_server.services.ingestion.retrieval import (
+    EmbeddingFn,
+    upsert_source_span_embedding,
+)
 
 
 def replace_source_artifacts_and_spans(
@@ -23,6 +27,7 @@ def replace_source_artifacts_and_spans(
     source: RuntimeSource,
     artifacts: Sequence[SourceArtifactInput],
     spans: Sequence[SourceSpanInput],
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     artifact_kinds = {artifact.artifact_kind for artifact in artifacts}
     missing_kinds = sorted({span.artifact_kind for span in spans} - artifact_kinds)
@@ -132,11 +137,24 @@ def replace_source_artifacts_and_spans(
     source.updated_at = now
     db.add(source)
     db.flush()
+    _embed_source_spans(db, spans=stored_spans, embedding_fn=embedding_fn)
 
     return (
         _ordered_artifacts(db, source_id=source.id),
         _ordered_spans(db, source_id=source.id),
     )
+
+
+def _embed_source_spans(
+    db: Session,
+    *,
+    spans: Sequence[RuntimeSourceSpan],
+    embedding_fn: EmbeddingFn | None,
+) -> None:
+    if embedding_fn is None:
+        return
+    for span in spans:
+        upsert_source_span_embedding(db, span=span, embedding_fn=embedding_fn)
 
 
 def _ordered_artifacts(db: Session, *, source_id: int) -> list[RuntimeSourceArtifact]:

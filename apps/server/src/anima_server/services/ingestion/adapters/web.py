@@ -8,6 +8,7 @@ from anima_server.models.runtime import RuntimeSource, RuntimeSourceArtifact, Ru
 from anima_server.services.ingestion.adapters.text import _content_hash, _paragraph_spans
 from anima_server.services.ingestion.artifacts import replace_source_artifacts_and_spans
 from anima_server.services.ingestion.models import SourceArtifactInput, SourceIdentity
+from anima_server.services.ingestion.retrieval import EmbeddingFn
 from anima_server.services.ingestion.sources import register_source
 
 
@@ -19,6 +20,7 @@ def ingest_web_capture(
     readable_text: str,
     title: str | None = None,
     canonical_url: str | None = None,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     source_url = _normalize_url(url)
     canonical = _normalize_url(canonical_url) if canonical_url else None
@@ -51,7 +53,16 @@ def ingest_web_capture(
         )
     ]
     spans = _paragraph_spans("readable_text", normalized)
-    return (source, *replace_source_artifacts_and_spans(db, source=source, artifacts=artifacts, spans=spans))
+    return (
+        source,
+        *replace_source_artifacts_and_spans(
+            db,
+            source=source,
+            artifacts=artifacts,
+            spans=spans,
+            embedding_fn=embedding_fn,
+        ),
+    )
 
 
 def _normalize_url(value: str) -> str:

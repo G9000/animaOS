@@ -13,6 +13,7 @@ from anima_server.services.ingestion.models import (
     SourceIdentity,
     SourceSpanInput,
 )
+from anima_server.services.ingestion.retrieval import EmbeddingFn
 from anima_server.services.ingestion.sources import register_source
 
 
@@ -23,6 +24,7 @@ def ingest_text_content(
     content: str,
     filename: str | None = None,
     title: str | None = None,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     return _ingest_content(
         db,
@@ -32,6 +34,7 @@ def ingest_text_content(
         content=content,
         filename=filename,
         title=title,
+        embedding_fn=embedding_fn,
     )
 
 
@@ -42,6 +45,7 @@ def ingest_markdown_content(
     content: str,
     filename: str | None = None,
     title: str | None = None,
+    embedding_fn: EmbeddingFn | None = None,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     return _ingest_content(
         db,
@@ -51,6 +55,7 @@ def ingest_markdown_content(
         content=content,
         filename=filename,
         title=title,
+        embedding_fn=embedding_fn,
     )
 
 
@@ -63,6 +68,7 @@ def _ingest_content(
     content: str,
     filename: str | None,
     title: str | None,
+    embedding_fn: EmbeddingFn | None,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     normalized = content.strip()
     if not normalized:
@@ -93,7 +99,16 @@ def _ingest_content(
         artifact_kind,
         normalized,
     )
-    return (source, *replace_source_artifacts_and_spans(db, source=source, artifacts=artifacts, spans=spans))
+    return (
+        source,
+        *replace_source_artifacts_and_spans(
+            db,
+            source=source,
+            artifacts=artifacts,
+            spans=spans,
+            embedding_fn=embedding_fn,
+        ),
+    )
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
