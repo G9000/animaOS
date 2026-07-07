@@ -117,6 +117,7 @@ async def ingest_text_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
+            compile_knowledge=payload.compile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -144,6 +145,7 @@ async def ingest_markdown_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
+            compile_knowledge=payload.compile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -172,6 +174,7 @@ async def ingest_web_capture_source(
             title=payload.title,
             canonical_url=payload.canonicalUrl,
             embedding_fn=generate_embedding,
+            compile_knowledge=payload.compile,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

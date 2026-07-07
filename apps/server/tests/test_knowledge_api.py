@@ -135,6 +135,55 @@ def test_markdown_source_endpoint_compile_reuses_adapter_compile_run() -> None:
         assert [run.run_type for run in compile_runs] == ["compile:initial"]
 
 
+def test_source_endpoint_compile_false_skips_knowledge_compile() -> None:
+    with managed_test_client("anima-knowledge-compile-false-") as client:
+        user_id, headers = _register(client, username="knowledge-compile-false")
+
+        text_response = client.post(
+            "/api/knowledge/sources/text",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "plain.txt",
+                "title": "Plain Text",
+                "content": "Plain text evidence.",
+                "compile": False,
+            },
+        )
+        markdown_response = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "notes.md",
+                "title": "Markdown Notes",
+                "content": "# Notes\n\nMarkdown evidence.",
+            },
+        )
+        web_response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/compile-false",
+                "title": "Compile False Web",
+                "readableText": "Captured web evidence.",
+                "compile": False,
+            },
+        )
+
+        assert text_response.status_code == 201
+        assert markdown_response.status_code == 201
+        assert web_response.status_code == 201
+        assert "compileRun" not in text_response.json()
+        assert "compileRun" not in markdown_response.json()
+        assert "compileRun" not in web_response.json()
+
+        with get_runtime_session_factory()() as runtime_db:
+            assert runtime_db.scalar(select(RuntimeKnowledgeBundleRun)) is None
+            assert runtime_db.scalar(select(RuntimeKnowledgeConcept)) is None
+
+
 def test_compile_source_endpoint_invokes_compiler_for_existing_source() -> None:
     with managed_test_client("anima-knowledge-compile-existing-") as client:
         user_id, headers = _register(client, username="knowledge-compile-existing")
