@@ -60,6 +60,93 @@ def _is_database_locked_error(exc: OperationalError) -> bool:
     return "database is locked" in str(exc).lower()
 
 
+# ── Input-freshness gating ───────────────────────────────────────────
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _newest_memory_item_at(db: Any, user_id: int) -> datetime | None:
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from anima_server.models import MemoryItem
+
+    created = db.scalar(
+        select(sa_func.max(MemoryItem.created_at)).where(MemoryItem.user_id == user_id)
+    )
+    updated = db.scalar(
+        select(sa_func.max(MemoryItem.updated_at)).where(MemoryItem.user_id == user_id)
+    )
+    candidates = [ts for ts in (_as_utc(created), _as_utc(updated)) if ts is not None]
+    return max(candidates) if candidates else None
+
+
+def _newest_episode_at(db: Any, user_id: int) -> datetime | None:
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from anima_server.models.agent_runtime import MemoryEpisode
+
+    return _as_utc(
+        db.scalar(
+            select(sa_func.max(MemoryEpisode.created_at)).where(
+                MemoryEpisode.user_id == user_id
+            )
+        )
+    )
+
+
+def _inputs_changed_since_last_run(
+    *,
+    user_id: int,
+    task_type: str,
+    latest_input_at: datetime | None,
+    runtime_db_factory: Callable[..., object] | None,
+) -> bool:
+    """Dirty check: skip a task when nothing it reads has changed.
+
+    An idle user who triggers repeated reflection lulls used to pay the
+    full synthesis suite each time for identical inputs.  Unknown state
+    (no runtime DB, no timestamps) errs toward running the task.
+    """
+    if latest_input_at is None:
+        return False
+
+    from sqlalchemy import desc, select
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            last_completed = rt_db.scalar(
+                select(RuntimeBackgroundTaskRun.completed_at)
+                .where(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
+                    RuntimeBackgroundTaskRun.task_type == task_type,
+                    RuntimeBackgroundTaskRun.status == "completed",
+                )
+                .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
+                .limit(1)
+            )
+    except Exception:
+        logger.debug("Freshness check failed for %s; running task", task_type)
+        return True
+
+    if last_completed is None:
+        return True
+    return latest_input_at > _as_utc(last_completed)
+
+
 # ── Task tracking ────────────────────────────────────────────────────
 
 async def _issue_background_task(
@@ -252,29 +339,63 @@ async def run_sleeptime_agents(
 
     # ── Sequential group (heat-gated) ────────────────────────────
 
-    run_expensive = force
-    if not run_expensive:
+    heat_gate_passed = False
+    try:
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+        with factory() as db:
+            heat_gate_passed = _should_run_expensive(db, user_id)
+    except Exception:
+        logger.debug("Heat check failed, skipping expensive tasks")
+
+    run_expensive = force or heat_gate_passed
+
+    if run_expensive:
+        newest_item_at: datetime | None = None
+        newest_episode_at: datetime | None = None
         try:
             from anima_server.db.session import SessionLocal
 
             factory = db_factory or SessionLocal
             with factory() as db:
-                run_expensive = _should_run_expensive(db, user_id)
+                newest_item_at = _newest_memory_item_at(db, user_id)
+                newest_episode_at = _newest_episode_at(db, user_id)
         except Exception:
-            logger.debug("Heat check failed, skipping expensive tasks")
+            logger.debug("Input freshness lookup failed; running all tasks")
 
-    if run_expensive:
-        try:
-            rid = await _issue_background_task(
+        def _fresh(task_type: str, latest_input_at: datetime | None) -> bool:
+            changed = _inputs_changed_since_last_run(
                 user_id=user_id,
-                task_type="contradiction_scan",
-                task_fn=_task_contradiction_scan,
-                db_factory=db_factory,
+                task_type=task_type,
+                latest_input_at=latest_input_at,
                 runtime_db_factory=runtime_db_factory,
             )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Contradiction scan task failed")
+            if not changed:
+                logger.info(
+                    "skipped_unchanged: %s for user %s (no new inputs since "
+                    "the last completed run)",
+                    task_type,
+                    user_id,
+                )
+            return changed
+
+        # The contradiction scan is the most expensive recurring task
+        # (up to 40 LLM calls): it honors the heat gate even on forced
+        # idle-lull runs, and skips entirely when no memory changed.
+        if heat_gate_passed and _fresh("contradiction_scan", newest_item_at):
+            try:
+                rid = await _issue_background_task(
+                    user_id=user_id,
+                    task_type="contradiction_scan",
+                    task_fn=_task_contradiction_scan,
+                    db_factory=db_factory,
+                    runtime_db_factory=runtime_db_factory,
+                    _task_runtime_db_factory=runtime_db_factory,
+                )
+                run_ids.append(rid)
+            except Exception:
+                logger.exception("Contradiction scan task failed")
 
         try:
             rid = await _issue_background_task(
@@ -288,29 +409,31 @@ async def run_sleeptime_agents(
         except Exception:
             logger.exception("Memory evolution scan task failed")
 
-        try:
-            rid = await _issue_background_task(
-                user_id=user_id,
-                task_type="profile_synthesis",
-                task_fn=_task_profile_synthesis,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Profile synthesis task failed")
+        if _fresh("profile_synthesis", newest_item_at):
+            try:
+                rid = await _issue_background_task(
+                    user_id=user_id,
+                    task_type="profile_synthesis",
+                    task_fn=_task_profile_synthesis,
+                    db_factory=db_factory,
+                    runtime_db_factory=runtime_db_factory,
+                )
+                run_ids.append(rid)
+            except Exception:
+                logger.exception("Profile synthesis task failed")
 
-        try:
-            rid = await _issue_background_task(
-                user_id=user_id,
-                task_type="pattern_synthesis",
-                task_fn=_task_pattern_synthesis,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Pattern synthesis task failed")
+        if _fresh("pattern_synthesis", newest_episode_at):
+            try:
+                rid = await _issue_background_task(
+                    user_id=user_id,
+                    task_type="pattern_synthesis",
+                    task_fn=_task_pattern_synthesis,
+                    db_factory=db_factory,
+                    runtime_db_factory=runtime_db_factory,
+                )
+                run_ids.append(rid)
+            except Exception:
+                logger.exception("Pattern synthesis task failed")
 
     # ── Time-gated: deep monologue ───────────────────────────────
 
@@ -646,11 +769,16 @@ async def _task_contradiction_scan(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> dict:
     """Scan for contradictions in memory items."""
     from anima_server.services.agent.sleep_tasks import scan_contradictions
 
-    found, resolved = await scan_contradictions(user_id=user_id, db_factory=db_factory)
+    found, resolved = await scan_contradictions(
+        user_id=user_id,
+        db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
     return {"found": found, "resolved": resolved}
 
 

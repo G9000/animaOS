@@ -316,6 +316,9 @@ async def run_quick_reflection(
                         _drop_stale("emotional_synthesis")
 
                 if isinstance(emotional, dict) and emotional.get("emotion"):
+                    # Reflection re-reads the conversation the per-turn
+                    # extraction already scored: dedupe so one conversation
+                    # can't double-count toward pattern promotion.
                     signal = record_emotional_signal(
                         db,
                         user_id=user_id,
@@ -325,6 +328,7 @@ async def run_quick_reflection(
                         evidence_type="linguistic",
                         evidence=str(emotional.get("evidence", "")),
                         trajectory=str(emotional.get("trajectory", "stable")),
+                        dedupe_window_minutes=15,
                     )
                     result.emotional_signal_recorded = signal is not None
             else:
@@ -398,6 +402,9 @@ async def run_quick_reflection(
                             _drop_stale("emotional_synthesis")
 
                     if isinstance(emotional, dict) and emotional.get("emotion"):
+                        # Reflection re-reads the conversation the per-turn
+                        # extraction already scored: dedupe so one
+                        # conversation can't double-count toward promotion.
                         signal = record_emotional_signal(
                             pg_db,
                             user_id=user_id,
@@ -408,6 +415,7 @@ async def run_quick_reflection(
                             evidence=str(emotional.get("evidence", "")),
                             trajectory=str(emotional.get(
                                 "trajectory", "stable")),
+                            dedupe_window_minutes=15,
                         )
                         result.emotional_signal_recorded = signal is not None
 
@@ -1174,22 +1182,9 @@ async def run_deep_monologue(
                     except SoulBlockConflict:
                         _drop_stale("emotional_synthesis")
 
-            # Promote recurring emotional signals to enduring soul patterns
-            if runtime_factory is not None:
-                try:
-                    from anima_server.services.agent.emotional_patterns import (
-                        promote_emotional_patterns,
-                    )
-
-                    with runtime_factory() as pg_db:
-                        promote_emotional_patterns(
-                            soul_db=db, pg_db=pg_db, user_id=user_id
-                        )
-                except Exception:
-                    logger.debug(
-                        "Emotional pattern promotion skipped in deep monologue for user %s",
-                        user_id,
-                    )
+            # Emotional-pattern promotion happens in the Soul Writer's
+            # gated Phase 4 (the single call site) — the duplicate call
+            # here made the same 50-signal scan run twice.
 
             insights = parsed.get("insights", [])
             if insights and isinstance(insights, list):

@@ -1,17 +1,17 @@
 # ARH-007 - Dirty-checks for background cognition
 
-- Status: backlog
+- Status: in-review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: `ARH-004`
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 18:18 MYT
+- Started: 2026-07-07 13:25 MYT
+- Completed: 2026-07-07 18:18 MYT
 
 ## Goal
 
@@ -46,12 +46,25 @@ Background cognition stops re-buying LLM calls for unchanged inputs — persiste
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 18:18 MYT - Implemented on branch `worktree-agent-runtime-hardening-p3`: migration `023_contradiction_checks` + `ContradictionCheck` model persist every scan verdict keyed on an order-normalized content-hash pair (editing an item naturally re-checks only its pairs); `scan_contradictions` skips cached pairs and decrypts each item once instead of per-comparison; the orchestrator computes the heat gate even under `force` — the contradiction scan honors it on idle-lull runs while other expensive tasks keep force semantics; per-task input-freshness gates skip `contradiction_scan`/`profile_synthesis`/`pattern_synthesis` when nothing they read changed since their last completed run (logged as `skipped_unchanged`); soul-writer Phase 4 emotional-pattern promotion is gated on new-signal count or a 1h interval derived from `CoreEmotionalPattern.last_observed` (restart-safe) and the duplicate deep-monologue call site was removed; quick reflection dedupes its emotion signal against the per-turn extraction's within a 15-minute window so one conversation cannot double-count toward `MIN_SIGNALS_FOR_PATTERN`.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_background_dirty_checks.py -q` → 11 passed
+  - `uv run --directory apps/server pytest tests/test_sleep_agent.py tests/test_background_dirty_checks.py -q` → 33 passed (one pre-existing force-mode test updated to the new contract)
+  - Broader sweep (consciousness, soul writer, reflection, creation flow, profile, baseline probes, block locking, runtime DB) → 227 passed, 2 known pre-existing pgvector-environment failures
+  - Migration chain validated: single head `023_contradiction_checks`
 - Changed paths:
-  - none
+  - apps/server/alembic_runtime/versions/023_contradiction_checks.py
+  - apps/server/src/anima_server/models/runtime_memory.py
+  - apps/server/src/anima_server/services/agent/sleep_tasks.py
+  - apps/server/src/anima_server/services/agent/sleep_agent.py
+  - apps/server/src/anima_server/services/agent/soul_writer.py
+  - apps/server/src/anima_server/services/agent/emotional_patterns.py
+  - apps/server/src/anima_server/services/agent/emotional_intelligence.py
+  - apps/server/src/anima_server/services/agent/inner_monologue.py
+  - apps/server/tests/test_background_dirty_checks.py
+  - apps/server/tests/test_sleep_agent.py
 - Notes:
-  - none
+  - 11 new tests: verdict cache (no re-buy, content-edit invalidation), freshness gate truth table, force no longer bypasses the contradiction heat gate, unchanged inputs skip synthesis, promotion gate thresholds, reflection-signal dedupe window.

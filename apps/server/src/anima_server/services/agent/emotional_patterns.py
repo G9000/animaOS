@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime_consciousness import CurrentEmotion
@@ -16,6 +16,59 @@ logger = logging.getLogger(__name__)
 
 MIN_SIGNALS_FOR_PATTERN = 3
 MIN_CONFIDENCE_FOR_PATTERN = 0.5
+
+# Promotion gate: don't re-scan 50 signals and write SQLCipher rows on
+# every soul-writer run (practically every turn).  Run when enough new
+# signals accumulated, or when at least one arrived and enough time
+# passed since the last promotion.
+MIN_NEW_SIGNALS_FOR_PROMOTION = 3
+PROMOTION_INTERVAL = timedelta(hours=1)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def should_promote_emotional_patterns(
+    *,
+    soul_db: Session,
+    pg_db: Session,
+    user_id: int,
+) -> bool:
+    """Restart-safe promotion gate derived from persisted state."""
+    last_observed = _as_utc(
+        soul_db.scalar(
+            select(func.max(CoreEmotionalPattern.last_observed)).where(
+                CoreEmotionalPattern.user_id == user_id
+            )
+        )
+    )
+    if last_observed is None:
+        total = pg_db.scalar(
+            select(func.count())
+            .select_from(CurrentEmotion)
+            .where(CurrentEmotion.user_id == user_id)
+        )
+        return (total or 0) >= MIN_SIGNALS_FOR_PATTERN
+
+    new_signals = pg_db.scalar(
+        select(func.count())
+        .select_from(CurrentEmotion)
+        .where(
+            CurrentEmotion.user_id == user_id,
+            CurrentEmotion.created_at > last_observed,
+        )
+    )
+    new_count = new_signals or 0
+    if new_count >= MIN_NEW_SIGNALS_FOR_PROMOTION:
+        return True
+    if new_count >= 1 and datetime.now(UTC) - last_observed >= PROMOTION_INTERVAL:
+        return True
+    return False
 
 
 def promote_emotional_patterns(

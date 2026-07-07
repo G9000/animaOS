@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
@@ -63,14 +64,36 @@ def record_emotional_signal(
     trajectory: str = "stable",
     previous_emotion: str | None = None,
     topic: str = "",
+    dedupe_window_minutes: float | None = None,
 ) -> CurrentEmotion | EmotionalSignal | None:
-    """Record an emotional signal if it passes confidence threshold."""
+    """Record an emotional signal if it passes confidence threshold.
+
+    *dedupe_window_minutes* suppresses the write when the same emotion was
+    already recorded within the window — quick reflection re-reads the same
+    conversation the per-turn extraction already scored, and without the
+    guard one conversation counted twice toward pattern promotion.
+    """
     if confidence < settings.agent_emotional_confidence_threshold:
         return None
 
     emotion = emotion.lower().strip()
     if emotion not in ALL_EMOTIONS:
         return None
+
+    if dedupe_window_minutes:
+        cutoff = datetime.now(UTC) - timedelta(minutes=dedupe_window_minutes)
+        dedupe_model = _emotion_model(db)
+        recent = db.scalar(
+            select(dedupe_model.id)
+            .where(
+                dedupe_model.user_id == user_id,
+                dedupe_model.emotion == emotion,
+                dedupe_model.created_at >= cutoff,
+            )
+            .limit(1)
+        )
+        if recent is not None:
+            return None
 
     if evidence_type not in ("explicit", "linguistic", "behavioral", "contextual"):
         evidence_type = "linguistic"

@@ -21,6 +21,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -201,6 +202,30 @@ class MemoryAccessLog(RuntimeBase):
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class ContradictionCheck(RuntimeBase):
+    """Persisted contradiction-scan verdict for a pair of memory items.
+
+    Keyed on an order-normalized hash of the two items' content hashes, so
+    an edited item naturally invalidates its pairs.  Without this cache the
+    scan re-bought up to 40 identical LLM verdicts every cycle.
+    """
+
+    __tablename__ = "contradiction_checks"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "pair_hash", name="uq_contradiction_checks_user_pair"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pair_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
 
 
 class MemoryRetrievalFeedback(RuntimeBase):

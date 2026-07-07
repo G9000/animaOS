@@ -452,24 +452,34 @@ def _run_soul_writer_inner(
             soul_db=soul_db,
         )
 
-    # Phase 4: Promote emotional patterns (if due)
+    # Phase 4: Promote emotional patterns — gated so the 50-signal scan
+    # and SQLCipher writes don't run on every turn (the stated "if due"
+    # previously had no gate at all).
     try:
-        from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
+        from anima_server.services.agent.emotional_patterns import (
+            promote_emotional_patterns,
+            should_promote_emotional_patterns,
+        )
 
         with rt_factory() as runtime_db, soul_factory() as soul_db:
-            promoted = promote_emotional_patterns(
+            if should_promote_emotional_patterns(
                 soul_db=soul_db,
                 pg_db=runtime_db,
                 user_id=user_id,
-            )
-            if promoted > 0:
-                soul_db.commit()
-                runtime_db.commit()
-                logger.info(
-                    "Soul Writer promoted %d emotional patterns for user %s",
-                    promoted,
-                    user_id,
+            ):
+                promoted = promote_emotional_patterns(
+                    soul_db=soul_db,
+                    pg_db=runtime_db,
+                    user_id=user_id,
                 )
+                if promoted > 0:
+                    soul_db.commit()
+                    runtime_db.commit()
+                    logger.info(
+                        "Soul Writer promoted %d emotional patterns for user %s",
+                        promoted,
+                        user_id,
+                    )
     except Exception:
         logger.debug(
             "Emotional pattern promotion failed for user %s",

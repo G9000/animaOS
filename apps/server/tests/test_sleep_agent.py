@@ -376,7 +376,36 @@ class TestEpisodeGenerationRetry:
 class TestForceMode:
     @pytest.mark.asyncio()
     async def test_force_bypasses_heat_gate(self, db_factory, rt_factory):
-        """With force=True, expensive tasks run even with no heat."""
+        """With force=True, synthesis tasks run even with no heat — but the
+        contradiction scan (the dominant recurring LLM cost) still honors
+        the heat gate, and tasks with no fresh inputs are skipped."""
+        # Fresh inputs for the synthesis tasks: a memory item (profile)
+        # and an episode (patterns), with no completed runs recorded.
+        from anima_server.models import MemoryEpisode, MemoryItem
+
+        with db_factory() as db:
+            user = User(username="force-mode", password_hash="x", display_name="F")
+            db.add(user)
+            db.flush()
+            db.add(
+                MemoryItem(
+                    user_id=user.id,
+                    content="Likes green tea",
+                    category="preference",
+                    importance=3,
+                    source="extraction",
+                )
+            )
+            db.add(
+                MemoryEpisode(
+                    user_id=user.id,
+                    date="2026-07-07",
+                    summary="Talked about tea preferences.",
+                )
+            )
+            db.commit()
+            user_id = user.id
+
         with (
             patch(
                 "anima_server.services.agent.sleep_agent._task_consolidation",
@@ -433,7 +462,7 @@ class TestForceMode:
             ),
         ):
             run_ids = await run_sleeptime_agents(
-                user_id=1,
+                user_id=user_id,
                 user_message="test",
                 assistant_response="resp",
                 db_factory=db_factory,
@@ -441,9 +470,11 @@ class TestForceMode:
                 force=True,
             )
 
-        # With force=True, contradiction_scan, profile_synthesis run.
-        # Deep monologue respects 24h throttle (mocked True here).
-        assert any("contradiction_scan" in r for r in run_ids)
+        # With force=True and fresh inputs, the synthesis tasks run.
+        # The contradiction scan honors the heat gate even under force
+        # (no heat here → skipped).  Deep monologue respects the 24h
+        # throttle (mocked True here).
+        assert not any("contradiction_scan" in r for r in run_ids)
         assert any("profile_synthesis" in r for r in run_ids)
         assert any("pattern_synthesis" in r for r in run_ids)
         assert any("deep_monologue" in r for r in run_ids)

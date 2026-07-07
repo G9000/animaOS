@@ -8,6 +8,7 @@ Includes:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -252,23 +253,103 @@ async def run_sleep_tasks(
     return result
 
 
+def _pair_hash(content_a: str, content_b: str) -> str:
+    """Order-normalized identity of a checked pair, derived from content.
+
+    Editing either item changes its content hash, which naturally
+    invalidates every cached verdict the item participated in.
+    """
+    hash_a = hashlib.sha256(content_a.strip().lower().encode()).hexdigest()
+    hash_b = hashlib.sha256(content_b.strip().lower().encode()).hexdigest()
+    low, high = sorted((hash_a, hash_b))
+    return hashlib.sha256(f"{low}:{high}".encode()).hexdigest()
+
+
+def _load_checked_pair_hashes(
+    runtime_db_factory: Callable[..., object] | None,
+    *,
+    user_id: int,
+) -> set[str]:
+    """Previously-checked pair hashes; empty set when the cache is unavailable."""
+    from anima_server.models.runtime_memory import ContradictionCheck
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            return set(
+                rt_db.scalars(
+                    select(ContradictionCheck.pair_hash).where(
+                        ContradictionCheck.user_id == user_id
+                    )
+                ).all()
+            )
+    except Exception:
+        logger.debug("Contradiction verdict cache unavailable", exc_info=True)
+        return set()
+
+
+def _record_checked_pair(
+    runtime_db_factory: Callable[..., object] | None,
+    *,
+    user_id: int,
+    pair_hash: str,
+    verdict: str,
+) -> None:
+    from anima_server.models.runtime_memory import ContradictionCheck
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            rt_db.add(
+                ContradictionCheck(
+                    user_id=user_id,
+                    pair_hash=pair_hash,
+                    verdict=verdict[:16],
+                )
+            )
+            rt_db.commit()
+    except Exception:
+        # A concurrent scan may have inserted the same pair; losing one
+        # cache write only costs one future re-check.
+        logger.debug("Failed to record contradiction verdict", exc_info=True)
+
+
 async def scan_contradictions(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> tuple[int, int]:
-    """Scan memory items for contradictions within each category. Returns (found, resolved)."""
+    """Scan memory items for contradictions within each category. Returns (found, resolved).
+
+    Verdicts are persisted per content-hash pair: stable pairs are checked
+    once ever instead of re-buying up to 40 identical LLM calls per cycle.
+    """
     from anima_server.db.session import SessionLocal
 
     factory = db_factory or SessionLocal
     found = 0
     resolved = 0
+    checked_pairs = _load_checked_pair_hashes(runtime_db_factory, user_id=user_id)
 
     for category in ("fact", "preference", "goal", "relationship"):
         with factory() as db:
             items = get_memory_items(db, user_id=user_id, category=category, limit=100)
             if len(items) < 2:
                 continue
+
+            # Decrypt each item once — the pair loop is O(n²) and used to
+            # re-decrypt both sides per comparison.
+            plaintext: dict[int, str] = {
+                item.id: df(user_id, item.content, table="memory_items", field="content")
+                for item in items
+            }
 
             # Find pairs with moderate similarity (potential conflicts)
             # items are newest-first; swap so item_a=older, item_b=newer
@@ -277,8 +358,8 @@ async def scan_contradictions(
             for i, newer_item in enumerate(items):
                 for older_item in items[i + 1 :]:
                     sim = _similarity(
-                        df(user_id, older_item.content, table="memory_items", field="content"),
-                        df(user_id, newer_item.content, table="memory_items", field="content"),
+                        plaintext[older_item.id],
+                        plaintext[newer_item.id],
                     )
                     if 0.3 < sim < 0.95:  # Similar but not duplicate
                         pairs.append((older_item, newer_item))
@@ -288,15 +369,25 @@ async def scan_contradictions(
                 # Skip if either side was already superseded in this scan
                 if item_a.id in resolved_ids or item_b.id in resolved_ids:
                     continue
+                pair_key = _pair_hash(plaintext[item_a.id], plaintext[item_b.id])
+                if pair_key in checked_pairs:
+                    continue
                 found += 1
                 resolution = await _check_contradiction(
-                    df(user_id, item_a.content, table="memory_items", field="content"),
-                    df(user_id, item_b.content, table="memory_items", field="content"),
+                    plaintext[item_a.id],
+                    plaintext[item_b.id],
                 )
                 if resolution is None:
                     continue
 
                 verdict = resolution.get("verdict", "COMPATIBLE")
+                checked_pairs.add(pair_key)
+                _record_checked_pair(
+                    runtime_db_factory,
+                    user_id=user_id,
+                    pair_hash=pair_key,
+                    verdict=str(verdict),
+                )
                 if verdict != "CONFLICT":
                     continue
 
