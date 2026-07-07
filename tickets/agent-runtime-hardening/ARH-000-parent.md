@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 12:53 MYT
+- Updated: 2026-07-08 00:35 MYT
 - Started: 2026-07-07 00:45 MYT
 - Completed:
 
@@ -31,7 +31,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-009` | Embedding contract and store consistency | `in-review` | none |
 | `ARH-010` | Crash-durable memory extraction | `in-review` | `ARH-004` |
 | `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `in-review` | none |
-| `ARH-012` | Retrieval scoring correctness | `backlog` | none |
+| `ARH-012` | Retrieval scoring correctness | `in-review` | none |
 | `ARH-013` | Deduplicate drifted turn and sleep logic | `backlog` | `ARH-002` |
 
 ## Deliverables
@@ -66,6 +66,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 
 - 2026-07-07 00:28 MYT - Parent tracker created from the 2026-07-07 runtime review.
 - 2026-07-07 01:55 MYT - Phase 1 (ARH-001..003) implemented on branch `worktree-agent-runtime-hardening-p1`, all in review.
+- 2026-07-08 00:35 MYT - Phase 5 (ARH-011 TTFT, ARH-012 retrieval scoring) implemented on branch `worktree-agent-runtime-hardening-p5`, both in review. Only ARH-013 (Phase 6) remains.
 
 ## Validation
 

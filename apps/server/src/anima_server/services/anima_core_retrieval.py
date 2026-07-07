@@ -619,8 +619,15 @@ def memory_index_vector_search(
         cosine = _cosine_similarity(normalized_query, doc_embedding)
         if cosine is None:
             continue
-        normalized_score = max(0.0, (cosine + 1.0) / 2.0)
-        ranked.append((normalized_score, _coerce_memory_hit(doc, normalized_score)))
+        # Score contract: raw cosine similarity clamped to [0, 1], higher is
+        # better — matching the rust native index (`retrieval_index.rs` uses
+        # `simd::cosine_similarity` directly) and the pgvector backend
+        # (`1 - cosine_distance`).  The previous `(cosine + 1) / 2` remap
+        # compressed [0, 1] cosine into [0.5, 1], so a shared
+        # `similarity_threshold` gated this backend far more loosely than the
+        # others.
+        similarity_score = max(0.0, cosine)
+        ranked.append((similarity_score, _coerce_memory_hit(doc, similarity_score)))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [hit for _score, hit in ranked][:max(int(limit), 0)]
 

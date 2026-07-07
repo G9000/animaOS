@@ -34,6 +34,16 @@ RECENCY_TAU_HOURS: float = 24.0  # time-decay constant
 MAX_IMPORTANCE: int = 5
 HEAT_IMPORTANCE_FLOOR_SCALE: float = 0.03  # heat floor per importance point
 
+# Retrieval treats heat == 0.0 (and NULL) as "never scored" and keeps the
+# item visible (see memory_store visibility scan and the hybrid/semantic
+# retrieval floors).  A scored item that fully decays would otherwise land on
+# exactly 0.0 via float underflow and silently *bypass* the visibility floor,
+# resurfacing forgotten memories.  Clamp every scored heat to a tiny positive
+# epsilon (well below HEAT_VISIBILITY_FLOOR = 0.01) so "scored-to-zero" stays
+# distinguishable from "never scored": decayed items sit just above 0.0 but
+# below the floor, so the floor filters them out.
+HEAT_SCORED_EPSILON: float = 1e-6
+
 
 def importance_heat_floor(importance: float) -> float:
     """Minimum heat for an item based on its importance, independent of
@@ -140,6 +150,7 @@ def compute_heat(
                     )
                 ),
                 floor,
+                HEAT_SCORED_EPSILON,
             )
         except Exception:
             logger.debug("Rust heat scoring failed; falling back to Python", exc_info=True)
@@ -149,7 +160,8 @@ def compute_heat(
     heat = (
         HEAT_ALPHA * access_count + HEAT_BETA * interaction_depth + HEAT_DELTA * importance
     ) * recency + HEAT_GAMMA * recency
-    return max(heat, floor)
+    # A scored item never lands on exactly 0.0 — see HEAT_SCORED_EPSILON.
+    return max(heat, floor, HEAT_SCORED_EPSILON)
 
 
 def compute_heat_for_item(

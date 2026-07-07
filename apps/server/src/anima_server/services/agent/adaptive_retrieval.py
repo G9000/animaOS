@@ -129,6 +129,20 @@ def find_adaptive_cutoff(
     if active_config.strategy == "legacy":
         return _legacy_cutoff(capped_scores, active_config)
 
+    # Absolute-confidence gate on the RAW (pre-normalization) top score.
+    # min-max normalization always maps the top hit to 1.0, so an
+    # `absolute_min` check applied to normalized scores can never reject a
+    # low-confidence result set — the top always renormalizes above any
+    # floor.  Gate on the raw top score before any shape strategy runs so a
+    # query whose best match is genuine junk returns nothing rather than a
+    # confidently-ranked set.  Callers must feed same-scale scores (e.g.
+    # cosine similarity) for `absolute_min` to be meaningful.
+    if (
+        active_config.strategy in ("combined", "absolute_threshold")
+        and capped_scores[0] < active_config.absolute_min
+    ):
+        return 0, "below_absolute_min", normalize_scores(capped_scores)
+
     if _rust_find_adaptive_cutoff is not None:
         try:
             cutoff, trigger, normalized = _rust_find_adaptive_cutoff(
@@ -224,14 +238,17 @@ def _python_cutoff(
         return len(scores), "min_results", normalized
 
     if config.strategy == "absolute_threshold":
+        # `absolute_min` is an absolute floor on the input scale — compare it
+        # against the raw scores, not the min-max-normalized ones.
         cutoff, trigger = _find_absolute_cutoff(
-            normalized,
+            scores,
             config.absolute_min,
             config.min_results,
         )
         return cutoff, trigger, normalized
 
     if config.strategy == "relative_threshold":
+        # Relative threshold is inherently scale-free — normalized is correct.
         threshold = normalized[0] * config.relative_threshold
         cutoff, _trigger = _find_absolute_cutoff(normalized, threshold, config.min_results)
         return cutoff, "relative_threshold", normalized
@@ -254,6 +271,7 @@ def _python_cutoff(
 
     cutoff, trigger = _find_combined_cutoff(
         normalized,
+        raw=scores,
         top_score=normalized[0],
         relative_threshold=config.relative_threshold,
         max_drop_ratio=config.max_drop_ratio,
@@ -327,19 +345,23 @@ def _find_elbow_cutoff(
 def _find_combined_cutoff(
     scores: Sequence[float],
     *,
+    raw: Sequence[float],
     top_score: float,
     relative_threshold: float,
     max_drop_ratio: float,
     absolute_min: float,
     min_results: int,
 ) -> tuple[int, str]:
+    # `scores` are normalized (relative/cliff checks are scale-free); `raw`
+    # carries the pre-normalization values so `absolute_min` gates on the
+    # true input scale rather than the always-1.0-topped normalized shape.
     relative_min = top_score * relative_threshold
 
     for index, score in enumerate(scores):
         if index < min_results:
             continue
 
-        if score < absolute_min:
+        if raw[index] < absolute_min:
             return index, "absolute_min"
 
         if score < relative_min:

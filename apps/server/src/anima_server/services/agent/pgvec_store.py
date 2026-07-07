@@ -133,52 +133,72 @@ class PgVecStore(VectorStore):
             return []
 
         distance = RuntimeEmbedding.embedding.cosine_distance(query_embedding)
-        candidate_limit = max(limit * 2, limit + 5)
-        stmt = (
+        base_stmt = (
             select(RuntimeEmbedding, (1 - distance).label("similarity"))
             .where(RuntimeEmbedding.user_id == user_id)
             .order_by(distance)
-            .limit(candidate_limit)
         )
         if category is not None:
-            stmt = stmt.where(RuntimeEmbedding.category == category)
+            base_stmt = base_stmt.where(RuntimeEmbedding.category == category)
         if source_types is not None:
-            stmt = stmt.where(RuntimeEmbedding.source_type.in_(source_types))
+            base_stmt = base_stmt.where(RuntimeEmbedding.source_type.in_(source_types))
         if source_ids is not None:
-            stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_ids))
+            base_stmt = base_stmt.where(RuntimeEmbedding.source_id.in_(source_ids))
         if source_id_query is not None:
-            stmt = stmt.where(RuntimeEmbedding.source_id.in_(source_id_query))
-        rows = self._db.execute(stmt).all()
+            base_stmt = base_stmt.where(RuntimeEmbedding.source_id.in_(source_id_query))
 
+        # Checksum filtering happens *after* the ANN fetch, so a fixed
+        # candidate cap can return fewer than `limit` valid rows while good
+        # candidates sit deeper in the ANN order.  Expand the fetch (bounded)
+        # until we collect `limit` valid rows or the pool is exhausted.
+        candidate_limit = max(limit * 2, limit + 5)
+        max_candidates = max(limit * 8, limit + 50)
         results: list[VectorSearchResult] = []
         repaired_checksum_count = 0
         invalid_checksum_count = 0
-        for row in rows:
-            checked = check_embedding(
-                row.RuntimeEmbedding.embedding,
-                row.RuntimeEmbedding.embedding_checksum,
-            )
-            if checked.status == "checksum_mismatch":
-                if checked.actual_checksum is None:
+        while True:
+            rows = self._db.execute(base_stmt.limit(candidate_limit)).all()
+
+            results = []
+            repaired_checksum_count = 0
+            invalid_checksum_count = 0
+            for row in rows:
+                checked = check_embedding(
+                    row.RuntimeEmbedding.embedding,
+                    row.RuntimeEmbedding.embedding_checksum,
+                )
+                if checked.status == "checksum_mismatch":
+                    if checked.actual_checksum is None:
+                        invalid_checksum_count += 1
+                        continue
+                    row.RuntimeEmbedding.embedding_checksum = checked.actual_checksum
+                    repaired_checksum_count += 1
+                if checked.status in {"invalid", "missing_checksum"}:
                     invalid_checksum_count += 1
                     continue
-                row.RuntimeEmbedding.embedding_checksum = checked.actual_checksum
-                repaired_checksum_count += 1
-            if checked.status in {"invalid", "missing_checksum"}:
-                invalid_checksum_count += 1
-                continue
-            results.append(
-                VectorSearchResult(
-                    item_id=row.RuntimeEmbedding.source_id,
-                    content=row.RuntimeEmbedding.content_preview,
-                    category=row.RuntimeEmbedding.category,
-                    importance=row.RuntimeEmbedding.importance,
-                    similarity=round(float(row.similarity), 4),
-                    source_type=getattr(row.RuntimeEmbedding, "source_type", "memory_item"),
+                results.append(
+                    VectorSearchResult(
+                        item_id=row.RuntimeEmbedding.source_id,
+                        content=row.RuntimeEmbedding.content_preview,
+                        category=row.RuntimeEmbedding.category,
+                        importance=row.RuntimeEmbedding.importance,
+                        similarity=round(float(row.similarity), 4),
+                        source_type=getattr(row.RuntimeEmbedding, "source_type", "memory_item"),
+                    )
                 )
-            )
-            if len(results) >= limit:
+                if len(results) >= limit:
+                    break
+
+            # Enough valid rows, the ANN pool is exhausted (fewer rows came
+            # back than we asked for), or we've hit the expansion ceiling.
+            if (
+                len(results) >= limit
+                or len(rows) < candidate_limit
+                or candidate_limit >= max_candidates
+            ):
                 break
+            candidate_limit = min(candidate_limit * 2, max_candidates)
+
         if repaired_checksum_count:
             self._db.flush()
             logger.info(
