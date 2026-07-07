@@ -214,6 +214,8 @@ def _retire_stale_source_concepts(
     ).where(
         RuntimeKnowledgeConceptSource.user_id == user_id,
         RuntimeKnowledgeConceptSource.source_id == source.id,
+        RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string()
+        == "llm_wiki",
     )
     stmt = select(RuntimeKnowledgeConcept).where(
         RuntimeKnowledgeConcept.user_id == user_id,
@@ -237,6 +239,10 @@ def _retire_stale_source_concepts(
                 RuntimeKnowledgeConceptSource.user_id == user_id,
                 RuntimeKnowledgeConceptSource.concept_id == concept.id,
                 RuntimeKnowledgeConceptSource.source_id == source.id,
+                RuntimeKnowledgeConceptSource.metadata_json[
+                    "compiler"
+                ].as_string()
+                == "llm_wiki",
             )
         )
         remaining_source_id = db.scalar(

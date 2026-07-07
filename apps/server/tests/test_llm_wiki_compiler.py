@@ -1023,6 +1023,59 @@ def test_compiler_recompile_removes_stale_citation_when_other_source_owns_metada
     assert [citation.source_id for citation in citations] == [second_source.id]
 
 
+def test_compiler_recompile_preserves_user_concept_citing_refreshed_source(
+    runtime_db,
+) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    user_concept = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="claim",
+        slug="user-claim",
+        title="User claim",
+        description=None,
+        body_markdown="User-authored claim.",
+        frontmatter_json={"type": "claim", "title": "User claim"},
+        content_hash=_sha("User-authored claim."),
+        status="active",
+    )
+    runtime_db.add(user_concept)
+    runtime_db.flush()
+    runtime_db.add(
+        RuntimeKnowledgeConceptSource(
+            user_id=1,
+            concept_id=user_concept.id,
+            source_id=source.id,
+            span_id=spans[0].id,
+            citation_label="U1",
+            quote_text=spans[0].content_text,
+            metadata_json={"origin": "import"},
+        )
+    )
+    runtime_db.flush()
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda request: json.dumps({"concepts": [], "links": []}),
+    )
+
+    concept = runtime_db.get(RuntimeKnowledgeConcept, user_concept.id)
+    citations = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource).where(
+                RuntimeKnowledgeConceptSource.concept_id == user_concept.id
+            )
+        ).all()
+    )
+
+    assert result.status == "completed"
+    assert concept.status == "active"
+    assert len(citations) == 1
+    assert citations[0].metadata_json == {"origin": "import"}
+
+
 def test_lint_knowledge_bundle_supports_concept_scope(runtime_db) -> None:
     from anima_server.services.ingestion.lint import lint_knowledge_bundle
 
