@@ -64,40 +64,7 @@ def _read_frontmatter(path: Path) -> tuple[dict[str, object], str]:
     return yaml.safe_load(yaml_text), body.lstrip("\n")
 
 
-def test_export_writes_okf_bundle_layout_and_required_type(runtime_db, tmp_path) -> None:
-    runtime_db.add(_concept())
-    runtime_db.commit()
-
-    result = export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
-
-    concept_path = tmp_path / "concepts" / "topic-runtime-ingestion.md"
-    assert result.concept_count == 1
-    assert (tmp_path / "index.md").exists()
-    assert (tmp_path / "log.md").exists()
-    assert concept_path.exists()
-
-    frontmatter, body = _read_frontmatter(concept_path)
-    assert frontmatter["type"] == "topic"
-    assert frontmatter["title"] == "Runtime ingestion"
-    assert frontmatter["description"] == "A source-type-agnostic ingestion topic."
-    assert frontmatter["resource"] == "https://example.test/resource"
-    assert frontmatter["tags"] == ["ingestion", "okf"]
-    assert frontmatter["timestamp"] == "2026-07-06T00:00:00+08:00"
-    assert frontmatter["x_anima_unknown"] == {"kept": True}
-    assert body == "Compiled notes.\n"
-
-
-def test_export_rejects_concept_slugs_that_escape_concepts_dir(runtime_db, tmp_path) -> None:
-    runtime_db.add(_concept(slug="../log", title="Unsafe path"))
-    runtime_db.commit()
-
-    with pytest.raises(ValueError, match="Unsafe OKF concept slug"):
-        export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
-
-    assert not (tmp_path / "log.md").exists()
-
-
-def test_export_preserves_concept_citations(runtime_db, tmp_path) -> None:
+def _seed_cited_concept(runtime_db) -> RuntimeKnowledgeConcept:
     concept = _concept(
         slug="topic-citable",
         title="Citable topic",
@@ -147,6 +114,44 @@ def test_export_preserves_concept_citations(runtime_db, tmp_path) -> None:
         )
     )
     runtime_db.commit()
+    return concept
+
+
+def test_export_writes_okf_bundle_layout_and_required_type(runtime_db, tmp_path) -> None:
+    runtime_db.add(_concept())
+    runtime_db.commit()
+
+    result = export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    concept_path = tmp_path / "concepts" / "topic-runtime-ingestion.md"
+    assert result.concept_count == 1
+    assert (tmp_path / "index.md").exists()
+    assert (tmp_path / "log.md").exists()
+    assert concept_path.exists()
+
+    frontmatter, body = _read_frontmatter(concept_path)
+    assert frontmatter["type"] == "topic"
+    assert frontmatter["title"] == "Runtime ingestion"
+    assert frontmatter["description"] == "A source-type-agnostic ingestion topic."
+    assert frontmatter["resource"] == "https://example.test/resource"
+    assert frontmatter["tags"] == ["ingestion", "okf"]
+    assert frontmatter["timestamp"] == "2026-07-06T00:00:00+08:00"
+    assert frontmatter["x_anima_unknown"] == {"kept": True}
+    assert body == "Compiled notes.\n"
+
+
+def test_export_rejects_concept_slugs_that_escape_concepts_dir(runtime_db, tmp_path) -> None:
+    runtime_db.add(_concept(slug="../log", title="Unsafe path"))
+    runtime_db.commit()
+
+    with pytest.raises(ValueError, match="Unsafe OKF concept slug"):
+        export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    assert not (tmp_path / "log.md").exists()
+
+
+def test_export_preserves_concept_citations(runtime_db, tmp_path) -> None:
+    _seed_cited_concept(runtime_db)
 
     export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
 
@@ -166,6 +171,24 @@ def test_export_preserves_concept_citations(runtime_db, tmp_path) -> None:
     assert "## Source References" in body
     assert "- [S1] Evidence source (text://evidence.txt)" in body
     assert "> Evidence quote." in body
+
+
+def test_import_strips_generated_source_references_from_exported_body(
+    runtime_db,
+    tmp_path,
+) -> None:
+    _seed_cited_concept(runtime_db)
+    export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    imported = import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+    runtime_db.commit()
+
+    concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "topic-citable")
+    )
+    assert imported.concept_count == 1
+    assert concept.body_markdown == "Compiled notes with source-backed evidence.\n"
+    assert "## Source References" not in concept.body_markdown
 
 
 def test_import_round_trips_unknown_fields_and_unknown_types(runtime_db, tmp_path) -> None:

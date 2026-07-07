@@ -20,6 +20,7 @@ from anima_server.models.runtime import (
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _OKF_IMPORT_SOURCE = "okf_import"
+_SOURCE_REFERENCES_HEADING = "## Source References"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,7 @@ def import_okf_bundle(
         slug = path.stem
         _concept_markdown_path(concepts_dir, slug)
         frontmatter, body = _parse_markdown(path)
+        body = _strip_generated_source_references(body, frontmatter)
         concept_type = str(frontmatter.get("type") or "note")
         title = str(frontmatter.get("title") or _title_from_slug(slug))
         description_value = frontmatter.get("description")
@@ -286,7 +288,12 @@ def _append_source_references(
     body_markdown: str,
     citations: list[dict[str, object]],
 ) -> str:
-    lines = [_ensure_trailing_newline(body_markdown).rstrip(), "", "## Source References", ""]
+    lines = [
+        _ensure_trailing_newline(body_markdown).rstrip(),
+        "",
+        _SOURCE_REFERENCES_HEADING,
+        "",
+    ]
     for citation in citations:
         label = str(citation.get("citation_label") or "S?")
         source_uri = str(citation.get("source_uri") or "")
@@ -297,6 +304,24 @@ def _append_source_references(
             for quote_line in quote.splitlines():
                 lines.append(f"  > {quote_line}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _strip_generated_source_references(
+    body_markdown: str,
+    frontmatter: dict[str, object],
+) -> str:
+    if not frontmatter.get("x_anima_citations"):
+        return body_markdown
+    marker = f"\n{_SOURCE_REFERENCES_HEADING}\n"
+    stripped = body_markdown.rstrip()
+    if stripped == _SOURCE_REFERENCES_HEADING or stripped.startswith(
+        f"{_SOURCE_REFERENCES_HEADING}\n"
+    ):
+        return ""
+    marker_index = stripped.rfind(marker)
+    if marker_index == -1:
+        return body_markdown
+    return stripped[:marker_index].rstrip() + "\n"
 
 
 def _concept_markdown_path(concepts_dir: Path, slug: str) -> Path:
