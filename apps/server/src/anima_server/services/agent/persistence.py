@@ -563,6 +563,22 @@ def append_message(
     return message
 
 
+# Step rows used to store every message's full content per step —
+# O(steps × history) serialization on the critical path.  Previews keep
+# the rows debuggable (roles, tool ids, shape) while the durable full
+# text lives once in the message rows and tool outputs in response_json.
+_STEP_SNAPSHOT_PREVIEW_CHARS = 500
+
+
+def _slim_message_snapshot(message: object) -> dict[str, object]:
+    payload = asdict(message)
+    content = payload.get("content")
+    if isinstance(content, str) and len(content) > _STEP_SNAPSHOT_PREVIEW_CHARS:
+        payload["content"] = content[:_STEP_SNAPSHOT_PREVIEW_CHARS] + "..."
+        payload["content_chars"] = len(content)
+    return payload
+
+
 def create_step(
     db: Session,
     *,
@@ -572,7 +588,9 @@ def create_step(
     prompt_budget: object | None = None,
 ) -> RuntimeStep:
     request_json: dict[str, object] = {
-        "messages": [asdict(message) for message in trace.request_messages],
+        "messages": [
+            _slim_message_snapshot(message) for message in trace.request_messages
+        ],
         "allowed_tools": list(trace.allowed_tools),
         "force_tool_call": trace.force_tool_call,
     }

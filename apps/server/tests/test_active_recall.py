@@ -867,7 +867,8 @@ class TestMemoryPressureWarning:
     def test_warning_injected_above_threshold(self):
         from anima_server.services.agent.service import _inject_memory_pressure_warning
 
-        # Create blocks that exceed 80% of 4096 tokens ≈ 3277 tokens ≈ 13108 chars
+        # Pin the context budget to 4096 tokens: threshold = 80% ≈ 3277
+        # tokens, and 14000 chars ≈ 4667 tokens (chars/3) crosses it.
         large_value = "x" * 14000
         blocks = (MemoryBlock(label="soul", value=large_value),)
         history: list[StoredMessage] = [
@@ -876,8 +877,10 @@ class TestMemoryPressureWarning:
         companion = MagicMock()
         companion._memory_pressure_alerted = False
 
-        with patch("anima_server.services.agent.service.settings") as mock_settings:
-            mock_settings.agent_max_tokens = 4096
+        with patch(
+            "anima_server.services.agent.service.resolve_context_budget_tokens",
+            return_value=4096,
+        ):
             result = _inject_memory_pressure_warning(
                 blocks, history, companion)
 
@@ -896,9 +899,10 @@ class TestMemoryPressureWarning:
         companion = MagicMock()
         companion._memory_pressure_alerted = False
 
-        with patch("anima_server.services.agent.service.settings") as mock_settings:
-            mock_settings.agent_max_tokens = 4096
-
+        with patch(
+            "anima_server.services.agent.service.resolve_context_budget_tokens",
+            return_value=4096,
+        ):
             # First call: warning injected
             result1 = _inject_memory_pressure_warning(
                 blocks, history, companion)

@@ -1,17 +1,17 @@
 # ARH-008 - Context and token hygiene
 
-- Status: backlog
+- Status: in-review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude (Fable 5)
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-07 00:28 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-07 18:55 MYT
+- Started: 2026-07-07 18:25 MYT
+- Completed: 2026-07-07 18:55 MYT
 
 ## Goal
 
@@ -49,12 +49,22 @@ Bound what enters and re-enters the context window: cap tool-output replay, slim
 ## Activity Log
 
 - 2026-07-07 00:28 MYT - Ticket created.
+- 2026-07-07 18:55 MYT - Implemented on branch `worktree-agent-runtime-hardening-p3`: `make_tool_message` clamps tool output entering conversation history at `TOOL_HISTORY_CHAR_LIMIT` (8k) — covering all nine append sites plus replayed history — truncating *inside* the executor's JSON envelope so the model keeps seeing valid JSON, while the 50k output stays intact on the step trace and message rows; `create_step` stores 500-char previews (+`content_chars`) instead of every message's full content per step; the seven raw `[:N]` slices in block builders route through `_truncate_lines`; token estimates move to a conservative chars/3 in both `estimate_message_tokens` and `estimate_char_tokens`, `resolve_context_budget_tokens` reserves `PROMPT_SCAFFOLDING_RESERVE_TOKENS` (3000) for template scaffolding + tool schemas, and the legacy no-window fallback derives from the block budget it must hold (16k tokens) instead of letting `agent_max_tokens` (4096) double as a context budget smaller than the blocks alone.
+- Note on a deliberate deviation from the ticket sketch: full tool output is kept on the *message rows* (the durable record) and clamped at context-build time via `make_tool_message`, rather than capping the persisted form — with step snapshots slimmed, capping message rows too would have destroyed the only full copy.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `uv run --directory apps/server pytest tests/test_context_token_hygiene.py tests/test_agent_compaction.py tests/test_prompt_budget.py -q` → 45 passed (three budget/estimate assertions updated to the new contract)
+  - Full server suite sweep recorded on the parent/PR.
 - Changed paths:
-  - none
+  - apps/server/src/anima_server/services/agent/messages.py
+  - apps/server/src/anima_server/services/agent/persistence.py
+  - apps/server/src/anima_server/services/agent/memory_blocks.py
+  - apps/server/src/anima_server/services/agent/compaction.py
+  - apps/server/src/anima_server/services/agent/prompt_budget.py
+  - apps/server/tests/test_context_token_hygiene.py
+  - apps/server/tests/test_agent_compaction.py
+  - apps/server/tests/test_prompt_budget.py
 - Notes:
-  - none
+  - 8 new tests: envelope-aware history clamp (valid JSON preserved), pass-through under the limit, non-JSON clamp marker, snapshot preview + length, short-content untouched, line-boundary truncation, chars/3 estimate, CJK not underestimated.

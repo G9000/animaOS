@@ -82,9 +82,9 @@ def test_estimate_tokens_empty() -> None:
 
 
 def test_estimate_tokens_text_only() -> None:
-    # "hello world" = 11 chars => ceil(11/4) = 3
+    # "hello world" = 11 chars => ceil(11/3) = 4 (conservative estimate)
     tokens = estimate_message_tokens(content_text="hello world")
-    assert tokens == 3
+    assert tokens == 4
 
 
 def test_estimate_tokens_with_tool_name() -> None:

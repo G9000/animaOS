@@ -27,7 +27,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-005` | LLM client robustness and capability gating | `in-review` | none |
 | `ARH-006` | Anthropic prompt caching with stable prefix | `in-review` | `ARH-005` |
 | `ARH-007` | Dirty-checks for background cognition | `in-review` | `ARH-004` |
-| `ARH-008` | Context and token hygiene | `backlog` | none |
+| `ARH-008` | Context and token hygiene | `in-review` | none |
 | `ARH-009` | Embedding contract and store consistency | `backlog` | none |
 | `ARH-010` | Crash-durable memory extraction | `backlog` | `ARH-004` |
 | `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `backlog` | none |

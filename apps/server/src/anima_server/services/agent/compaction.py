@@ -86,7 +86,10 @@ def estimate_message_tokens(
     combined_text = "\n".join(text_parts).strip()
     if not combined_text:
         return 0
-    return max(1, ceil(len(combined_text) / 4))
+    # chars/3 keeps the estimate conservative: real ratios run 1–2 chars
+    # per token for CJK/emoji/code, and an optimistic estimate overflows
+    # the window with only substring-matched provider errors as backstop.
+    return max(1, ceil(len(combined_text) / 3))
 
 
 def compact_thread_context(

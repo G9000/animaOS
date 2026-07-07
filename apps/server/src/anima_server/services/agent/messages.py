@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -8,6 +9,36 @@ from anima_server.services.agent.runtime_types import ToolCall
 from anima_server.services.agent.state import StoredAttachment, StoredMessage
 
 _TOOL_RULE_VIOLATION_PREFIX = "Tool rule violation:"
+
+# Cap on tool output entering the conversation (live and replayed).  The
+# executor's 50k trace cap stays on the step record; without a separate
+# history cap a single large tool result was re-billed on every
+# subsequent LLM call until compaction.
+TOOL_HISTORY_CHAR_LIMIT = 8_000
+
+
+def _clamp_tool_history_content(content: str) -> str:
+    if len(content) <= TOOL_HISTORY_CHAR_LIMIT:
+        return content
+
+    note = (
+        f"... [NOTE: tool output clamped for conversation history, "
+        f"{len(content)} chars total; the step trace holds the full output]"
+    )
+    # Tool results usually arrive as the executor's JSON envelope —
+    # truncate inside the message field so the model keeps seeing valid
+    # JSON instead of a cut-off document.
+    try:
+        envelope = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        envelope = None
+    if isinstance(envelope, dict) and isinstance(envelope.get("message"), str):
+        overflow = len(content) - TOOL_HISTORY_CHAR_LIMIT
+        message = envelope["message"]
+        keep = max(len(message) - overflow, 0)
+        envelope["message"] = message[:keep] + note
+        return json.dumps(envelope)
+    return content[:TOOL_HISTORY_CHAR_LIMIT] + note
 
 
 @dataclass
@@ -188,7 +219,7 @@ def make_tool_message(
     name: str | None = None,
 ) -> Any:
     return ToolMessage(
-        content=content,
+        content=_clamp_tool_history_content(content),
         tool_call_id=tool_call_id,
         name=name,
     )

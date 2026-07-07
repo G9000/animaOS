@@ -824,7 +824,15 @@ def test_chat_compacts_thread_context_into_summary() -> None:
         settings.agent_compaction_keep_last_messages = 2
         invalidate_agent_runtime_cache()
 
-        with _client() as client:
+        from unittest.mock import patch as _patch
+
+        # Pin a tiny context budget so a few short messages trigger
+        # compaction (the legacy fallback no longer lets agent_max_tokens
+        # double as the context budget).
+        with _patch(
+            "anima_server.services.agent.service.resolve_context_budget_tokens",
+            return_value=60,
+        ), _client() as client:
             user = _register_user(client, username="compact-me")
             headers = {"x-anima-unlock": str(user["unlockToken"])}
             user_id = int(user["id"])

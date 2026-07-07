@@ -103,20 +103,34 @@ DEFAULT_BUDGET = BudgetConfig()
 _TIER_SHARES = (4 / 24, 6 / 24, 6 / 24, 8 / 24)
 
 
+# Fixed reservation for prompt content the char-based budgets never
+# counted: the system template scaffolding around the blocks and the
+# serialized tool JSON schemas sent with every request.
+PROMPT_SCAFFOLDING_RESERVE_TOKENS = 3000
+
+
 def resolve_context_budget_tokens() -> int:
     """Token budget available to the whole prompt (blocks + conversation).
 
     When ``agent_context_window_tokens`` is configured, the budget is the
-    window minus the output reservation (``agent_max_tokens``).  Otherwise
-    fall back to the legacy behaviour where ``agent_max_tokens`` doubles
-    as the context budget.
+    window minus the output reservation (``agent_max_tokens``) and the
+    scaffolding/tool-schema reserve.  The legacy fallback (no window
+    configured) derives from the block budget it has to accommodate:
+    ``agent_max_tokens`` used to double as the whole context budget while
+    DEFAULT_BUDGET simultaneously allowed more block chars than that
+    budget could hold, so compaction triggers fired at the wrong point.
     """
     from anima_server.config import settings
 
     window = settings.agent_context_window_tokens
     if window is not None and window > 0:
-        return max(1024, window - settings.agent_max_tokens)
-    return settings.agent_max_tokens
+        return max(
+            1024,
+            window - settings.agent_max_tokens - PROMPT_SCAFFOLDING_RESERVE_TOKENS,
+        )
+    # Blocks are roughly half the prompt; history keeps the other half.
+    block_tokens = estimate_char_tokens(DEFAULT_BUDGET.total_budget)
+    return max(settings.agent_max_tokens, block_tokens * 2)
 
 
 def resolve_budget_config() -> BudgetConfig:
@@ -133,7 +147,9 @@ def resolve_budget_config() -> BudgetConfig:
 
     ratio = min(max(settings.agent_block_budget_ratio, 0.05), 0.95)
     block_tokens = int(resolve_context_budget_tokens() * ratio)
-    total_chars = max(4000, block_tokens * 4)
+    # Inverse of estimate_char_tokens (chars/3), so the char budget and
+    # the token budget describe the same amount of text.
+    total_chars = max(4000, block_tokens * 3)
     tier_chars = [int(total_chars * share) for share in _TIER_SHARES]
     return BudgetConfig(
         total_budget=total_chars,
@@ -145,9 +161,11 @@ def resolve_budget_config() -> BudgetConfig:
 
 
 def estimate_char_tokens(char_count: int) -> int:
+    """Conservative token estimate (chars/3): never optimistic, so budget
+    checks fail toward compaction rather than context overflow."""
     if char_count <= 0:
         return 0
-    return max(1, ceil(char_count / 4))
+    return max(1, ceil(char_count / 3))
 
 
 def plan_prompt_budget(
