@@ -10,6 +10,8 @@ from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeDocument,
     RuntimeDocumentChunk,
+    RuntimeSource,
+    RuntimeSourceSpan,
     RuntimeWorkflowCheckpoint,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -63,7 +65,12 @@ def _embedding(*values: float) -> list[float]:
     return [*values, *([0.0] * (_TEST_EMBEDDING_DIM - len(values)))]
 
 
-def _request(*, user_id: int = 7, sha256: str = "a" * 64) -> PDFIngestionRequest:
+def _request(
+    *,
+    user_id: int = 7,
+    sha256: str = "a" * 64,
+    thread_id: int | None = 42,
+) -> PDFIngestionRequest:
     return PDFIngestionRequest(
         user_id=user_id,
         filename="manual.pdf",
@@ -71,7 +78,7 @@ def _request(*, user_id: int = 7, sha256: str = "a" * 64) -> PDFIngestionRequest
         storage_path=f".anima/documents/{user_id}/manual.pdf",
         sha256=sha256,
         size_bytes=2048,
-        thread_id=42,
+        thread_id=thread_id,
         metadata_json={"source": "test"},
     )
 
@@ -242,6 +249,41 @@ def _candidate_rows(runtime_db: Session) -> list[MemoryCandidate]:
             select(MemoryCandidate).order_by(MemoryCandidate.id)
         ).all()
     )
+
+
+def test_pdf_workflow_syncs_indexed_document_chunks_to_source_spans(
+    runtime_db: Session,
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _patch_pgvec_upsert(monkeypatch)
+    calls = _Calls()
+    run = start_pdf_ingestion_workflow(runtime_db, _request(thread_id=None))
+
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(calls),
+    )
+
+    source = runtime_db.scalar(
+        select(RuntimeSource).where(
+            RuntimeSource.user_id == 7,
+            RuntimeSource.kind == "document",
+        )
+    )
+    assert result.status == "awaiting_input"
+    assert source is not None
+    spans = list(
+        runtime_db.scalars(
+            select(RuntimeSourceSpan)
+            .where(RuntimeSourceSpan.source_id == source.id)
+            .order_by(RuntimeSourceSpan.id)
+        ).all()
+    )
+    assert [span.locator_json["page_start"] for span in spans] == [1, 2]
+    assert [span.locator_json["chunk_index"] for span in spans] == [0, 1]
 
 
 def _checkpoint(

@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 from anima_server.config import settings
-from anima_server.models.runtime import RuntimeImageAnnotation, RuntimeImageAsset
+from anima_server.models.runtime import (
+    RuntimeImageAnnotation,
+    RuntimeImageAsset,
+    RuntimeSource,
+    RuntimeSourceSpan,
+)
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.images.store import register_image_asset
 from sqlalchemy import func, select
@@ -80,6 +85,26 @@ def test_index_image_asset_creates_context_metadata_and_current_embeddings(
     assert {row.importance for row in embeddings} == {3}
     assert runtime_db.get(RuntimeImageAsset, asset.id).status == "indexed"
     assert runtime_db.get(RuntimeImageAsset, asset.id).indexed_at is not None
+    source = runtime_db.scalar(
+        select(RuntimeSource).where(
+            RuntimeSource.user_id == 7,
+            RuntimeSource.kind == "image",
+            RuntimeSource.source_uri == f"runtime-image://{asset.id}",
+        )
+    )
+    assert source is not None
+    spans = list(
+        runtime_db.scalars(
+            select(RuntimeSourceSpan)
+            .where(RuntimeSourceSpan.source_id == source.id)
+            .order_by(RuntimeSourceSpan.id)
+        ).all()
+    )
+    assert [span.span_kind for span in spans] == ["image_annotation", "image_annotation"]
+    assert {span.locator_json["annotation_kind"] for span in spans} == {
+        "upload_context",
+        "metadata",
+    }
 
 
 def test_index_image_asset_defaults_to_configured_embedding_function(

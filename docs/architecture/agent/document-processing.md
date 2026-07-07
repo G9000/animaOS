@@ -8,6 +8,13 @@ category: architecture
 
 This document describes the current document-processing path in AnimaOS. The implemented user-facing document format is PDF. Documents are runtime context for chat and RAG; they are not automatically promoted into durable SQLCipher memory.
 
+PDF ingestion also feeds the universal source-ingestion layer described in
+[Source Ingestion](source-ingestion.md). The PDF workflow keeps its existing
+`runtime_documents`, `runtime_document_chunks`, and `document_chunk` embeddings
+for chat RAG, then mirrors indexed documents and chunks into `runtime_sources`
+and `runtime_source_spans` so they can participate in OKF concept compilation,
+bundle export, linting, and source evidence drilldown.
+
 ## Scope
 
 Document processing covers five responsibilities:
@@ -32,6 +39,8 @@ The source of truth is:
 | Chunking | `apps/server/src/anima_server/services/documents/chunking.py` |
 | Chunk embedding | `apps/server/src/anima_server/services/documents/indexing.py` |
 | Document RAG search | `apps/server/src/anima_server/services/documents/rag.py` |
+| Source ingestion bridge | `apps/server/src/anima_server/services/ingestion/adapters/documents.py` |
+| OKF/knowledge routes | `apps/server/src/anima_server/api/routes/knowledge.py` |
 | Chat prompt assembly | `apps/server/src/anima_server/services/agent/service.py` |
 | Message persistence and pills | `apps/server/src/anima_server/services/agent/persistence.py` |
 | Runtime models | `apps/server/src/anima_server/models/runtime.py` |
@@ -41,7 +50,10 @@ Image uploads are intentionally handled by a separate visual-memory path:
 `runtime_image_assets`, `runtime_image_message_links`, `runtime_image_annotations`,
 and `RuntimeEmbedding.source_type = "image_annotation"`. The PDF pipeline should not
 copy PDFs into image assets. Future unified media recall should compose document
-results and image results at the prompt/source-pill layer.
+results and image results at the prompt/source-pill layer. The source-ingestion
+layer now provides that shared evidence contract by mirroring PDF chunks and image
+annotations into source spans while leaving the original document/image pipelines
+as the source-specific operational paths.
 
 ## End-to-End Flow
 
@@ -96,6 +108,8 @@ Documents live in the runtime PostgreSQL store, not the encrypted soul database.
 | `runtime_workflow_checkpoints` | Ordered idempotent checkpoints for each completed or waiting workflow state |
 | `runtime_documents` | Per-user document metadata: filename, MIME type, storage path, SHA-256, size, status, indexed timestamp, optional thread/workflow ids |
 | `runtime_document_chunks` | Extracted text chunks with chunk index, page range, content hash, token count, section title, and metadata |
+| `runtime_sources`, `runtime_source_artifacts`, `runtime_source_spans` | Universal source-ingestion mirror for indexed documents and chunks |
+| `runtime_knowledge_concepts`, `runtime_knowledge_concept_sources`, `runtime_knowledge_links` | Optional compiled OKF/LLM-wiki concepts, citations, and links derived from source spans |
 | `embeddings` | pgvector rows for document chunks and other runtime-search sources |
 | `runtime_messages` | User/assistant chat rows, including serialized document attachment/source pills in `content_json` |
 
@@ -175,6 +189,11 @@ For each missing chunk, it calls the configured embedding function, then writes 
 | `content_preview` | first 200 characters for debugging and BM25 support |
 
 If every current chunk has an embedding, the document status becomes `indexed` and `indexed_at` is set. If an embedding provider returns no vector for any chunk, the document stays `registered` so callers know indexing is incomplete.
+
+After chunk indexing, the document adapter bridge can sync the document into
+`runtime_sources` and its chunks into `runtime_source_spans` with page locators.
+This sync is additive: it does not delete or replace the document chunk rows or
+their `document_chunk` embeddings.
 
 ## Document RAG Search
 
@@ -268,6 +287,8 @@ The default API dependency currently indexes and summarizes PDFs but does not pr
 | `POST /api/documents/workflows/{workflow_id}/resume` | Continue ingestion from the latest completed checkpoint |
 | `POST /api/documents/workflows/{workflow_id}/approve-memory` | Approve staged PDF memory proposals |
 | `POST /api/documents/search` | Search indexed document chunks |
+| `GET /api/knowledge/sources` | List universal source-ingestion rows, including mirrored PDFs |
+| `GET /api/knowledge/concepts` | List compiled OKF/LLM-wiki concept pages derived from source spans |
 | `POST /api/chat` | Send chat text, images, context messages, today context, and selected `documentIds` |
 | `GET /api/chat/history` | Return messages with serialized attachments, retrieval traces, and pills |
 
@@ -308,6 +329,7 @@ Important regression coverage lives in:
 - OCR is not implemented.
 - Chunk overlap is not implemented.
 - Document chunks are runtime context, not encrypted soul memory.
+- The source-ingestion mirror is runtime evidence and compiled knowledge, not encrypted soul memory.
 - Citation pills identify the document, not exact chunk ids or page-level inline citations.
 - Chat document grounding is scoped to explicit or active thread documents, not a global search over every indexed PDF.
 - Runtime pgvector availability and embedding provider availability determine whether indexing/search can complete.
