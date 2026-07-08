@@ -48,6 +48,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | [Presence Core Module](agent/capability-modules/presence-core.md) | Ambient awareness, follow-ups, nudges, quiet hours, and proactive policy |
 | [Camera Perception Module](agent/capability-modules/perception-camera.md) | First concrete perception module for consented one-frame webcam sight |
 | [Document Processing](agent/document-processing.md) | PDF upload, checkpointed ingestion, runtime document storage, pgvector RAG, chat grounding, and citation pills |
+| [Source Ingestion](agent/source-ingestion.md) | Universal source registry, artifacts/spans, OKF concept bundles, LLM-wiki compilation, search, linting, and memory boundary |
 | [Agent Tools](agent/agent-tools.md) | The 17 tools available to the LLM agent |
 
 ### Memory Architecture (`memory/`)
@@ -89,6 +90,7 @@ flowchart TD
             Auth["/api/auth"]
             Chat["/api/chat"]
             Memory["/api/memory"]
+            Knowledge["/api/knowledge"]
             Consc["/api/consciousness"]
             Soul["/api/soul"]
             Tasks["/api/tasks"]
@@ -102,6 +104,7 @@ flowchart TD
         subgraph Services["Service Layer"]
             AgentRT["Agent Runtime"]
             MemStack["Memory Stack"]
+            SourceIngest["Source Ingestion"]
             Consciousness["Consciousness Layer"]
             LLMLayer["LLM Clients"]
             CryptoLayer["Crypto & Auth"]

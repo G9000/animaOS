@@ -16,8 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeImageMessageLink,
+    RuntimeKnowledgeConcept,
+    RuntimeKnowledgeConceptSource,
     RuntimeMessage,
     RuntimeRun,
+    RuntimeSource,
+    RuntimeSourceSpan,
     RuntimeThread,
 )
 from anima_server.schemas.chat import (
@@ -125,6 +129,7 @@ from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.documents.store import get_document_for_user
 from anima_server.services.health.event_logger import emit as health_emit
+from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
 
 logger = logging.getLogger(__name__)
 
@@ -1091,10 +1096,7 @@ async def _prepare_turn_context(
         ):
             content_json = attach_serialized_pills(
                 None,
-                [
-                    _serialize_context_message_pill(pill)
-                    for pill in context_message.pills
-                ],
+                [_serialize_context_pill(pill) for pill in context_message.pills],
             )
             persisted = append_message(
                 runtime_db,
@@ -1177,6 +1179,12 @@ async def _prepare_turn_context(
         )
         raise
     return thread, run, user_msg, turn_ctx
+
+
+def _serialize_context_pill(pill: MessagePill) -> dict[str, object]:
+    payload = pill.model_dump(exclude_none=True)
+    payload.setdefault("ref", None)
+    return payload
 
 
 def _fail_turn_setup(
@@ -1700,14 +1708,6 @@ def _build_recalled_image_source_pills(
     return tuple(pills)
 
 
-def _serialize_context_message_pill(pill: MessagePill) -> dict[str, object]:
-    return {
-        key: value
-        for key, value in pill.model_dump().items()
-        if value is not None or key == "ref"
-    }
-
-
 def _build_assistant_source_pills(
     turn_ctx: _TurnContext,
     *,
@@ -1780,29 +1780,262 @@ def _build_document_context_block(
             exc_info=True,
         )
         return None
-    if not results:
+
+    try:
+        knowledge_hits = _document_knowledge_hits(
+            runtime_db,
+            user_id=user_id,
+            document_ids=cleaned_document_ids,
+            document_chunk_ids=[result.chunk_id for result in results],
+            limit=8,
+        )
+    except Exception:
+        logger.debug(
+            "Document knowledge retrieval failed for user %s documents %s",
+            user_id,
+            cleaned_document_ids,
+            exc_info=True,
+        )
+        knowledge_hits = []
+
+    if not results and not knowledge_hits:
         return None
 
     lines = [
         "Selected document context from indexed PDFs. Use this only when it is relevant.",
     ]
-    for index, result in enumerate(results, start=1):
-        location = _format_document_location(result)
-        section = f", section {result.section_title}" if result.section_title else ""
-        lines.append(
-            f"[{index}] {result.filename}{location}{section} "
-            f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
-        )
-        lines.append(_truncate_document_chunk(result.content))
+    if knowledge_hits:
+        lines.append("")
+        lines.append("Compiled knowledge from selected PDFs:")
+        for index, hit in enumerate(knowledge_hits, start=1):
+            lines.append(
+                f"[K{index}] {hit.title} "
+                f"({hit.concept_type}, concept {hit.concept_id}, selected source)"
+            )
+            lines.append(_truncate_document_chunk(hit.summary, limit=700))
+
+    raw_results = _raw_document_results_without_compiled_coverage(
+        runtime_db,
+        user_id=user_id,
+        results=results,
+        knowledge_hits=knowledge_hits,
+    )
+    if raw_results:
+        lines.append("")
+        lines.append("Raw evidence excerpts from selected PDFs:")
+        for index, result in enumerate(raw_results, start=1):
+            location = _format_document_location(result)
+            section = f", section {result.section_title}" if result.section_title else ""
+            lines.append(
+                f"[{index}] {result.filename}{location}{section} "
+                f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
+            )
+            lines.append(_truncate_document_chunk(result.content))
 
     return MemoryBlock(
         label="document_context",
         value="\n".join(lines),
         description=(
-            "Query-relevant excerpts from PDFs the user explicitly selected for this chat turn. "
-            "Ground answers in these snippets when they apply; do not treat them as long-term memory."
+            "Compiled source knowledge and query-relevant excerpts from PDFs the user explicitly "
+            "selected for this chat turn. Ground answers in these snippets when they apply; "
+            "do not treat them as long-term memory."
         ),
     )
+
+
+def _raw_document_results_without_compiled_coverage(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    results: Sequence[DocumentRagResult],
+    knowledge_hits: Sequence[KnowledgeConceptHit],
+) -> list[DocumentRagResult]:
+    if not results:
+        return []
+    if not knowledge_hits:
+        return list(results)
+    result_chunk_ids = {result.chunk_id for result in results if result.chunk_id > 0}
+    concept_ids = _dedupe_positive_ids([hit.concept_id for hit in knowledge_hits])
+    if not result_chunk_ids or not concept_ids:
+        return list(results)
+    try:
+        covered_chunk_ids = _compiled_document_chunk_ids(
+            runtime_db,
+            user_id=user_id,
+            concept_ids=concept_ids,
+            document_chunk_ids=result_chunk_ids,
+        )
+    except Exception:
+        logger.debug(
+            "Document compiled chunk coverage lookup failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+        return []
+    return [
+        result
+        for result in results
+        if result.chunk_id not in covered_chunk_ids
+    ]
+
+
+def _compiled_document_chunk_ids(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    concept_ids: Sequence[int],
+    document_chunk_ids: set[int],
+) -> set[int]:
+    if not concept_ids or not document_chunk_ids:
+        return set()
+    rows = runtime_db.execute(
+        select(RuntimeSourceSpan.locator_json)
+        .join(
+            RuntimeKnowledgeConceptSource,
+            (RuntimeKnowledgeConceptSource.span_id == RuntimeSourceSpan.id)
+            & (RuntimeKnowledgeConceptSource.user_id == RuntimeSourceSpan.user_id),
+        )
+        .where(
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+            RuntimeKnowledgeConceptSource.concept_id.in_(list(concept_ids)),
+        )
+    ).all()
+    covered_chunk_ids: set[int] = set()
+    for (locator,) in rows:
+        if not isinstance(locator, dict):
+            continue
+        chunk_id = locator.get("runtime_document_chunk_id")
+        if isinstance(chunk_id, int) and chunk_id in document_chunk_ids:
+            covered_chunk_ids.add(chunk_id)
+    return covered_chunk_ids
+
+
+def _document_knowledge_hits(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+    document_chunk_ids: Sequence[int] | None = None,
+    limit: int = 8,
+) -> list[KnowledgeConceptHit]:
+    if limit <= 0:
+        return []
+    source_ids = _document_source_ids(
+        runtime_db,
+        user_id=user_id,
+        document_ids=document_ids,
+    )
+    if not source_ids:
+        return []
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept)
+            .where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                RuntimeKnowledgeConcept.status == "active",
+                RuntimeKnowledgeConcept.metadata_json[
+                    "compiled_from_source_id"
+                ].as_integer().in_(source_ids),
+            )
+            .order_by(
+                RuntimeKnowledgeConcept.updated_at.desc(),
+                RuntimeKnowledgeConcept.id.desc(),
+            )
+        ).all()
+    )
+    query_matched = _query_matched_document_concepts(
+        runtime_db,
+        user_id=user_id,
+        concepts=concepts,
+        document_chunk_ids=document_chunk_ids,
+    )
+    if document_chunk_ids:
+        concepts = query_matched
+    elif not query_matched:
+        concepts.sort(key=lambda concept: (concept.concept_type != "source_summary", concept.id))
+    else:
+        concepts = query_matched
+    return [
+        KnowledgeConceptHit(
+            concept_id=concept.id,
+            title=concept.title,
+            slug=concept.slug,
+            concept_type=concept.concept_type,
+            summary=_document_knowledge_summary(concept),
+            score=1.0 if concept.concept_type == "source_summary" else 0.8,
+        )
+        for concept in concepts[:limit]
+    ]
+
+
+def _query_matched_document_concepts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    concepts: Sequence[RuntimeKnowledgeConcept],
+    document_chunk_ids: Sequence[int] | None,
+) -> list[RuntimeKnowledgeConcept]:
+    chunk_ids = set(_dedupe_positive_ids(document_chunk_ids or ()))
+    if not chunk_ids:
+        return []
+    concepts_by_id = {
+        concept.id: concept
+        for concept in concepts
+        if concept.concept_type != "source_summary"
+    }
+    if not concepts_by_id:
+        return []
+    matched_ids: set[int] = set()
+    rows = runtime_db.execute(
+        select(
+            RuntimeKnowledgeConceptSource.concept_id,
+            RuntimeSourceSpan.locator_json,
+        )
+        .join(
+            RuntimeSourceSpan,
+            (RuntimeSourceSpan.id == RuntimeKnowledgeConceptSource.span_id)
+            & (RuntimeSourceSpan.user_id == RuntimeKnowledgeConceptSource.user_id),
+        )
+        .where(
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+            RuntimeKnowledgeConceptSource.concept_id.in_(list(concepts_by_id)),
+        )
+    ).all()
+    for concept_id, locator in rows:
+        if not isinstance(locator, dict):
+            continue
+        chunk_id = locator.get("runtime_document_chunk_id")
+        if isinstance(chunk_id, int) and chunk_id in chunk_ids:
+            matched_ids.add(concept_id)
+    return [
+        concept
+        for concept in concepts
+        if concept.id in matched_ids and concept.concept_type != "source_summary"
+    ]
+
+
+def _document_source_ids(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+) -> list[int]:
+    source_uris = [f"runtime-document://{document_id}" for document_id in document_ids]
+    if not source_uris:
+        return []
+    return list(
+        runtime_db.scalars(
+            select(RuntimeSource.id).where(
+                RuntimeSource.user_id == user_id,
+                RuntimeSource.kind == "document",
+                RuntimeSource.source_uri.in_(source_uris),
+            )
+        ).all()
+    )
+
+
+def _document_knowledge_summary(concept: RuntimeKnowledgeConcept) -> str:
+    return concept.body_markdown or concept.description or concept.title
 
 
 def _build_document_turn_directive(
