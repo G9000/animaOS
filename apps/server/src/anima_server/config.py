@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     agent_emotional_patterns_budget: int = 400
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
+    background_task_run_retention_days: int = 30
     consolidation_health_threshold_minutes: int = 30
     sidecar_nonce: str = ""
     health_log_dir: str = ""

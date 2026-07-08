@@ -525,6 +525,18 @@ async def _task_consolidation(
     )
     if cursor is not None:
         last_processed_message_id, messages_processed = cursor
+        # Persist the cursor to its dedicated table.  The task's result_json
+        # is no longer the cursor store, so the advance must be written
+        # explicitly (the returned dict below is now purely informational for
+        # task-run inspection).
+        if last_processed_message_id is not None:
+            update_last_processed_message_id(
+                user_id,
+                thread_id,
+                last_processed_message_id,
+                messages_processed,
+                runtime_db_factory=runtime_db_factory,
+            )
         return {
             "thread_id": thread_id,
             "last_processed_message_id": last_processed_message_id,
@@ -936,6 +948,20 @@ async def _task_deep_monologue(
 # ── Restart cursor ───────────────────────────────────────────────────
 
 
+def _cursor_scope_filter(thread_id: int | None):
+    """SQL predicate selecting the cursor row for a ``(user, thread)`` scope.
+
+    ``thread_id`` is nullable for the thread-agnostic scope, and SQL treats
+    NULL as distinct — so the global scope must be matched with ``IS NULL``
+    rather than ``== None``.
+    """
+    from anima_server.models.runtime import RuntimeConsolidationCursor
+
+    if thread_id is None:
+        return RuntimeConsolidationCursor.thread_id.is_(None)
+    return RuntimeConsolidationCursor.thread_id == thread_id
+
+
 def get_last_processed_message_id(
     user_id: int,
     thread_id: int | None = None,
@@ -945,36 +971,25 @@ def get_last_processed_message_id(
 ) -> int | None:
     """Get the last processed message ID for the active cursor scope.
 
-    Reads from the most recent completed RuntimeBackgroundTaskRun where
-    task_type='consolidation' and result_json.thread_id matches.
+    Reads the dedicated ``runtime_consolidation_cursors`` row (indexed on
+    ``(user_id, thread_id)``) rather than scanning every completed
+    consolidation task-run and Python-filtering ``result_json`` — so the
+    cursor survives task-run pruning.
     """
-    from sqlalchemy import desc, select
+    from sqlalchemy import select
 
     from anima_server.db.runtime import get_runtime_session_factory
-    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.models.runtime import RuntimeConsolidationCursor
 
     factory = runtime_db_factory or get_runtime_session_factory()
     with factory() as rt_db:
-        stmt = (
-            select(RuntimeBackgroundTaskRun)
-            .where(
-                RuntimeBackgroundTaskRun.user_id == user_id,
-                RuntimeBackgroundTaskRun.task_type == "consolidation",
-                RuntimeBackgroundTaskRun.status == "completed",
+        msg_id = rt_db.scalar(
+            select(RuntimeConsolidationCursor.last_processed_message_id).where(
+                RuntimeConsolidationCursor.user_id == user_id,
+                _cursor_scope_filter(thread_id),
             )
-            .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
         )
-        runs = list(rt_db.scalars(stmt).all())
-
-    for run in runs:
-        rj = run.result_json
-        if not isinstance(rj, dict):
-            continue
-        if rj.get("thread_id") == thread_id:
-            msg_id = rj.get("last_processed_message_id")
-            if msg_id is not None:
-                return int(msg_id)
-    return None
+    return int(msg_id) if msg_id is not None else None
 
 
 def update_last_processed_message_id(
@@ -986,34 +1001,30 @@ def update_last_processed_message_id(
     runtime_db_factory: Callable[..., object] | None = None,
     db_factory: Callable[..., object] | None = None,
 ) -> None:
-    """Persist the consolidation restart cursor in the most recent run."""
-    from sqlalchemy import desc, select
+    """Upsert the consolidation restart cursor for a ``(user, thread)`` scope."""
+    from sqlalchemy import select
 
     from anima_server.db.runtime import get_runtime_session_factory
-    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.models.runtime import RuntimeConsolidationCursor
 
     factory = runtime_db_factory or get_runtime_session_factory()
     with factory() as rt_db:
-        stmt = (
-            select(RuntimeBackgroundTaskRun)
-            .where(
-                RuntimeBackgroundTaskRun.user_id == user_id,
-                RuntimeBackgroundTaskRun.task_type == "consolidation",
-                RuntimeBackgroundTaskRun.status == "completed",
+        cursor = rt_db.scalar(
+            select(RuntimeConsolidationCursor).where(
+                RuntimeConsolidationCursor.user_id == user_id,
+                _cursor_scope_filter(thread_id),
             )
-            .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
         )
-        runs = list(rt_db.scalars(stmt).all())
-        run = None
-        for candidate in runs:
-            rj = candidate.result_json
-            if isinstance(rj, dict) and rj.get("thread_id") == thread_id:
-                run = candidate
-                break
-        if run is not None:
-            run.result_json = {
-                "thread_id": thread_id,
-                "last_processed_message_id": message_id,
-                "messages_processed": messages_processed,
-            }
-            rt_db.commit()
+        if cursor is None:
+            rt_db.add(
+                RuntimeConsolidationCursor(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    last_processed_message_id=message_id,
+                    messages_processed=messages_processed,
+                )
+            )
+        else:
+            cursor.last_processed_message_id = message_id
+            cursor.messages_processed = messages_processed
+        rt_db.commit()

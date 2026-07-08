@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -560,67 +560,46 @@ class TestRestartCursor:
             1, runtime_db_factory=rt_factory) is None
 
     def test_round_trip(self, rt_factory):
-        # Seed a completed consolidation run
-        with rt_factory() as db:
-            run = RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                completed_at=datetime.now(UTC),
-                result_json={
-                    "thread_id": 10,
-                    "last_processed_message_id": 42,
-                    "messages_processed": 5,
-                },
-            )
-            db.add(run)
-            db.commit()
-
+        update_last_processed_message_id(
+            1,
+            thread_id=10,
+            message_id=42,
+            messages_processed=5,
+            runtime_db_factory=rt_factory,
+        )
         msg_id = get_last_processed_message_id(
             1, thread_id=10, runtime_db_factory=rt_factory)
         assert msg_id == 42
 
     def test_thread_scope_isolation(self, rt_factory):
-        """Cursor for thread 10 should not match thread 20."""
-        with rt_factory() as db:
-            run = RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                completed_at=datetime.now(UTC),
-                result_json={
-                    "thread_id": 10,
-                    "last_processed_message_id": 42,
-                    "messages_processed": 5,
-                },
-            )
-            db.add(run)
-            db.commit()
-
-        # Thread 20 has no cursor
+        """Cursor for thread 10 should not match thread 20 or the global scope."""
+        update_last_processed_message_id(
+            1,
+            thread_id=10,
+            message_id=42,
+            messages_processed=5,
+            runtime_db_factory=rt_factory,
+        )
+        # Thread 20 and the None (global) scope have no cursor.
         assert get_last_processed_message_id(
             1, thread_id=20, runtime_db_factory=rt_factory) is None
-        # Thread 10 has the cursor
+        assert get_last_processed_message_id(
+            1, thread_id=None, runtime_db_factory=rt_factory) is None
+        # Thread 10 has the cursor.
         assert get_last_processed_message_id(
             1, thread_id=10, runtime_db_factory=rt_factory) == 42
 
-    def test_update_cursor(self, rt_factory):
-        # Create a completed run first
-        with rt_factory() as db:
-            run = RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                completed_at=datetime.now(UTC),
-                result_json={
-                    "thread_id": None,
-                    "last_processed_message_id": 10,
-                    "messages_processed": 3,
-                },
-            )
-            db.add(run)
-            db.commit()
-
+    def test_update_cursor_upserts_single_row(self, rt_factory):
+        update_last_processed_message_id(
+            1,
+            thread_id=None,
+            message_id=10,
+            messages_processed=3,
+            runtime_db_factory=rt_factory,
+        )
+        # A second update for the same scope overwrites in place — no
+        # duplicate row (SQL treats NULL as distinct, so the select-then-
+        # upsert must handle the global scope explicitly).
         update_last_processed_message_id(
             1,
             thread_id=None,
@@ -628,10 +607,58 @@ class TestRestartCursor:
             messages_processed=7,
             runtime_db_factory=rt_factory,
         )
+        assert get_last_processed_message_id(
+            1, thread_id=None, runtime_db_factory=rt_factory) == 50
 
-        msg_id = get_last_processed_message_id(
-            1, thread_id=None, runtime_db_factory=rt_factory)
-        assert msg_id == 50
+        from anima_server.models.runtime import RuntimeConsolidationCursor
+
+        with rt_factory() as db:
+            rows = db.scalars(
+                select(RuntimeConsolidationCursor).where(
+                    RuntimeConsolidationCursor.user_id == 1,
+                    RuntimeConsolidationCursor.thread_id.is_(None),
+                )
+            ).all()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio()
+    async def test_cursor_survives_task_run_pruning(self, rt_factory):
+        """The cursor now lives in its own table, so pruning old completed
+        task-run rows must not lose it (the old result_json cursor did)."""
+        from anima_server.services.agent.eager_consolidation import (
+            prune_old_background_task_runs,
+        )
+
+        update_last_processed_message_id(
+            1,
+            thread_id=10,
+            message_id=99,
+            messages_processed=4,
+            runtime_db_factory=rt_factory,
+        )
+        # An old completed consolidation task-run that retention will drop.
+        with rt_factory() as db:
+            db.add(
+                RuntimeBackgroundTaskRun(
+                    user_id=1,
+                    task_type="consolidation",
+                    status="completed",
+                    completed_at=datetime.now(UTC) - timedelta(days=90),
+                    created_at=datetime.now(UTC) - timedelta(days=90),
+                    result_json={"thread_id": 10, "last_processed_message_id": 99},
+                )
+            )
+            db.commit()
+
+        deleted = await prune_old_background_task_runs(runtime_db_factory=rt_factory)
+        assert deleted == 1
+
+        with rt_factory() as db:
+            remaining = db.scalars(select(RuntimeBackgroundTaskRun)).all()
+        assert remaining == []
+        # Cursor is intact despite the task-run rows being gone.
+        assert get_last_processed_message_id(
+            1, thread_id=10, runtime_db_factory=rt_factory) == 99
 
     @pytest.mark.asyncio()
     async def test_consolidation_task_records_latest_runtime_message_cursor(self, rt_factory):

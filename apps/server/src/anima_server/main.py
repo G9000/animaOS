@@ -141,10 +141,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                     from .services.agent.eager_consolidation import (
                         prune_expired_messages,
                         prune_expired_transcripts,
+                        prune_old_background_task_runs,
                     )
 
                     await prune_expired_messages()
                     await prune_expired_transcripts()
+                    await prune_old_background_task_runs()
                 except Exception:
                     logger.warning("Prune sweep error", exc_info=True)
 

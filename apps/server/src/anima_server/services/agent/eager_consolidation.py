@@ -333,6 +333,48 @@ async def prune_expired_messages(
         db.close()
 
 
+async def prune_old_background_task_runs(
+    *,
+    runtime_db_factory: Callable[..., Session] | None = None,
+) -> int:
+    """Delete finished background task-run rows past the retention window.
+
+    ``RuntimeBackgroundTaskRun`` grows ~6-10 rows every third turn and nothing
+    pruned it.  Now that the consolidation cursor lives in its own table
+    (``runtime_consolidation_cursors``) rather than in these rows'
+    ``result_json``, old completed/failed runs can be dropped safely without
+    losing the restart cursor.  In-flight rows (pending/running) are kept.
+    """
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    if settings.background_task_run_retention_days <= 0:
+        return 0
+
+    resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
+    cutoff = datetime.now(UTC) - timedelta(
+        days=settings.background_task_run_retention_days
+    )
+    db = resolved_runtime_db_factory()
+    try:
+        result = db.execute(
+            delete(RuntimeBackgroundTaskRun).where(
+                RuntimeBackgroundTaskRun.status.in_(["completed", "failed"]),
+                RuntimeBackgroundTaskRun.created_at < cutoff,
+            )
+        )
+        db.commit()
+        deleted = int(result.rowcount or 0)
+        if deleted:
+            logger.info("Pruned %d expired background task-run rows", deleted)
+        return deleted
+    except Exception:
+        logger.exception("Background task-run pruning failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 async def prune_expired_transcripts() -> int:
     """Delete transcript artifacts older than the configured retention window."""
     if settings.transcript_retention_days < 0:
