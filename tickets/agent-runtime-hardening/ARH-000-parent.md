@@ -68,6 +68,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 - 2026-07-07 01:55 MYT - Phase 1 (ARH-001..003) implemented on branch `worktree-agent-runtime-hardening-p1`, all in review.
 - 2026-07-08 00:35 MYT - Phase 5 (ARH-011 TTFT, ARH-012 retrieval scoring) implemented on branch `worktree-agent-runtime-hardening-p5`, both in review. Only ARH-013 (Phase 6) remains.
 - 2026-07-08 02:20 MYT - Phase 6 (ARH-013) partially implemented on branch `worktree-agent-runtime-hardening-p6`: 4 of 5 sub-items landed with tests (single stream pump, dead-param removal, mid-turn memory-refresh fix, consolidation cursor table + task-run retention). The two highest-risk items are deferred with documented rationale: #1 the shared `_process_step_tool_calls` extraction ("the riskiest refactor in the epic", needs a characterization harness and touches the approval-resume path) and #3 the sleep-orchestrator merge (entangled with ARH-007 freshness gating + a `/sleep` response-contract change). ARH-013 stays `in-progress`.
+- 2026-07-08 03:05 MYT - #1 (the shared `_process_step_tool_calls` extraction) landed on `worktree-agent-runtime-hardening-p6`, characterization-test-first: `invoke` and `resume_after_approval` now share one tool-call pipeline (`_execute_validated_calls` + `_process_step_tool_calls`). Only #3 (sleep-orchestrator merge) remains; ARH-013 stays `in-progress` for it.
 
 ## Validation
 
