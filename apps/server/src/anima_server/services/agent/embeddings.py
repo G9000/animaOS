@@ -965,22 +965,37 @@ def _blend_keyword_scores(
     O(n·|q|) scoring pass per turn, before first token.  The keyword leg
     already produced BM25 scores for the same query; normalise both
     distributions to [0, 1] and sort by the weighted combination.
+
+    The RRF side is normalised even when there is no lexical signal (no
+    keyword hits, or a single result): raw RRF scores sit around
+    ``1/(k+rank)`` (< 0.02), so leaving them un-normalised would let the
+    downstream raw ``absolute_min`` gate drop a strong semantic-only match.
+    Normalising keeps the top hit at 1.0 on the same scale as the blended
+    case.
     """
-    if len(results) <= 1 or not keyword_ranked:
+    if not results:
         return results
 
-    bm25_by_id = {item_id: score for item_id, score in keyword_ranked}
-    bm25_scores = [bm25_by_id.get(item.id, 0.0) for item, _ in results]
-    max_bm25 = max(bm25_scores)
     n = len(results)
-    norm_bm25 = (
-        [score / max_bm25 for score in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
-    )
-
     rrf_scores = [score for _, score in results]
     max_rrf = max(rrf_scores)
     norm_rrf = (
         [score / max_rrf for score in rrf_scores] if max_rrf > 0.0 else [0.0] * n
+    )
+
+    if not keyword_ranked:
+        # No lexical signal to blend — return the RRF ranking (already sorted)
+        # rescaled to [0, 1] so it is comparable to the blended path and
+        # survives the downstream absolute-threshold gate.
+        return [
+            (item, norm_rrf[i]) for i, (item, _original_score) in enumerate(results)
+        ]
+
+    bm25_by_id = {item_id: score for item_id, score in keyword_ranked}
+    bm25_scores = [bm25_by_id.get(item.id, 0.0) for item, _ in results]
+    max_bm25 = max(bm25_scores)
+    norm_bm25 = (
+        [score / max_bm25 for score in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
     )
 
     combined = [

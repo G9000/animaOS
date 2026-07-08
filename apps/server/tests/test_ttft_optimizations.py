@@ -115,8 +115,13 @@ def test_blend_keyword_scores_reuses_leg_scores() -> None:
 
     assert [item.id for item, _ in blended] == [2, 1]
 
-    # Without keyword scores the ranking is untouched.
-    assert embeddings._blend_keyword_scores(results, []) == results
+    # Without keyword scores the ranking order is untouched, but the RRF
+    # scores are still rescaled to [0, 1] so a semantic-only top hit survives
+    # the downstream raw absolute_min gate (raw RRF ~1/(k+rank) < 0.02).
+    semantic_only = embeddings._blend_keyword_scores(results, [])
+    assert [item.id for item, _ in semantic_only] == [1, 2]  # order preserved
+    assert semantic_only[0][1] == 1.0  # top normalized to 1.0
+    assert 0.9 < semantic_only[1][1] < 1.0
 
 
 # --------------------------------------------------------------------------- #

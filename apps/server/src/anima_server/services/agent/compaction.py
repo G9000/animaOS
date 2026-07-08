@@ -339,18 +339,20 @@ async def summarize_with_llm(
     # Prefer extraction model (cheaper) if configured, else use primary.
     model = settings.agent_extraction_model.strip() or settings.agent_model
 
+    import contextlib
+
     from anima_server.services.agent.llm import create_provider_chat_client
     from anima_server.services.agent.llm_json import call_llm_for_text
 
+    # Temperature is intentionally omitted: some current Anthropic models
+    # reject it, and the summarizer works fine at the default.
+    client = create_provider_chat_client(
+        provider=provider,
+        model=model,
+        timeout=60.0,
+        max_tokens=500,
+    )
     try:
-        # Temperature is intentionally omitted: some current Anthropic
-        # models reject it, and the summarizer works fine at the default.
-        client = create_provider_chat_client(
-            provider=provider,
-            model=model,
-            timeout=60.0,
-            max_tokens=500,
-        )
         summary = (
             await call_llm_for_text(
                 "You are a concise conversation summarizer.",
@@ -374,6 +376,14 @@ async def summarize_with_llm(
             model,
             exc_info=True,
         )
+    finally:
+        # The provider client owns an httpx.AsyncClient; unlike the old
+        # `async with httpx.AsyncClient(...)` path it must be closed
+        # explicitly or repeated compactions leak sockets/connections.
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            with contextlib.suppress(Exception):
+                await aclose()
 
     return None
 

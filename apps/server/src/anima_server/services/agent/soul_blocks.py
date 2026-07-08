@@ -59,17 +59,21 @@ def _write_soul_block(
     ``None`` skips the check (delta-shaped writers that read fresh state
     in the same session, like the soul writer's pending ops).
     """
+    from sqlalchemy import update
+
     encrypted_content = ef(user_id, content, table="self_model_blocks", field="content")
     block = _get_soul_block(soul_db, user_id=user_id, section=section)
-    if expected_version is not None:
-        actual_version = block.version if block is not None else 0
-        if actual_version != expected_version:
+
+    if block is None:
+        # Create path: the only valid expected_version is 0 (no prior block).
+        # A concurrent create loses on the (user_id, section) uniqueness at
+        # flush, so this too is DB-enforced rather than a bare pre-check.
+        if expected_version is not None and expected_version != 0:
             raise SoulBlockConflict(
                 section=section,
                 expected_version=expected_version,
-                actual_version=actual_version,
+                actual_version=0,
             )
-    if block is None:
         block = SelfModelBlock(
             user_id=user_id,
             section=section,
@@ -82,13 +86,48 @@ def _write_soul_block(
         soul_db.flush()
         return block
 
-    block.content = encrypted_content
-    block.version += 1
-    block.updated_by = updated_by
-    block.updated_at = datetime.now(UTC)
+    if expected_version is None:
+        # Delta-shaped writer that read fresh state in this session — no
+        # optimistic lock requested.
+        block.content = encrypted_content
+        block.version += 1
+        block.updated_by = updated_by
+        block.updated_at = datetime.now(UTC)
+        if metadata is not None:
+            block.metadata_json = metadata
+        soul_db.flush()
+        return block
+
+    # Optimistic lock: put the version guard IN the UPDATE's WHERE clause so
+    # the check and the write are one atomic operation.  A bare pre-check
+    # lets two writers that both read version N each commit N+1, silently
+    # losing one update; a conditional UPDATE matches zero rows for the
+    # second writer instead.
+    values: dict[str, object] = {
+        "content": encrypted_content,
+        "version": SelfModelBlock.version + 1,
+        "updated_by": updated_by,
+        "updated_at": datetime.now(UTC),
+    }
     if metadata is not None:
-        block.metadata_json = metadata
+        values["metadata_json"] = metadata
+    result = soul_db.execute(
+        update(SelfModelBlock)
+        .where(
+            SelfModelBlock.id == block.id,
+            SelfModelBlock.version == expected_version,
+        )
+        .values(**values)
+    )
+    if result.rowcount != 1:
+        actual = _get_soul_block(soul_db, user_id=user_id, section=section)
+        raise SoulBlockConflict(
+            section=section,
+            expected_version=expected_version,
+            actual_version=actual.version if actual is not None else 0,
+        )
     soul_db.flush()
+    soul_db.refresh(block)
     return block
 
 
