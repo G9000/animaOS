@@ -13,7 +13,7 @@ from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 revision = "022_retry_hygiene"
-down_revision = "021_repair_profile_update_candidates"
+down_revision = "1c3df376a170"
 branch_labels = None
 depends_on = None
 
