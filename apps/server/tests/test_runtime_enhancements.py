@@ -455,6 +455,96 @@ async def test_memory_refresh_callback_updates_system_prompt() -> None:
     assert "Updated: user likes coffee AND tea" in second_system
 
 
+_REFRESH_ACTION_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": "Execute a shell command through Animus.",
+        "parameters": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_memory_refresh_preserves_action_tools_and_relationship_stage() -> None:
+    """ARH-013 #2: the mid-turn rebuild must mirror the initial assembly —
+    re-append session-scoped action tools and thread conversation_turn_count.
+    Before the fix, a save_to_memory mid-turn stripped the connected-client
+    action tools and reset relationship-stage instructions to first_contact."""
+
+    @tool
+    def modify_tool() -> str:
+        """Modify memory."""
+        return "modified"
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(ToolCall(id="c1", name="modify_tool", arguments={}),)
+            ),
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(id="c2", name="send_message", arguments={"message": "done"}),
+                )
+            ),
+        ]
+    )
+
+    class MemModifiedExecutor(ToolExecutor):
+        async def execute(self, tool_call, *, is_terminal=False):
+            result = await super().execute(tool_call, is_terminal=is_terminal)
+            if tool_call.name == "modify_tool":
+                return ToolExecutionResult(
+                    call_id=result.call_id,
+                    name=result.name,
+                    output=result.output,
+                    is_terminal=result.is_terminal,
+                    memory_modified=True,
+                )
+            return result
+
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[modify_tool, send_message],
+        tool_rules=[TerminalToolRule(tool_name="send_message")],
+        tool_executor=MemModifiedExecutor([modify_tool, send_message]),
+        max_steps=3,
+    )
+
+    async def refresher():
+        return (
+            MemoryBlock(label="human", value="Updated info", description="User info"),
+        )
+
+    await runtime.invoke(
+        "hi",
+        user_id=1,
+        history=[],
+        conversation_turn_count=10,  # >= 7 → relationship stage "familiar"
+        memory_refresher=refresher,
+        extra_tool_schemas=[_REFRESH_ACTION_TOOL_SCHEMA],
+    )
+
+    assert len(adapter.requests) == 2
+    first_system = adapter.requests[0].messages[0].content
+    second_system = adapter.requests[1].messages[0].content
+
+    # Baseline: the initial prompt has both signals.
+    assert "Core Action Tools" in first_system
+    assert "Relationship stage: familiar" in first_system
+
+    # Regression: the rebuilt prompt must keep BOTH — not drop action tools
+    # and not reset the stage to first_contact.
+    assert "Core Action Tools" in second_system
+    assert "bash" in second_system
+    assert "Relationship stage: familiar" in second_system
+    assert "first_contact" not in second_system
+
+
 # ---------------------------------------------------------------------------
 # Continue Reasoning Tool
 # ---------------------------------------------------------------------------

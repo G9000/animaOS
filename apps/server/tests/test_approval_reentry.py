@@ -1221,7 +1221,6 @@ def test_persist_approval_checkpoint_creates_message_and_sets_status() -> None:
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=1,
         )
         # Must return the ToolCall that was checkpointed.
         assert pending_tc is not None
@@ -1258,7 +1257,6 @@ def test_persist_approval_checkpoint_fails_gracefully_without_tool_call() -> Non
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=1,
         )
         assert pending_tc is None
         assert run.status == "failed"
@@ -1347,7 +1345,6 @@ def test_persist_approval_checkpoint_skips_retrieval_feedback_logging(
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=1,
         )
 
         assert pending_tc is not None
@@ -1457,7 +1454,6 @@ async def test_approve_or_deny_turn_restores_retrieval_from_checkpoint(
             thread=thread,
             run=run,
             result=checkpoint_result,
-            initial_sequence_id=1,
         )
         assert pending_tc is not None
         db.refresh(run)

@@ -544,16 +544,23 @@ async def _approve_or_deny_turn_locked(
     return result
 
 
-async def stream_approve_or_deny(
-    run_id: int,
-    user_id: int,
-    approved: bool,
-    db: Session,
-    runtime_db: Session,
+async def _stream_via_queue(
+    run_turn: Callable[[Callable[[AgentStreamEvent], Awaitable[None]]], Awaitable[Any]],
     *,
-    denial_reason: str | None = None,
+    failure_log: str,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
-    """Streaming wrapper for approve_or_deny_turn."""
+    """Run ``run_turn`` in a worker task and relay its emitted events as an SSE
+    stream through a bounded queue.
+
+    Shared pump for both the live turn (``stream_agent``) and the
+    approval-resume turn (``stream_approve_or_deny``): the only per-caller
+    differences are which coroutine the worker awaits and the failure log
+    line.  The worker never blocks on the end-of-stream sentinel — if the
+    consumer stopped reading while the queue was full, an awaited ``put()``
+    would deadlock it (and the generator's ``finally`` awaits the worker), so
+    the sentinel is dropped and worker completion doubles as end-of-stream
+    (ARH-002).
+    """
     queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
         maxsize=settings.agent_stream_queue_max_size,
     )
@@ -563,25 +570,11 @@ async def stream_approve_or_deny(
 
     async def worker() -> None:
         try:
-            await approve_or_deny_turn(
-                run_id,
-                user_id,
-                approved,
-                db,
-                runtime_db,
-                denial_reason=denial_reason,
-                event_callback=emit,
-            )
+            await run_turn(emit)
         except Exception as exc:
-            logger.exception(
-                "Approval resume failed for run %s (user %s)", run_id, user_id)
+            logger.exception("%s", failure_log)
             await queue.put(build_error_event(client_error_message(exc)))
         finally:
-            # Never block on the end-of-stream sentinel: if the consumer
-            # stopped reading while the bounded queue was full, an awaited
-            # put() would deadlock this worker (and the generator's
-            # finally awaits us).  The consumer treats worker completion
-            # as end-of-stream, so a dropped sentinel is safe.
             with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(None)
 
@@ -603,6 +596,35 @@ async def stream_approve_or_deny(
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker_task
+
+
+async def stream_approve_or_deny(
+    run_id: int,
+    user_id: int,
+    approved: bool,
+    db: Session,
+    runtime_db: Session,
+    *,
+    denial_reason: str | None = None,
+) -> AsyncGenerator[AgentStreamEvent, None]:
+    """Streaming wrapper for approve_or_deny_turn."""
+
+    async def run_turn(emit: Callable[[AgentStreamEvent], Awaitable[None]]) -> None:
+        await approve_or_deny_turn(
+            run_id,
+            user_id,
+            approved,
+            db,
+            runtime_db,
+            denial_reason=denial_reason,
+            event_callback=emit,
+        )
+
+    async for event in _stream_via_queue(
+        run_turn,
+        failure_log=f"Approval resume failed for run {run_id} (user {user_id})",
+    ):
+        yield event
 
 
 async def _execute_agent_turn(
@@ -705,7 +727,7 @@ async def _execute_agent_turn_locked(
     today_context: TodayContext | None = None,
 ) -> AgentResult:
     # Stage 1: Prepare turn context
-    thread, run, user_msg, initial_sequence_id, turn_ctx = await _prepare_turn_context(
+    thread, run, user_msg, turn_ctx = await _prepare_turn_context(
         user_message,
         user_id,
         db,
@@ -801,7 +823,6 @@ async def _execute_agent_turn_locked(
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=initial_sequence_id,
             assistant_pills=_build_assistant_source_pills(
                 turn_ctx,
                 source_message=user_msg,
@@ -842,7 +863,6 @@ async def _execute_agent_turn_locked(
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=initial_sequence_id,
             assistant_pills=_build_assistant_source_pills(
                 turn_ctx,
                 source_message=user_msg,
@@ -972,7 +992,7 @@ async def _prepare_turn_context(
     document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
-) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
+) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
     Uses the AnimaCompanion cache for static memory blocks and conversation
@@ -1135,7 +1155,7 @@ async def _prepare_turn_context(
             exc=exc,
         )
         raise
-    return thread, run, user_msg, initial_sequence_id, turn_ctx
+    return thread, run, user_msg, turn_ctx
 
 
 def _fail_turn_setup(
@@ -2392,7 +2412,6 @@ def _persist_approval_checkpoint(
     thread: RuntimeThread,
     run: RuntimeRun,
     result: AgentResult,
-    initial_sequence_id: int,
     assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> ToolCall | None:
     """Persist the agent result plus a role='approval' checkpoint message.
@@ -2472,7 +2491,6 @@ async def _persist_turn_result(
     thread: RuntimeThread,
     run: RuntimeRun,
     result: AgentResult,
-    initial_sequence_id: int,
     assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> None:
     """Stage 3: Write result to DB; schedule compaction in the background.
@@ -2859,61 +2877,29 @@ async def stream_agent(
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
-    queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
-        maxsize=settings.agent_stream_queue_max_size,
-    )
+    async def run_turn(emit: Callable[[AgentStreamEvent], Awaitable[None]]) -> None:
+        await _execute_agent_turn(
+            user_message,
+            user_id,
+            db,
+            runtime_db,
+            thread_id=thread_id,
+            event_callback=emit,
+            source=source,
+            tool_delegate=tool_delegate,
+            delegated_tool_names=delegated_tool_names,
+            extra_tool_schemas=extra_tool_schemas,
+            attachments=attachments,
+            document_ids=document_ids,
+            context_messages=context_messages,
+            today_context=today_context,
+        )
 
-    async def emit(event: AgentStreamEvent) -> None:
-        await queue.put(event)
-
-    async def worker() -> None:
-        try:
-            await _execute_agent_turn(
-                user_message,
-                user_id,
-                db,
-                runtime_db,
-                thread_id=thread_id,
-                event_callback=emit,
-                source=source,
-                tool_delegate=tool_delegate,
-                delegated_tool_names=delegated_tool_names,
-                extra_tool_schemas=extra_tool_schemas,
-                attachments=attachments,
-                document_ids=document_ids,
-                context_messages=context_messages,
-                today_context=today_context,
-            )
-        except Exception as exc:
-            logger.exception("Agent turn failed for user %s", user_id)
-            await queue.put(build_error_event(client_error_message(exc)))
-        finally:
-            # Never block on the end-of-stream sentinel: if the consumer
-            # stopped reading while the bounded queue was full, an awaited
-            # put() would deadlock this worker (and the generator's
-            # finally awaits us).  The consumer treats worker completion
-            # as end-of-stream, so a dropped sentinel is safe.
-            with contextlib.suppress(asyncio.QueueFull):
-                queue.put_nowait(None)
-
-    worker_task = asyncio.create_task(worker())
-    try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            await asyncio.sleep(0)
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await worker_task
-        raise
-    finally:
-        if not worker_task.done():
-            worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await worker_task
+    async for event in _stream_via_queue(
+        run_turn,
+        failure_log=f"Agent turn failed for user {user_id}",
+    ):
+        yield event
 
 
 def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) -> list[RuntimeMessage]:

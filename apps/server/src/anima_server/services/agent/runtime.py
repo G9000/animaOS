@@ -638,10 +638,25 @@ class AgentRuntime:
                 try:
                     fresh_blocks = await memory_refresher()
                     if fresh_blocks is not None:
+                        # Rebuild exactly as the initial assembly did (216-235):
+                        # thread conversation_turn_count so relationship-stage
+                        # instructions survive, and re-append the session-scoped
+                        # action tools to the volatile suffix.  Without both, a
+                        # save_to_memory mid-turn stripped connected-client
+                        # action tools and relationship instructions from the
+                        # rebuilt prompt.
                         refreshed_parts, prompt_budget = (
                             self.build_system_prompt_parts_with_budget(
                                 memory_blocks=fresh_blocks,
+                                conversation_turn_count=conversation_turn_count,
                             )
+                        )
+                        refreshed_parts = replace(
+                            refreshed_parts,
+                            volatile=_append_action_tool_prompt(
+                                refreshed_parts.volatile,
+                                extra_tool_schemas,
+                            ),
                         )
                         system_prompt = refreshed_parts.full
                         # Replace the system message (always first in the list).
