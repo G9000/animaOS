@@ -1,8 +1,10 @@
 from .base import Base
 from .runtime import (
+    RuntimeDatabaseEngine,
     dispose_runtime_engine,
     get_runtime_db,
     get_runtime_engine,
+    get_runtime_engine_name,
     get_runtime_session_factory,
     init_runtime_engine,
 )
@@ -19,6 +21,7 @@ from .session import (
 __all__ = [
     "Base",
     "RuntimeBase",
+    "RuntimeDatabaseEngine",
     "SessionLocal",
     "build_session_factory_for_db",
     "dispose_all_user_engines",
@@ -28,6 +31,7 @@ __all__ = [
     "get_db",
     "get_runtime_db",
     "get_runtime_engine",
+    "get_runtime_engine_name",
     "get_runtime_session_factory",
     "init_runtime_engine",
 ]
