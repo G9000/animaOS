@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Generator
+from enum import StrEnum
 from pathlib import Path
 
 from sqlalchemy import create_engine, func, select, text, update
@@ -22,6 +23,12 @@ _runtime_engine: Engine | None = None
 _runtime_session_factory: sessionmaker[Session] | None = None
 
 _ALEMBIC_RUNTIME_INI = Path(__file__).resolve().parents[3] / "alembic_runtime.ini"
+
+
+class RuntimeDatabaseEngine(StrEnum):
+    POSTGRES = "postgresql"
+    SQLITE = "sqlite"
+    OTHER = "other"
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +92,16 @@ def get_runtime_engine() -> Engine:
             "Call init_runtime_engine() during server startup."
         )
     return _runtime_engine
+
+
+def get_runtime_engine_name() -> RuntimeDatabaseEngine:
+    """Return the normalized Runtime store engine type."""
+    dialect_name = get_runtime_engine().dialect.name
+    if dialect_name == "postgresql":
+        return RuntimeDatabaseEngine.POSTGRES
+    if dialect_name == "sqlite":
+        return RuntimeDatabaseEngine.SQLITE
+    return RuntimeDatabaseEngine.OTHER
 
 
 def get_runtime_session_factory() -> sessionmaker[Session]:
@@ -245,6 +262,9 @@ def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> i
 
 def ensure_pgvector() -> None:
     """Enable the pgvector extension. Idempotent."""
+    if get_runtime_engine_name() is not RuntimeDatabaseEngine.POSTGRES:
+        logger.debug("Skipping pgvector extension for non-PostgreSQL runtime engine.")
+        return
     engine = get_runtime_engine()
     try:
         with engine.begin() as conn:

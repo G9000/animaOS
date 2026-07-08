@@ -585,4 +585,115 @@ describe("createApiClient error handling", () => {
       },
     ]);
   });
+
+  test("calls knowledge library endpoints", async () => {
+    const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        const body = init?.body;
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          bodyType: body instanceof FormData ? "form" : typeof body,
+          body:
+            body instanceof FormData
+              ? {
+                  fileName: (body.get("file") as File).name,
+                }
+              : typeof body === "string"
+                ? JSON.parse(body)
+                : undefined,
+        });
+        if (String(input).endsWith("/knowledge/export?userId=7")) {
+          return new Response(new Blob(["zip"]));
+        }
+        return new Response(
+          JSON.stringify({
+            sources: [],
+            concepts: [],
+            source: { id: 2, kind: "text", sourceUri: "text://a", contentHash: "h", status: "indexed" },
+            artifacts: [],
+            spans: [],
+            id: 3,
+            slug: "topic-a",
+            title: "Topic A",
+            conceptType: "topic",
+            bodyMarkdown: "Body",
+            frontmatter: {},
+            metadata: null,
+            status: "active",
+            citations: [],
+            links: [],
+            compileRun: { id: 4, status: "completed", runType: "compiler:queued", sourceId: 2 },
+            query: "topic",
+            evidenceSpans: [],
+            findings: [],
+            conceptCount: 1,
+            linkCount: 0,
+          }),
+        );
+      },
+    });
+
+    await api.knowledge.listSources(7);
+    await api.knowledge.readSource(7, 2);
+    await api.knowledge.listConcepts(7);
+    await api.knowledge.readConcept(7, 3);
+    await api.knowledge.compileSource(7, 2);
+    await api.knowledge.search(7, "topic");
+    await api.knowledge.runLint(7, { sourceId: 2 });
+    await api.knowledge.exportBundle(7);
+    await api.knowledge.importBundle(7, new File(["zip"], "bundle.zip", { type: "application/zip" }));
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/knowledge/sources?userId=7",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/sources/2?userId=7",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/concepts?userId=7",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/concepts/3?userId=7",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/sources/2/compile?userId=7",
+        method: "POST",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/search?userId=7&q=topic",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/lint",
+        method: "POST",
+        bodyType: "string",
+        body: { userId: 7, sourceId: 2 },
+      },
+      {
+        url: "https://api.test/api/knowledge/export?userId=7",
+        method: "GET",
+        bodyType: "undefined",
+      },
+      {
+        url: "https://api.test/api/knowledge/import?userId=7",
+        method: "POST",
+        bodyType: "form",
+        body: { fileName: "bundle.zip" },
+      },
+    ]);
+  });
 });
