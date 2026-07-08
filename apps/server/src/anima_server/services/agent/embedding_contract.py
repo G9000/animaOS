@@ -24,6 +24,11 @@ degraded_logger = logging.getLogger("anima.runtime.degraded")
 # and on re-embed completion.
 _reembed_required: bool | None = None
 
+# Process-local mirror of the per-user re-embed completions (``None`` = not
+# loaded).  Re-embed is per-user, so semantic search is gated per-user: the
+# global flag says "a cycle is open", this set says which users have finished.
+_completed_users: set[int] | None = None
+
 
 def _runtime_factory(
     runtime_db_factory: Callable[..., object] | None,
@@ -39,8 +44,78 @@ def _runtime_factory(
 
 
 def reset_contract_cache() -> None:
-    global _reembed_required
+    global _reembed_required, _completed_users
     _reembed_required = None
+    _completed_users = None
+
+
+def _load_completed_users(
+    runtime_db_factory: Callable[..., object] | None,
+) -> set[int]:
+    global _completed_users
+    if _completed_users is not None:
+        return _completed_users
+    from anima_server.models.runtime_memory import ReembedCompletion
+
+    factory = _runtime_factory(runtime_db_factory)
+    if factory is None:
+        _completed_users = set()
+        return _completed_users
+    try:
+        with factory() as rt_db:
+            _completed_users = {
+                int(user_id)
+                for user_id in rt_db.scalars(select(ReembedCompletion.user_id)).all()
+            }
+    except Exception:
+        _completed_users = set()
+    return _completed_users
+
+
+def mark_user_reembed_complete(
+    user_id: int,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Record that ``user_id`` has finished re-embedding for the current cycle.
+
+    This does NOT clear the global ``reembed_required`` flag — clearing it
+    would re-enable semantic search for every user, including those whose
+    vectors are still stale (the multi-user bug this gate fixes).
+    """
+    global _completed_users
+    from anima_server.models.runtime_memory import ReembedCompletion
+
+    factory = _runtime_factory(runtime_db_factory)
+    if factory is not None:
+        try:
+            with factory() as rt_db:
+                if rt_db.get(ReembedCompletion, int(user_id)) is None:
+                    rt_db.add(ReembedCompletion(user_id=int(user_id)))
+                    rt_db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to record re-embed completion for user %s", user_id
+            )
+    if _completed_users is not None:
+        _completed_users.add(int(user_id))
+
+
+def _clear_reembed_completions(
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Start a fresh re-embed cycle: every user must re-embed again."""
+    global _completed_users
+    from anima_server.models.runtime_memory import ReembedCompletion
+
+    factory = _runtime_factory(runtime_db_factory)
+    if factory is not None:
+        try:
+            with factory() as rt_db:
+                rt_db.execute(delete(ReembedCompletion))
+                rt_db.commit()
+        except Exception:
+            logger.debug("Failed to clear re-embed completions", exc_info=True)
+    _completed_users = set()
 
 
 def check_embedding_contract(
@@ -85,6 +160,9 @@ def check_embedding_contract(
                 row.reembed_required = True
                 row.updated_at = datetime.now(UTC)
                 rt_db.commit()
+                # New cycle: every user must re-embed again (their derived
+                # stores were built with the now-superseded model/dimension).
+                _clear_reembed_completions(runtime_db_factory)
                 degraded_logger.error(
                     "Embedding contract mismatch: stores were built with "
                     "%s (dim %d) but the active model is %s (dim %d). "
@@ -103,26 +181,39 @@ def check_embedding_contract(
 
 
 def is_reembed_required(
+    user_id: int | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> bool:
-    """Cheap hot-path check: is semantic search currently degraded?"""
+    """Cheap hot-path check: is semantic search currently degraded?
+
+    The global ``reembed_required`` flag opens a re-embed cycle, but the work
+    is per-user.  When ``user_id`` is given, semantic search is degraded only
+    until THAT user has re-embedded — one user finishing no longer re-enables
+    stale-vector search for the others.  ``user_id=None`` returns the global
+    flag (any cycle open).
+    """
     global _reembed_required
-    if _reembed_required is not None:
-        return _reembed_required
+    if _reembed_required is None:
+        from anima_server.models.runtime_memory import EmbeddingConfig
 
-    from anima_server.models.runtime_memory import EmbeddingConfig
+        factory = _runtime_factory(runtime_db_factory)
+        if factory is None:
+            _reembed_required = False
+        else:
+            try:
+                with factory() as rt_db:
+                    row = rt_db.scalar(select(EmbeddingConfig).limit(1))
+                    _reembed_required = (
+                        bool(row.reembed_required) if row is not None else False
+                    )
+            except Exception:
+                _reembed_required = False
 
-    factory = _runtime_factory(runtime_db_factory)
-    if factory is None:
-        _reembed_required = False
+    if not _reembed_required:
         return False
-    try:
-        with factory() as rt_db:
-            row = rt_db.scalar(select(EmbeddingConfig).limit(1))
-            _reembed_required = bool(row.reembed_required) if row is not None else False
-    except Exception:
-        _reembed_required = False
-    return _reembed_required
+    if user_id is None:
+        return True
+    return int(user_id) not in _load_completed_users(runtime_db_factory)
 
 
 def complete_reembed(

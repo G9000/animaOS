@@ -86,7 +86,7 @@ class TestContractCheck:
             )
             is True
         )
-        assert embedding_contract.is_reembed_required(rt_factory) is False
+        assert embedding_contract.is_reembed_required(runtime_db_factory=rt_factory) is False
 
     def test_model_switch_is_loud_and_persisted(
         self, rt_factory, caplog: pytest.LogCaptureFixture
@@ -111,7 +111,7 @@ class TestContractCheck:
 
         # The flag survives a "restart" (fresh process cache).
         embedding_contract.reset_contract_cache()
-        assert embedding_contract.is_reembed_required(rt_factory) is True
+        assert embedding_contract.is_reembed_required(runtime_db_factory=rt_factory) is True
 
     def test_complete_reembed_adopts_new_pair(self, rt_factory) -> None:
         embedding_contract.check_embedding_contract(
@@ -128,7 +128,36 @@ class TestContractCheck:
         assert row.embedding_model == "mxbai-embed-large"
         assert row.embedding_dim == 1024
         assert row.reembed_required is False
-        assert embedding_contract.is_reembed_required(rt_factory) is False
+        assert embedding_contract.is_reembed_required(runtime_db_factory=rt_factory) is False
+
+    def test_reembed_gate_is_per_user(self, rt_factory) -> None:
+        """A model switch opens a re-embed cycle for everyone; one user
+        finishing must not re-enable semantic search for others whose vectors
+        are still stale (re-embed is per-user)."""
+        embedding_contract.reset_contract_cache()
+        embedding_contract.check_embedding_contract(
+            model="nomic-embed-text", dim=768, runtime_db_factory=rt_factory
+        )
+        embedding_contract.check_embedding_contract(
+            model="mxbai-embed-large", dim=1024, runtime_db_factory=rt_factory
+        )
+        embedding_contract.reset_contract_cache()
+
+        # Both users gated until each re-embeds; the global (user_id=None)
+        # check still reports the cycle open.
+        assert embedding_contract.is_reembed_required(runtime_db_factory=rt_factory) is True
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is True
+        assert embedding_contract.is_reembed_required(2, runtime_db_factory=rt_factory) is True
+
+        # User 1 completes → only user 1 is ungated.
+        embedding_contract.mark_user_reembed_complete(1, runtime_db_factory=rt_factory)
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is False
+        assert embedding_contract.is_reembed_required(2, runtime_db_factory=rt_factory) is True
+
+        # Survives a restart (fresh process cache).
+        embedding_contract.reset_contract_cache()
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is False
+        assert embedding_contract.is_reembed_required(2, runtime_db_factory=rt_factory) is True
 
 
 def test_semantic_leg_reports_degraded_instead_of_silent_empty(

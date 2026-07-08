@@ -532,10 +532,12 @@ def _semantic_ranked_ids(
 ) -> list[tuple[int, float]]:
     from anima_server.services.agent.embedding_contract import is_reembed_required
 
-    if is_reembed_required():
-        # The stores were built with a different model/dimension —
-        # comparing against them would be wrong or raise.  Degrade
-        # loudly (once per process the contract check logged ERROR).
+    if is_reembed_required(user_id):
+        # This user's derived stores were built with a different
+        # model/dimension and haven't been re-embedded yet — comparing
+        # against them would be wrong or raise.  Degrade loudly (once per
+        # process the contract check logged ERROR).  The gate is per-user:
+        # another user completing their re-embed doesn't re-enable this one.
         logger.debug(
             "Semantic leg skipped for user %d: re-embed required", user_id
         )

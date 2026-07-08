@@ -681,8 +681,8 @@ async def _task_embedding_backfill(
     and orphaned pgvector rows."""
     from anima_server.services.agent.consolidation import _backfill_user_embeddings
     from anima_server.services.agent.embedding_contract import (
-        complete_reembed,
         is_reembed_required,
+        mark_user_reembed_complete,
         reset_derived_embedding_stores,
         sweep_orphaned_runtime_embeddings,
     )
@@ -692,7 +692,7 @@ async def _task_embedding_backfill(
         from anima_server.db.session import SessionLocal
 
         factory = db_factory or SessionLocal
-        if is_reembed_required():
+        if is_reembed_required(user_id):
             reembedding = True
             with factory() as db:
                 from sqlalchemy import func as sa_func
@@ -749,13 +749,12 @@ async def _task_embedding_backfill(
         factory = db_factory or SessionLocal
 
         if reembedding:
-            # All items re-embedded with the active model: adopt the new
-            # contract so semantic search comes back.
-            from anima_server.config import resolve_embedding_dim
-            from anima_server.services.agent.embeddings import (
-                _resolve_embedding_model,
-            )
-
+            # This user's items are all re-embedded with the active model:
+            # mark THIS user complete so semantic search comes back for them.
+            # The global flag is intentionally left set — clearing it would
+            # re-enable semantic search for other users whose vectors are
+            # still stale (re-embed is per-user; soul stores are per-user
+            # encrypted so there is no global reset).
             with factory() as db:
                 from sqlalchemy import func as sa_func
                 from sqlalchemy import select
@@ -772,10 +771,7 @@ async def _task_embedding_backfill(
                     )
                 )
             if not remaining:
-                complete_reembed(
-                    model=_resolve_embedding_model(),
-                    dim=resolve_embedding_dim(),
-                )
+                mark_user_reembed_complete(user_id)
 
         from anima_server.services.agent.vector_store import (
             consume_vector_store_dirty,
