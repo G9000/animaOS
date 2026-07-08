@@ -904,3 +904,67 @@ def test_chat_compacts_thread_context_into_summary() -> None:
     assert thread.next_message_sequence == all_messages[-1].sequence_id + 1
     assert any(message.role == "user" for message in compacted_messages)
     assert any(message.role == "assistant" for message in compacted_messages)
+
+
+def test_sleep_endpoint_maps_task_run_results_to_counts() -> None:
+    """/sleep delegates to run_sleeptime_agents(force=True) and rebuilds the
+    count-shaped response the Consciousness UI expects from the issued task
+    runs' stored results."""
+    from unittest.mock import AsyncMock, patch
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    with _scaffold_agent_settings(), _client() as client:
+        user = _register_user(client, username="sleeper")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        user_id = int(user["id"])
+
+        rt_factory = get_runtime_session_factory()
+        with rt_factory() as db:
+            db.add_all(
+                [
+                    RuntimeBackgroundTaskRun(
+                        id=101,
+                        user_id=user_id,
+                        task_type="contradiction_scan",
+                        status="completed",
+                        result_json={"found": 3, "resolved": 2},
+                    ),
+                    RuntimeBackgroundTaskRun(
+                        id=102,
+                        user_id=user_id,
+                        task_type="profile_synthesis",
+                        status="completed",
+                        result_json={"merged": 4, "profile_fields_reconciled": 1},
+                    ),
+                    RuntimeBackgroundTaskRun(
+                        id=103,
+                        user_id=user_id,
+                        task_type="episode_gen",
+                        status="completed",
+                        result_json={"generated": True},
+                    ),
+                ]
+            )
+            db.commit()
+
+        fake_ids = [
+            "contradiction_scan:101",
+            "profile_synthesis:102",
+            "episode_gen:103",
+        ]
+        with patch(
+            "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
+            new=AsyncMock(return_value=fake_ids),
+        ):
+            response = client.post(
+                "/api/chat/sleep", headers=headers, json={"userId": user_id}
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["contradictionsFound"] == 3
+        assert body["contradictionsResolved"] == 2
+        assert body["itemsMerged"] == 4
+        assert body["episodesGenerated"] == 1
+        assert body["errors"] == []

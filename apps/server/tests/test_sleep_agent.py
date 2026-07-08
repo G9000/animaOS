@@ -92,66 +92,6 @@ def rt_factory(runtime_db_engine):
 # ── _issue_background_task ───────────────────────────────────────────
 
 
-@pytest.mark.asyncio()
-async def test_manual_sleep_generates_episode_before_pattern_synthesis(db_factory):
-    from anima_server.services.agent import sleep_tasks
-
-    with db_factory() as db:
-        user = User(
-            username="manual-sleep-user",
-            display_name="Manual Sleep User",
-            password_hash="x",
-        )
-        db.add(user)
-        db.commit()
-        user_id = user.id
-
-    call_order: list[str] = []
-
-    async def _no_scan(**kwargs: object) -> tuple[int, int]:
-        del kwargs
-        return (0, 0)
-
-    async def _no_merge(**kwargs: object) -> int:
-        del kwargs
-        return 0
-
-    async def _fake_episode(**kwargs: object) -> object:
-        del kwargs
-        call_order.append("episode_gen")
-        return object()
-
-    async def _fake_pattern(**kwargs: object) -> SimpleNamespace:
-        del kwargs
-        call_order.append("pattern_synthesis")
-        return SimpleNamespace(created=0, updated=0)
-
-    with (
-        patch.object(sleep_tasks, "scan_contradictions", _no_scan),
-        patch.object(sleep_tasks, "synthesize_profile", _no_merge),
-        patch.object(sleep_tasks, "_should_run_deep_monologue", return_value=False),
-        patch(
-            "anima_server.services.agent.episodes.maybe_generate_episode",
-            new=_fake_episode,
-        ),
-        patch(
-            "anima_server.services.agent.pattern_synthesis.synthesize_cross_episode_patterns",
-            new=_fake_pattern,
-        ),
-        patch(
-            "anima_server.services.agent.embeddings.backfill_embeddings",
-            new=AsyncMock(return_value=0),
-        ),
-    ):
-        result = await sleep_tasks.run_sleep_tasks(
-            user_id=user_id,
-            db_factory=db_factory,
-        )
-
-    assert call_order == ["episode_gen", "pattern_synthesis"]
-    assert result.episodes_generated == 1
-
-
 class TestIssueBackgroundTask:
     @pytest.mark.asyncio()
     async def test_successful_task(self, db_factory, rt_factory):
@@ -549,6 +489,52 @@ class TestTurnFrequency:
         assert should_run_sleeptime(2) is False
         assert should_run_sleeptime(3) is True
         assert should_run_sleeptime(6) is True
+
+
+@pytest.mark.asyncio()
+async def test_run_sleeptime_agents_invalidates_companion_cache(
+    db_factory, rt_factory, monkeypatch
+):
+    """The orchestrator invalidates the companion memory cache once at the end
+    of a run so the next turn sees fresh soul data (this used to be coupled to
+    profile reconciliation inside the removed run_sleep_tasks; it is now an
+    unconditional post-run step)."""
+    from anima_server.services.agent import sleep_agent
+
+    with db_factory() as db:
+        user = User(
+            username="sleep-invalidate", password_hash="x", display_name="S"
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    invalidations = {"count": 0}
+
+    class _FakeCompanion:
+        def invalidate_memory(self) -> None:
+            invalidations["count"] += 1
+
+    async def _recording_issue(*, user_id, task_type, task_fn, **kwargs) -> str:
+        return f"{task_type}:0"
+
+    monkeypatch.setattr(sleep_agent, "_issue_background_task", _recording_issue)
+    monkeypatch.setattr(sleep_agent, "_should_run_expensive", lambda db, uid: False)
+    monkeypatch.setattr(
+        "anima_server.services.agent.companion.get_companion",
+        lambda uid: _FakeCompanion(),
+    )
+
+    await sleep_agent.run_sleeptime_agents(
+        user_id=user_id,
+        user_message="hi",
+        assistant_response="hello",
+        force=True,
+        db_factory=db_factory,
+        runtime_db_factory=rt_factory,
+    )
+
+    assert invalidations["count"] == 1
 
 
 # ── Restart cursor ───────────────────────────────────────────────────

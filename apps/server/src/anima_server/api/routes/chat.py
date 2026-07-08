@@ -565,22 +565,71 @@ async def trigger_sleep_tasks(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    """Manually trigger sleep-time maintenance tasks (contradiction scan, profile synthesis, etc.)."""
+    """Manually trigger sleep-time maintenance tasks (contradiction scan, profile synthesis, etc.).
+
+    Delegates to the single sleep orchestrator with ``force=True`` so manual
+    runs bypass the heat/freshness gates, get ``RuntimeBackgroundTaskRun``
+    tracking and consolidation-cursor updates, and stay in sync with the
+    automatic per-turn path.  The count-shaped response the Consciousness UI
+    expects is rebuilt from the issued task runs' stored results.
+    """
     require_unlocked_user(request, payload.userId)
 
-    from anima_server.services.agent.sleep_tasks import run_sleep_tasks
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.services.agent.sleep_agent import run_sleeptime_agents
 
-    result = await run_sleep_tasks(
+    runtime_db_factory = get_runtime_session_factory()
+    run_ids = await run_sleeptime_agents(
         user_id=payload.userId,
+        user_message="",
+        assistant_response="",
+        force=True,
         db_factory=build_session_factory_for_db(db),
+        runtime_db_factory=runtime_db_factory,
     )
+
+    # run_ids are "{task_type}:{run_id}" — read each run's stored result for
+    # the counts the UI surfaces (tasks that were gated out simply stay 0).
+    issued_ids: list[int] = []
+    for token in run_ids:
+        _, _, raw_id = token.rpartition(":")
+        try:
+            issued_ids.append(int(raw_id))
+        except ValueError:
+            continue
+
+    contradictions_found = 0
+    contradictions_resolved = 0
+    items_merged = 0
+    episodes_generated = 0
+    errors: list[str] = []
+    if issued_ids:
+        with runtime_db_factory() as rt_db:
+            rows = rt_db.scalars(
+                select(RuntimeBackgroundTaskRun).where(
+                    RuntimeBackgroundTaskRun.id.in_(issued_ids)
+                )
+            ).all()
+        for row in rows:
+            result_json = row.result_json if isinstance(row.result_json, dict) else {}
+            if row.task_type == "contradiction_scan":
+                contradictions_found = int(result_json.get("found", 0) or 0)
+                contradictions_resolved = int(result_json.get("resolved", 0) or 0)
+            elif row.task_type == "profile_synthesis":
+                items_merged = int(result_json.get("merged", 0) or 0)
+            elif row.task_type == "episode_gen":
+                episodes_generated = 1 if result_json.get("generated") else 0
+            if row.error_message:
+                errors.append(f"{row.task_type}: {row.error_message}")
+
     return {
-        "contradictionsFound": result.contradictions_found,
-        "contradictionsResolved": result.contradictions_resolved,
-        "itemsMerged": result.items_merged,
-        "episodesGenerated": result.episodes_generated,
-        "embeddingsBackfilled": result.embeddings_backfilled,
-        "errors": result.errors,
+        "contradictionsFound": contradictions_found,
+        "contradictionsResolved": contradictions_resolved,
+        "itemsMerged": items_merged,
+        "episodesGenerated": episodes_generated,
+        "embeddingsBackfilled": 0,
+        "errors": errors,
     }
 
 

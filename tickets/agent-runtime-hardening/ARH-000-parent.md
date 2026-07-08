@@ -8,9 +8,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-08 02:20 MYT
+- Updated: 2026-07-08 03:40 MYT
 - Started: 2026-07-07 00:45 MYT
-- Completed:
+- Completed: 2026-07-08 03:40 MYT
 
 ## Goal
 
@@ -32,7 +32,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 | `ARH-010` | Crash-durable memory extraction | `in-review` | `ARH-004` |
 | `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `in-review` | none |
 | `ARH-012` | Retrieval scoring correctness | `in-review` | none |
-| `ARH-013` | Deduplicate drifted turn and sleep logic | `in-progress` | `ARH-002` |
+| `ARH-013` | Deduplicate drifted turn and sleep logic | `in-review` | `ARH-002` |
 
 ## Deliverables
 
@@ -69,6 +69,7 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 - 2026-07-08 00:35 MYT - Phase 5 (ARH-011 TTFT, ARH-012 retrieval scoring) implemented on branch `worktree-agent-runtime-hardening-p5`, both in review. Only ARH-013 (Phase 6) remains.
 - 2026-07-08 02:20 MYT - Phase 6 (ARH-013) partially implemented on branch `worktree-agent-runtime-hardening-p6`: 4 of 5 sub-items landed with tests (single stream pump, dead-param removal, mid-turn memory-refresh fix, consolidation cursor table + task-run retention). The two highest-risk items are deferred with documented rationale: #1 the shared `_process_step_tool_calls` extraction ("the riskiest refactor in the epic", needs a characterization harness and touches the approval-resume path) and #3 the sleep-orchestrator merge (entangled with ARH-007 freshness gating + a `/sleep` response-contract change). ARH-013 stays `in-progress`.
 - 2026-07-08 03:05 MYT - #1 (the shared `_process_step_tool_calls` extraction) landed on `worktree-agent-runtime-hardening-p6`, characterization-test-first: `invoke` and `resume_after_approval` now share one tool-call pipeline (`_execute_validated_calls` + `_process_step_tool_calls`). Only #3 (sleep-orchestrator merge) remains; ARH-013 stays `in-progress` for it.
+- 2026-07-08 03:40 MYT - #3 (single sleep orchestrator) landed: `run_sleep_tasks`/`SleepTaskResult` deleted, `/sleep` delegates to `run_sleeptime_agents(force=True)` with the count-shaped response rebuilt from task-run results, profile reconciliation folded into the orchestrator's profile task. `force` intentionally bypasses only the heat gate, not ARH-007 freshness. **ARH-013 complete — all 13 child tickets are now in-review; the epic is done pending PR-stack merge.**
 
 ## Validation
 

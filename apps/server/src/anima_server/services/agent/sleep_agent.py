@@ -365,6 +365,9 @@ async def run_sleeptime_agents(
             logger.debug("Input freshness lookup failed; running all tasks")
 
         def _fresh(task_type: str, latest_input_at: datetime | None) -> bool:
+            # `force` bypasses the heat gate (above), not this input-freshness
+            # dirty-check: even a manual /sleep or idle catch-up run skips work
+            # whose inputs have not changed since the last completed run.
             changed = _inputs_changed_since_last_run(
                 user_id=user_id,
                 task_type=task_type,
@@ -888,11 +891,28 @@ async def _task_profile_synthesis(
     user_id: int,
     db_factory: Callable[..., object] | None = None,
 ) -> dict:
-    """Synthesize user profile from facts."""
+    """Synthesize the user profile from facts and reconcile structured profile
+    fields from active claims.
+
+    Reconciliation used to live only in the manual ``/sleep`` orchestrator
+    (``run_sleep_tasks``); folding it in here means the automatic sleep path
+    reconciles profile fields too, and keeps ``run_sleeptime_agents`` a true
+    superset now that ``run_sleep_tasks`` is gone.  The companion cache is
+    invalidated once at the end of the orchestrator regardless.
+    """
+    from anima_server.db.session import SessionLocal
     from anima_server.services.agent.sleep_tasks import synthesize_profile
+    from anima_server.services.agent.user_profile import reconcile_profile_from_claims
 
     merged = await synthesize_profile(user_id=user_id, db_factory=db_factory)
-    return {"merged": merged}
+
+    factory = db_factory or SessionLocal
+    with factory() as db:
+        reconciled = reconcile_profile_from_claims(db, user_id=user_id)
+        if reconciled > 0:
+            db.commit()
+
+    return {"merged": merged, "profile_fields_reconciled": reconciled}
 
 
 async def _task_pattern_synthesis(

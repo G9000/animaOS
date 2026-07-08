@@ -1,6 +1,6 @@
 # ARH-013 - Deduplicate drifted turn and sleep logic
 
-- Status: in-progress
+- Status: in-review
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `ARH-000`
@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-07-agent-runtime-hardening.md
 - Created: 2026-07-07 00:28 MYT
-- Updated: 2026-07-08 03:05 MYT
+- Updated: 2026-07-08 03:40 MYT
 - Started: 2026-07-08 01:00 MYT
-- Completed:
+- Completed: 2026-07-08 03:40 MYT
 
 ## Goal
 
@@ -62,14 +62,19 @@ Exactly one copy of each critical loop: one step-tool-call pipeline shared by in
   2. Extracted two methods: `_execute_validated_calls` (non-terminal parallel + terminal sequential + reply policy + solver/tools_used/failure tracking) and `_process_step_tool_calls` (validate → defer → flush-before-stop → execute), plus small `_FailureTracker`/`_StepToolCallResult` dataclasses. `invoke`'s per-step loop now calls the helper; all characterization + existing `test_agent_runtime` + `test_runtime_enhancements` stayed green (pure refactor).
   3. Rewired `resume_after_approval`'s follow-up step to the same helper (`user_message=None`, no action tools, `deferred_tool_calls=None`, no failure tracker — deferral/exclusion are loop concepts that don't apply to the single follow-up step). All 56 `test_approval_reentry` tests stayed green; added a resume characterization test proving the follow-up now runs the shared multi-tool pipeline.
   - Two intentional consistency improvements to `invoke` fell out of unifying the flush semantics (both validated by the characterization suite): its pre-approval flush now splits terminal/non-terminal and applies the reply policy (was `execute_parallel(all)`), and a rule violation now flushes already-validated safe calls before reporting the violation (was: silently dropped). `resume` behavior is otherwise preserved (it already flushed before both stops).
-- 2026-07-08 02:20 MYT - **#3 Deferred (not started), with rationale:**
-  - **#3 Delete `run_sleep_tasks`; point `/sleep` at `run_sleeptime_agents(force=True)`.** `run_sleeptime_agents` is a near-superset but its `_task_profile_synthesis` omits the structured profile-field reconciliation (`reconcile_profile_from_claims`) that `run_sleep_tasks` step 2.5 performs — and even folding it in, the orchestrator gates profile synthesis behind the ARH-007 `_fresh(...)` input-freshness check, which `force=True` does not currently bypass and which keys on newest *memory item* while reconciliation reads *claims*. Doing #3 safely means deciding whether `force` should bypass freshness gates (an ARH-007 semantics change) plus a frontend-facing `/sleep` response-contract change (counts → run ids) and migrating 3 tests. Deferred as one coherent unit for a follow-up.
+- 2026-07-08 03:40 MYT - **#3 One sleep orchestrator — DONE.**
+  - Folded structured profile-field reconciliation (`reconcile_profile_from_claims`) into `_task_profile_synthesis`, so the automatic sleep path now reconciles too (it previously never did — reconciliation was only reachable via the manual `run_sleep_tasks`).
+  - Deleted `run_sleep_tasks`, its dead step 0.5 (a `refs_regenerated` count that cleared nothing), and the now-orphaned `SleepTaskResult`.
+  - Repointed the `/sleep` endpoint at `run_sleeptime_agents(force=True)`: manual runs now get `RuntimeBackgroundTaskRun` tracking + consolidation-cursor updates and stay in sync with the per-turn path. The count-shaped response the Consciousness UI consumes (`contradictionsResolved`/`itemsMerged`/`episodesGenerated`) is rebuilt from the issued task runs' stored `result_json` — no frontend change.
+  - **Decision on freshness (answering the open question):** `force` bypasses the *heat* gate only, NOT the ARH-007 input-freshness dirty-check. `test_background_dirty_checks` documents that even a forced run skips synthesis whose inputs are unchanged; bypassing freshness would contradict that tested design and re-run work needlessly. So the correct approach kept freshness intact — no ARH-007 semantics change.
+  - Tests: profile reconciliation now tested directly on `_task_profile_synthesis`; a relocated `test_run_sleeptime_agents_invalidates_companion_cache` (companion invalidation is now an unconditional post-run step, no longer coupled to reconciliation); a `/sleep` endpoint test asserting the response mapping; the obsolete `run_sleep_tasks` ordering test removed (ordering is structural + covered by `test_background_dirty_checks`).
 
 ## Validation
 
 - Commands:
   - #1 extraction: `pytest tests/test_step_loop_characterization.py tests/test_agent_runtime.py tests/test_runtime_enhancements.py tests/test_approval_reentry.py` → 86 + 5 passed (characterization tests identical pre/post extraction; `invoke` pure refactor; `resume` rewired). `test_chat` 17 passed; `test_agent_service` 35 tests with only the known recalled-image-pill pre-existing failure.
   - #2/#4/#5a/#5b: `pytest tests/test_agent_runtime.py tests/test_runtime_enhancements.py tests/test_approval_reentry.py tests/test_sleep_agent.py tests/test_ws.py` → 117 passed
+  - #3 sleep merge: `pytest tests/test_sleep_agent.py tests/test_background_dirty_checks.py tests/test_agent_consolidation.py tests/test_user_profile.py` → 80 passed; `tests/test_chat.py::test_sleep_endpoint_maps_task_run_results_to_counts` → 1 passed. `run_sleep_tasks`/`SleepTaskResult` deleted; `/sleep` delegates to `run_sleeptime_agents(force=True)`.
   - Migration 025 up/down/re-up verified on a stamped-at-024 sqlite DB (table + both indexes created, dropped on downgrade, idempotent re-upgrade)
 - Changed paths:
   - apps/server/src/anima_server/services/agent/service.py
@@ -85,4 +90,4 @@ Exactly one copy of each critical loop: one step-tool-call pipeline shared by in
   - apps/server/tests/test_sleep_agent.py
   - apps/server/tests/test_step_loop_characterization.py
 - Notes:
-  - #1, #2, #4, #5a, #5b landed. Only #3 (sleep-orchestrator merge) remains deferred; ticket stays `in-progress` until it lands. All landed items are behavior-preserving except the intended mid-turn-refresh correctness fix (#2) and two documented `invoke` consistency improvements from #1 (pre-approval flush splits/applies policy; violation flushes already-validated calls before reporting).
+  - All six sub-items landed (#1 shared step pipeline, #2 mid-turn refresh fix, #3 single sleep orchestrator, #4 single stream pump, #5a dead-param removal, #5b cursor table + retention). Behavior-preserving except: the intended mid-turn-refresh correctness fix (#2); two documented `invoke` consistency improvements from #1 (pre-approval flush splits/applies policy; violation flushes already-validated calls before reporting); and #3's intended additions (the automatic sleep path now reconciles profile fields; manual `/sleep` runs are now tracked and heat-gate-bypassed but still freshness-gated).

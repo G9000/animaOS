@@ -1459,16 +1459,16 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
 
 
 @pytest.mark.asyncio
-async def test_sleep_tasks_reconciles_claims_to_profile_fields(
+async def test_profile_synthesis_task_reconciles_claims_to_profile_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Structured profile reconciliation now lives in the sleep orchestrator's
+    # profile-synthesis task (folded in when run_sleep_tasks was removed), so
+    # it is exercised through that task directly.
     service = _profile_service()
     from anima_server.config import settings
     from anima_server.services.agent import sleep_tasks
-
-    async def no_scan(**kwargs: object) -> tuple[int, int]:
-        del kwargs
-        return (0, 0)
+    from anima_server.services.agent.sleep_agent import _task_profile_synthesis
 
     async def no_merge(**kwargs: object) -> int:
         del kwargs
@@ -1477,13 +1477,7 @@ async def test_sleep_tasks_reconciles_claims_to_profile_fields(
     original_provider = settings.agent_provider
     try:
         settings.agent_provider = "scaffold"
-        monkeypatch.setattr(sleep_tasks, "scan_contradictions", no_scan)
         monkeypatch.setattr(sleep_tasks, "synthesize_profile", no_merge)
-        monkeypatch.setattr(
-            sleep_tasks,
-            "_should_run_deep_monologue",
-            lambda *args, **kwargs: False,
-        )
 
         with _soul_session_factory() as factory:
             with factory() as db:
@@ -1498,83 +1492,17 @@ async def test_sleep_tasks_reconciles_claims_to_profile_fields(
                 )
                 db.commit()
 
-            result = await sleep_tasks.run_sleep_tasks(
-                user_id=user_id,
-                db_factory=factory,
-            )
+            result = await _task_profile_synthesis(user_id=user_id, db_factory=factory)
 
             with factory() as db:
                 fields = service.list_profile_fields(db, user_id=user_id)
 
-        assert result.profile_fields_reconciled == 1
+        assert result["profile_fields_reconciled"] == 1
         assert [(field.category, field.key) for field in fields] == [
             ("work", "occupation")
         ]
     finally:
         settings.agent_provider = original_provider
-
-
-@pytest.mark.asyncio
-async def test_sleep_tasks_invalidates_companion_memory_after_profile_reconciliation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from anima_server.config import settings
-    from anima_server.services.agent import sleep_tasks
-
-    class FakeCompanion:
-        def __init__(self) -> None:
-            self.invalidations = 0
-
-        def invalidate_memory(self) -> None:
-            self.invalidations += 1
-
-    async def no_scan(**kwargs: object) -> tuple[int, int]:
-        del kwargs
-        return (0, 0)
-
-    async def no_merge(**kwargs: object) -> int:
-        del kwargs
-        return 0
-
-    companion = FakeCompanion()
-    original_provider = settings.agent_provider
-    try:
-        settings.agent_provider = "scaffold"
-        monkeypatch.setattr(sleep_tasks, "scan_contradictions", no_scan)
-        monkeypatch.setattr(sleep_tasks, "synthesize_profile", no_merge)
-        monkeypatch.setattr(
-            sleep_tasks,
-            "_should_run_deep_monologue",
-            lambda *args, **kwargs: False,
-        )
-        monkeypatch.setattr(
-            "anima_server.services.agent.companion.get_companion",
-            lambda user_id: companion,
-        )
-
-        with _soul_session_factory() as factory:
-            with factory() as db:
-                user = _make_user(db)
-                user_id = user.id
-                upsert_claim(
-                    db,
-                    user_id=user_id,
-                    content="works as a product manager",
-                    category="fact",
-                    evidence_text="I work as a product manager",
-                )
-                db.commit()
-
-            result = await sleep_tasks.run_sleep_tasks(
-                user_id=user_id,
-                db_factory=factory,
-            )
-
-    finally:
-        settings.agent_provider = original_provider
-
-    assert result.profile_fields_reconciled == 1
-    assert companion.invalidations == 1
 
 
 def test_static_memory_blocks_include_structured_user_profile_block() -> None:
