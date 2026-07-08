@@ -947,6 +947,43 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
     return "\n\n".join(lines)
 
 
+@tool
+def search_knowledge_bundle(query: str, mode: str = "balanced") -> str:
+    """Search compiled knowledge bundles and source evidence spans without writing memory."""
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge
+
+    query_stripped = query.strip()
+    if not query_stripped:
+        return "Please provide a knowledge search query."
+    if mode not in {"balanced", "concepts", "evidence"}:
+        return "Unknown knowledge search mode. Valid modes: balanced, concepts, evidence."
+
+    ctx = get_tool_context()
+    result = retrieve_knowledge(
+        ctx.runtime_db,
+        user_id=ctx.user_id,
+        query=query_stripped,
+        limit_concepts=0 if mode == "evidence" else 5,
+        limit_spans=0 if mode == "concepts" else 5,
+    )
+    if not result.concepts and not result.evidence_spans:
+        return "No compiled knowledge bundle results found."
+
+    lines = ["Knowledge bundle results:"]
+    for concept in result.concepts:
+        lines.append(
+            f"- concept:{concept.concept_id} [{concept.concept_type}] "
+            f"{concept.title}: {concept.summary}"
+        )
+    for span in result.evidence_spans:
+        lines.append(
+            f"- source_span:{span.span_id} source:{span.source_id} "
+            f"{span.source_uri} {span.locator}: {span.content_text}"
+        )
+    return "\n".join(lines)
+
+
 def _normalize_long_memory_mode(mode: object) -> tuple[str, object | None]:
     if mode is None:
         return "auto", None
@@ -1381,6 +1418,7 @@ def get_core_tools() -> list[Any]:
         send_message,
         recall_memory,
         search_long_memory,
+        search_knowledge_bundle,
         search_images,
         recall_conversation,
         core_memory_append,
