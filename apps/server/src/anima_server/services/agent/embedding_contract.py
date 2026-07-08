@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, null, select
 
 logger = logging.getLogger(__name__)
 degraded_logger = logging.getLogger("anima.runtime.degraded")
@@ -184,7 +184,12 @@ def reset_derived_embedding_stores(
         ).all()
     )
     for item in items:
-        item.embedding_json = None
+        # Assign a SQL NULL, not Python None: this JSON column is not
+        # none_as_null, so `item.embedding_json = None` would persist the JSON
+        # value 'null' — which `embedding_json IS NULL` (used by the backfill
+        # selector and the remaining-count check) does NOT match, leaving reset
+        # items un-re-embedded and the contract falsely "complete".
+        item.embedding_json = null()
         item.embedding_checksum = None
     soul_db.flush()
 

@@ -25,7 +25,7 @@ from anima_server.services.agent.sleep_agent import (
     should_run_sleeptime,
     update_last_processed_message_id,
 )
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -535,6 +535,112 @@ async def test_run_sleeptime_agents_invalidates_companion_cache(
     )
 
     assert invalidations["count"] == 1
+
+
+@pytest.mark.asyncio()
+async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
+    """The re-embed reset must not re-null a mid-cycle backfill.  Backfill does
+    ~10 items/pass; re-running the reset every pass (while reembed_required
+    stays true) would re-null the previous pass's work and semantic search
+    would never recover.  Reset only when the user has no pending (null)
+    embeddings yet."""
+    from anima_server.models import MemoryItem
+    from anima_server.services.agent import (
+        consolidation,
+        embedding_contract,
+        sleep_agent,
+        vector_store,
+    )
+
+    reset_calls = {"n": 0}
+
+    def _reset_spy(soul_db, *, user_id, runtime_db_factory=None):
+        reset_calls["n"] += 1
+        return 0
+
+    async def _noop_backfill(user_id, db_factory=None):
+        return None
+
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
+    monkeypatch.setattr(embedding_contract, "reset_derived_embedding_stores", _reset_spy)
+    monkeypatch.setattr(embedding_contract, "complete_reembed", lambda **k: None)
+    monkeypatch.setattr(
+        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
+    monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
+
+    # Fresh cycle: items still carry their (old-model) embeddings → reset once.
+    with db_factory() as db:
+        user_a = User(username="reembed-a", password_hash="x", display_name="A")
+        db.add(user_a)
+        db.commit()
+        uid_a = user_a.id
+        db.add(
+            MemoryItem(
+                user_id=uid_a, content="x", category="fact", importance=3,
+                source="e", embedding_json=[0.1] * 8,
+            )
+        )
+        db.commit()
+    await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
+    assert reset_calls["n"] == 1
+
+    # Mid-cycle: a pending (SQL NULL) embedding already exists → skip the reset.
+    # embedding_json is omitted so the column defaults to SQL NULL (assigning
+    # Python None would persist JSON 'null', which IS NULL does not match).
+    reset_calls["n"] = 0
+    with db_factory() as db:
+        user_b = User(username="reembed-b", password_hash="x", display_name="B")
+        db.add(user_b)
+        db.commit()
+        uid_b = user_b.id
+        db.add(
+            MemoryItem(
+                user_id=uid_b, content="y", category="fact", importance=3,
+                source="e",
+            )
+        )
+        db.commit()
+    await sleep_agent._task_embedding_backfill(user_id=uid_b, db_factory=db_factory)
+    assert reset_calls["n"] == 0
+
+
+def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:
+    """reset must persist SQL NULL, not JSON 'null' — otherwise the backfill
+    selector (embedding_json IS NULL) never finds reset items and re-embed
+    silently 'completes' without regenerating anything."""
+    from anima_server.models import MemoryItem
+    from anima_server.services.agent.embedding_contract import (
+        reset_derived_embedding_stores,
+    )
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as db:
+            db.add(User(username="reset-null", password_hash="x", display_name="R"))
+            db.commit()
+            db.add(
+                MemoryItem(
+                    user_id=1, content="z", category="fact", importance=3,
+                    source="e", embedding_json=[0.1] * 8,
+                )
+            )
+            db.commit()
+            reset_derived_embedding_stores(db, user_id=1)
+            db.commit()
+            pending = db.scalar(
+                select(func.count())
+                .select_from(MemoryItem)
+                .where(MemoryItem.embedding_json.is_(None))
+            )
+        assert pending == 1  # reset item is matched by IS NULL
+    finally:
+        engine.dispose()
 
 
 # ── Restart cursor ───────────────────────────────────────────────────

@@ -135,7 +135,8 @@ def test_list_threads_sorted_by_last_message() -> None:
 
         threads = list_threads(db, user_id=uid)
         assert len(threads) == 2
-        assert threads[0].id == t2.id  # most recent first
+        # list_threads returns (RuntimeThread, first_role) rows.
+        assert threads[0][0].id == t2.id  # most recent first
 
 
 def test_list_threads_sorts_empty_threads_by_created_at() -> None:
@@ -157,7 +158,7 @@ def test_list_threads_sorts_empty_threads_by_created_at() -> None:
         db.flush()
 
         threads = list_threads(db, user_id=uid)
-        assert [thread.id for thread in threads] == [newer.id, older.id]
+        assert [thread.id for thread, _first_role in threads] == [newer.id, older.id]
 
 
 def test_list_threads_excludes_other_users() -> None:

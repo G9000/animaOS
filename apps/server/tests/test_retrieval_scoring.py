@@ -311,3 +311,32 @@ def test_search_by_vector_expands_until_limit(monkeypatch: pytest.MonkeyPatch) -
     assert len(results) == 10
     assert db.calls == 2  # first pool (20) under-delivered, expanded to 40
     assert all(r.item_id in valid_ids for r in results)
+
+
+def test_combined_strategy_bypasses_rust_for_raw_absolute_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Rust cutoff compares absolute_min against normalized scores, so
+    combined/absolute_threshold must stay on the Python path to cut on the raw
+    scale — e.g. [0.9, 0.85, 0.8, 0.29, 0.0] with absolute_min=0.3 cuts at 3."""
+    from anima_server.services.agent import adaptive_retrieval as ar
+
+    calls: list[int] = []
+
+    def _rust_spy(capped_scores, **kwargs):
+        calls.append(1)
+        # Would keep the 0.29 tail hit (normalized 0.32 > 0.3).
+        return len(capped_scores), "rust_no_cut", ar.normalize_scores(capped_scores)
+
+    monkeypatch.setattr(ar, "_rust_find_adaptive_cutoff", _rust_spy)
+
+    config = ar.AdaptiveRetrievalConfig.combined(
+        max_results=12, min_results=3, absolute_min=0.3, relative_threshold=0.0
+    )
+    cutoff, trigger, _norm = ar.find_adaptive_cutoff(
+        [0.9, 0.85, 0.8, 0.29, 0.0], config=config
+    )
+
+    assert cutoff == 3
+    assert trigger == "absolute_min"
+    assert calls == []  # Rust bypassed for the raw-absolute strategy

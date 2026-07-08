@@ -63,6 +63,19 @@ def upgrade() -> None:
         ["user_id", "thread_id"],
         unique=True,
     )
+    # SQL treats NULLs as distinct, so the composite unique index above does
+    # NOT constrain the thread-agnostic ("global") scope (thread_id IS NULL):
+    # two racing global-scope tasks could each insert a row and later reads
+    # would be unordered.  A partial unique index enforces one row per user
+    # for that scope.
+    op.create_index(
+        "ix_runtime_consolidation_cursor_global",
+        "runtime_consolidation_cursors",
+        ["user_id"],
+        unique=True,
+        postgresql_where=sa.text("thread_id IS NULL"),
+        sqlite_where=sa.text("thread_id IS NULL"),
+    )
 
 
 def downgrade() -> None:
@@ -71,6 +84,11 @@ def downgrade() -> None:
     if not inspector.has_table("runtime_consolidation_cursors"):
         return
     existing = {ix["name"] for ix in inspector.get_indexes("runtime_consolidation_cursors")}
+    if "ix_runtime_consolidation_cursor_global" in existing:
+        op.drop_index(
+            "ix_runtime_consolidation_cursor_global",
+            table_name="runtime_consolidation_cursors",
+        )
     if "ix_runtime_consolidation_cursor_scope" in existing:
         op.drop_index(
             "ix_runtime_consolidation_cursor_scope",

@@ -695,14 +695,44 @@ async def _task_embedding_backfill(
         if is_reembed_required():
             reembedding = True
             with factory() as db:
-                cleared = reset_derived_embedding_stores(db, user_id=user_id)
-                db.commit()
-            logger.info(
-                "Re-embed started for user %s: %d items reset after an "
-                "embedding model/dimension change",
-                user_id,
-                cleared,
-            )
+                from sqlalchemy import func as sa_func
+                from sqlalchemy import select as sa_select
+
+                from anima_server.models import MemoryItem
+
+                # Reset only ONCE per re-embed cycle.  The backfill below only
+                # re-embeds ~10 items per pass, so re-running the reset on
+                # every sleeptime pass (while reembed_required stays true) would
+                # re-null the batch the previous pass just embedded — `remaining`
+                # never reaches 0 and semantic search stays disabled forever for
+                # users with more than one batch of memories.  A user that is
+                # mid-re-embed already has null embeddings; only reset when none
+                # are null yet (the cycle hasn't started for this user).
+                already_pending = db.scalar(
+                    sa_select(sa_func.count())
+                    .select_from(MemoryItem)
+                    .where(
+                        MemoryItem.user_id == user_id,
+                        MemoryItem.superseded_by.is_(None),
+                        MemoryItem.embedding_json.is_(None),
+                    )
+                )
+                if not already_pending:
+                    cleared = reset_derived_embedding_stores(db, user_id=user_id)
+                    db.commit()
+                    logger.info(
+                        "Re-embed started for user %s: %d items reset after an "
+                        "embedding model/dimension change",
+                        user_id,
+                        cleared,
+                    )
+                else:
+                    logger.debug(
+                        "Re-embed already in progress for user %s (%d items "
+                        "pending); continuing backfill without resetting",
+                        user_id,
+                        already_pending,
+                    )
     except Exception:
         logger.exception("Re-embed reset failed for user %s", user_id)
         reembedding = False

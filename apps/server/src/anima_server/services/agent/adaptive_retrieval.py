@@ -137,13 +137,17 @@ def find_adaptive_cutoff(
     # query whose best match is genuine junk returns nothing rather than a
     # confidently-ranked set.  Callers must feed same-scale scores (e.g.
     # cosine similarity) for `absolute_min` to be meaningful.
-    if (
-        active_config.strategy in ("combined", "absolute_threshold")
-        and capped_scores[0] < active_config.absolute_min
-    ):
+    raw_absolute_strategy = active_config.strategy in ("combined", "absolute_threshold")
+    if raw_absolute_strategy and capped_scores[0] < active_config.absolute_min:
         return 0, "below_absolute_min", normalize_scores(capped_scores)
 
-    if _rust_find_adaptive_cutoff is not None:
+    # The Rust cutoff compares `absolute_min` against min-max-normalized
+    # scores, so it would keep below-floor tail hits that the Python path cuts
+    # on the raw scale (e.g. [0.9, 0.85, 0.8, 0.29, 0.0] with absolute_min=0.3
+    # cuts at 3, not 4).  Keep the raw-scale strategies on the Python
+    # implementation; the Rust path still serves the scale-free strategies
+    # (relative_threshold, score_cliff, elbow).
+    if _rust_find_adaptive_cutoff is not None and not raw_absolute_strategy:
         try:
             cutoff, trigger, normalized = _rust_find_adaptive_cutoff(
                 capped_scores,

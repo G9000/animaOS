@@ -348,6 +348,15 @@ def is_retryable_llm_error(exc: BaseException) -> bool:
             return status in RETRYABLE_STATUS_CODES
         msg = str(exc).lower()
         return any(pattern in msg for pattern in _RETRYABLE_MESSAGE_PATTERNS)
+    # The raw provider clients (used by call_llm_for_text) surface httpx
+    # errors directly: response.raise_for_status() raises HTTPStatusError, and
+    # timeouts/connection failures raise httpx.TransportError subclasses.
+    # Classify them like the wrapped LLMInvocationError so background LLM
+    # retries actually retry a real 429/529/5xx or transient transport error.
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in RETRYABLE_STATUS_CODES
+    if isinstance(exc, httpx.TransportError):
+        return True
     return isinstance(exc, (ConnectionError, OSError))
 
 

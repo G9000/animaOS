@@ -698,6 +698,16 @@ class RuntimeConsolidationCursor(RuntimeBase):
             "thread_id",
             unique=True,
         ),
+        # NULLs are distinct in a unique index, so the composite index above
+        # does not constrain the thread-agnostic scope; a partial unique index
+        # enforces one row per user for thread_id IS NULL.
+        Index(
+            "ix_runtime_consolidation_cursor_global",
+            "user_id",
+            unique=True,
+            postgresql_where=text("thread_id IS NULL"),
+            sqlite_where=text("thread_id IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

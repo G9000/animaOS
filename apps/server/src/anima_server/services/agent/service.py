@@ -558,8 +558,10 @@ async def _stream_via_queue(
     line.  The worker never blocks on the end-of-stream sentinel — if the
     consumer stopped reading while the queue was full, an awaited ``put()``
     would deadlock it (and the generator's ``finally`` awaits the worker), so
-    the sentinel is dropped and worker completion doubles as end-of-stream
-    (ARH-002).
+    it is put best-effort and may be dropped when the queue is full (ARH-002).
+    Because a dropped sentinel would otherwise hang the consumer on
+    ``queue.get()`` forever, the consumer races each ``get()`` against worker
+    completion and drains anything buffered once the worker is done.
     """
     queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
         maxsize=settings.agent_stream_queue_max_size,
@@ -581,11 +583,30 @@ async def _stream_via_queue(
     worker_task = asyncio.create_task(worker())
     try:
         while True:
-            event = await queue.get()
-            if event is None:
-                break
-            await asyncio.sleep(0)
-            yield event
+            get_task = asyncio.ensure_future(queue.get())
+            done, _pending = await asyncio.wait(
+                {get_task, worker_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if get_task in done:
+                event = get_task.result()
+                if event is None:
+                    break
+                await asyncio.sleep(0)
+                yield event
+                continue
+            # Worker finished (or errored) without the consumer reading a
+            # sentinel — it may have been dropped on a full queue.  Cancel the
+            # pending get, drain anything still buffered, then stop.
+            get_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await get_task
+            while not queue.empty():
+                buffered = queue.get_nowait()
+                if buffered is None:
+                    continue
+                yield buffered
+            break
     except (asyncio.CancelledError, GeneratorExit):
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1647,8 +1668,14 @@ def _build_recalled_image_source_pills(
     pills: list[dict[str, object]] = []
     seen_assets: set[int] = set()
     for result in results:
-        if result.annotation_kind not in {"vision_caption", "ocr_text"}:
-            continue
+        # Any recalled image annotation should surface a clickable source
+        # pill, not just vision/OCR captions.  The indexer always writes
+        # upload_context/metadata annotations, and where vision/OCR is
+        # disabled — or upload context outscores a caption — those are what
+        # the prompt memory block recalls, so restricting to
+        # {vision_caption, ocr_text} dropped the pill for a genuinely used
+        # image (the response then had no clickable image_source).  Dedup by
+        # asset keeps the top-scoring annotation per image.
         if result.image_asset_id in seen_assets or not result.attachment_url:
             continue
         seen_assets.add(result.image_asset_id)

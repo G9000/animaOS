@@ -316,3 +316,28 @@ async def test_anthropic_chat_client_streams_content_tool_calls_and_usage() -> N
         ),
         AnthropicStreamChunk(done=True),
     ]
+
+
+def test_extract_usage_metadata_folds_cache_tokens_into_total() -> None:
+    """With prompt caching on, Anthropic reports the cached prefix separately
+    from input_tokens; total_tokens must include cache reads/writes so cached
+    tokens are not dropped from cost accounting."""
+    from anima_server.services.agent.anthropic_client import _extract_usage_metadata
+
+    usage = _extract_usage_metadata(
+        {
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "cache_creation_input_tokens": 500,
+                "cache_read_input_tokens": 300,
+            }
+        }
+    )
+    assert usage is not None
+    assert usage["total_tokens"] == 100 + 20 + 500 + 300
+
+    # No cache fields → unchanged input + output behaviour.
+    plain = _extract_usage_metadata({"usage": {"input_tokens": 10, "output_tokens": 5}})
+    assert plain is not None
+    assert plain["total_tokens"] == 15

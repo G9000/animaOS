@@ -602,7 +602,19 @@ def _extract_usage_metadata(payload: object) -> dict[str, object] | None:
         and isinstance(input_tokens, int)
         and isinstance(output_tokens, int)
     ):
-        usage["total_tokens"] = input_tokens + output_tokens
+        # With prompt caching on, Anthropic reports the cached prefix
+        # separately from input_tokens (cache_creation_input_tokens on a write,
+        # cache_read_input_tokens on a hit).  Fold both back in so total_tokens
+        # reflects the full prompt cost instead of dropping cached-prefix
+        # tokens from run/stream totals.
+        cache_read = usage.get("cache_read_input_tokens")
+        cache_write = usage.get("cache_creation_input_tokens")
+        usage["total_tokens"] = (
+            input_tokens
+            + output_tokens
+            + (cache_read if isinstance(cache_read, int) else 0)
+            + (cache_write if isinstance(cache_write, int) else 0)
+        )
 
     return usage or None
 
