@@ -29,6 +29,14 @@ import type {
   Greeting,
   Reflection,
   HomeData,
+  KnowledgeBundleRun,
+  KnowledgeConcept,
+  KnowledgeConceptSummary,
+  KnowledgeImportResponse,
+  KnowledgeLintFinding,
+  KnowledgeSearchResponse,
+  KnowledgeSource,
+  KnowledgeSourceResponse,
   LoginResponse,
   MemoryEpisodeData,
   MemoryItemData,
@@ -671,6 +679,70 @@ export function createApiClient(options: ApiClientOptions) {
         request<DocumentWorkflowActionResponse>(
           `/documents/workflows/${workflowId}/resume`,
           { method: "POST" },
+        ),
+    },
+    knowledge: {
+      listSources: (userId: number, limit?: number) => {
+        const params = new URLSearchParams({ userId: String(userId) });
+        if (limit !== undefined) params.set("limit", String(limit));
+        return request<{ sources: KnowledgeSource[] }>(
+          `/knowledge/sources?${params.toString()}`,
+        );
+      },
+      readSource: (userId: number, sourceId: number) =>
+        request<KnowledgeSourceResponse>(
+          `/knowledge/sources/${sourceId}?userId=${userId}`,
+        ),
+      listConcepts: (userId: number, limit?: number) => {
+        const params = new URLSearchParams({ userId: String(userId) });
+        if (limit !== undefined) params.set("limit", String(limit));
+        return request<{ concepts: KnowledgeConceptSummary[] }>(
+          `/knowledge/concepts?${params.toString()}`,
+        );
+      },
+      readConcept: (userId: number, conceptId: number) =>
+        request<KnowledgeConcept>(
+          `/knowledge/concepts/${conceptId}?userId=${userId}`,
+        ),
+      compileSource: (userId: number, sourceId: number) =>
+        request<{ compileRun: KnowledgeBundleRun }>(
+          `/knowledge/sources/${sourceId}/compile?userId=${userId}`,
+          {
+            method: "POST",
+          },
+        ),
+      search: (userId: number, query: string, limit?: number) => {
+        const params = new URLSearchParams({
+          userId: String(userId),
+          q: query,
+        });
+        if (limit !== undefined) params.set("limit", String(limit));
+        return request<KnowledgeSearchResponse>(
+          `/knowledge/search?${params.toString()}`,
+        );
+      },
+      runLint: (
+        userId: number,
+        options?: { sourceId?: number; conceptId?: number },
+      ) =>
+        request<{ findings: KnowledgeLintFinding[] }>("/knowledge/lint", {
+          method: "POST",
+          body: {
+            userId,
+            ...(options?.sourceId !== undefined
+              ? { sourceId: options.sourceId }
+              : {}),
+            ...(options?.conceptId !== undefined
+              ? { conceptId: options.conceptId }
+              : {}),
+          },
+        }),
+      exportBundle: (userId: number) =>
+        downloadBlob(`/knowledge/export?userId=${userId}`),
+      importBundle: (userId: number, file: File | Blob) =>
+        uploadFile<KnowledgeImportResponse>(
+          `/knowledge/import?userId=${userId}`,
+          file,
         ),
     },
     config: {
