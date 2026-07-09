@@ -805,17 +805,32 @@ def set_self_model_block(
                     SelfModelBlock.section == section,
                 )
             )
-            _check_block_version(
-                existing, section=section, expected_version=expected_version
-            )
             if existing is not None:
-                existing.content = ef(
+                encrypted = ef(
                     user_id, content, table="self_model_blocks", field="content")
-                existing.version += 1
-                existing.updated_by = updated_by
-                existing.updated_at = datetime.now(UTC)
-                db.flush()
+                if expected_version is None:
+                    existing.content = encrypted
+                    existing.version += 1
+                    existing.updated_by = updated_by
+                    existing.updated_at = datetime.now(UTC)
+                    db.flush()
+                else:
+                    # Same atomic optimistic lock in the degraded/no-runtime
+                    # path — a bare pre-check lets two reflections that read
+                    # version N both overwrite at N+1.
+                    _atomic_block_update(
+                        db,
+                        SelfModelBlock,
+                        existing=existing,
+                        section=section,
+                        stored_content=encrypted,
+                        updated_by=updated_by,
+                        expected_version=expected_version,
+                    )
                 return existing
+            _check_block_version(
+                None, section=section, expected_version=expected_version
+            )
             block = SelfModelBlock(
                 user_id=user_id,
                 section=section,

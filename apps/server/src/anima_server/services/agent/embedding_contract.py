@@ -15,9 +15,16 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, null, select, text
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 degraded_logger = logging.getLogger("anima.runtime.degraded")
+
+# The embedding contract is a singleton: exactly one row, at this fixed primary
+# key, so two concurrent fresh-DB initializations can't each insert a row (the
+# second collides on the PK) and leave an unordered ``limit(1)`` reading a stale
+# duplicate.
+_CONTRACT_ROW_ID = 1
 
 # Process-local mirror of the persisted reembed flag so the per-turn
 # search path doesn't pay a DB read; refreshed on every contract check
@@ -187,17 +194,36 @@ def check_embedding_contract(
 
     try:
         with factory() as rt_db:
-            row = rt_db.scalar(select(EmbeddingConfig).limit(1))
+            row = rt_db.scalar(
+                select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
+            )
             if row is None:
                 rt_db.add(
                     EmbeddingConfig(
+                        id=_CONTRACT_ROW_ID,
                         embedding_model=model[:128],
                         embedding_dim=dim,
                     )
                 )
-                rt_db.commit()
-                _reembed_required = False
-                return True
+                try:
+                    rt_db.commit()
+                except IntegrityError:
+                    # A concurrent fresh-DB init inserted the singleton first;
+                    # the fixed primary key rejects the duplicate.  Re-read and
+                    # evaluate against the winner's row rather than creating a
+                    # second contract row that unordered reads could later pick.
+                    rt_db.rollback()
+                    row = rt_db.scalar(
+                        select(EmbeddingConfig)
+                        .order_by(EmbeddingConfig.id)
+                        .limit(1)
+                    )
+                else:
+                    _reembed_required = False
+                    return True
+                if row is None:
+                    _reembed_required = False
+                    return True
 
             if row.embedding_model == model[:128] and row.embedding_dim == dim:
                 _reembed_required = bool(row.reembed_required)
@@ -257,7 +283,9 @@ def is_reembed_required(
         else:
             try:
                 with factory() as rt_db:
-                    row = rt_db.scalar(select(EmbeddingConfig).limit(1))
+                    row = rt_db.scalar(
+                        select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
+                    )
                     _reembed_required = (
                         bool(row.reembed_required) if row is not None else False
                     )
@@ -287,9 +315,15 @@ def complete_reembed(
         return
     try:
         with factory() as rt_db:
-            row = rt_db.scalar(select(EmbeddingConfig).limit(1))
+            row = rt_db.scalar(
+                select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
+            )
             if row is None:
-                row = EmbeddingConfig(embedding_model=model[:128], embedding_dim=dim)
+                row = EmbeddingConfig(
+                    id=_CONTRACT_ROW_ID,
+                    embedding_model=model[:128],
+                    embedding_dim=dim,
+                )
                 rt_db.add(row)
             row.embedding_model = model[:128]
             row.embedding_dim = dim

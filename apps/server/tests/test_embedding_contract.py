@@ -76,6 +76,21 @@ class TestContractCheck:
         assert row.embedding_dim == 768
         assert row.reembed_required is False
 
+    def test_contract_row_is_a_singleton(self, rt_factory) -> None:
+        """The contract must be a single fixed-PK row so concurrent fresh-DB
+        inits can't leave duplicate rows that unordered reads pick from."""
+        embedding_contract.check_embedding_contract(
+            model="nomic-embed-text", dim=768, runtime_db_factory=rt_factory
+        )
+        embedding_contract.reset_contract_cache()
+        embedding_contract.check_embedding_contract(
+            model="nomic-embed-text", dim=768, runtime_db_factory=rt_factory
+        )
+        with rt_factory() as rt_db:
+            rows = rt_db.scalars(select(EmbeddingConfig)).all()
+        assert len(rows) == 1
+        assert rows[0].id == 1
+
     def test_matching_pair_passes(self, rt_factory) -> None:
         embedding_contract.check_embedding_contract(
             model="nomic-embed-text", dim=768, runtime_db_factory=rt_factory
