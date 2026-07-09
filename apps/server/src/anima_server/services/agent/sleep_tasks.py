@@ -189,16 +189,19 @@ async def scan_contradictions(
                     continue
 
                 verdict = resolution.get("verdict", "COMPATIBLE")
-                # Suppress re-checking within this run immediately; defer the
-                # durable record until the resolution commits.
+                # Suppress re-checking within this run immediately (avoid a
+                # second LLM call for the same pair this pass).
                 checked_pairs.add(pair_key)
-                pending_records.append((pair_key, str(verdict)))
                 if verdict != "CONFLICT":
+                    # COMPATIBLE is terminal — no memory change needed, so it is
+                    # safe to persist immediately (post-commit) as checked.
+                    pending_records.append((pair_key, str(verdict)))
                     continue
 
                 action = resolution.get("action", "KEEP_SECOND")
                 merged = resolution.get("merged")
 
+                resolved_this_pair = False
                 if action == "KEEP_SECOND":
                     # Mark A as superseded by B (no new row needed)
                     item_a.superseded_by = item_b.id
@@ -207,7 +210,7 @@ async def scan_contradictions(
                     _cleanup_superseded_indexes(user_id, item_a.id, db)
                     _suppress_after_contradiction(db, item_a.id, item_b.id, user_id)
                     resolved_ids.add(item_a.id)
-                    resolved += 1
+                    resolved_this_pair = True
                 elif action == "KEEP_FIRST":
                     # Mark B as superseded by A (no new row needed)
                     item_b.superseded_by = item_a.id
@@ -216,7 +219,7 @@ async def scan_contradictions(
                     _cleanup_superseded_indexes(user_id, item_b.id, db)
                     _suppress_after_contradiction(db, item_b.id, item_a.id, user_id)
                     resolved_ids.add(item_b.id)
-                    resolved += 1
+                    resolved_this_pair = True
                 elif action == "MERGE" and merged:
                     # Create one merged item, point both old items at it
                     merged_item = supersede_memory_item(
@@ -235,6 +238,15 @@ async def scan_contradictions(
                     _suppress_after_contradiction(db, item_b.id, merged_item.id, user_id)
                     resolved_ids.add(item_a.id)
                     resolved_ids.add(item_b.id)
+                    resolved_this_pair = True
+
+                # Only persist a CONFLICT verdict once a branch actually resolved
+                # it.  An unresolvable verdict (MERGE without merged content, or
+                # an unsupported action) must NOT be cached, or the still-active
+                # contradiction would be skipped forever until an item's content
+                # changes.
+                if resolved_this_pair:
+                    pending_records.append((pair_key, str(verdict)))
                     resolved += 1
 
             db.commit()

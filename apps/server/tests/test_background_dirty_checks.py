@@ -121,6 +121,50 @@ async def test_contradiction_scan_does_not_rebuy_verdicts(
 
 
 @pytest.mark.asyncio
+async def test_unresolved_conflict_is_not_cached(
+    soul_factory, rt_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CONFLICT the resolver can't act on (MERGE without merged content) must
+    NOT be cached — otherwise the still-active contradiction is skipped forever.
+    A later scan must re-examine the same pair."""
+    from anima_server.services.agent import sleep_tasks
+
+    user_id = _make_user(soul_factory)
+    _add_items(
+        soul_factory,
+        user_id,
+        [
+            "Likes green tea in the morning",
+            "Likes black tea in the morning",
+        ],
+    )
+
+    calls = 0
+
+    async def merge_without_content(content_a: str, content_b: str):
+        nonlocal calls
+        calls += 1
+        return {"verdict": "CONFLICT", "action": "MERGE", "merged": None}
+
+    monkeypatch.setattr(sleep_tasks, "_check_contradiction", merge_without_content)
+
+    await sleep_tasks.scan_contradictions(
+        user_id=user_id, db_factory=soul_factory, runtime_db_factory=rt_factory
+    )
+    first_calls = calls
+    assert first_calls >= 1
+
+    # Nothing was resolved and nothing cached → a second scan re-checks the pair.
+    with rt_factory() as rt_db:
+        assert rt_db.scalars(select(ContradictionCheck)).all() == []
+
+    await sleep_tasks.scan_contradictions(
+        user_id=user_id, db_factory=soul_factory, runtime_db_factory=rt_factory
+    )
+    assert calls > first_calls
+
+
+@pytest.mark.asyncio
 async def test_verdict_not_cached_when_soul_commit_fails(
     soul_factory, rt_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -331,6 +375,40 @@ async def test_forced_run_does_not_bypass_contradiction_heat_gate(
     # a memory item exists and no completed runs are recorded).
     assert "profile_synthesis" in issued
     assert "pattern_synthesis" not in issued  # no episodes → no inputs
+
+
+@pytest.mark.asyncio
+async def test_manual_run_forces_contradiction_scan_at_low_heat(
+    soul_factory, rt_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user-triggered /sleep (manual=True) runs the contradiction scan even
+    below the heat gate — the idle-lull carve-out must not silently no-op an
+    on-demand maintenance click."""
+    from anima_server.services.agent import sleep_agent
+
+    user_id = _make_user(soul_factory)
+    _add_items(soul_factory, user_id, ["Likes green tea"])
+
+    issued: list[str] = []
+
+    async def recording_issue(*, user_id, task_type, task_fn, **kwargs) -> str:
+        issued.append(task_type)
+        return f"{task_type}:0"
+
+    monkeypatch.setattr(sleep_agent, "_issue_background_task", recording_issue)
+    monkeypatch.setattr(sleep_agent, "_should_run_expensive", lambda db, uid: False)
+
+    await sleep_agent.run_sleeptime_agents(
+        user_id=user_id,
+        user_message="",
+        assistant_response="",
+        db_factory=soul_factory,
+        runtime_db_factory=rt_factory,
+        force=True,
+        manual=True,
+    )
+
+    assert "contradiction_scan" in issued
 
 
 @pytest.mark.asyncio

@@ -585,6 +585,7 @@ async def trigger_sleep_tasks(
         user_message="",
         assistant_response="",
         force=True,
+        manual=True,
         db_factory=build_session_factory_for_db(db),
         runtime_db_factory=runtime_db_factory,
     )

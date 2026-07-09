@@ -271,6 +271,7 @@ async def run_sleeptime_agents(
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
     force: bool = False,
+    manual: bool = False,
 ) -> list[str]:
     """Orchestrate all background tasks.
 
@@ -290,7 +291,10 @@ async def run_sleeptime_agents(
     Time-gated:
     10. Deep monologue (only once per 24h)
 
-    When force=True (inactivity timer): bypass heat gates.
+    When force=True (inactivity timer): bypass heat gates.  ``manual=True`` (a
+    user-triggered /sleep) additionally runs the contradiction scan regardless
+    of heat — an idle-lull force still heat-gates that most-expensive task, but
+    an on-demand maintenance click should honor the user's intent.
     Returns list of task run IDs for tracking.
     """
     run_ids: list[str] = []
@@ -385,8 +389,9 @@ async def run_sleeptime_agents(
 
         # The contradiction scan is the most expensive recurring task
         # (up to 40 LLM calls): it honors the heat gate even on forced
-        # idle-lull runs, and skips entirely when no memory changed.
-        if heat_gate_passed and _fresh("contradiction_scan", newest_item_at):
+        # idle-lull runs, but a manual /sleep runs it on demand.  Either way it
+        # still skips entirely when no memory changed (input-freshness gate).
+        if (heat_gate_passed or manual) and _fresh("contradiction_scan", newest_item_at):
             try:
                 rid = await _issue_background_task(
                     user_id=user_id,
