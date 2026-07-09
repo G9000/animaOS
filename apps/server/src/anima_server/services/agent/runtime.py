@@ -767,6 +767,8 @@ class AgentRuntime:
         validated_calls: list[tuple[ToolCall, bool]] = []
         awaiting_approval = False
         rule_violation_hit = False
+        terminal_tool_hit = False
+        response: str | None = None
 
         if event_callback is not None:
             for tool_call in effective_tool_calls:
@@ -823,7 +825,17 @@ class AgentRuntime:
                         tool_call.name,
                         violation,
                     )
-                await _flush(capture_terminal=False)
+                # Capture a terminal hit from calls that ran BEFORE this
+                # violation (e.g. a valid send_message earlier in the same
+                # batch): the reply was already sent, so the turn must end on it
+                # rather than be treated purely as a violation and loop again —
+                # which would strand the sent reply and emit a second response.
+                flushed_terminal, flushed_response = await _flush(
+                    capture_terminal=True
+                )
+                if flushed_terminal:
+                    terminal_tool_hit = True
+                    response = flushed_response
                 tool_result = ToolExecutionResult(
                     call_id=tool_call.id,
                     name=tool_call.name,
@@ -874,8 +886,6 @@ class AgentRuntime:
             if not is_action_tool:
                 rules_solver.update_state(tool_call.name, None)
 
-        terminal_tool_hit = False
-        response: str | None = None
         if not rule_violation_hit and not awaiting_approval:
             terminal_tool_hit, response = await _flush(capture_terminal=True)
 
