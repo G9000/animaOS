@@ -675,10 +675,13 @@ async def _task_embedding_backfill(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
-) -> None:
+) -> dict:
     """Backfill embeddings; also the recovery path for the embedding
     contract (re-embed after a model switch), failed vector-store writes,
-    and orphaned pgvector rows."""
+    and orphaned pgvector rows.
+
+    Returns ``{"backfilled": n, "resynced": m}`` so the manual /sleep summary
+    reports the real counts instead of a hard-coded zero."""
     from anima_server.services.agent.consolidation import _backfill_user_embeddings
     from anima_server.services.agent.embedding_contract import (
         ensure_pgvector_dimension,
@@ -744,18 +747,26 @@ async def _task_embedding_backfill(
         logger.exception("Re-embed reset failed for user %s", user_id)
         reembedding = False
 
+    backfilled = 0
+    resynced = 0
     try:
-        await _backfill_user_embeddings(user_id, db_factory=db_factory)
+        backfilled = await _backfill_user_embeddings(user_id, db_factory=db_factory)
     except Exception:
         logger.debug("Embedding backfill skipped for user %s", user_id)
-        return
+        return {"backfilled": 0, "resynced": 0}
 
     try:
         from anima_server.db.session import SessionLocal
 
         factory = db_factory or SessionLocal
 
-        if reembedding:
+        # Only complete when the reset is confirmed done for this user — which
+        # includes a successful pgvector alignment (`mark_reset_done` is skipped
+        # when the ALTER fails).  Otherwise a swallowed pgvector upsert failure
+        # during the backfill could drive `remaining` to 0 and mark the user
+        # complete against a still-misaligned `vector(N)` column, re-enabling
+        # semantic search and skipping the ALTER retry.
+        if reembedding and has_reset_done(user_id):
             # This user's items are all re-embedded with the active model:
             # mark THIS user complete so semantic search comes back for them.
             # The global flag is intentionally left set — clearing it would
@@ -805,6 +816,9 @@ async def _task_embedding_backfill(
             user_id,
             exc_info=True,
         )
+
+    # Report the real work done so the manual /sleep summary isn't hard-coded 0.
+    return {"backfilled": backfilled, "resynced": resynced}
 
 
 async def _task_graph_ingestion(
@@ -1056,28 +1070,47 @@ def update_last_processed_message_id(
 ) -> None:
     """Upsert the consolidation restart cursor for a ``(user, thread)`` scope."""
     from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
 
     from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.models.runtime import RuntimeConsolidationCursor
 
-    factory = runtime_db_factory or get_runtime_session_factory()
-    with factory() as rt_db:
-        cursor = rt_db.scalar(
+    def _load(rt_db):
+        return rt_db.scalar(
             select(RuntimeConsolidationCursor).where(
                 RuntimeConsolidationCursor.user_id == user_id,
                 _cursor_scope_filter(thread_id),
             )
         )
-        if cursor is None:
-            rt_db.add(
-                RuntimeConsolidationCursor(
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    last_processed_message_id=message_id,
-                    messages_processed=messages_processed,
-                )
-            )
-        else:
+
+    factory = runtime_db_factory or get_runtime_session_factory()
+    with factory() as rt_db:
+        cursor = _load(rt_db)
+        if cursor is not None:
             cursor.last_processed_message_id = message_id
             cursor.messages_processed = messages_processed
-        rt_db.commit()
+            rt_db.commit()
+            return
+
+        rt_db.add(
+            RuntimeConsolidationCursor(
+                user_id=user_id,
+                thread_id=thread_id,
+                last_processed_message_id=message_id,
+                messages_processed=messages_processed,
+            )
+        )
+        try:
+            rt_db.commit()
+        except IntegrityError:
+            # Post-turn sleeptime, reflection, and manual sleep can overlap
+            # without a per-cursor lock, so two tasks can both read "no cursor"
+            # and race the insert; the partial-unique index rejects the second.
+            # Recover by updating the row the winner wrote instead of letting
+            # the background task fail with the cursor unadvanced.
+            rt_db.rollback()
+            cursor = _load(rt_db)
+            if cursor is not None:
+                cursor.last_processed_message_id = message_id
+                cursor.messages_processed = messages_processed
+                rt_db.commit()

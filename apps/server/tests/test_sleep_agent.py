@@ -623,9 +623,10 @@ async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
     )
 
     reset_marker: set[int] = set()
+    complete_calls: list[int] = []
 
     async def _noop_backfill(user_id, db_factory=None):
-        return None
+        return 0
 
     monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
     monkeypatch.setattr(
@@ -646,7 +647,9 @@ async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
         lambda uid, *a, **k: reset_marker.add(uid),
     )
     monkeypatch.setattr(
-        embedding_contract, "mark_user_reembed_complete", lambda *a, **k: None
+        embedding_contract,
+        "mark_user_reembed_complete",
+        lambda uid, *a, **k: complete_calls.append(uid),
     )
     monkeypatch.setattr(
         embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
@@ -664,6 +667,34 @@ async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
     # Alignment failed → the reset marker must remain unset so a later pass
     # re-runs the reset + ALTER.
     assert uid not in reset_marker
+    # And the user must NOT be marked complete (which would re-enable semantic
+    # search against a still-misaligned column) even though 0 items remain.
+    assert complete_calls == []
+
+
+@pytest.mark.asyncio()
+async def test_embedding_backfill_task_reports_counts(db_factory, monkeypatch):
+    """The task must return the real backfill/resync counts so the manual
+    /sleep summary isn't hard-coded to 0."""
+    from anima_server.services.agent import (
+        consolidation,
+        embedding_contract,
+        sleep_agent,
+        vector_store,
+    )
+
+    async def _backfill_five(user_id, db_factory=None):
+        return 5
+
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: False)
+    monkeypatch.setattr(
+        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _backfill_five)
+    monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
+
+    result = await sleep_agent._task_embedding_backfill(user_id=1, db_factory=db_factory)
+    assert result == {"backfilled": 5, "resynced": 0}
 
 
 def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:

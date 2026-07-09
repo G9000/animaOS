@@ -603,6 +603,7 @@ async def trigger_sleep_tasks(
     contradictions_resolved = 0
     items_merged = 0
     episodes_generated = 0
+    embeddings_backfilled = 0
     errors: list[str] = []
     if issued_ids:
         with runtime_db_factory() as rt_db:
@@ -620,6 +621,12 @@ async def trigger_sleep_tasks(
                 items_merged = int(result_json.get("merged", 0) or 0)
             elif row.task_type == "episode_gen":
                 episodes_generated = 1 if result_json.get("generated") else 0
+            elif row.task_type == "embedding_backfill":
+                # Report the actual maintenance done (memories embedded + vectors
+                # re-synced), not a hard-coded 0.
+                embeddings_backfilled = int(
+                    result_json.get("backfilled", 0) or 0
+                ) + int(result_json.get("resynced", 0) or 0)
             if row.error_message:
                 errors.append(f"{row.task_type}: {row.error_message}")
 
@@ -628,7 +635,7 @@ async def trigger_sleep_tasks(
         "contradictionsResolved": contradictions_resolved,
         "itemsMerged": items_merged,
         "episodesGenerated": episodes_generated,
-        "embeddingsBackfilled": 0,
+        "embeddingsBackfilled": embeddings_backfilled,
         "errors": errors,
     }
 

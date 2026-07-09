@@ -819,10 +819,14 @@ async def _backfill_user_embeddings(
     user_id: int,
     *,
     db_factory: Callable[..., object] | None = None,
-) -> None:
-    """Embed any memory items that don't have embeddings yet."""
+) -> int:
+    """Embed any memory items that don't have embeddings yet.
+
+    Returns the number of memory items embedded this pass (0 when the provider
+    is a scaffold or nothing was pending) so callers can report the real count.
+    """
     if settings.agent_provider == "scaffold":
-        return
+        return 0
     from anima_server.db.session import SessionLocal
     from anima_server.services.agent.embeddings import backfill_embeddings
 
@@ -832,6 +836,7 @@ async def _backfill_user_embeddings(
         if count > 0:
             db.commit()
             logger.info("Backfilled %d embeddings for user %s", count, user_id)
+    return count
 
 
 async def _run_post_turn_sleeptime_pipeline(
