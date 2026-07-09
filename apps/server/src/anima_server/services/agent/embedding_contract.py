@@ -351,6 +351,21 @@ def ensure_pgvector_dimension(
                     current_dim = None
             if current_dim == int(dim):
                 return True
+            # A dimension change forces dropping ALL rows — pgvector can't hold
+            # old-dimension vectors in a vector(new) column, so non-memory
+            # sources go too.  Make that loud rather than silent: memory items
+            # are rebuilt by the backfill and documents self-heal via the RAG
+            # after-reset repair, but image-annotation and knowledge-concept
+            # vectors are only rebuilt on re-ingestion.
+            dropped_non_memory = (
+                rt_db.execute(
+                    text(
+                        "SELECT count(*) FROM embeddings "
+                        "WHERE source_type <> 'memory_item'"
+                    )
+                ).scalar()
+                or 0
+            )
             rt_db.execute(text("DELETE FROM embeddings"))
             rt_db.execute(
                 text(
@@ -365,6 +380,15 @@ def ensure_pgvector_dimension(
                 dim,
                 current_type,
             )
+            if dropped_non_memory:
+                degraded_logger.warning(
+                    "Dropped %d non-memory embedding rows while realigning the "
+                    "pgvector column to dim %d; document vectors self-heal on "
+                    "the next RAG query, image/knowledge-concept vectors rebuild "
+                    "on re-ingestion.",
+                    dropped_non_memory,
+                    dim,
+                )
             return True
     except Exception:
         logger.exception(

@@ -321,7 +321,6 @@ def _atomic_block_update(
     model,
     *,
     existing,
-    user_id: int,
     section: str,
     stored_content: str,
     updated_by: str,
@@ -334,7 +333,9 @@ def _atomic_block_update(
     silently losing one update and defeating the stale-reflection protection.
     Putting ``version == expected_version`` in the WHERE makes the check and the
     write one atomic operation: the second writer matches zero rows and gets a
-    :class:`SoulBlockConflict` instead.
+    :class:`SoulBlockConflict` instead.  ``section`` is used only for the
+    conflict message (some models, e.g. ``ActiveIntention``, have no section
+    column), so the current version is re-read by primary key.
     """
     result = pg_db.execute(
         update(model)
@@ -349,13 +350,15 @@ def _atomic_block_update(
     if result.rowcount != 1:
         from anima_server.services.agent.soul_blocks import SoulBlockConflict
 
-        fresh = pg_db.scalar(
-            select(model).where(model.user_id == user_id, model.section == section)
-        )
+        # Column query by PK → the true committed version (not the stale
+        # identity-mapped object).
+        actual = pg_db.execute(
+            select(model.version).where(model.id == existing.id)
+        ).scalar()
         raise SoulBlockConflict(
             section=section,
             expected_version=expected_version,
-            actual_version=getattr(fresh, "version", 0) if fresh is not None else 0,
+            actual_version=int(actual) if actual is not None else 0,
         )
     pg_db.flush()
     pg_db.refresh(existing)
@@ -392,7 +395,6 @@ def set_working_context(
                     pg_db,
                     SelfModelBlock,
                     existing=existing,
-                    user_id=user_id,
                     section=section,
                     stored_content=encrypted,
                     updated_by=updated_by,
@@ -452,7 +454,6 @@ def set_working_context(
             pg_db,
             WorkingContext,
             existing=existing,
-            user_id=user_id,
             section=section,
             stored_content=content,
             updated_by=updated_by,
@@ -520,16 +521,25 @@ def set_active_intentions(
                 SelfModelBlock.section == "intentions",
             )
         )
-        _check_block_version(
-            existing, section="intentions", expected_version=expected_version
-        )
         if existing is not None:
-            existing.content = ef(
+            encrypted = ef(
                 user_id, content, table="self_model_blocks", field="content")
-            existing.version += 1
-            existing.updated_by = updated_by
-            existing.updated_at = datetime.now(UTC)
-            pg_db.flush()
+            if expected_version is None:
+                existing.content = encrypted
+                existing.version += 1
+                existing.updated_by = updated_by
+                existing.updated_at = datetime.now(UTC)
+                pg_db.flush()
+            else:
+                _atomic_block_update(
+                    pg_db,
+                    SelfModelBlock,
+                    existing=existing,
+                    section="intentions",
+                    stored_content=encrypted,
+                    updated_by=updated_by,
+                    expected_version=expected_version,
+                )
             return _make_legacy_view(
                 user_id=user_id,
                 section="intentions",
@@ -541,6 +551,7 @@ def set_active_intentions(
                 row_id=existing.id,
             )
 
+        _check_block_version(None, section="intentions", expected_version=expected_version)
         legacy = SelfModelBlock(
             user_id=user_id,
             section="intentions",
@@ -563,17 +574,27 @@ def set_active_intentions(
         )
 
     existing = get_active_intentions(pg_db, user_id=user_id)
-    _check_block_version(
-        existing, section="intentions", expected_version=expected_version
-    )
+
     if existing is not None:
-        existing.content = content
-        existing.version += 1
-        existing.updated_by = updated_by
-        existing.updated_at = datetime.now(UTC)
-        pg_db.flush()
+        if expected_version is None:
+            existing.content = content
+            existing.version += 1
+            existing.updated_by = updated_by
+            existing.updated_at = datetime.now(UTC)
+            pg_db.flush()
+            return existing
+        _atomic_block_update(
+            pg_db,
+            ActiveIntention,
+            existing=existing,
+            section="intentions",
+            stored_content=content,
+            updated_by=updated_by,
+            expected_version=expected_version,
+        )
         return existing
 
+    _check_block_version(None, section="intentions", expected_version=expected_version)
     row = ActiveIntention(
         user_id=user_id,
         content=content,
