@@ -1088,12 +1088,22 @@ def update_last_processed_message_id(
             )
         )
 
+    def _advance(cursor) -> None:
+        # Only ever move the cursor FORWARD.  Overlapping tasks (post-turn,
+        # reflection, manual sleep) run without a per-cursor lock, so an older
+        # task can compute a smaller message_id and commit after a newer task
+        # already advanced the cursor; rewinding would make the next run treat
+        # already-processed runtime messages as new and re-run extraction.
+        if message_id <= (cursor.last_processed_message_id or 0):
+            return
+        cursor.last_processed_message_id = message_id
+        cursor.messages_processed = messages_processed
+
     factory = runtime_db_factory or get_runtime_session_factory()
     with factory() as rt_db:
         cursor = _load(rt_db)
         if cursor is not None:
-            cursor.last_processed_message_id = message_id
-            cursor.messages_processed = messages_processed
+            _advance(cursor)
             rt_db.commit()
             return
 
@@ -1111,11 +1121,10 @@ def update_last_processed_message_id(
             # Post-turn sleeptime, reflection, and manual sleep can overlap
             # without a per-cursor lock, so two tasks can both read "no cursor"
             # and race the insert; the partial-unique index rejects the second.
-            # Recover by updating the row the winner wrote instead of letting
+            # Recover by advancing the row the winner wrote instead of letting
             # the background task fail with the cursor unadvanced.
             rt_db.rollback()
             cursor = _load(rt_db)
             if cursor is not None:
-                cursor.last_processed_message_id = message_id
-                cursor.messages_processed = messages_processed
+                _advance(cursor)
                 rt_db.commit()

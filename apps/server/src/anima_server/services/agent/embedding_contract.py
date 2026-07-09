@@ -153,25 +153,6 @@ def mark_user_reembed_complete(
         _reset_users.add(int(user_id))
 
 
-def _clear_reembed_completions(
-    runtime_db_factory: Callable[..., object] | None = None,
-) -> None:
-    """Start a fresh re-embed cycle: every user must reset + re-embed again."""
-    global _completed_users, _reset_users
-    from anima_server.models.runtime_memory import ReembedCompletion
-
-    factory = _runtime_factory(runtime_db_factory)
-    if factory is not None:
-        try:
-            with factory() as rt_db:
-                rt_db.execute(delete(ReembedCompletion))
-                rt_db.commit()
-        except Exception:
-            logger.debug("Failed to clear re-embed completions", exc_info=True)
-    _completed_users = set()
-    _reset_users = set()
-
-
 def check_embedding_contract(
     *,
     model: str,
@@ -185,8 +166,8 @@ def check_embedding_contract(
     were built with — in which case ``reembed_required`` is persisted and
     semantic search reports itself degraded until the re-embed completes.
     """
-    global _reembed_required
-    from anima_server.models.runtime_memory import EmbeddingConfig
+    global _reembed_required, _completed_users, _reset_users
+    from anima_server.models.runtime_memory import EmbeddingConfig, ReembedCompletion
 
     factory = _runtime_factory(runtime_db_factory)
     if factory is None:
@@ -252,8 +233,16 @@ def check_embedding_contract(
             row.embedding_dim = dim
             row.reembed_required = True
             row.updated_at = datetime.now(UTC)
+            # Clear the per-user completions in the SAME transaction as the
+            # contract update.  A separate-session clear could be lost to a
+            # crash after the contract commit, leaving stale "complete" rows
+            # that `is_reembed_required(user_id)` would trust on restart and
+            # re-enable semantic search for users whose vectors still match the
+            # previous target.
+            rt_db.execute(delete(ReembedCompletion))
             rt_db.commit()
-            _clear_reembed_completions(runtime_db_factory)
+            _completed_users = set()
+            _reset_users = set()
             _reembed_required = True
             return False
     except Exception:

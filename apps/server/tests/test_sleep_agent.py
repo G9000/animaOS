@@ -804,6 +804,27 @@ class TestRestartCursor:
             ).all()
         assert len(rows) == 1
 
+    def test_cursor_only_advances_forward(self, rt_factory):
+        """An older overlapping task committing a smaller message_id must not
+        rewind the cursor (which would re-process already-handled messages)."""
+        update_last_processed_message_id(
+            1,
+            thread_id=7,
+            message_id=100,
+            messages_processed=10,
+            runtime_db_factory=rt_factory,
+        )
+        # A stale/older task reports a smaller id — must be ignored.
+        update_last_processed_message_id(
+            1,
+            thread_id=7,
+            message_id=40,
+            messages_processed=2,
+            runtime_db_factory=rt_factory,
+        )
+        assert get_last_processed_message_id(
+            1, thread_id=7, runtime_db_factory=rt_factory) == 100
+
     @pytest.mark.asyncio()
     async def test_cursor_survives_task_run_pruning(self, rt_factory):
         """The cursor now lives in its own table, so pruning old completed
