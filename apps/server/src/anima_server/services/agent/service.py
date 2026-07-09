@@ -1316,6 +1316,10 @@ async def _assemble_turn_context(
                     max_drop_ratio=0.35,
                     absolute_min=0.2,
                 ),
+                # The item scores are the fused ranking scale (top renormalised
+                # to 1.0); gate the absolute-confidence floor on the best hit's
+                # raw cosine so a genuinely-irrelevant top match is rejected.
+                confidence_score=search_result.max_cosine,
             )
             filtered = adaptive_result.results
             logger.debug(

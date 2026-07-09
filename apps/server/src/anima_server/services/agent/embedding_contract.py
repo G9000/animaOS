@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, null, select
+from sqlalchemy import delete, null, select, text
 
 logger = logging.getLogger(__name__)
 degraded_logger = logging.getLogger("anima.runtime.degraded")
@@ -24,10 +24,14 @@ degraded_logger = logging.getLogger("anima.runtime.degraded")
 # and on re-embed completion.
 _reembed_required: bool | None = None
 
-# Process-local mirror of the per-user re-embed completions (``None`` = not
-# loaded).  Re-embed is per-user, so semantic search is gated per-user: the
-# global flag says "a cycle is open", this set says which users have finished.
+# Process-local mirrors of per-user re-embed progress (``None`` = not loaded).
+# Re-embed is per-user, so the reset and the search gate are both per-user:
+# the global flag says "a cycle is open"; ``_reset_users`` are users whose
+# derived stores have already been reset this cycle (so the reset runs once,
+# not every pass); ``_completed_users`` are users whose backfill has finished
+# (so semantic search comes back for them without re-enabling it for others).
 _completed_users: set[int] | None = None
+_reset_users: set[int] | None = None
 
 
 def _runtime_factory(
@@ -44,32 +48,66 @@ def _runtime_factory(
 
 
 def reset_contract_cache() -> None:
-    global _reembed_required, _completed_users
+    global _reembed_required, _completed_users, _reset_users
     _reembed_required = None
     _completed_users = None
+    _reset_users = None
 
 
-def _load_completed_users(
+def _load_progress(
     runtime_db_factory: Callable[..., object] | None,
-) -> set[int]:
-    global _completed_users
-    if _completed_users is not None:
-        return _completed_users
+) -> tuple[set[int], set[int]]:
+    """Return ``(reset_users, completed_users)`` for the active cycle."""
+    global _completed_users, _reset_users
+    if _reset_users is not None and _completed_users is not None:
+        return _reset_users, _completed_users
     from anima_server.models.runtime_memory import ReembedCompletion
 
     factory = _runtime_factory(runtime_db_factory)
     if factory is None:
-        _completed_users = set()
-        return _completed_users
+        _reset_users, _completed_users = set(), set()
+        return _reset_users, _completed_users
     try:
         with factory() as rt_db:
-            _completed_users = {
-                int(user_id)
-                for user_id in rt_db.scalars(select(ReembedCompletion.user_id)).all()
-            }
+            rows = rt_db.execute(
+                select(ReembedCompletion.user_id, ReembedCompletion.completed)
+            ).all()
+        _reset_users = {int(uid) for uid, _done in rows}
+        _completed_users = {int(uid) for uid, done in rows if done}
     except Exception:
-        _completed_users = set()
-    return _completed_users
+        _reset_users, _completed_users = set(), set()
+    return _reset_users, _completed_users
+
+
+def has_reset_done(
+    user_id: int,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> bool:
+    """Whether ``user_id``'s derived stores were already reset this cycle."""
+    reset_users, _ = _load_progress(runtime_db_factory)
+    return int(user_id) in reset_users
+
+
+def mark_reset_done(
+    user_id: int,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Record that ``user_id``'s derived stores have been reset this cycle so
+    the (expensive, destructive) reset runs exactly once."""
+    global _reset_users
+    from anima_server.models.runtime_memory import ReembedCompletion
+
+    factory = _runtime_factory(runtime_db_factory)
+    if factory is not None:
+        try:
+            with factory() as rt_db:
+                if rt_db.get(ReembedCompletion, int(user_id)) is None:
+                    rt_db.add(ReembedCompletion(user_id=int(user_id), completed=False))
+                    rt_db.commit()
+        except Exception:
+            logger.exception("Failed to record re-embed reset for user %s", user_id)
+    if _reset_users is not None:
+        _reset_users.add(int(user_id))
 
 
 def mark_user_reembed_complete(
@@ -82,29 +120,37 @@ def mark_user_reembed_complete(
     would re-enable semantic search for every user, including those whose
     vectors are still stale (the multi-user bug this gate fixes).
     """
-    global _completed_users
+    global _completed_users, _reset_users
     from anima_server.models.runtime_memory import ReembedCompletion
 
     factory = _runtime_factory(runtime_db_factory)
     if factory is not None:
         try:
             with factory() as rt_db:
-                if rt_db.get(ReembedCompletion, int(user_id)) is None:
-                    rt_db.add(ReembedCompletion(user_id=int(user_id)))
-                    rt_db.commit()
+                row = rt_db.get(ReembedCompletion, int(user_id))
+                if row is None:
+                    rt_db.add(
+                        ReembedCompletion(user_id=int(user_id), completed=True)
+                    )
+                else:
+                    row.completed = True
+                    row.updated_at = datetime.now(UTC)
+                rt_db.commit()
         except Exception:
             logger.exception(
                 "Failed to record re-embed completion for user %s", user_id
             )
     if _completed_users is not None:
         _completed_users.add(int(user_id))
+    if _reset_users is not None:
+        _reset_users.add(int(user_id))
 
 
 def _clear_reembed_completions(
     runtime_db_factory: Callable[..., object] | None = None,
 ) -> None:
-    """Start a fresh re-embed cycle: every user must re-embed again."""
-    global _completed_users
+    """Start a fresh re-embed cycle: every user must reset + re-embed again."""
+    global _completed_users, _reset_users
     from anima_server.models.runtime_memory import ReembedCompletion
 
     factory = _runtime_factory(runtime_db_factory)
@@ -116,6 +162,7 @@ def _clear_reembed_completions(
         except Exception:
             logger.debug("Failed to clear re-embed completions", exc_info=True)
     _completed_users = set()
+    _reset_users = set()
 
 
 def check_embedding_contract(
@@ -213,7 +260,8 @@ def is_reembed_required(
         return False
     if user_id is None:
         return True
-    return int(user_id) not in _load_completed_users(runtime_db_factory)
+    _reset_users, completed_users = _load_progress(runtime_db_factory)
+    return int(user_id) not in completed_users
 
 
 def complete_reembed(
@@ -248,6 +296,66 @@ def complete_reembed(
         )
     except Exception:
         logger.exception("Failed to update embedding contract after re-embed")
+
+
+def ensure_pgvector_dimension(
+    dim: int,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> None:
+    """Make the pgvector ``embeddings.embedding`` column match ``dim``.
+
+    The column is created as ``vector(<dim>)`` at migration time; on a real
+    PostgreSQL runtime a model switch to a different dimension can't be
+    satisfied by deleting rows — the column type is unchanged, so every
+    re-embed upsert of the new-dimension vectors would fail with a dimension
+    mismatch.  When the stored column dimension differs, drop all rows (they
+    are all stale under the new contract anyway) and ``ALTER`` the column type.
+
+    No-op on non-PostgreSQL backends (the sqlite variant is dimension-agnostic)
+    and when the dimension already matches, so it is safe to call on every
+    re-embed pass.
+    """
+    factory = _runtime_factory(runtime_db_factory)
+    if factory is None:
+        return
+    try:
+        with factory() as rt_db:
+            if rt_db.get_bind().dialect.name != "postgresql":
+                return
+            current_type = rt_db.execute(
+                text(
+                    "SELECT format_type(a.atttypid, a.atttypmod) "
+                    "FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+                    "WHERE c.relname = 'embeddings' AND a.attname = 'embedding'"
+                )
+            ).scalar()
+            # e.g. "vector(768)"; extract the declared dimension.
+            current_dim: int | None = None
+            if isinstance(current_type, str) and "(" in current_type:
+                try:
+                    current_dim = int(current_type.split("(")[1].split(")")[0])
+                except (ValueError, IndexError):
+                    current_dim = None
+            if current_dim == int(dim):
+                return
+            rt_db.execute(text("DELETE FROM embeddings"))
+            rt_db.execute(
+                text(
+                    f"ALTER TABLE embeddings "
+                    f"ALTER COLUMN embedding TYPE vector({int(dim)})"
+                )
+            )
+            rt_db.commit()
+            logger.info(
+                "Recreated embeddings.embedding as vector(%d) for re-embed "
+                "(was %s)",
+                dim,
+                current_type,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to align pgvector column to dimension %d", dim
+        )
 
 
 def reset_derived_embedding_stores(

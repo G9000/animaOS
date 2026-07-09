@@ -116,6 +116,7 @@ def find_adaptive_cutoff(
     scores: Sequence[float],
     *,
     config: AdaptiveRetrievalConfig | None = None,
+    confidence_score: float | None = None,
 ) -> tuple[int, str, list[float]]:
     active_config = config or AdaptiveRetrievalConfig()
     capped_scores = [float(score) for score in scores[: _effective_max(active_config)]]
@@ -135,10 +136,16 @@ def find_adaptive_cutoff(
     # low-confidence result set — the top always renormalizes above any
     # floor.  Gate on the raw top score before any shape strategy runs so a
     # query whose best match is genuine junk returns nothing rather than a
-    # confidently-ranked set.  Callers must feed same-scale scores (e.g.
-    # cosine similarity) for `absolute_min` to be meaningful.
+    # confidently-ranked set.
+    #
+    # `scores` may be a fused ranking scale (RRF+BM25) whose top is
+    # renormalized to 1.0 — meaningless for an absolute floor.  When the caller
+    # supplies `confidence_score` (the same-scale cosine of the best match) the
+    # gate uses it instead of the ranking top; otherwise it falls back to the
+    # top score for callers that already feed same-scale (cosine) values.
     raw_absolute_strategy = active_config.strategy in ("combined", "absolute_threshold")
-    if raw_absolute_strategy and capped_scores[0] < active_config.absolute_min:
+    gate_score = confidence_score if confidence_score is not None else capped_scores[0]
+    if raw_absolute_strategy and gate_score < active_config.absolute_min:
         return 0, "below_absolute_min", normalize_scores(capped_scores)
 
     # The Rust cutoff compares `absolute_min` against min-max-normalized
@@ -174,11 +181,14 @@ def apply_adaptive_filter[ItemT](
     results: list[tuple[ItemT, float]],
     *,
     config: AdaptiveRetrievalConfig | None = None,
+    confidence_score: float | None = None,
 ) -> AdaptiveFilterResult[ItemT]:
     active_config = config or AdaptiveRetrievalConfig()
     capped = results[: _effective_max(active_config)]
     scores = [float(score) for _, score in capped]
-    cutoff, triggered_by, _normalized = find_adaptive_cutoff(scores, config=active_config)
+    cutoff, triggered_by, _normalized = find_adaptive_cutoff(
+        scores, config=active_config, confidence_score=confidence_score
+    )
     cutoff = max(0, min(len(capped), cutoff))
     filtered = capped[:cutoff]
 

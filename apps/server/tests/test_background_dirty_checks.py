@@ -17,7 +17,7 @@ from anima_server.models import MemoryItem, User
 from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.models.runtime_memory import ContradictionCheck
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 
@@ -118,6 +118,48 @@ async def test_contradiction_scan_does_not_rebuy_verdicts(
         cached = rt_db.scalars(select(ContradictionCheck)).all()
     assert len(cached) == first_calls
     assert all(row.verdict == "COMPATIBLE" for row in cached)
+
+
+@pytest.mark.asyncio
+async def test_verdict_not_cached_when_soul_commit_fails(
+    soul_factory, rt_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verdict must be persisted only AFTER its resolution commits.  If the
+    soul commit raises, the pair must stay un-cached so it is re-examined next
+    cycle rather than being silently marked resolved with the fix lost."""
+    from anima_server.services.agent import sleep_tasks
+
+    user_id = _make_user(soul_factory)
+    _add_items(
+        soul_factory,
+        user_id,
+        [
+            "Likes green tea in the morning",
+            "Likes black tea in the morning",
+        ],
+    )
+
+    async def conflict_check(content_a: str, content_b: str):
+        return {"verdict": "CONFLICT", "action": "KEEP_SECOND", "merged": None}
+
+    monkeypatch.setattr(sleep_tasks, "_check_contradiction", conflict_check)
+
+    # Fail every soul commit so no resolution ever becomes durable.
+    real_commit = Session.commit
+
+    def boom(self):
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(Session, "commit", boom)
+
+    with pytest.raises(RuntimeError):
+        await sleep_tasks.scan_contradictions(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=rt_factory
+        )
+
+    monkeypatch.setattr(Session, "commit", real_commit)
+    with rt_factory() as rt_db:
+        assert rt_db.scalars(select(ContradictionCheck)).all() == []
 
 
 @pytest.mark.asyncio
@@ -365,6 +407,50 @@ class TestEmotionalPromotionGate:
             )
 
         self._add_signals(rt_factory, user_id, 1)
+        with soul_factory() as soul_db, rt_factory() as rt_db:
+            assert (
+                should_promote_emotional_patterns(
+                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
+                )
+                is True
+            )
+
+    def test_distinct_emotions_do_not_trip_gate(
+        self, soul_factory, rt_factory
+    ) -> None:
+        """Three signals of three *different* emotions must not fire the gate:
+        promotion needs one emotion to recur, so firing here would scan 50
+        SQLCipher rows, promote nothing, and (last_observed unchanged) re-fire
+        every turn."""
+        from anima_server.models.runtime_consciousness import CurrentEmotion
+        from anima_server.services.agent.emotional_patterns import (
+            should_promote_emotional_patterns,
+        )
+
+        user_id = _make_user(soul_factory)
+        with rt_factory() as rt_db:
+            for emotion in ("curious", "joyful", "anxious"):
+                rt_db.add(
+                    CurrentEmotion(
+                        user_id=user_id,
+                        emotion=emotion,
+                        confidence=0.8,
+                        evidence_type="linguistic",
+                        trajectory="stable",
+                    )
+                )
+            rt_db.commit()
+
+        with soul_factory() as soul_db, rt_factory() as rt_db:
+            assert (
+                should_promote_emotional_patterns(
+                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
+                )
+                is False
+            )
+
+        # A third signal of one repeated emotion crosses the threshold.
+        self._add_signals(rt_factory, user_id, 3)  # 3× "curious"
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
                 should_promote_emotional_patterns(

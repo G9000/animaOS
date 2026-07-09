@@ -228,20 +228,26 @@ class EmbeddingConfig(RuntimeBase):
 
 
 class ReembedCompletion(RuntimeBase):
-    """Per-user re-embed completion under the current contract cycle.
+    """Per-user re-embed progress for the current contract cycle.
 
     The ``reembed_required`` flag on :class:`EmbeddingConfig` is global, but
     re-embedding is per-user work (soul stores are per-user encrypted, so each
-    user is reset + backfilled during their own sleeptime pass).  This table
-    records which users have finished re-embedding for the active cycle so the
-    semantic-search gate can be per-user: one user finishing must not re-enable
-    semantic search for other users whose vectors are still stale.  Rows are
-    cleared when a new contract mismatch opens a fresh cycle.
+    user is reset + backfilled during their own sleeptime pass).  A row is
+    created the first time a user's derived stores are reset for the active
+    cycle — so the expensive reset runs exactly once per cycle rather than on
+    every pass (and is not mis-gated by unrelated pending embeddings) — and
+    ``completed`` flips to True once that user's backfill finishes.  The
+    semantic-search gate is per-user: one user finishing must not re-enable
+    search for others whose vectors are still stale.  All rows are cleared when
+    a new contract mismatch opens a fresh cycle.
     """
 
     __tablename__ = "runtime_reembed_completions"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

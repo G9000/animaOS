@@ -38,6 +38,12 @@ def upgrade() -> None:
         "runtime_reembed_completions",
         sa.Column("user_id", sa.BigInteger(), nullable=False),
         sa.Column(
+            "completed",
+            sa.Boolean(),
+            server_default=sa.text("false"),
+            nullable=False,
+        ),
+        sa.Column(
             "updated_at",
             TIMESTAMPTZ,
             server_default=sa.func.now(),

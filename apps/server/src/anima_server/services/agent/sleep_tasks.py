@@ -168,6 +168,11 @@ async def scan_contradictions(
                         pairs.append((older_item, newer_item))
 
             resolved_ids: set[int] = set()
+            # Verdicts checked this category, persisted only AFTER the soul
+            # commit below succeeds.  Recording a pair as "checked" before the
+            # resolution is durable would strand the contradiction: a failed
+            # commit loses the supersede, yet the pair is never re-examined.
+            pending_records: list[tuple[str, str]] = []
             for item_a, item_b in pairs[:10]:  # Cap per category
                 # Skip if either side was already superseded in this scan
                 if item_a.id in resolved_ids or item_b.id in resolved_ids:
@@ -184,13 +189,10 @@ async def scan_contradictions(
                     continue
 
                 verdict = resolution.get("verdict", "COMPATIBLE")
+                # Suppress re-checking within this run immediately; defer the
+                # durable record until the resolution commits.
                 checked_pairs.add(pair_key)
-                _record_checked_pair(
-                    runtime_db_factory,
-                    user_id=user_id,
-                    pair_hash=pair_key,
-                    verdict=str(verdict),
-                )
+                pending_records.append((pair_key, str(verdict)))
                 if verdict != "CONFLICT":
                     continue
 
@@ -236,6 +238,18 @@ async def scan_contradictions(
                     resolved += 1
 
             db.commit()
+
+        # Only now that the resolutions are durable, persist the per-pair
+        # verdicts so stable pairs are skipped in future cycles.  If the commit
+        # above raised, we never get here and the pairs are re-checked next
+        # cycle rather than being silently marked resolved.
+        for pair_hash, verdict in pending_records:
+            _record_checked_pair(
+                runtime_db_factory,
+                user_id=user_id,
+                pair_hash=pair_hash,
+                verdict=verdict,
+            )
 
     return found, resolved
 

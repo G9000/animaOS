@@ -539,11 +539,13 @@ async def test_run_sleeptime_agents_invalidates_companion_cache(
 
 @pytest.mark.asyncio()
 async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
-    """The re-embed reset must not re-null a mid-cycle backfill.  Backfill does
-    ~10 items/pass; re-running the reset every pass (while reembed_required
-    stays true) would re-null the previous pass's work and semantic search
-    would never recover.  Reset only when the user has no pending (null)
-    embeddings yet."""
+    """The re-embed reset is destructive and must run exactly once per user per
+    cycle.  Backfill does ~10 items/pass; re-running the reset on every
+    sleeptime pass (while reembed_required stays true) would re-null the
+    previous pass's work and semantic search would never recover.  The reset is
+    gated by an explicit per-user marker, not by null-embedding counts — a
+    null-count guard mis-fires the moment the first batch embeds (count drops to
+    0, triggering a second destructive reset mid-cycle)."""
     from anima_server.models import MemoryItem
     from anima_server.services.agent import (
         consolidation,
@@ -553,6 +555,7 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
     )
 
     reset_calls = {"n": 0}
+    reset_marker: set[int] = set()
 
     def _reset_spy(soul_db, *, user_id, runtime_db_factory=None):
         reset_calls["n"] += 1
@@ -563,14 +566,28 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
 
     monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
     monkeypatch.setattr(embedding_contract, "reset_derived_embedding_stores", _reset_spy)
-    monkeypatch.setattr(embedding_contract, "complete_reembed", lambda **k: None)
+    monkeypatch.setattr(
+        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "has_reset_done",
+        lambda uid, *a, **k: uid in reset_marker,
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "mark_reset_done",
+        lambda uid, *a, **k: reset_marker.add(uid),
+    )
+    monkeypatch.setattr(
+        embedding_contract, "mark_user_reembed_complete", lambda *a, **k: None
+    )
     monkeypatch.setattr(
         embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
     )
     monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
     monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
 
-    # Fresh cycle: items still carry their (old-model) embeddings → reset once.
     with db_factory() as db:
         user_a = User(username="reembed-a", password_hash="x", display_name="A")
         db.add(user_a)
@@ -583,27 +600,12 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
             )
         )
         db.commit()
+
+    # First pass resets once and records the marker; a second pass in the same
+    # cycle sees the marker and must NOT reset again.
+    await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
     await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
     assert reset_calls["n"] == 1
-
-    # Mid-cycle: a pending (SQL NULL) embedding already exists → skip the reset.
-    # embedding_json is omitted so the column defaults to SQL NULL (assigning
-    # Python None would persist JSON 'null', which IS NULL does not match).
-    reset_calls["n"] = 0
-    with db_factory() as db:
-        user_b = User(username="reembed-b", password_hash="x", display_name="B")
-        db.add(user_b)
-        db.commit()
-        uid_b = user_b.id
-        db.add(
-            MemoryItem(
-                user_id=uid_b, content="y", category="fact", importance=3,
-                source="e",
-            )
-        )
-        db.commit()
-    await sleep_agent._task_embedding_backfill(user_id=uid_b, db_factory=db_factory)
-    assert reset_calls["n"] == 0
 
 
 def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:

@@ -117,6 +117,38 @@ def test_absolute_min_trims_tail_on_raw_scale(_python_cutoff_path) -> None:
     assert trigger == "absolute_min"
 
 
+def test_confidence_score_gates_fused_ranking_scores(_python_cutoff_path) -> None:
+    """On the live hybrid path the item scores are the fused RRF+BM25 ranking
+    scale (top renormalised to 1.0), so the absolute floor is meaningless
+    against them.  A separate ``confidence_score`` (the best hit's raw cosine)
+    must drive the gate instead."""
+    # Fused ranking scores: top is 1.0 regardless of true relevance.
+    fused = [1.0, 0.7, 0.55, 0.4, 0.2]
+    config = AdaptiveRetrievalConfig.combined(
+        max_results=12, min_results=3, absolute_min=0.3
+    )
+
+    # Best match is genuine junk (cosine 0.26 < 0.3) → reject the whole set,
+    # even though the ranking top (1.0) would otherwise clear the floor.
+    cutoff, trigger, _ = find_adaptive_cutoff(
+        fused, config=config, confidence_score=0.26
+    )
+    assert cutoff == 0
+    assert trigger == "below_absolute_min"
+
+    # A confident best match (cosine 0.82) keeps the set; the shape strategies
+    # decide the tail from the fused scores.
+    cutoff, trigger, _ = find_adaptive_cutoff(
+        fused, config=config, confidence_score=0.82
+    )
+    assert cutoff >= 3
+    assert trigger != "below_absolute_min"
+
+    # No confidence_score → legacy fallback gates on the top ranking score.
+    cutoff, trigger, _ = find_adaptive_cutoff(fused, config=config)
+    assert trigger != "below_absolute_min"
+
+
 # --------------------------------------------------------------------------- #
 # 2. Heat floor: scored-to-zero vs never-scored
 # --------------------------------------------------------------------------- #

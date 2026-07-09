@@ -681,7 +681,10 @@ async def _task_embedding_backfill(
     and orphaned pgvector rows."""
     from anima_server.services.agent.consolidation import _backfill_user_embeddings
     from anima_server.services.agent.embedding_contract import (
+        ensure_pgvector_dimension,
+        has_reset_done,
         is_reembed_required,
+        mark_reset_done,
         mark_user_reembed_complete,
         reset_derived_embedding_stores,
         sweep_orphaned_runtime_embeddings,
@@ -694,45 +697,38 @@ async def _task_embedding_backfill(
         factory = db_factory or SessionLocal
         if is_reembed_required(user_id):
             reembedding = True
-            with factory() as db:
-                from sqlalchemy import func as sa_func
-                from sqlalchemy import select as sa_select
-
-                from anima_server.models import MemoryItem
-
-                # Reset only ONCE per re-embed cycle.  The backfill below only
-                # re-embeds ~10 items per pass, so re-running the reset on
-                # every sleeptime pass (while reembed_required stays true) would
-                # re-null the batch the previous pass just embedded — `remaining`
-                # never reaches 0 and semantic search stays disabled forever for
-                # users with more than one batch of memories.  A user that is
-                # mid-re-embed already has null embeddings; only reset when none
-                # are null yet (the cycle hasn't started for this user).
-                already_pending = db.scalar(
-                    sa_select(sa_func.count())
-                    .select_from(MemoryItem)
-                    .where(
-                        MemoryItem.user_id == user_id,
-                        MemoryItem.superseded_by.is_(None),
-                        MemoryItem.embedding_json.is_(None),
-                    )
-                )
-                if not already_pending:
+            # Reset only ONCE per re-embed cycle, tracked by an explicit marker
+            # rather than inferred from null embedding counts.  The backfill
+            # below only re-embeds ~10 items per pass, so re-running the reset
+            # on every sleeptime pass (while reembed_required stays true) would
+            # re-null the batch the previous pass just embedded — `remaining`
+            # never reaches 0 and semantic search stays disabled forever for
+            # users with more than one batch of memories.  A null-count guard
+            # also mis-fires the moment the first batch is embedded (count drops
+            # to 0), triggering a second destructive reset mid-cycle.
+            if not has_reset_done(user_id):
+                with factory() as db:
                     cleared = reset_derived_embedding_stores(db, user_id=user_id)
                     db.commit()
-                    logger.info(
-                        "Re-embed started for user %s: %d items reset after an "
-                        "embedding model/dimension change",
-                        user_id,
-                        cleared,
-                    )
-                else:
-                    logger.debug(
-                        "Re-embed already in progress for user %s (%d items "
-                        "pending); continuing backfill without resetting",
-                        user_id,
-                        already_pending,
-                    )
+                # Align the pgvector column to the active model's dimension
+                # (a no-op on sqlite and when the dimension is unchanged); a
+                # dimension change can't be satisfied by deleting rows alone.
+                from anima_server.config import resolve_embedding_dim
+
+                ensure_pgvector_dimension(resolve_embedding_dim())
+                mark_reset_done(user_id)
+                logger.info(
+                    "Re-embed started for user %s: %d items reset after an "
+                    "embedding model/dimension change",
+                    user_id,
+                    cleared,
+                )
+            else:
+                logger.debug(
+                    "Re-embed already reset for user %s this cycle; "
+                    "continuing backfill without resetting",
+                    user_id,
+                )
     except Exception:
         logger.exception("Re-embed reset failed for user %s", user_id)
         reembedding = False

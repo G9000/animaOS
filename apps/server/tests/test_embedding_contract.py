@@ -159,6 +159,32 @@ class TestContractCheck:
         assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is False
         assert embedding_contract.is_reembed_required(2, runtime_db_factory=rt_factory) is True
 
+    def test_reset_marker_is_per_user_and_survives_restart(self, rt_factory) -> None:
+        """The destructive reset is gated by a per-user marker so it runs once
+        per cycle.  The marker is distinct from completion: a user that has been
+        reset (mid-re-embed) is still gated until it completes."""
+        assert embedding_contract.has_reset_done(1, runtime_db_factory=rt_factory) is False
+
+        embedding_contract.mark_reset_done(1, runtime_db_factory=rt_factory)
+        assert embedding_contract.has_reset_done(1, runtime_db_factory=rt_factory) is True
+        assert embedding_contract.has_reset_done(2, runtime_db_factory=rt_factory) is False
+
+        # Reset alone does not mark completion.
+        embedding_contract.check_embedding_contract(
+            model="nomic-embed-text", dim=768, runtime_db_factory=rt_factory
+        )
+        embedding_contract.check_embedding_contract(
+            model="mxbai-embed-large", dim=1024, runtime_db_factory=rt_factory
+        )
+        embedding_contract.reset_contract_cache()
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is True
+
+        # Completion sets both the marker and the completion flag.
+        embedding_contract.mark_user_reembed_complete(1, runtime_db_factory=rt_factory)
+        embedding_contract.reset_contract_cache()
+        assert embedding_contract.has_reset_done(1, runtime_db_factory=rt_factory) is True
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is False
+
 
 def test_semantic_leg_reports_degraded_instead_of_silent_empty(
     monkeypatch: pytest.MonkeyPatch,

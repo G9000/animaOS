@@ -943,6 +943,14 @@ class HybridSearchResult:
     # exactly once here so downstream consumers (fragments, blocks) stop
     # re-decrypting the same rows on the pre-first-token path.
     plaintexts: dict[int, str] | None = None
+    # Top raw cosine similarity among the returned items (``None`` when the
+    # semantic leg contributed nothing, e.g. keyword-only hits).  The per-item
+    # ``float`` scores above are the fused RRF+BM25(+recency) ranking scale
+    # (top renormalised to 1.0), which is meaningless for an absolute
+    # confidence floor; this carries the same-scale cosine value so the
+    # downstream ``absolute_min`` gate can judge whether the best match is
+    # actually relevant.
+    max_cosine: float | None = None
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1194,6 +1202,10 @@ async def hybrid_search(
 
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
+    # Raw cosine per id (before RRF/BM25 fusion) so the confidence floor can be
+    # judged on the semantic scale rather than the renormalised ranking scale.
+    cosine_by_id = {item_id: sim for item_id, sim in semantic_ranked}
+
     results: list[tuple[MemoryItem, float]] = []
     for item_id, rrf_score in merged:
         if item_id in items_by_id:
@@ -1207,6 +1219,11 @@ async def hybrid_search(
             results.append((item, rrf_score))
             if len(results) >= limit:
                 break
+
+    max_cosine = max(
+        (cosine_by_id[item.id] for item, _ in results if item.id in cosine_by_id),
+        default=None,
+    )
 
     # --- Lexical rerank stage (reuses the keyword leg's BM25 scores) ---
     if results:
@@ -1223,6 +1240,7 @@ async def hybrid_search(
         items=results,
         query_embedding=query_embedding,
         plaintexts=plaintexts,
+        max_cosine=max_cosine,
     )
 
 
@@ -1235,16 +1253,24 @@ def adaptive_filter_with_stats(
     results: list[tuple[MemoryItem, float]],
     *,
     config: AdaptiveRetrievalConfig | None = None,
+    confidence_score: float | None = None,
 ) -> AdaptiveFilterResult[MemoryItem]:
     """Apply adaptive retrieval cutoffs and return results plus cutoff stats.
 
     The default config uses a memvid-style combined strategy. For existing call
     sites that still expect the older precision/gap heuristic, use
     ``adaptive_filter`` below.
+
+    ``confidence_score`` is the raw same-scale signal (cosine similarity) used
+    by the ``absolute_min`` floor.  The per-item scores here are the fused
+    ranking scale whose top is renormalised to 1.0, so without this the floor
+    can never reject a low-confidence set.  ``None`` keeps the legacy behaviour
+    of gating on the top ranking score.
     """
     return apply_adaptive_filter(
         results,
         config=config or AdaptiveRetrievalConfig.combined(),
+        confidence_score=confidence_score,
     )
 
 

@@ -33,13 +33,47 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value
 
 
+def _emotion_signal_counts(
+    pg_db: Session,
+    *,
+    user_id: int,
+    since: datetime | None = None,
+) -> tuple[int, int]:
+    """Return ``(total, max_single_emotion)`` for confident signals.
+
+    Counting is grouped by emotion and filtered to the confidence floor that
+    :func:`promote_emotional_patterns` itself applies, so the gate measures the
+    same thing the promotion does: whether one emotion actually repeats.
+    """
+    query = (
+        select(CurrentEmotion.emotion, func.count())
+        .where(
+            CurrentEmotion.user_id == user_id,
+            CurrentEmotion.confidence >= MIN_CONFIDENCE_FOR_PATTERN,
+        )
+        .group_by(CurrentEmotion.emotion)
+    )
+    if since is not None:
+        query = query.where(CurrentEmotion.created_at > since)
+    counts = [int(count) for _emotion, count in pg_db.execute(query).all()]
+    return sum(counts), max(counts, default=0)
+
+
 def should_promote_emotional_patterns(
     *,
     soul_db: Session,
     pg_db: Session,
     user_id: int,
 ) -> bool:
-    """Restart-safe promotion gate derived from persisted state."""
+    """Restart-safe promotion gate derived from persisted state.
+
+    The gate must track what the promotion does — promote a *single* emotion
+    that recurs ``MIN_SIGNALS_FOR_PATTERN`` times — not merely count signals.
+    Gating on the raw new-signal count fires the (expensive, SQLCipher-backed)
+    promotion scan on any three signals even when they are three *different*
+    emotions; the scan then promotes nothing, ``last_observed`` never advances,
+    and the gate re-fires every turn.  Grouping by emotion avoids that loop.
+    """
     last_observed = _as_utc(
         soul_db.scalar(
             select(func.max(CoreEmotionalPattern.last_observed)).where(
@@ -48,25 +82,17 @@ def should_promote_emotional_patterns(
         )
     )
     if last_observed is None:
-        total = pg_db.scalar(
-            select(func.count())
-            .select_from(CurrentEmotion)
-            .where(CurrentEmotion.user_id == user_id)
-        )
-        return (total or 0) >= MIN_SIGNALS_FOR_PATTERN
+        _total, max_run = _emotion_signal_counts(pg_db, user_id=user_id)
+        return max_run >= MIN_SIGNALS_FOR_PATTERN
 
-    new_signals = pg_db.scalar(
-        select(func.count())
-        .select_from(CurrentEmotion)
-        .where(
-            CurrentEmotion.user_id == user_id,
-            CurrentEmotion.created_at > last_observed,
-        )
+    new_total, new_max = _emotion_signal_counts(
+        pg_db, user_id=user_id, since=last_observed
     )
-    new_count = new_signals or 0
-    if new_count >= MIN_NEW_SIGNALS_FOR_PROMOTION:
+    if new_max >= MIN_NEW_SIGNALS_FOR_PROMOTION:
         return True
-    if new_count >= 1 and datetime.now(UTC) - last_observed >= PROMOTION_INTERVAL:
+    # Slow trickle: a lone new signal may combine with older ones to cross the
+    # threshold, but only re-scan at most once per interval, never every turn.
+    if new_total >= 1 and datetime.now(UTC) - last_observed >= PROMOTION_INTERVAL:
         return True
     return False
 
