@@ -309,7 +309,7 @@ def complete_reembed(
 def ensure_pgvector_dimension(
     dim: int,
     runtime_db_factory: Callable[..., object] | None = None,
-) -> None:
+) -> bool:
     """Make the pgvector ``embeddings.embedding`` column match ``dim``.
 
     The column is created as ``vector(<dim>)`` at migration time; on a real
@@ -322,14 +322,19 @@ def ensure_pgvector_dimension(
     No-op on non-PostgreSQL backends (the sqlite variant is dimension-agnostic)
     and when the dimension already matches, so it is safe to call on every
     re-embed pass.
+
+    Returns ``True`` when the column is aligned (a no-op counts as aligned) and
+    ``False`` when the ALTER could not be applied (PG unavailable/locked), so
+    the caller can retry instead of marking the reset done over a still-stale
+    column.
     """
     factory = _runtime_factory(runtime_db_factory)
     if factory is None:
-        return
+        return True
     try:
         with factory() as rt_db:
             if rt_db.get_bind().dialect.name != "postgresql":
-                return
+                return True
             current_type = rt_db.execute(
                 text(
                     "SELECT format_type(a.atttypid, a.atttypmod) "
@@ -345,7 +350,7 @@ def ensure_pgvector_dimension(
                 except (ValueError, IndexError):
                     current_dim = None
             if current_dim == int(dim):
-                return
+                return True
             rt_db.execute(text("DELETE FROM embeddings"))
             rt_db.execute(
                 text(
@@ -360,10 +365,12 @@ def ensure_pgvector_dimension(
                 dim,
                 current_type,
             )
+            return True
     except Exception:
         logger.exception(
             "Failed to align pgvector column to dimension %d", dim
         )
+        return False
 
 
 def reset_derived_embedding_stores(

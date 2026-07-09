@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
@@ -316,6 +316,51 @@ def _check_block_version(
         )
 
 
+def _atomic_block_update(
+    pg_db: Session,
+    model,
+    *,
+    existing,
+    user_id: int,
+    section: str,
+    stored_content: str,
+    updated_by: str,
+    expected_version: int,
+) -> None:
+    """Version-checked update with the guard IN the UPDATE's WHERE clause.
+
+    A bare read/check-then-write (``_check_block_version`` followed by an ORM
+    mutation) lets two writers that both read version N each commit N+1,
+    silently losing one update and defeating the stale-reflection protection.
+    Putting ``version == expected_version`` in the WHERE makes the check and the
+    write one atomic operation: the second writer matches zero rows and gets a
+    :class:`SoulBlockConflict` instead.
+    """
+    result = pg_db.execute(
+        update(model)
+        .where(model.id == existing.id, model.version == expected_version)
+        .values(
+            content=stored_content,
+            version=model.version + 1,
+            updated_by=updated_by,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    if result.rowcount != 1:
+        from anima_server.services.agent.soul_blocks import SoulBlockConflict
+
+        fresh = pg_db.scalar(
+            select(model).where(model.user_id == user_id, model.section == section)
+        )
+        raise SoulBlockConflict(
+            section=section,
+            expected_version=expected_version,
+            actual_version=getattr(fresh, "version", 0) if fresh is not None else 0,
+        )
+    pg_db.flush()
+    pg_db.refresh(existing)
+
+
 def set_working_context(
     pg_db: Session,
     *,
@@ -333,16 +378,26 @@ def set_working_context(
                 SelfModelBlock.section == section,
             )
         )
-        _check_block_version(
-            existing, section=section, expected_version=expected_version
-        )
         if existing is not None:
-            existing.content = ef(
+            encrypted = ef(
                 user_id, content, table="self_model_blocks", field="content")
-            existing.version += 1
-            existing.updated_by = updated_by
-            existing.updated_at = datetime.now(UTC)
-            pg_db.flush()
+            if expected_version is None:
+                existing.content = encrypted
+                existing.version += 1
+                existing.updated_by = updated_by
+                existing.updated_at = datetime.now(UTC)
+                pg_db.flush()
+            else:
+                _atomic_block_update(
+                    pg_db,
+                    SelfModelBlock,
+                    existing=existing,
+                    user_id=user_id,
+                    section=section,
+                    stored_content=encrypted,
+                    updated_by=updated_by,
+                    expected_version=expected_version,
+                )
             return _make_legacy_view(
                 user_id=user_id,
                 section=section,
@@ -354,6 +409,8 @@ def set_working_context(
                 row_id=existing.id,
             )
 
+        # Create path: the only valid expected_version is 0 (absent block).
+        _check_block_version(None, section=section, expected_version=expected_version)
         legacy = SelfModelBlock(
             user_id=user_id,
             section=section,
@@ -381,16 +438,30 @@ def set_working_context(
             WorkingContext.section == section,
         )
     )
-    _check_block_version(existing, section=section, expected_version=expected_version)
 
     if existing is not None:
-        existing.content = content
-        existing.version += 1
-        existing.updated_by = updated_by
-        existing.updated_at = datetime.now(UTC)
-        pg_db.flush()
+        if expected_version is None:
+            # Delta writer that read fresh state in this session — no lock.
+            existing.content = content
+            existing.version += 1
+            existing.updated_by = updated_by
+            existing.updated_at = datetime.now(UTC)
+            pg_db.flush()
+            return existing
+        _atomic_block_update(
+            pg_db,
+            WorkingContext,
+            existing=existing,
+            user_id=user_id,
+            section=section,
+            stored_content=content,
+            updated_by=updated_by,
+            expected_version=expected_version,
+        )
         return existing
 
+    # Create path: the only valid expected_version is 0 (absent block).
+    _check_block_version(None, section=section, expected_version=expected_version)
     row = WorkingContext(
         user_id=user_id,
         section=section,

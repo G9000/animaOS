@@ -213,6 +213,31 @@ class TestContractCheck:
         assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is False
 
 
+def test_batch_embedding_path_runs_contract_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The contract check must fire on the batch path too (the sleep backfill
+    embeds via ``generate_embeddings_batch``); gating it on the single path
+    alone let a model/dimension switch slip through undetected."""
+    from anima_server.config import clear_detected_embedding_dim
+    from anima_server.services.agent import embeddings
+
+    clear_detected_embedding_dim()
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        embedding_contract,
+        "check_embedding_contract",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+    try:
+        embeddings._note_first_embedding_dim([None, [0.0] * 384])
+    finally:
+        clear_detected_embedding_dim()
+
+    assert len(calls) == 1
+    assert calls[0]["dim"] == 384
+
+
 def test_semantic_leg_reports_degraded_instead_of_silent_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -715,14 +715,25 @@ async def _task_embedding_backfill(
                 # dimension change can't be satisfied by deleting rows alone.
                 from anima_server.config import resolve_embedding_dim
 
-                ensure_pgvector_dimension(resolve_embedding_dim())
-                mark_reset_done(user_id)
-                logger.info(
-                    "Re-embed started for user %s: %d items reset after an "
-                    "embedding model/dimension change",
-                    user_id,
-                    cleared,
-                )
+                aligned = ensure_pgvector_dimension(resolve_embedding_dim())
+                if aligned:
+                    # Only record the reset as done once the column is actually
+                    # aligned — otherwise a transient PG failure would strand
+                    # the column at the old vector(N) type with every upsert
+                    # failing and no later pass retrying the ALTER.
+                    mark_reset_done(user_id)
+                    logger.info(
+                        "Re-embed started for user %s: %d items reset after an "
+                        "embedding model/dimension change",
+                        user_id,
+                        cleared,
+                    )
+                else:
+                    logger.warning(
+                        "pgvector column alignment failed for user %s; leaving "
+                        "reset un-marked so a later pass retries the ALTER",
+                        user_id,
+                    )
             else:
                 logger.debug(
                     "Re-embed already reset for user %s this cycle; "

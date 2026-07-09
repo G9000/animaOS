@@ -567,7 +567,7 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
     monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
     monkeypatch.setattr(embedding_contract, "reset_derived_embedding_stores", _reset_spy)
     monkeypatch.setattr(
-        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: None
+        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: True
     )
     monkeypatch.setattr(
         embedding_contract,
@@ -606,6 +606,64 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
     await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
     await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
     assert reset_calls["n"] == 1
+
+
+@pytest.mark.asyncio()
+async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
+    db_factory, monkeypatch
+):
+    """If the pgvector ALTER fails (PG unavailable/locked), the reset must NOT
+    be marked done — otherwise the column stays at the old vector(N) type with
+    every upsert failing and no later pass retrying the ALTER."""
+    from anima_server.services.agent import (
+        consolidation,
+        embedding_contract,
+        sleep_agent,
+        vector_store,
+    )
+
+    reset_marker: set[int] = set()
+
+    async def _noop_backfill(user_id, db_factory=None):
+        return None
+
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
+    monkeypatch.setattr(
+        embedding_contract, "reset_derived_embedding_stores", lambda *a, **k: 0
+    )
+    # Alignment keeps failing.
+    monkeypatch.setattr(
+        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "has_reset_done",
+        lambda uid, *a, **k: uid in reset_marker,
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "mark_reset_done",
+        lambda uid, *a, **k: reset_marker.add(uid),
+    )
+    monkeypatch.setattr(
+        embedding_contract, "mark_user_reembed_complete", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
+    monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
+
+    with db_factory() as db:
+        user = User(username="reembed-fail", password_hash="x", display_name="F")
+        db.add(user)
+        db.commit()
+        uid = user.id
+
+    await sleep_agent._task_embedding_backfill(user_id=uid, db_factory=db_factory)
+    # Alignment failed → the reset marker must remain unset so a later pass
+    # re-runs the reset + ALTER.
+    assert uid not in reset_marker
 
 
 def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:

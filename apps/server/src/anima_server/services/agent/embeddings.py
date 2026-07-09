@@ -405,27 +405,43 @@ async def generate_embedding(text: str) -> list[float] | None:
     if result is not None:
         _clear_provider_unavailable(provider_key)
         _cache_put(key, result)
-        from anima_server.config import _detected_embedding_dim, set_detected_embedding_dim
-
-        if _detected_embedding_dim is None:
-            set_detected_embedding_dim(len(result))
-            logger.info(
-                "Auto-detected embedding dimension: %d (model=%s)",
-                len(result),
-                _resolve_embedding_model(),
-            )
-            # Verify the detected pair against the persisted contract —
-            # a model switch used to surface only as swallowed pgvector
-            # errors, silently degrading retrieval to keyword-only.
-            from anima_server.services.agent.embedding_contract import (
-                check_embedding_contract,
-            )
-
-            check_embedding_contract(
-                model=_resolve_embedding_model(),
-                dim=len(result),
-            )
+        _note_detected_embedding_dim(len(result))
     return result
+
+
+def _note_detected_embedding_dim(dim: int) -> None:
+    """Auto-detect the embedding dimension on the first successful embedding and
+    verify it against the persisted contract.
+
+    Shared by the single- and batch-embedding paths: the sleep backfill embeds
+    via ``generate_embeddings_batch``, so gating the contract check on the
+    single path alone let a model/dimension switch slip through undetected when
+    the first embedding work of a process was a batch backfill — leaving
+    ``reembed_required`` unset and mixing new-model vectors into stale stores.
+    """
+    from anima_server.config import _detected_embedding_dim, set_detected_embedding_dim
+
+    if _detected_embedding_dim is not None:
+        return
+    set_detected_embedding_dim(dim)
+    logger.info(
+        "Auto-detected embedding dimension: %d (model=%s)",
+        dim,
+        _resolve_embedding_model(),
+    )
+    # A model switch used to surface only as swallowed pgvector errors,
+    # silently degrading retrieval to keyword-only.
+    from anima_server.services.agent.embedding_contract import check_embedding_contract
+
+    check_embedding_contract(model=_resolve_embedding_model(), dim=dim)
+
+
+def _note_first_embedding_dim(results: list[list[float] | None]) -> None:
+    """Record the dimension from the first non-empty embedding in a batch."""
+    for embedding in results:
+        if embedding:
+            _note_detected_embedding_dim(len(embedding))
+            return
 
 
 async def _embed_openai_compatible(text: str) -> list[float] | None:
@@ -1342,7 +1358,9 @@ async def generate_embeddings_batch(
         return [None] * len(texts)
 
     if provider == "ollama":
-        return await _batch_embed_ollama(texts)
+        results = await _batch_embed_ollama(texts)
+        _note_first_embedding_dim(results)
+        return results
 
     prepared_items = [
         (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
@@ -1360,6 +1378,9 @@ async def generate_embeddings_batch(
     for (index, _text), embedding in zip(non_empty_items, prepared_results, strict=False):
         results[index] = embedding
 
+    # Same-scale contract check as the single path, so a model/dimension switch
+    # is caught even when the first embedding work is a batch backfill.
+    _note_first_embedding_dim(results)
     return results
 
 
