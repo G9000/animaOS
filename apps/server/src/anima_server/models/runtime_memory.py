@@ -205,8 +205,14 @@ class MemoryAccessLog(RuntimeBase):
 
 
 class EmbeddingConfig(RuntimeBase):
-    """The active embedding contract: which model and dimension the derived
-    embedding stores were built with.
+    """The active embedding contract: the model and dimension the derived
+    embedding stores are being kept consistent with.
+
+    On first use this records the pair the stores were built with.  When the
+    active model/dimension changes, this row is updated to the new pair (the
+    re-embed *target*) and ``reembed_required`` is set until the per-user
+    backfill catches up — so a subsequent switch is detected as a fresh target
+    and re-opens the cycle rather than leaving stale completion markers.
 
     Switching embedding models used to silently kill semantic search: the
     pgvector column stayed at the old dimension, every query raised, and

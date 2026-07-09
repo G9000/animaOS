@@ -203,23 +203,31 @@ def check_embedding_contract(
                 _reembed_required = bool(row.reembed_required)
                 return not row.reembed_required
 
-            if not row.reembed_required:
-                row.reembed_required = True
-                row.updated_at = datetime.now(UTC)
-                rt_db.commit()
-                # New cycle: every user must re-embed again (their derived
-                # stores were built with the now-superseded model/dimension).
-                _clear_reembed_completions(runtime_db_factory)
-                degraded_logger.error(
-                    "Embedding contract mismatch: stores were built with "
-                    "%s (dim %d) but the active model is %s (dim %d). "
-                    "Semantic search is disabled until the re-embed "
-                    "backfill completes.",
-                    row.embedding_model,
-                    row.embedding_dim,
-                    model,
-                    dim,
-                )
+            # Mismatch: the active (model, dim) differs from the recorded
+            # re-embed target.  This fires on the first switch AND on any later
+            # switch while a cycle is still open — the completion markers
+            # recorded against the *previous* target are invalid in both cases.
+            # Clearing must therefore be unconditional on a target change, not
+            # gated on a false->true transition: a second switch would otherwise
+            # leave stale "complete" rows that ungate users still holding
+            # old-model vectors.  Record the new active pair as the target so
+            # routine re-checks with the same model match (and don't re-clear).
+            degraded_logger.error(
+                "Embedding contract mismatch: stores were built with "
+                "%s (dim %d) but the active model is %s (dim %d). "
+                "Semantic search is disabled until the re-embed "
+                "backfill completes.",
+                row.embedding_model,
+                row.embedding_dim,
+                model,
+                dim,
+            )
+            row.embedding_model = model[:128]
+            row.embedding_dim = dim
+            row.reembed_required = True
+            row.updated_at = datetime.now(UTC)
+            rt_db.commit()
+            _clear_reembed_completions(runtime_db_factory)
             _reembed_required = True
             return False
     except Exception:
@@ -398,10 +406,19 @@ def reset_derived_embedding_stores(
             from anima_server.models.runtime_embedding import RuntimeEmbedding
 
             with factory() as rt_db:
+                # Delete ALL of the user's derived vectors, not just
+                # ``memory_item``.  ``document_chunk``, ``image_annotation`` and
+                # ``knowledge_concept`` rows are embedded with the same model
+                # (``generate_embedding``) and live in the same ``embeddings``
+                # table; on a model change their vectors are just as stale, and
+                # paths like document RAG (``source_types=["document_chunk"]``)
+                # would otherwise compare new-model query vectors against them.
+                # They carry no soul-side ``embedding_json`` to null — deleting
+                # the vector rows invalidates them; they are regenerated from
+                # their source text on re-ingestion.
                 rt_db.execute(
                     delete(RuntimeEmbedding).where(
                         RuntimeEmbedding.user_id == user_id,
-                        RuntimeEmbedding.source_type == "memory_item",
                     )
                 )
                 rt_db.commit()

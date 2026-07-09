@@ -106,12 +106,39 @@ class TestContractCheck:
         with rt_factory() as rt_db:
             row = rt_db.scalar(select(EmbeddingConfig))
         assert row.reembed_required is True
-        # The old pair stays recorded until the re-embed completes.
-        assert row.embedding_model == "nomic-embed-text"
+        # The active pair becomes the recorded re-embed target so a later switch
+        # is detected as a fresh target rather than the same open cycle.
+        assert row.embedding_model == "mxbai-embed-large"
+        assert row.embedding_dim == 1024
 
         # The flag survives a "restart" (fresh process cache).
         embedding_contract.reset_contract_cache()
         assert embedding_contract.is_reembed_required(runtime_db_factory=rt_factory) is True
+
+    def test_second_switch_reopens_cycle_for_completed_users(
+        self, rt_factory
+    ) -> None:
+        """A completion is only valid for the target it was recorded against.
+        A second model switch (while the global flag is still set) must clear
+        prior completions so a user who finished the first re-embed is re-gated
+        instead of serving old-model vectors."""
+        embedding_contract.check_embedding_contract(
+            model="nomic-embed-text", dim=768, runtime_db_factory=rt_factory
+        )
+        embedding_contract.check_embedding_contract(
+            model="mxbai-embed-large", dim=1024, runtime_db_factory=rt_factory
+        )
+        # User 1 finishes the re-embed for the first target and is ungated.
+        embedding_contract.mark_user_reembed_complete(1, runtime_db_factory=rt_factory)
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is False
+
+        # A SECOND switch (global flag already set) must re-gate user 1.
+        embedding_contract.check_embedding_contract(
+            model="bge-m3", dim=1024, runtime_db_factory=rt_factory
+        )
+        embedding_contract.reset_contract_cache()
+        assert embedding_contract.is_reembed_required(1, runtime_db_factory=rt_factory) is True
+        assert embedding_contract.has_reset_done(1, runtime_db_factory=rt_factory) is False
 
     def test_complete_reembed_adopts_new_pair(self, rt_factory) -> None:
         embedding_contract.check_embedding_contract(
@@ -254,6 +281,40 @@ class TestDerivedStoreMaintenance:
             assert item.embedding_json is None
         with rt_factory() as rt_db:
             assert rt_db.scalar(select(RuntimeEmbedding)) is None
+
+    def test_reset_clears_non_memory_sources(
+        self, soul_factory, rt_factory
+    ) -> None:
+        """Document/image/concept vectors share the embedding model and the
+        ``embeddings`` table, so a model change makes them stale too — the reset
+        must delete them, not just ``memory_item`` rows."""
+        self._add_item_with_embedding(
+            soul_factory, rt_factory, item_content="Likes green tea"
+        )
+        with rt_factory() as rt_db:
+            rt_db.add(
+                RuntimeEmbedding(
+                    user_id=1,
+                    source_type="document_chunk",
+                    source_id=4242,
+                    content_hash="d" * 64,
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
+                        _embedding()
+                    ),
+                    embedding=_embedding(),
+                    content_preview="a document chunk",
+                )
+            )
+            rt_db.commit()
+
+        with soul_factory() as db:
+            embedding_contract.reset_derived_embedding_stores(
+                db, user_id=1, runtime_db_factory=rt_factory
+            )
+            db.commit()
+
+        with rt_factory() as rt_db:
+            assert rt_db.scalars(select(RuntimeEmbedding)).all() == []
 
     def test_orphan_sweep_removes_rows_without_live_items(
         self, soul_factory, rt_factory
