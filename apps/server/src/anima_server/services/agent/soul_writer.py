@@ -10,9 +10,9 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,10 @@ degraded_logger = logging.getLogger("anima.runtime.degraded")
 _user_locks: dict[int, asyncio.Lock] = {}
 MAX_RETRY_COUNT = 3
 MAX_ITEMS_PER_RUN = 50
+# A "pending" extraction guard newer than this is treated as a live in-flight
+# call and left alone; older than this it is assumed to be from a crashed
+# process and becomes eligible for crash-recovery retry.
+STALE_PENDING_EXTRACTION = timedelta(minutes=15)
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
@@ -510,12 +514,23 @@ def _retry_memory_extraction_failures(
         create_profile_update_candidates_from_payload,
     )
 
+    # Retry genuine failures immediately, plus "pending" guards that have gone
+    # stale — a still-pending row past the staleness window means the process
+    # died mid-extraction (Phase C never ran).  Fresh "pending" rows are a live
+    # in-flight call and are skipped so we don't double-extract them.
+    stale_before = datetime.now(UTC) - STALE_PENDING_EXTRACTION
     failures = list(
         runtime_db.scalars(
             select(MemoryExtractionFailure)
             .where(
                 MemoryExtractionFailure.user_id == user_id,
-                MemoryExtractionFailure.status == "failed",
+                or_(
+                    MemoryExtractionFailure.status == "failed",
+                    and_(
+                        MemoryExtractionFailure.status == "pending",
+                        MemoryExtractionFailure.last_attempt_at < stale_before,
+                    ),
+                ),
                 MemoryExtractionFailure.retry_count < MAX_RETRY_COUNT,
             )
             .order_by(MemoryExtractionFailure.created_at)
@@ -548,12 +563,16 @@ def _retry_memory_extraction_failures(
             )
             llm_result = future.result(timeout=30)
         except Exception as exc:
+            # Normalize a recovered stale "pending" guard to "failed" so it is
+            # a plain retryable row from here on.
+            failure.status = "failed"
             failure.failure_reason = str(exc)[:2000]
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {exc}")
             continue
 
         if llm_result.failed:
+            failure.status = "failed"
             failure.failure_reason = (llm_result.error or "LLM memory extraction failed")[:2000]
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {failure.failure_reason}")

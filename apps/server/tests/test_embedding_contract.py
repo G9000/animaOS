@@ -282,12 +282,13 @@ class TestDerivedStoreMaintenance:
         with rt_factory() as rt_db:
             assert rt_db.scalar(select(RuntimeEmbedding)) is None
 
-    def test_reset_clears_non_memory_sources(
+    def test_reset_preserves_non_memory_sources(
         self, soul_factory, rt_factory
     ) -> None:
-        """Document/image/concept vectors share the embedding model and the
-        ``embeddings`` table, so a model change makes them stale too — the reset
-        must delete them, not just ``memory_item`` rows."""
+        """The reset clears only ``memory_item`` vectors (which the backfill
+        rebuilds).  Non-memory sources have no rebuild path this cycle, so
+        deleting them would drop those memories from recall entirely — they are
+        left in place rather than lost."""
         self._add_item_with_embedding(
             soul_factory, rt_factory, item_content="Likes green tea"
         )
@@ -314,7 +315,9 @@ class TestDerivedStoreMaintenance:
             db.commit()
 
         with rt_factory() as rt_db:
-            assert rt_db.scalars(select(RuntimeEmbedding)).all() == []
+            remaining = rt_db.scalars(select(RuntimeEmbedding)).all()
+        # The memory_item vector is cleared; the document_chunk vector remains.
+        assert [row.source_type for row in remaining] == ["document_chunk"]
 
     def test_orphan_sweep_removes_rows_without_live_items(
         self, soul_factory, rt_factory

@@ -6,7 +6,7 @@ import hashlib
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from anima_server.db.base import Base
@@ -271,6 +271,88 @@ async def test_run_soul_writer_retries_failed_extraction_work(
         )
         assert evidence is not None
         assert evidence.runtime_message_ids_json == [101, 102]
+    finally:
+        settings.agent_provider = original_provider
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retry_skips_inflight_pending_but_recovers_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh "pending" guard is a live in-flight extraction and must be left
+    alone (no concurrent double-extraction); a stale "pending" guard is from a
+    crashed process and must be recovered."""
+    from anima_server.config import settings
+    from anima_server.services.agent.soul_writer import STALE_PENDING_EXTRACTION
+
+    class _FakeResponse:
+        content = '{"memories":[{"content":"Recovered","category":"fact","importance":3}]}'
+
+    class _FakeLLM:
+        async def ainvoke(self, _messages):
+            return _FakeResponse()
+
+    original_provider = settings.agent_provider
+    settings.agent_provider = "openai"
+    monkeypatch.setattr(
+        "anima_server.services.agent.llm.create_llm", lambda: _FakeLLM()
+    )
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    runtime_factory = _make_runtime_factory(runtime_engine)
+
+    try:
+        with soul_factory() as soul_db:
+            user = User(username="stale-pending", password_hash="x", display_name="S")
+            soul_db.add(user)
+            soul_db.commit()
+            user_id = user.id
+
+        now = datetime.now(UTC)
+        with runtime_factory() as runtime_db:
+            runtime_db.add(
+                MemoryExtractionFailure(
+                    user_id=user_id,
+                    source_message_ids=[1],
+                    user_message_preview="in flight",
+                    assistant_response_preview="x",
+                    failure_reason="LLM extraction pending (crash-recovery guard)",
+                    status="pending",
+                    last_attempt_at=now,  # fresh → live in-flight
+                )
+            )
+            runtime_db.add(
+                MemoryExtractionFailure(
+                    user_id=user_id,
+                    source_message_ids=[2],
+                    user_message_preview="crashed",
+                    assistant_response_preview="x",
+                    failure_reason="LLM extraction pending (crash-recovery guard)",
+                    status="pending",
+                    last_attempt_at=now - STALE_PENDING_EXTRACTION - timedelta(minutes=1),
+                )
+            )
+            runtime_db.commit()
+
+        result = await run_soul_writer(
+            user_id,
+            soul_db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+
+        with runtime_factory() as runtime_db:
+            rows = {
+                tuple(r.source_message_ids): r.status
+                for r in runtime_db.scalars(select(MemoryExtractionFailure)).all()
+            }
+
+        assert result.extraction_failures_retried == 1
+        assert rows[(1,)] == "pending"  # in-flight guard untouched
+        assert rows[(2,)] == "resolved"  # stale guard recovered
     finally:
         settings.agent_provider = original_provider
         soul_engine.dispose()

@@ -92,7 +92,10 @@ async def test_cancellation_during_llm_keeps_pre_llm_work(
 
     assert any(c.source == "regex" for c in candidates)
     assert intent is not None
-    assert intent.status == "failed"
+    # The guard is left "pending" (not "failed"): while the LLM call was in
+    # flight it must not be immediately retryable.  A crash leaves it stale for
+    # the Soul Writer sweep to recover.
+    assert intent.status == "pending"
     assert "crash-recovery guard" in intent.failure_reason
     assert intent.source_message_ids == [11, 12]
 

@@ -838,6 +838,13 @@ def sync_to_vector_store(
     except Exception:
         logger.exception(
             "Failed to sync embeddings to vector store for user %d", user_id)
+        # Preserve the retry: the caller consumed the dirty marker before this
+        # pass, so if the vector store is still unavailable we must re-arm it or
+        # a later maintenance pass would never retry and the user stays missing
+        # runtime vectors until another write fails or the process restarts.
+        from anima_server.services.agent.vector_store import mark_vector_store_dirty
+
+        mark_vector_store_dirty(user_id)
         return 0
 
 

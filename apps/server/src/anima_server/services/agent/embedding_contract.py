@@ -406,19 +406,20 @@ def reset_derived_embedding_stores(
             from anima_server.models.runtime_embedding import RuntimeEmbedding
 
             with factory() as rt_db:
-                # Delete ALL of the user's derived vectors, not just
-                # ``memory_item``.  ``document_chunk``, ``image_annotation`` and
-                # ``knowledge_concept`` rows are embedded with the same model
-                # (``generate_embedding``) and live in the same ``embeddings``
-                # table; on a model change their vectors are just as stale, and
-                # paths like document RAG (``source_types=["document_chunk"]``)
-                # would otherwise compare new-model query vectors against them.
-                # They carry no soul-side ``embedding_json`` to null — deleting
-                # the vector rows invalidates them; they are regenerated from
-                # their source text on re-ingestion.
+                # Only ``memory_item`` vectors are cleared here: the re-embed
+                # backfill regenerates those from ``MemoryItem.content``.  The
+                # other sources (``document_chunk``, ``image_annotation``,
+                # ``knowledge_concept``) share the embedding model but have NO
+                # backfill in this cycle, so deleting them would drop those
+                # memories from recall with no way to rebuild them — a worse
+                # regression than a stale vector on an operator-initiated model
+                # change.  Re-embedding non-memory sources is a separate follow
+                # up; dimension changes still wipe the whole column via
+                # ``ensure_pgvector_dimension`` (unavoidable there).
                 rt_db.execute(
                     delete(RuntimeEmbedding).where(
                         RuntimeEmbedding.user_id == user_id,
+                        RuntimeEmbedding.source_type == "memory_item",
                     )
                 )
                 rt_db.commit()

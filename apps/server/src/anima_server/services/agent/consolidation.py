@@ -441,6 +441,9 @@ async def run_background_extraction(
             )
 
             if llm_enabled:
+                # Guard is in-flight, not yet a failure: "pending" keeps it out
+                # of the retry sweep until Phase C resolves it (or a crash
+                # leaves it stale for recovery).
                 intent = record_memory_extraction_failure(
                     rt_db,
                     user_id=user_id,
@@ -448,6 +451,7 @@ async def run_background_extraction(
                     user_message=user_message,
                     assistant_response=assistant_response,
                     failure_reason="LLM extraction pending (crash-recovery guard)",
+                    status="pending",
                 )
                 rt_db.commit()
                 intent_id = intent.id
@@ -491,6 +495,9 @@ async def run_background_extraction(
                         or "LLM memory extraction failed"
                     )
                     if intent is not None:
+                        # Promote the in-flight guard to a retryable failure so
+                        # the Soul Writer sweep picks it up.
+                        intent.status = "failed"
                         intent.failure_reason = reason[:2000]
                         intent.last_attempt_at = now
                         intent.updated_at = now
@@ -667,7 +674,18 @@ def record_memory_extraction_failure(
     assistant_response: str,
     failure_reason: str,
     extraction_model: str | None = None,
+    status: str = "failed",
 ):
+    """Persist an extraction intent row.
+
+    ``status`` defaults to ``"failed"`` (immediately retryable).  The Phase A
+    crash-recovery guard passes ``"pending"`` instead: while the LLM call is
+    genuinely in flight the row must NOT be retryable, or a concurrent turn /
+    sleep run would re-extract the same messages and enqueue duplicate
+    candidates.  Phase C flips it to ``"failed"`` if the call actually failed;
+    a hard crash leaves it ``"pending"`` and the retry sweep recovers it once
+    it goes stale.
+    """
     from anima_server.models.runtime_memory import MemoryExtractionFailure
 
     failure = MemoryExtractionFailure(
@@ -677,6 +695,7 @@ def record_memory_extraction_failure(
         assistant_response_preview=_preview_text(assistant_response),
         failure_reason=failure_reason[:2000],
         extraction_model=extraction_model,
+        status=status,
         last_attempt_at=datetime.now(UTC),
     )
     runtime_db.add(failure)
