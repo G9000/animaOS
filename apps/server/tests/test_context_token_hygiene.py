@@ -18,7 +18,6 @@ from anima_server.services.agent.persistence import (
 )
 from anima_server.services.agent.runtime_types import MessageSnapshot
 
-
 # --------------------------------------------------------------------------- #
 # Tool-output history clamp
 # --------------------------------------------------------------------------- #

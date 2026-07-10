@@ -564,7 +564,7 @@ def append_message(
 
 
 # Step rows used to store every message's full content per step —
-# O(steps × history) serialization on the critical path.  Previews keep
+# O(steps x history) serialization on the critical path.  Previews keep
 # the rows debuggable (roles, tool ids, shape) while the durable full
 # text lives once in the message rows and tool outputs in response_json.
 _STEP_SNAPSHOT_PREVIEW_CHARS = 500

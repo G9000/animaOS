@@ -164,7 +164,6 @@ def test_raw_httpx_status_error_retryable_by_status() -> None:
     # response.raise_for_status() — a 429/5xx reaches the retry classifier as
     # httpx.HTTPStatusError, not LLMInvocationError.
     import httpx
-
     from anima_server.services.agent.llm import is_retryable_llm_error
 
     req = httpx.Request("POST", "http://provider")
@@ -180,7 +179,6 @@ def test_raw_httpx_status_error_retryable_by_status() -> None:
 
 def test_raw_httpx_transport_error_retryable() -> None:
     import httpx
-
     from anima_server.services.agent.llm import is_retryable_llm_error
 
     assert is_retryable_llm_error(httpx.ConnectError("refused")) is True

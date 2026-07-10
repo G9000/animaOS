@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
-from typing import Any, Final, Protocol, TypeVar
+from typing import Any, Final, Protocol
 
 import httpx
 
@@ -375,19 +375,17 @@ def retry_backoff_delay(
     return delay
 
 
-_T = TypeVar("_T")
-
 _retry_logger = logging.getLogger(__name__)
 
 
-async def invoke_with_retry(
-    operation: Callable[[], Awaitable[_T]],
+async def invoke_with_retry[T](
+    operation: Callable[[], Awaitable[T]],
     *,
     retry_limit: int | None = None,
     backoff_factor: float | None = None,
     max_delay: float | None = None,
     description: str = "LLM call",
-) -> _T:
+) -> T:
     """Run *operation* with exponential backoff on transient LLM errors.
 
     Shared by background call sites (extraction, consolidation, compaction)

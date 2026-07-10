@@ -9,8 +9,6 @@ that reject it.
 
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 import pytest
 from anima_server.services.agent.anthropic_client import (
@@ -136,7 +134,7 @@ class TestRetryClassification:
         )
 
     def test_timeout_and_connection_errors_retry(self) -> None:
-        assert is_retryable_llm_error(asyncio.TimeoutError()) is True
+        assert is_retryable_llm_error(TimeoutError()) is True
         assert is_retryable_llm_error(ConnectionError("reset")) is True
 
 

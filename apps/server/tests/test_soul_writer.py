@@ -294,7 +294,7 @@ def test_extraction_retry_wait_covers_full_retry_budget(
     monkeypatch.setattr(settings, "agent_llm_retry_max_delay", 10.0)
 
     wait = _extraction_retry_wait_seconds()
-    # 4 attempts × 120s + 3 × 10s max backoff + 30s buffer.
+    # 4 attempts x 120s + 3 x 10s max backoff + 30s buffer.
     assert wait == 4 * 120.0 + 3 * 10.0 + EXTRACTION_RETRY_TIMEOUT_BUFFER
     # Must far exceed a single provider timeout (the earlier one-timeout bug).
     assert wait > settings.agent_llm_timeout

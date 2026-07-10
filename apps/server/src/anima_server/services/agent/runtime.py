@@ -22,7 +22,6 @@ from anima_server.services.agent.conversation_policy import (
 )
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import (
-    ContextWindowOverflowError,
     LLMInvocationError,
     is_retryable_llm_error,
     retry_backoff_delay,

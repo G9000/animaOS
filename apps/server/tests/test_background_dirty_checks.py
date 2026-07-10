@@ -82,7 +82,7 @@ async def test_contradiction_scan_does_not_rebuy_verdicts(
     from anima_server.services.agent import sleep_tasks
 
     user_id = _make_user(soul_factory)
-    # Similar-but-not-duplicate pair (token overlap in the 0.3–0.95 band).
+    # Similar-but-not-duplicate pair (token overlap in the 0.3-0.95 band).
     _add_items(
         soul_factory,
         user_id,
@@ -583,7 +583,7 @@ class TestEmotionalPromotionGate:
             )
 
         # A third signal of one repeated emotion crosses the threshold.
-        self._add_signals(rt_factory, user_id, 3)  # 3× "curious"
+        self._add_signals(rt_factory, user_id, 3)  # 3x "curious"
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
                 should_promote_emotional_patterns(

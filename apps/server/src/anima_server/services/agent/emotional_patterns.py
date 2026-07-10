@@ -92,9 +92,7 @@ def should_promote_emotional_patterns(
         return True
     # Slow trickle: a lone new signal may combine with older ones to cross the
     # threshold, but only re-scan at most once per interval, never every turn.
-    if new_total >= 1 and datetime.now(UTC) - last_observed >= PROMOTION_INTERVAL:
-        return True
-    return False
+    return new_total >= 1 and datetime.now(UTC) - last_observed >= PROMOTION_INTERVAL
 
 
 def promote_emotional_patterns(
