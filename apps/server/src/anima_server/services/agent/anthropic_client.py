@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,29 @@ from anima_server.services.agent.openai_compatible_client import _serialize_tool
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 4096
 
+# Truncated/refused responses used to be delivered as complete answers;
+# they log here so the degradation stays greppable.
+degraded_logger = logging.getLogger("anima.runtime.degraded")
+
+# Current-generation Anthropic models reject sampling parameters
+# (temperature/top_p/top_k return a 400); older generations still accept
+# them.  Sending temperature unconditionally bricked every request the
+# moment the configured model was upgraded.
+_SAMPLING_PARAM_REJECTING_PATTERNS = (
+    "claude-fable-5",
+    "claude-mythos",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+)
+
+
+def _model_accepts_temperature(model: str) -> bool:
+    normalized = model.strip().lower()
+    return not any(
+        pattern in normalized for pattern in _SAMPLING_PARAM_REJECTING_PATTERNS
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class AnthropicResponse:
@@ -24,6 +48,10 @@ class AnthropicResponse:
     reasoning_content: str | None = None
     reasoning_content_signature: str | None = None
     redacted_reasoning_content: str | None = None
+    # Why the model stopped ("end_turn", "max_tokens", "refusal", ...).
+    # Surfaced as a first-class field so callers can react to truncation
+    # and refusals instead of delivering them as complete answers.
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +135,10 @@ class AnthropicChatClient:
             json=payload,
         )
         response.raise_for_status()
-        return _normalize_response(response.json())
+        normalized = _normalize_response(response.json())
+        _warn_on_abnormal_stop(normalized.stop_reason, model=self.model)
+        _log_cache_usage(normalized.usage_metadata, model=self.model)
+        return normalized
 
     async def astream(
         self,
@@ -158,11 +189,23 @@ class AnthropicChatClient:
         if system_prompt:
             payload["system"] = system_prompt
         if self._tools:
-            payload["tools"] = [_serialize_anthropic_tool(tool) for tool in self._tools]
+            # Tools render at position 0 of the cache prefix: their order
+            # must be byte-stable across requests or nothing caches.
+            payload["tools"] = sorted(
+                (_serialize_anthropic_tool(tool) for tool in self._tools),
+                key=lambda tool: str(tool.get("name", "")),
+            )
         if self._tool_choice is not None:
             payload["tool_choice"] = self._tool_choice
         if self._temperature is not None:
-            payload["temperature"] = self._temperature
+            if _model_accepts_temperature(self.model):
+                payload["temperature"] = self._temperature
+            else:
+                logging.getLogger(__name__).debug(
+                    "Dropping temperature=%s: model %s rejects sampling parameters",
+                    self._temperature,
+                    self.model,
+                )
         return payload
 
     def _request_headers(self) -> dict[str, str]:
@@ -173,8 +216,10 @@ class AnthropicChatClient:
         }
 
 
-def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, object]]]:
-    system_parts: list[str] = []
+def _serialize_messages(
+    messages: Sequence[Any],
+) -> tuple[str | list[dict[str, object]], list[dict[str, object]]]:
+    system_parts: list[tuple[str, int]] = []
     serialized: list[dict[str, object]] = []
 
     for message in messages:
@@ -182,7 +227,9 @@ def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, ob
         if message_type == "system":
             content = _serialize_text(getattr(message, "content", ""))
             if content:
-                system_parts.append(content)
+                raw_boundary = getattr(message, "stable_prefix_chars", 0)
+                boundary = raw_boundary if isinstance(raw_boundary, int) else 0
+                system_parts.append((content, boundary))
             continue
 
         if message_type == "human":
@@ -213,7 +260,45 @@ def _serialize_messages(messages: Sequence[Any]) -> tuple[str, list[dict[str, ob
             }
         )
 
-    return "\n\n".join(system_parts), _merge_adjacent_messages(serialized)
+    return _build_system_payload(system_parts), _merge_adjacent_messages(serialized)
+
+
+def _build_system_payload(
+    system_parts: list[tuple[str, int]],
+) -> str | list[dict[str, object]]:
+    """Assemble the ``system`` request value, splitting at the cache boundary.
+
+    When the leading system message carries a stable-prefix boundary, the
+    prompt is sent as two text blocks with ``cache_control`` on the stable
+    one — the Anthropic prompt cache then covers tools + rules + persona
+    on every turn instead of re-billing them at full input price.
+    Mid-conversation summary messages (also serialized as system parts)
+    join the volatile block so they never sit inside the cached prefix.
+    """
+    if not system_parts:
+        return ""
+
+    first_content, boundary = system_parts[0]
+    trailing = "\n\n".join(content for content, _ in system_parts[1:])
+
+    if 0 < boundary <= len(first_content):
+        stable = first_content[:boundary]
+        volatile = first_content[boundary:]
+        if trailing:
+            volatile = f"{volatile}\n\n{trailing}" if volatile.strip() else trailing
+        blocks: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": stable,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        if volatile.strip():
+            blocks.append({"type": "text", "text": volatile})
+        return blocks
+
+    contents = [first_content] + [content for content, _ in system_parts[1:]]
+    return "\n\n".join(contents)
 
 
 def _serialize_assistant_content(message: Any) -> str | list[dict[str, object]]:
@@ -340,14 +425,17 @@ def _serialize_text(content: object) -> str:
 def _serialize_anthropic_tool(tool: Any) -> dict[str, object]:
     openai_tool = tool if isinstance(tool, dict) else _serialize_tool(tool)
     function = openai_tool.get("function") if isinstance(openai_tool, dict) else None
+    strict: object = None
     if isinstance(function, dict):
         name = str(function.get("name", "")).strip()
         parameters = function.get("parameters")
         description = str(function.get("description", "")).strip()
+        strict = function.get("strict")
     elif isinstance(openai_tool, dict):
         name = str(openai_tool.get("name", "")).strip()
         parameters = openai_tool.get("input_schema") or openai_tool.get("parameters")
         description = str(openai_tool.get("description", "")).strip()
+        strict = openai_tool.get("strict")
     else:
         name = ""
         parameters = None
@@ -362,6 +450,11 @@ def _serialize_anthropic_tool(tool: Any) -> dict[str, object]:
     }
     if description:
         payload["description"] = " ".join(description.split())
+    if strict is True:
+        # Anthropic supports top-level strict tool use; the round-trip
+        # through the OpenAI serializer used to drop the flag, silently
+        # disabling agent_strict_tool_schemas on this provider.
+        payload["strict"] = True
     return payload
 
 
@@ -421,6 +514,7 @@ def _normalize_response(payload: object) -> AnthropicResponse:
                 if isinstance(data, str):
                     redacted_reasoning_parts.append(data)
 
+    stop_reason = payload.get("stop_reason")
     return AnthropicResponse(
         content="".join(text_parts),
         tool_calls=tuple(tool_calls),
@@ -433,7 +527,44 @@ def _normalize_response(payload: object) -> AnthropicResponse:
         reasoning_content="\n".join(reasoning_parts) or None,
         reasoning_content_signature=reasoning_signature,
         redacted_reasoning_content="\n".join(redacted_reasoning_parts) or None,
+        stop_reason=stop_reason if isinstance(stop_reason, str) else None,
     )
+
+
+def _log_cache_usage(usage: dict[str, object] | None, *, model: str) -> None:
+    """Make the prompt-cache hit rate observable per request."""
+    if not usage:
+        return
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_write = usage.get("cache_creation_input_tokens")
+    if cache_read or cache_write:
+        logging.getLogger(__name__).debug(
+            "Anthropic prompt cache (model %s): read=%s created=%s uncached=%s",
+            model,
+            cache_read or 0,
+            cache_write or 0,
+            usage.get("input_tokens", 0),
+        )
+
+
+def _warn_on_abnormal_stop(stop_reason: str | None, *, model: str) -> None:
+    """Make truncation and refusals visible instead of silent.
+
+    A max_tokens cut used to be delivered to the user as a complete
+    answer, and a refusal as an empty message with no signal anywhere.
+    """
+    if stop_reason == "max_tokens":
+        degraded_logger.warning(
+            "Anthropic response truncated at max_tokens (model %s); "
+            "the reply is incomplete — consider raising max_tokens",
+            model,
+        )
+    elif stop_reason == "refusal":
+        degraded_logger.warning(
+            "Anthropic declined the request (model %s, stop_reason=refusal); "
+            "the reply is empty or partial",
+            model,
+        )
 
 
 def _normalize_response_tool_call(
@@ -471,7 +602,19 @@ def _extract_usage_metadata(payload: object) -> dict[str, object] | None:
         and isinstance(input_tokens, int)
         and isinstance(output_tokens, int)
     ):
-        usage["total_tokens"] = input_tokens + output_tokens
+        # With prompt caching on, Anthropic reports the cached prefix
+        # separately from input_tokens (cache_creation_input_tokens on a write,
+        # cache_read_input_tokens on a hit).  Fold both back in so total_tokens
+        # reflects the full prompt cost instead of dropping cached-prefix
+        # tokens from run/stream totals.
+        cache_read = usage.get("cache_read_input_tokens")
+        cache_write = usage.get("cache_creation_input_tokens")
+        usage["total_tokens"] = (
+            input_tokens
+            + output_tokens
+            + (cache_read if isinstance(cache_read, int) else 0)
+            + (cache_write if isinstance(cache_write, int) else 0)
+        )
 
     return usage or None
 
@@ -523,6 +666,10 @@ def _chunks_from_sse_data(raw_data: str) -> tuple[AnthropicStreamChunk, ...]:
         usage = _extract_usage_metadata(payload)
         delta = payload.get("delta")
         done = bool(isinstance(delta, dict) and delta.get("stop_reason"))
+        if isinstance(delta, dict):
+            stop_reason = delta.get("stop_reason")
+            if isinstance(stop_reason, str):
+                _warn_on_abnormal_stop(stop_reason, model="(streaming)")
         return (AnthropicStreamChunk(usage_metadata=usage, done=done),)
 
     if event_type == "message_stop":

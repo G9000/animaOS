@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -17,6 +16,7 @@ from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
+from anima_server.services.agent.service import _track_background_task
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
 from anima_server.services.images.deletion import delete_thread_with_image_cleanup
 from anima_server.services.sessions import get_active_dek
@@ -26,7 +26,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["threads"])
 
 
-def _thread_to_dict(thread: RuntimeThread) -> dict[str, object]:
+def _thread_to_dict(thread: RuntimeThread, first_role: str | None = None) -> dict[str, object]:
+    initiated_by: str | None = None
+    if first_role == "user":
+        initiated_by = "user"
+    elif first_role is not None:
+        initiated_by = "agent"
     return {
         "id": thread.id,
         "userId": thread.user_id,
@@ -36,6 +41,7 @@ def _thread_to_dict(thread: RuntimeThread) -> dict[str, object]:
         "lastMessageAt": thread.last_message_at.isoformat() if thread.last_message_at else None,
         "closedAt": thread.closed_at.isoformat() if thread.closed_at else None,
         "isArchived": thread.is_archived,
+        "initiatedBy": initiated_by,
     }
 
 
@@ -62,9 +68,9 @@ async def list_user_threads(
 ) -> dict[str, object]:
     """List all threads for the authenticated user, newest first."""
     unlock_session = require_unlocked_session(request)
-    threads = list_threads(runtime_db, user_id=unlock_session.user_id)
+    rows = list_threads(runtime_db, user_id=unlock_session.user_id)
     return {
-        "threads": [_thread_to_dict(t) for t in threads]
+        "threads": [_thread_to_dict(t, first_role) for t, first_role in rows]
     }
 
 
@@ -96,7 +102,10 @@ async def create_new_thread(
 
     if old_thread_id is not None:
         soul_db_factory = build_session_factory_for_db(db)
-        asyncio.get_running_loop().create_task(
+        # Strong-ref via the tracked set: the loop keeps only weak task
+        # references, so a bare create_task can be GC'd mid-flight and
+        # silently never consolidate.
+        _track_background_task(
             on_thread_close(
                 thread_id=old_thread_id,
                 user_id=user_id,
@@ -153,7 +162,7 @@ async def close_thread_endpoint(
 
     if changed:
         soul_db_factory = build_session_factory_for_db(db)
-        asyncio.get_running_loop().create_task(
+        _track_background_task(
             on_thread_close(
                 thread_id=thread_id,
                 user_id=thread.user_id,

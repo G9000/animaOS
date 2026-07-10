@@ -60,6 +60,116 @@ def _is_database_locked_error(exc: OperationalError) -> bool:
     return "database is locked" in str(exc).lower()
 
 
+# ── Input-freshness gating ───────────────────────────────────────────
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _newest_memory_item_at(db: Any, user_id: int) -> datetime | None:
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from anima_server.models import MemoryItem
+
+    created = db.scalar(
+        select(sa_func.max(MemoryItem.created_at)).where(MemoryItem.user_id == user_id)
+    )
+    updated = db.scalar(
+        select(sa_func.max(MemoryItem.updated_at)).where(MemoryItem.user_id == user_id)
+    )
+    candidates = [ts for ts in (_as_utc(created), _as_utc(updated)) if ts is not None]
+    return max(candidates) if candidates else None
+
+
+def _newest_episode_at(db: Any, user_id: int) -> datetime | None:
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from anima_server.models.agent_runtime import MemoryEpisode
+
+    return _as_utc(
+        db.scalar(
+            select(sa_func.max(MemoryEpisode.created_at)).where(
+                MemoryEpisode.user_id == user_id
+            )
+        )
+    )
+
+
+def _newest_claim_at(db: Any, user_id: int) -> datetime | None:
+    """Newest MemoryClaim timestamp for the user.
+
+    Profile synthesis reconciles ``user_profile_fields`` from claims, and a
+    claim can be created/updated without a newer ``MemoryItem`` row (its
+    ``memory_item_id`` is nullable), so the profile freshness gate must fold in
+    claim changes or claim-only edits would be treated as "unchanged".
+    """
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from anima_server.models.agent_runtime import MemoryClaim
+
+    created = db.scalar(
+        select(sa_func.max(MemoryClaim.created_at)).where(MemoryClaim.user_id == user_id)
+    )
+    updated = db.scalar(
+        select(sa_func.max(MemoryClaim.updated_at)).where(MemoryClaim.user_id == user_id)
+    )
+    candidates = [ts for ts in (_as_utc(created), _as_utc(updated)) if ts is not None]
+    return max(candidates) if candidates else None
+
+
+def _inputs_changed_since_last_run(
+    *,
+    user_id: int,
+    task_type: str,
+    latest_input_at: datetime | None,
+    runtime_db_factory: Callable[..., object] | None,
+) -> bool:
+    """Dirty check: skip a task when nothing it reads has changed.
+
+    An idle user who triggers repeated reflection lulls used to pay the
+    full synthesis suite each time for identical inputs.  Unknown state
+    (no runtime DB, no timestamps) errs toward running the task.
+    """
+    if latest_input_at is None:
+        return False
+
+    from sqlalchemy import desc, select
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            last_completed = rt_db.scalar(
+                select(RuntimeBackgroundTaskRun.completed_at)
+                .where(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
+                    RuntimeBackgroundTaskRun.task_type == task_type,
+                    RuntimeBackgroundTaskRun.status == "completed",
+                )
+                .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
+                .limit(1)
+            )
+    except Exception:
+        logger.debug("Freshness check failed for %s; running task", task_type)
+        return True
+
+    if last_completed is None:
+        return True
+    return latest_input_at > _as_utc(last_completed)
+
+
 # ── Task tracking ────────────────────────────────────────────────────
 
 async def _issue_background_task(
@@ -184,6 +294,7 @@ async def run_sleeptime_agents(
     db_factory: Callable[..., object] | None = None,
     runtime_db_factory: Callable[..., object] | None = None,
     force: bool = False,
+    manual: bool = False,
 ) -> list[str]:
     """Orchestrate all background tasks.
 
@@ -203,7 +314,10 @@ async def run_sleeptime_agents(
     Time-gated:
     10. Deep monologue (only once per 24h)
 
-    When force=True (inactivity timer): bypass heat gates.
+    When force=True (inactivity timer): bypass heat gates.  ``manual=True`` (a
+    user-triggered /sleep) additionally runs the contradiction scan regardless
+    of heat — an idle-lull force still heat-gates that most-expensive task, but
+    an on-demand maintenance click should honor the user's intent.
     Returns list of task run IDs for tracking.
     """
     run_ids: list[str] = []
@@ -252,29 +366,76 @@ async def run_sleeptime_agents(
 
     # ── Sequential group (heat-gated) ────────────────────────────
 
-    run_expensive = force
-    if not run_expensive:
+    heat_gate_passed = False
+    try:
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+        with factory() as db:
+            heat_gate_passed = _should_run_expensive(db, user_id)
+    except Exception:
+        logger.debug("Heat check failed, skipping expensive tasks")
+
+    run_expensive = force or heat_gate_passed
+
+    if run_expensive:
+        newest_item_at: datetime | None = None
+        newest_episode_at: datetime | None = None
+        newest_claim_at: datetime | None = None
         try:
             from anima_server.db.session import SessionLocal
 
             factory = db_factory or SessionLocal
             with factory() as db:
-                run_expensive = _should_run_expensive(db, user_id)
+                newest_item_at = _newest_memory_item_at(db, user_id)
+                newest_episode_at = _newest_episode_at(db, user_id)
+                newest_claim_at = _newest_claim_at(db, user_id)
         except Exception:
-            logger.debug("Heat check failed, skipping expensive tasks")
+            logger.debug("Input freshness lookup failed; running all tasks")
 
-    if run_expensive:
-        try:
-            rid = await _issue_background_task(
+        # Profile synthesis reconciles from both memory items and claims, so its
+        # freshness gate is the newer of the two.
+        newest_profile_input_at = max(
+            (ts for ts in (newest_item_at, newest_claim_at) if ts is not None),
+            default=None,
+        )
+
+        def _fresh(task_type: str, latest_input_at: datetime | None) -> bool:
+            # `force` bypasses the heat gate (above), not this input-freshness
+            # dirty-check: even a manual /sleep or idle catch-up run skips work
+            # whose inputs have not changed since the last completed run.
+            changed = _inputs_changed_since_last_run(
                 user_id=user_id,
-                task_type="contradiction_scan",
-                task_fn=_task_contradiction_scan,
-                db_factory=db_factory,
+                task_type=task_type,
+                latest_input_at=latest_input_at,
                 runtime_db_factory=runtime_db_factory,
             )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Contradiction scan task failed")
+            if not changed:
+                logger.info(
+                    "skipped_unchanged: %s for user %s (no new inputs since "
+                    "the last completed run)",
+                    task_type,
+                    user_id,
+                )
+            return changed
+
+        # The contradiction scan is the most expensive recurring task
+        # (up to 40 LLM calls): it honors the heat gate even on forced
+        # idle-lull runs, but a manual /sleep runs it on demand.  Either way it
+        # still skips entirely when no memory changed (input-freshness gate).
+        if (heat_gate_passed or manual) and _fresh("contradiction_scan", newest_item_at):
+            try:
+                rid = await _issue_background_task(
+                    user_id=user_id,
+                    task_type="contradiction_scan",
+                    task_fn=_task_contradiction_scan,
+                    db_factory=db_factory,
+                    runtime_db_factory=runtime_db_factory,
+                    _task_runtime_db_factory=runtime_db_factory,
+                )
+                run_ids.append(rid)
+            except Exception:
+                logger.exception("Contradiction scan task failed")
 
         try:
             rid = await _issue_background_task(
@@ -288,36 +449,42 @@ async def run_sleeptime_agents(
         except Exception:
             logger.exception("Memory evolution scan task failed")
 
-        try:
-            rid = await _issue_background_task(
-                user_id=user_id,
-                task_type="profile_synthesis",
-                task_fn=_task_profile_synthesis,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Profile synthesis task failed")
+        if _fresh("profile_synthesis", newest_profile_input_at):
+            try:
+                rid = await _issue_background_task(
+                    user_id=user_id,
+                    task_type="profile_synthesis",
+                    task_fn=_task_profile_synthesis,
+                    db_factory=db_factory,
+                    runtime_db_factory=runtime_db_factory,
+                )
+                run_ids.append(rid)
+            except Exception:
+                logger.exception("Profile synthesis task failed")
 
-        try:
-            rid = await _issue_background_task(
-                user_id=user_id,
-                task_type="pattern_synthesis",
-                task_fn=_task_pattern_synthesis,
-                db_factory=db_factory,
-                runtime_db_factory=runtime_db_factory,
-            )
-            run_ids.append(rid)
-        except Exception:
-            logger.exception("Pattern synthesis task failed")
+        if _fresh("pattern_synthesis", newest_episode_at):
+            try:
+                rid = await _issue_background_task(
+                    user_id=user_id,
+                    task_type="pattern_synthesis",
+                    task_fn=_task_pattern_synthesis,
+                    db_factory=db_factory,
+                    runtime_db_factory=runtime_db_factory,
+                )
+                run_ids.append(rid)
+            except Exception:
+                logger.exception("Pattern synthesis task failed")
 
     # ── Time-gated: deep monologue ───────────────────────────────
 
     try:
         from anima_server.services.agent.sleep_tasks import _should_run_deep_monologue
 
-        if _should_run_deep_monologue(user_id, db_factory=db_factory):
+        if _should_run_deep_monologue(
+            user_id,
+            db_factory=db_factory,
+            runtime_db_factory=runtime_db_factory,
+        ):
             rid = await _issue_background_task(
                 user_id=user_id,
                 task_type="deep_monologue",
@@ -398,6 +565,18 @@ async def _task_consolidation(
     )
     if cursor is not None:
         last_processed_message_id, messages_processed = cursor
+        # Persist the cursor to its dedicated table.  The task's result_json
+        # is no longer the cursor store, so the advance must be written
+        # explicitly (the returned dict below is now purely informational for
+        # task-run inspection).
+        if last_processed_message_id is not None:
+            update_last_processed_message_id(
+                user_id,
+                thread_id,
+                last_processed_message_id,
+                messages_processed,
+                runtime_db_factory=runtime_db_factory,
+            )
         return {
             "thread_id": thread_id,
             "last_processed_message_id": last_processed_message_id,
@@ -533,14 +712,150 @@ async def _task_embedding_backfill(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
-) -> None:
-    """Backfill embeddings for existing user memories."""
-    from anima_server.services.agent.consolidation import _backfill_user_embeddings
+) -> dict:
+    """Backfill embeddings; also the recovery path for the embedding
+    contract (re-embed after a model switch), failed vector-store writes,
+    and orphaned pgvector rows.
 
+    Returns ``{"backfilled": n, "resynced": m}`` so the manual /sleep summary
+    reports the real counts instead of a hard-coded zero."""
+    from anima_server.services.agent.consolidation import _backfill_user_embeddings
+    from anima_server.services.agent.embedding_contract import (
+        ensure_pgvector_dimension,
+        has_reset_done,
+        is_reembed_required,
+        mark_reset_done,
+        mark_user_reembed_complete,
+        reset_derived_embedding_stores,
+        sweep_orphaned_runtime_embeddings,
+    )
+
+    reembedding = False
     try:
-        await _backfill_user_embeddings(user_id, db_factory=db_factory)
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+        if is_reembed_required(user_id):
+            reembedding = True
+            # Reset only ONCE per re-embed cycle, tracked by an explicit marker
+            # rather than inferred from null embedding counts.  The backfill
+            # below only re-embeds ~10 items per pass, so re-running the reset
+            # on every sleeptime pass (while reembed_required stays true) would
+            # re-null the batch the previous pass just embedded — `remaining`
+            # never reaches 0 and semantic search stays disabled forever for
+            # users with more than one batch of memories.  A null-count guard
+            # also mis-fires the moment the first batch is embedded (count drops
+            # to 0), triggering a second destructive reset mid-cycle.
+            if not has_reset_done(user_id):
+                with factory() as db:
+                    cleared = reset_derived_embedding_stores(db, user_id=user_id)
+                    db.commit()
+                # Align the pgvector column to the active model's dimension
+                # (a no-op on sqlite and when the dimension is unchanged); a
+                # dimension change can't be satisfied by deleting rows alone.
+                from anima_server.config import resolve_embedding_dim
+
+                aligned = ensure_pgvector_dimension(resolve_embedding_dim())
+                if aligned:
+                    # Only record the reset as done once the column is actually
+                    # aligned — otherwise a transient PG failure would strand
+                    # the column at the old vector(N) type with every upsert
+                    # failing and no later pass retrying the ALTER.
+                    mark_reset_done(user_id)
+                    logger.info(
+                        "Re-embed started for user %s: %d items reset after an "
+                        "embedding model/dimension change",
+                        user_id,
+                        cleared,
+                    )
+                else:
+                    logger.warning(
+                        "pgvector column alignment failed for user %s; leaving "
+                        "reset un-marked so a later pass retries the ALTER",
+                        user_id,
+                    )
+            else:
+                logger.debug(
+                    "Re-embed already reset for user %s this cycle; "
+                    "continuing backfill without resetting",
+                    user_id,
+                )
+    except Exception:
+        logger.exception("Re-embed reset failed for user %s", user_id)
+        reembedding = False
+
+    backfilled = 0
+    resynced = 0
+    try:
+        backfilled = await _backfill_user_embeddings(user_id, db_factory=db_factory)
     except Exception:
         logger.debug("Embedding backfill skipped for user %s", user_id)
+        return {"backfilled": 0, "resynced": 0}
+
+    try:
+        from anima_server.db.session import SessionLocal
+
+        factory = db_factory or SessionLocal
+
+        # Only complete when the reset is confirmed done for this user — which
+        # includes a successful pgvector alignment (`mark_reset_done` is skipped
+        # when the ALTER fails).  Otherwise a swallowed pgvector upsert failure
+        # during the backfill could drive `remaining` to 0 and mark the user
+        # complete against a still-misaligned `vector(N)` column, re-enabling
+        # semantic search and skipping the ALTER retry.
+        if reembedding and has_reset_done(user_id):
+            # This user's items are all re-embedded with the active model:
+            # mark THIS user complete so semantic search comes back for them.
+            # The global flag is intentionally left set — clearing it would
+            # re-enable semantic search for other users whose vectors are
+            # still stale (re-embed is per-user; soul stores are per-user
+            # encrypted so there is no global reset).
+            with factory() as db:
+                from sqlalchemy import func as sa_func
+                from sqlalchemy import select
+
+                from anima_server.models import MemoryItem
+
+                remaining = db.scalar(
+                    select(sa_func.count())
+                    .select_from(MemoryItem)
+                    .where(
+                        MemoryItem.user_id == user_id,
+                        MemoryItem.superseded_by.is_(None),
+                        MemoryItem.embedding_json.is_(None),
+                    )
+                )
+            if not remaining:
+                mark_user_reembed_complete(user_id)
+
+        from anima_server.services.agent.vector_store import (
+            consume_vector_store_dirty,
+        )
+
+        if consume_vector_store_dirty(user_id):
+            from anima_server.services.agent.embeddings import sync_to_vector_store
+
+            with factory() as db:
+                resynced = sync_to_vector_store(db, user_id=user_id)
+            logger.info(
+                "Re-synced %d embeddings to the vector store for user %s "
+                "after a failed upsert",
+                resynced,
+                user_id,
+            )
+
+        with factory() as db:
+            sweep_orphaned_runtime_embeddings(db, user_id=user_id)
+    except Exception:
+        logger.debug(
+            "Embedding maintenance (contract/re-sync/orphan sweep) failed "
+            "for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+    # Report the real work done so the manual /sleep summary isn't hard-coded 0.
+    return {"backfilled": backfilled, "resynced": resynced}
 
 
 async def _task_graph_ingestion(
@@ -557,6 +872,12 @@ async def _task_graph_ingestion(
     # Strip inner reasoning prefix — the KG extraction prompt doesn't
     # understand it and may extract spurious entities from it.
     clean_response = _strip_inner_reasoning(assistant_response)
+
+    # No turn text (e.g. a manual /sleep maintenance run) — skip: the
+    # entity-extraction LLM would otherwise burn a billable call on an empty
+    # prompt and could persist hallucinated entities.
+    if not (user_message or "").strip() and not clean_response.strip():
+        return {"entities": 0, "relations": 0, "pruned": 0}
 
     factory = db_factory or SessionLocal
     with factory() as db:
@@ -642,11 +963,16 @@ async def _task_contradiction_scan(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> dict:
     """Scan for contradictions in memory items."""
     from anima_server.services.agent.sleep_tasks import scan_contradictions
 
-    found, resolved = await scan_contradictions(user_id=user_id, db_factory=db_factory)
+    found, resolved = await scan_contradictions(
+        user_id=user_id,
+        db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
     return {"found": found, "resolved": resolved}
 
 
@@ -655,11 +981,28 @@ async def _task_profile_synthesis(
     user_id: int,
     db_factory: Callable[..., object] | None = None,
 ) -> dict:
-    """Synthesize user profile from facts."""
+    """Synthesize the user profile from facts and reconcile structured profile
+    fields from active claims.
+
+    Reconciliation used to live only in the manual ``/sleep`` orchestrator
+    (``run_sleep_tasks``); folding it in here means the automatic sleep path
+    reconciles profile fields too, and keeps ``run_sleeptime_agents`` a true
+    superset now that ``run_sleep_tasks`` is gone.  The companion cache is
+    invalidated once at the end of the orchestrator regardless.
+    """
+    from anima_server.db.session import SessionLocal
     from anima_server.services.agent.sleep_tasks import synthesize_profile
+    from anima_server.services.agent.user_profile import reconcile_profile_from_claims
 
     merged = await synthesize_profile(user_id=user_id, db_factory=db_factory)
-    return {"merged": merged}
+
+    factory = db_factory or SessionLocal
+    with factory() as db:
+        reconciled = reconcile_profile_from_claims(db, user_id=user_id)
+        if reconciled > 0:
+            db.commit()
+
+    return {"merged": merged, "profile_fields_reconciled": reconciled}
 
 
 async def _task_pattern_synthesis(
@@ -715,6 +1058,20 @@ async def _task_deep_monologue(
 # ── Restart cursor ───────────────────────────────────────────────────
 
 
+def _cursor_scope_filter(thread_id: int | None):
+    """SQL predicate selecting the cursor row for a ``(user, thread)`` scope.
+
+    ``thread_id`` is nullable for the thread-agnostic scope, and SQL treats
+    NULL as distinct — so the global scope must be matched with ``IS NULL``
+    rather than ``== None``.
+    """
+    from anima_server.models.runtime import RuntimeConsolidationCursor
+
+    if thread_id is None:
+        return RuntimeConsolidationCursor.thread_id.is_(None)
+    return RuntimeConsolidationCursor.thread_id == thread_id
+
+
 def get_last_processed_message_id(
     user_id: int,
     thread_id: int | None = None,
@@ -724,36 +1081,25 @@ def get_last_processed_message_id(
 ) -> int | None:
     """Get the last processed message ID for the active cursor scope.
 
-    Reads from the most recent completed RuntimeBackgroundTaskRun where
-    task_type='consolidation' and result_json.thread_id matches.
+    Reads the dedicated ``runtime_consolidation_cursors`` row (indexed on
+    ``(user_id, thread_id)``) rather than scanning every completed
+    consolidation task-run and Python-filtering ``result_json`` — so the
+    cursor survives task-run pruning.
     """
-    from sqlalchemy import desc, select
+    from sqlalchemy import select
 
     from anima_server.db.runtime import get_runtime_session_factory
-    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.models.runtime import RuntimeConsolidationCursor
 
     factory = runtime_db_factory or get_runtime_session_factory()
     with factory() as rt_db:
-        stmt = (
-            select(RuntimeBackgroundTaskRun)
-            .where(
-                RuntimeBackgroundTaskRun.user_id == user_id,
-                RuntimeBackgroundTaskRun.task_type == "consolidation",
-                RuntimeBackgroundTaskRun.status == "completed",
+        msg_id = rt_db.scalar(
+            select(RuntimeConsolidationCursor.last_processed_message_id).where(
+                RuntimeConsolidationCursor.user_id == user_id,
+                _cursor_scope_filter(thread_id),
             )
-            .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
         )
-        runs = list(rt_db.scalars(stmt).all())
-
-    for run in runs:
-        rj = run.result_json
-        if not isinstance(rj, dict):
-            continue
-        if rj.get("thread_id") == thread_id:
-            msg_id = rj.get("last_processed_message_id")
-            if msg_id is not None:
-                return int(msg_id)
-    return None
+    return int(msg_id) if msg_id is not None else None
 
 
 def update_last_processed_message_id(
@@ -765,34 +1111,58 @@ def update_last_processed_message_id(
     runtime_db_factory: Callable[..., object] | None = None,
     db_factory: Callable[..., object] | None = None,
 ) -> None:
-    """Persist the consolidation restart cursor in the most recent run."""
-    from sqlalchemy import desc, select
+    """Upsert the consolidation restart cursor for a ``(user, thread)`` scope."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
 
     from anima_server.db.runtime import get_runtime_session_factory
-    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.models.runtime import RuntimeConsolidationCursor
+
+    def _load(rt_db):
+        return rt_db.scalar(
+            select(RuntimeConsolidationCursor).where(
+                RuntimeConsolidationCursor.user_id == user_id,
+                _cursor_scope_filter(thread_id),
+            )
+        )
+
+    def _advance(cursor) -> None:
+        # Only ever move the cursor FORWARD.  Overlapping tasks (post-turn,
+        # reflection, manual sleep) run without a per-cursor lock, so an older
+        # task can compute a smaller message_id and commit after a newer task
+        # already advanced the cursor; rewinding would make the next run treat
+        # already-processed runtime messages as new and re-run extraction.
+        if message_id <= (cursor.last_processed_message_id or 0):
+            return
+        cursor.last_processed_message_id = message_id
+        cursor.messages_processed = messages_processed
 
     factory = runtime_db_factory or get_runtime_session_factory()
     with factory() as rt_db:
-        stmt = (
-            select(RuntimeBackgroundTaskRun)
-            .where(
-                RuntimeBackgroundTaskRun.user_id == user_id,
-                RuntimeBackgroundTaskRun.task_type == "consolidation",
-                RuntimeBackgroundTaskRun.status == "completed",
-            )
-            .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
-        )
-        runs = list(rt_db.scalars(stmt).all())
-        run = None
-        for candidate in runs:
-            rj = candidate.result_json
-            if isinstance(rj, dict) and rj.get("thread_id") == thread_id:
-                run = candidate
-                break
-        if run is not None:
-            run.result_json = {
-                "thread_id": thread_id,
-                "last_processed_message_id": message_id,
-                "messages_processed": messages_processed,
-            }
+        cursor = _load(rt_db)
+        if cursor is not None:
+            _advance(cursor)
             rt_db.commit()
+            return
+
+        rt_db.add(
+            RuntimeConsolidationCursor(
+                user_id=user_id,
+                thread_id=thread_id,
+                last_processed_message_id=message_id,
+                messages_processed=messages_processed,
+            )
+        )
+        try:
+            rt_db.commit()
+        except IntegrityError:
+            # Post-turn sleeptime, reflection, and manual sleep can overlap
+            # without a per-cursor lock, so two tasks can both read "no cursor"
+            # and race the insert; the partial-unique index rejects the second.
+            # Recover by advancing the row the winner wrote instead of letting
+            # the background task fail with the cursor unadvanced.
+            rt_db.rollback()
+            cursor = _load(rt_db)
+            if cursor is not None:
+                _advance(cursor)
+                rt_db.commit()

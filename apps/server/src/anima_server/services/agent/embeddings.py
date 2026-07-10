@@ -314,6 +314,14 @@ def clear_embedding_cache() -> None:
     from anima_server.config import clear_detected_embedding_dim
 
     clear_detected_embedding_dim()
+    # A config change must also re-arm the one-shot cold-start sync and
+    # re-read the persisted contract — otherwise stale-model embeddings
+    # keep serving searches until a process restart.
+    from anima_server.services.agent.embedding_contract import reset_contract_cache
+    from anima_server.services.agent.vector_store import clear_synced_users
+
+    clear_synced_users()
+    reset_contract_cache()
 
 
 def get_embedding_cache_stats() -> dict[str, int]:
@@ -397,16 +405,43 @@ async def generate_embedding(text: str) -> list[float] | None:
     if result is not None:
         _clear_provider_unavailable(provider_key)
         _cache_put(key, result)
-        from anima_server.config import _detected_embedding_dim, set_detected_embedding_dim
-
-        if _detected_embedding_dim is None:
-            set_detected_embedding_dim(len(result))
-            logger.info(
-                "Auto-detected embedding dimension: %d (model=%s)",
-                len(result),
-                _resolve_embedding_model(),
-            )
+        _note_detected_embedding_dim(len(result))
     return result
+
+
+def _note_detected_embedding_dim(dim: int) -> None:
+    """Auto-detect the embedding dimension on the first successful embedding and
+    verify it against the persisted contract.
+
+    Shared by the single- and batch-embedding paths: the sleep backfill embeds
+    via ``generate_embeddings_batch``, so gating the contract check on the
+    single path alone let a model/dimension switch slip through undetected when
+    the first embedding work of a process was a batch backfill — leaving
+    ``reembed_required`` unset and mixing new-model vectors into stale stores.
+    """
+    from anima_server.config import _detected_embedding_dim, set_detected_embedding_dim
+
+    if _detected_embedding_dim is not None:
+        return
+    set_detected_embedding_dim(dim)
+    logger.info(
+        "Auto-detected embedding dimension: %d (model=%s)",
+        dim,
+        _resolve_embedding_model(),
+    )
+    # A model switch used to surface only as swallowed pgvector errors,
+    # silently degrading retrieval to keyword-only.
+    from anima_server.services.agent.embedding_contract import check_embedding_contract
+
+    check_embedding_contract(model=_resolve_embedding_model(), dim=dim)
+
+
+def _note_first_embedding_dim(results: list[list[float] | None]) -> None:
+    """Record the dimension from the first non-empty embedding in a batch."""
+    for embedding in results:
+        if embedding:
+            _note_detected_embedding_dim(len(embedding))
+            return
 
 
 async def _embed_openai_compatible(text: str) -> list[float] | None:
@@ -511,6 +546,19 @@ def _semantic_ranked_ids(
     similarity_threshold: float,
     runtime_db: Session | None = None,
 ) -> list[tuple[int, float]]:
+    from anima_server.services.agent.embedding_contract import is_reembed_required
+
+    if is_reembed_required(user_id):
+        # This user's derived stores were built with a different
+        # model/dimension and haven't been re-embedded yet — comparing
+        # against them would be wrong or raise.  Degrade loudly (once per
+        # process the contract check logged ERROR).  The gate is per-user:
+        # another user completing their re-embed doesn't re-enable this one.
+        logger.debug(
+            "Semantic leg skipped for user %d: re-embed required", user_id
+        )
+        return []
+
     rust_ranked = _semantic_ranked_ids_via_rust(
         db=db,
         user_id=user_id,
@@ -670,9 +718,28 @@ async def embed_memory_item(
             db=db,
         )
     except Exception:
-        logger.debug("Failed to upsert item %d into vector store", item.id)
+        _mark_vector_upsert_failed(item.user_id, item.id)
 
     return True
+
+
+def _mark_vector_upsert_failed(user_id: int, item_id: int) -> None:
+    """A failed pgvector write leaves the item searchable in one backend
+    and invisible in another — flag the user so the next backfill task
+    re-syncs instead of the failure being swallowed at debug level."""
+    degraded_logger = logging.getLogger("anima.runtime.degraded")
+    degraded_logger.warning(
+        "Vector-store upsert failed for item %d (user %d); "
+        "flagged for re-sync on the next embedding backfill",
+        item_id,
+        user_id,
+    )
+    try:
+        from anima_server.services.agent.vector_store import mark_vector_store_dirty
+
+        mark_vector_store_dirty(user_id)
+    except Exception:
+        pass
 
 
 async def backfill_embeddings(
@@ -726,7 +793,7 @@ async def backfill_embeddings(
                 db=db,
             )
         except Exception:
-            logger.debug("Failed to upsert item %d into vector store", item.id)
+            _mark_vector_upsert_failed(item.user_id, item.id)
         count += 1
 
     if count > 0:
@@ -787,6 +854,13 @@ def sync_to_vector_store(
     except Exception:
         logger.exception(
             "Failed to sync embeddings to vector store for user %d", user_id)
+        # Preserve the retry: the caller consumed the dirty marker before this
+        # pass, so if the vector store is still unavailable we must re-arm it or
+        # a later maintenance pass would never retry and the user stays missing
+        # runtime vectors until another write fails or the process restarts.
+        from anima_server.services.agent.vector_store import mark_vector_store_dirty
+
+        mark_vector_store_dirty(user_id)
         return 0
 
 
@@ -888,6 +962,18 @@ class HybridSearchResult:
 
     items: list[tuple[MemoryItem, float]]
     query_embedding: list[float] | None
+    # Decrypted content per item id: each surviving item is AEAD-decrypted
+    # exactly once here so downstream consumers (fragments, blocks) stop
+    # re-decrypting the same rows on the pre-first-token path.
+    plaintexts: dict[int, str] | None = None
+    # Top raw cosine similarity among the returned items (``None`` when the
+    # semantic leg contributed nothing, e.g. keyword-only hits).  The per-item
+    # ``float`` scores above are the fused RRF+BM25(+recency) ranking scale
+    # (top renormalised to 1.0), which is meaningless for an absolute
+    # confidence floor; this carries the same-scale cosine value so the
+    # downstream ``absolute_min`` gate can judge whether the best match is
+    # actually relevant.
+    max_cosine: float | None = None
 
 
 def _tokenize(text: str) -> list[str]:
@@ -896,84 +982,57 @@ def _tokenize(text: str) -> list[str]:
     return [w for w in normalized.lower().split() if len(w) > 1]
 
 
-def _bm25_rerank(
+def _blend_keyword_scores(
     results: list[tuple[MemoryItem, float]],
-    query: str,
-    user_id: int,
+    keyword_ranked: list[tuple[int, float]],
     *,
     rrf_weight: float = 0.7,
     bm25_weight: float = 0.3,
-    k1: float = 1.5,
-    b: float = 0.75,
 ) -> list[tuple[MemoryItem, float]]:
-    """Re-rank search results by combining existing RRF scores with BM25 relevance.
+    """Lexical-precision boost reusing the keyword leg's BM25 scores.
 
-    Computes BM25 scores for each result's content against the query, normalises
-    both score distributions to [0, 1], then returns results sorted by the
-    weighted combination: ``rrf_weight * norm_rrf + bm25_weight * norm_bm25``.
+    The old rerank stage recomputed an independent, differently-tokenized
+    BM25 over freshly-decrypted content — ~15 extra AEAD decrypts plus an
+    O(n·|q|) scoring pass per turn, before first token.  The keyword leg
+    already produced BM25 scores for the same query; normalise both
+    distributions to [0, 1] and sort by the weighted combination.
 
-    This adds a lexical-precision boost on top of the hybrid (semantic + keyword)
-    RRF merge, similar to the reranker stage in Mem0's retrieval pipeline but
-    without requiring any external model — pure BM25 in ~30 lines.
+    The RRF side is normalised even when there is no lexical signal (no
+    keyword hits, or a single result): raw RRF scores sit around
+    ``1/(k+rank)`` (< 0.02), so leaving them un-normalised would let the
+    downstream raw ``absolute_min`` gate drop a strong semantic-only match.
+    Normalising keeps the top hit at 1.0 on the same scale as the blended
+    case.
     """
-    if len(results) <= 1:
+    if not results:
         return results
 
-    query_tokens = _tokenize(query)
-    if not query_tokens:
-        return results
-
-    # Decrypt and tokenize each document
-    doc_tokens: list[list[str]] = []
-    for item, _score in results:
-        plaintext = df(item.user_id, item.content,
-                       table="memory_items", field="content")
-        doc_tokens.append(_tokenize(plaintext))
-
-    n = len(doc_tokens)
-    # Average document length
-    total_len = sum(len(dt) for dt in doc_tokens)
-    avgdl = total_len / n if total_len > 0 else 1.0
-
-    # Document frequency for each query term
-    doc_freq: dict[str, int] = {}
-    for qt in query_tokens:
-        doc_freq[qt] = sum(1 for dt in doc_tokens if qt in dt)
-
-    # Compute BM25 score for each document
-    bm25_scores: list[float] = []
-    for dt in doc_tokens:
-        dl = len(dt) if dt else 1
-        score = 0.0
-        for qt in query_tokens:
-            tf = dt.count(qt)
-            if tf == 0:
-                continue
-            df_val = doc_freq.get(qt, 0)
-            # IDF: log((N - df + 0.5) / (df + 0.5) + 1)
-            idf = math.log((n - df_val + 0.5) / (df_val + 0.5) + 1.0)
-            # BM25 term score
-            numerator = tf * (k1 + 1.0)
-            denominator = tf + k1 * (1.0 - b + b * dl / avgdl)
-            score += idf * numerator / denominator
-        bm25_scores.append(score)
-
-    # Normalise BM25 scores to [0, 1]
-    max_bm25 = max(bm25_scores) if bm25_scores else 0.0
-    norm_bm25 = [
-        s / max_bm25 for s in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
-
-    # Normalise RRF scores to [0, 1]
+    n = len(results)
     rrf_scores = [score for _, score in results]
-    max_rrf = max(rrf_scores) if rrf_scores else 0.0
-    norm_rrf = [s / max_rrf for s in rrf_scores] if max_rrf > 0.0 else [0.0] * n
+    max_rrf = max(rrf_scores)
+    norm_rrf = (
+        [score / max_rrf for score in rrf_scores] if max_rrf > 0.0 else [0.0] * n
+    )
 
-    # Combine and re-sort
-    combined: list[tuple[MemoryItem, float]] = []
-    for i, (item, _original_score) in enumerate(results):
-        final = rrf_weight * norm_rrf[i] + bm25_weight * norm_bm25[i]
-        combined.append((item, final))
+    if not keyword_ranked:
+        # No lexical signal to blend — return the RRF ranking (already sorted)
+        # rescaled to [0, 1] so it is comparable to the blended path and
+        # survives the downstream absolute-threshold gate.
+        return [
+            (item, norm_rrf[i]) for i, (item, _original_score) in enumerate(results)
+        ]
 
+    bm25_by_id = {item_id: score for item_id, score in keyword_ranked}
+    bm25_scores = [bm25_by_id.get(item.id, 0.0) for item, _ in results]
+    max_bm25 = max(bm25_scores)
+    norm_bm25 = (
+        [score / max_bm25 for score in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
+    )
+
+    combined = [
+        (item, rrf_weight * norm_rrf[i] + bm25_weight * norm_bm25[i])
+        for i, (item, _original_score) in enumerate(results)
+    ]
     combined.sort(key=lambda pair: pair[1], reverse=True)
     return combined
 
@@ -1166,6 +1225,10 @@ async def hybrid_search(
 
     from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
 
+    # Raw cosine per id (before RRF/BM25 fusion) so the confidence floor can be
+    # judged on the semantic scale rather than the renormalised ranking scale.
+    cosine_by_id = {item_id: sim for item_id, sim in semantic_ranked}
+
     results: list[tuple[MemoryItem, float]] = []
     for item_id, rrf_score in merged:
         if item_id in items_by_id:
@@ -1180,14 +1243,28 @@ async def hybrid_search(
             if len(results) >= limit:
                 break
 
-    # --- BM25 rerank stage ---
+    max_cosine = max(
+        (cosine_by_id[item.id] for item, _ in results if item.id in cosine_by_id),
+        default=None,
+    )
+
+    # --- Lexical rerank stage (reuses the keyword leg's BM25 scores) ---
     if results:
-        results = _bm25_rerank(results, prepared_query, user_id)
+        results = _blend_keyword_scores(results, keyword_ranked)
 
     if results and recency_heat_blend:
         results = recency_heat_rerank(results)
 
-    return HybridSearchResult(items=results, query_embedding=query_embedding)
+    plaintexts = {
+        item.id: df(user_id, item.content, table="memory_items", field="content")
+        for item, _score in results
+    }
+    return HybridSearchResult(
+        items=results,
+        query_embedding=query_embedding,
+        plaintexts=plaintexts,
+        max_cosine=max_cosine,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1199,16 +1276,24 @@ def adaptive_filter_with_stats(
     results: list[tuple[MemoryItem, float]],
     *,
     config: AdaptiveRetrievalConfig | None = None,
+    confidence_score: float | None = None,
 ) -> AdaptiveFilterResult[MemoryItem]:
     """Apply adaptive retrieval cutoffs and return results plus cutoff stats.
 
     The default config uses a memvid-style combined strategy. For existing call
     sites that still expect the older precision/gap heuristic, use
     ``adaptive_filter`` below.
+
+    ``confidence_score`` is the raw same-scale signal (cosine similarity) used
+    by the ``absolute_min`` floor.  The per-item scores here are the fused
+    ranking scale whose top is renormalised to 1.0, so without this the floor
+    can never reject a low-confidence set.  ``None`` keeps the legacy behaviour
+    of gating on the top ranking score.
     """
     return apply_adaptive_filter(
         results,
         config=config or AdaptiveRetrievalConfig.combined(),
+        confidence_score=confidence_score,
     )
 
 
@@ -1273,7 +1358,9 @@ async def generate_embeddings_batch(
         return [None] * len(texts)
 
     if provider == "ollama":
-        return await _batch_embed_ollama(texts)
+        results = await _batch_embed_ollama(texts)
+        _note_first_embedding_dim(results)
+        return results
 
     prepared_items = [
         (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
@@ -1291,6 +1378,9 @@ async def generate_embeddings_batch(
     for (index, _text), embedding in zip(non_empty_items, prepared_results, strict=False):
         results[index] = embedding
 
+    # Same-scale contract check as the single path, so a model/dimension switch
+    # is caught even when the first embedding work is a batch backfill.
+    _note_first_embedding_dim(results)
     return results
 
 

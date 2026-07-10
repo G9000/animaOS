@@ -159,6 +159,32 @@ def test_server_error_is_retryable() -> None:
     assert _is_retryable_error(exc) is True
 
 
+def test_raw_httpx_status_error_retryable_by_status() -> None:
+    # call_llm_for_text uses the raw provider clients, whose ainvoke calls
+    # response.raise_for_status() — a 429/5xx reaches the retry classifier as
+    # httpx.HTTPStatusError, not LLMInvocationError.
+    import httpx
+    from anima_server.services.agent.llm import is_retryable_llm_error
+
+    req = httpx.Request("POST", "http://provider")
+    overloaded = httpx.HTTPStatusError(
+        "529", request=req, response=httpx.Response(529, request=req)
+    )
+    permanent = httpx.HTTPStatusError(
+        "400", request=req, response=httpx.Response(400, request=req)
+    )
+    assert is_retryable_llm_error(overloaded) is True
+    assert is_retryable_llm_error(permanent) is False
+
+
+def test_raw_httpx_transport_error_retryable() -> None:
+    import httpx
+    from anima_server.services.agent.llm import is_retryable_llm_error
+
+    assert is_retryable_llm_error(httpx.ConnectError("refused")) is True
+    assert is_retryable_llm_error(httpx.ReadTimeout("slow")) is True
+
+
 def test_context_overflow_not_retryable() -> None:
     exc = ContextWindowOverflowError("context length exceeded")
     assert _is_retryable_error(exc) is False

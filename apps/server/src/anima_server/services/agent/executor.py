@@ -188,19 +188,43 @@ class ToolExecutor:
         self,
         tool_calls: list[tuple[ToolCall, bool]],
     ) -> list[ToolExecutionResult]:
-        """Execute multiple tool calls sequentially.
+        """Execute multiple tool calls, concurrently where that is safe.
 
-        Runs each call in order to avoid SQLAlchemy session concurrency
-        errors — tools share a single runtime_db session per step, which
-        is not safe for concurrent writes.
-
-        Each entry is (tool_call, is_terminal).  Returns results in the
-        same order as the input.
+        Delegated client tools run outside this process (no server DB
+        session) and are gathered concurrently — a step with several
+        long-timeout client tools used to hold the per-thread lock for
+        the SUM of their durations.  Server tools stay sequential: they
+        share a single runtime_db session per step, which is not safe
+        for concurrent writes.  Returns results in input order.
         """
-        results: list[ToolExecutionResult] = []
-        for tc, terminal in tool_calls:
-            results.append(await self.execute(tc, is_terminal=terminal))
-        return results
+        results: list[ToolExecutionResult | None] = [None] * len(tool_calls)
+        delegated_group: list[int] = []
+
+        async def flush_delegated_group() -> None:
+            if not delegated_group:
+                return
+            gathered = await asyncio.gather(
+                *(
+                    self.execute(tool_calls[index][0], is_terminal=tool_calls[index][1])
+                    for index in delegated_group
+                )
+            )
+            for index, result in zip(delegated_group, gathered, strict=True):
+                results[index] = result
+            delegated_group.clear()
+
+        for index, (tool_call, terminal) in enumerate(tool_calls):
+            if (
+                self._delegate is not None
+                and tool_call.name in self._delegated_tool_names
+            ):
+                delegated_group.append(index)
+                continue
+            await flush_delegated_group()
+            results[index] = await self.execute(tool_call, is_terminal=terminal)
+
+        await flush_delegated_group()
+        return [result for result in results if result is not None]
 
 
 async def _invoke_tool(

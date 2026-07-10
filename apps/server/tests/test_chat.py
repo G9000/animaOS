@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+import asyncio
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -25,7 +26,8 @@ from anima_server.services.agent.state import (
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
+from starlette.responses import StreamingResponse
 
 
 def _register_user(client: TestClient, username: str = "alice") -> dict[str, object]:
@@ -346,6 +348,147 @@ def test_chat_stream_returns_sse_events() -> None:
     assert "event: tool_return" in body
     assert "event: done" in body
     assert "stream this" in body
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_closes_service_stream_when_transport_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+
+    async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[object, None]:
+        try:
+            yield SimpleNamespace(event="chunk", data={"content": "hello"})
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
+    monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
+
+    response = await chat_routes.send_message(
+        chat_routes.ChatRequest(message="hello", userId=1, stream=True),
+        Request({"type": "http", "method": "POST", "path": "/api/chat"}),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(response, StreamingResponse)
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_shields_cleanup_on_legacy_asgi_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+    body_started = asyncio.Event()
+
+    async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[object, None]:
+        try:
+            yield SimpleNamespace(event="chunk", data={"content": "hello"})
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            closed.set()
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
+    monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
+
+    response = await chat_routes.send_message(
+        chat_routes.ChatRequest(message="hello", userId=1, stream=True),
+        Request({"type": "http", "method": "POST", "path": "/api/chat"}),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    async def receive() -> dict[str, str]:
+        await body_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            body_started.set()
+
+    assert isinstance(response, StreamingResponse)
+    await response(
+        {"type": "http", "asgi": {"spec_version": "2.3"}},
+        receive,
+        send,
+    )
+
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_approval_stream_closes_service_stream_when_transport_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+
+    async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[object, None]:
+        try:
+            yield SimpleNamespace(event="chunk", data={"content": "resumed"})
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    runtime_db = SimpleNamespace(
+        get=lambda _model, _run_id: SimpleNamespace(
+            id=42,
+            user_id=1,
+            status="awaiting_approval",
+        )
+    )
+    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    monkeypatch.setattr(chat_routes, "stream_approve_or_deny", tracked_stream)
+
+    response = await chat_routes.handle_approval(
+        42,
+        chat_routes.ApprovalRequest(userId=1, approved=True, stream=True),
+        Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/chat/runs/42/approval",
+            }
+        ),
+        SimpleNamespace(),
+        runtime_db,
+    )
+
+    assert isinstance(response, StreamingResponse)
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+
+    assert closed.is_set()
 
 
 @pytest.mark.asyncio
@@ -824,7 +967,15 @@ def test_chat_compacts_thread_context_into_summary() -> None:
         settings.agent_compaction_keep_last_messages = 2
         invalidate_agent_runtime_cache()
 
-        with _client() as client:
+        from unittest.mock import patch as _patch
+
+        # Pin a tiny context budget so a few short messages trigger
+        # compaction (the legacy fallback no longer lets agent_max_tokens
+        # double as the context budget).
+        with _patch(
+            "anima_server.services.agent.service.resolve_context_budget_tokens",
+            return_value=60,
+        ), _client() as client:
             user = _register_user(client, username="compact-me")
             headers = {"x-anima-unlock": str(user["unlockToken"])}
             user_id = int(user["id"])
@@ -896,3 +1047,67 @@ def test_chat_compacts_thread_context_into_summary() -> None:
     assert thread.next_message_sequence == all_messages[-1].sequence_id + 1
     assert any(message.role == "user" for message in compacted_messages)
     assert any(message.role == "assistant" for message in compacted_messages)
+
+
+def test_sleep_endpoint_maps_task_run_results_to_counts() -> None:
+    """/sleep delegates to run_sleeptime_agents(force=True) and rebuilds the
+    count-shaped response the Consciousness UI expects from the issued task
+    runs' stored results."""
+    from unittest.mock import AsyncMock, patch
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    with _scaffold_agent_settings(), _client() as client:
+        user = _register_user(client, username="sleeper")
+        headers = {"x-anima-unlock": str(user["unlockToken"])}
+        user_id = int(user["id"])
+
+        rt_factory = get_runtime_session_factory()
+        with rt_factory() as db:
+            db.add_all(
+                [
+                    RuntimeBackgroundTaskRun(
+                        id=101,
+                        user_id=user_id,
+                        task_type="contradiction_scan",
+                        status="completed",
+                        result_json={"found": 3, "resolved": 2},
+                    ),
+                    RuntimeBackgroundTaskRun(
+                        id=102,
+                        user_id=user_id,
+                        task_type="profile_synthesis",
+                        status="completed",
+                        result_json={"merged": 4, "profile_fields_reconciled": 1},
+                    ),
+                    RuntimeBackgroundTaskRun(
+                        id=103,
+                        user_id=user_id,
+                        task_type="episode_gen",
+                        status="completed",
+                        result_json={"generated": True},
+                    ),
+                ]
+            )
+            db.commit()
+
+        fake_ids = [
+            "contradiction_scan:101",
+            "profile_synthesis:102",
+            "episode_gen:103",
+        ]
+        with patch(
+            "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
+            new=AsyncMock(return_value=fake_ids),
+        ):
+            response = client.post(
+                "/api/chat/sleep", headers=headers, json={"userId": user_id}
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["contradictionsFound"] == 3
+        assert body["contradictionsResolved"] == 2
+        assert body["itemsMerged"] == 4
+        assert body["episodesGenerated"] == 1
+        assert body["errors"] == []

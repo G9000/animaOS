@@ -8,9 +8,9 @@ Includes:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -56,219 +56,103 @@ Facts:
 {facts}"""
 
 
-@dataclass(slots=True)
-class SleepTaskResult:
-    contradictions_found: int = 0
-    contradictions_resolved: int = 0
-    items_merged: int = 0
-    profile_fields_reconciled: int = 0
-    patterns_created: int = 0
-    patterns_updated: int = 0
-    foresight_due: int = 0
-    foresight_occurred: int = 0
-    foresight_stale: int = 0
-    episodes_generated: int = 0
-    embeddings_backfilled: int = 0
-    refs_regenerated: int = 0
-    deep_monologue_ran: bool = False
-    errors: list[str] = field(default_factory=list)
+def _pair_hash(content_a: str, content_b: str) -> str:
+    """Order-normalized identity of a checked pair, derived from content.
+
+    Editing either item changes its content hash, which naturally
+    invalidates every cached verdict the item participated in.
+    """
+    hash_a = hashlib.sha256(content_a.strip().lower().encode()).hexdigest()
+    hash_b = hashlib.sha256(content_b.strip().lower().encode()).hexdigest()
+    low, high = sorted((hash_a, hash_b))
+    return hashlib.sha256(f"{low}:{high}".encode()).hexdigest()
 
 
-async def run_sleep_tasks(
+def _load_checked_pair_hashes(
+    runtime_db_factory: Callable[..., object] | None,
     *,
     user_id: int,
-    db_factory: Callable[..., object] | None = None,
-) -> SleepTaskResult:
-    """Run the full suite of sleep-time maintenance tasks."""
-    result = SleepTaskResult()
+) -> set[str]:
+    """Previously-checked pair hashes; empty set when the cache is unavailable."""
+    from anima_server.models.runtime_memory import ContradictionCheck
 
-    # 0. Decay heat scores for all items
     try:
-        from anima_server.db.session import SessionLocal
-        from anima_server.services.agent.heat_scoring import decay_all_heat
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
 
-        factory = db_factory or SessionLocal
-        with factory() as db:
-            decay_all_heat(db, user_id=user_id)
-            db.commit()
-    except Exception as e:
-        logger.debug("Heat decay failed for user %s: %s", user_id, e)
-
-    # 0.5. Clear needs_regeneration flags on derived references
-    # In a full implementation this would re-generate the content using
-    # current knowledge.  For now we simply clear the flags so the
-    # records are no longer marked stale.
-    try:
-        from anima_server.db.session import SessionLocal as _SL05
-        from anima_server.models import MemoryEpisode
-        from anima_server.models.consciousness import SelfModelBlock
-
-        factory05 = db_factory or _SL05
-        with factory05() as db:
-            stale_episodes = list(
-                db.scalars(
-                    select(MemoryEpisode).where(
-                        MemoryEpisode.user_id == user_id,
-                        MemoryEpisode.needs_regeneration.is_(True),
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            return set(
+                rt_db.scalars(
+                    select(ContradictionCheck.pair_hash).where(
+                        ContradictionCheck.user_id == user_id
                     )
                 ).all()
             )
-            stale_blocks = list(
-                db.scalars(
-                    select(SelfModelBlock).where(
-                        SelfModelBlock.user_id == user_id,
-                        SelfModelBlock.needs_regeneration.is_(True),
-                    )
-                ).all()
+    except Exception:
+        logger.debug("Contradiction verdict cache unavailable", exc_info=True)
+        return set()
+
+
+def _record_checked_pair(
+    runtime_db_factory: Callable[..., object] | None,
+    *,
+    user_id: int,
+    pair_hash: str,
+    verdict: str,
+) -> None:
+    from anima_server.models.runtime_memory import ContradictionCheck
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            rt_db.add(
+                ContradictionCheck(
+                    user_id=user_id,
+                    pair_hash=pair_hash,
+                    verdict=verdict[:16],
+                )
             )
-            regen_count = len(stale_episodes) + len(stale_blocks)
-            # NOTE: We intentionally do NOT clear needs_regeneration here.
-            # The flags must remain until actual content regeneration is
-            # implemented.  Clearing them prematurely would discard the
-            # only signal that stale derived references need repair.
-            result.refs_regenerated = regen_count
-    except Exception as e:
-        logger.debug("Derived ref regeneration failed for user %s: %s", user_id, e)
-
-    # 1. Scan for contradictions
-    try:
-        cr = await scan_contradictions(user_id=user_id, db_factory=db_factory)
-        result.contradictions_found = cr[0]
-        result.contradictions_resolved = cr[1]
-    except Exception as e:
-        logger.exception("Contradiction scan failed for user %s", user_id)
-        result.errors.append(f"contradiction_scan: {e}")
-
-    # 2. Profile synthesis (merge related facts)
-    try:
-        result.items_merged = await synthesize_profile(user_id=user_id, db_factory=db_factory)
-    except Exception as e:
-        logger.exception("Profile synthesis failed for user %s", user_id)
-        result.errors.append(f"profile_synthesis: {e}")
-
-    # 2.5. Structured profile reconciliation from active claims
-    try:
-        from anima_server.db.session import SessionLocal
-        from anima_server.services.agent.user_profile import reconcile_profile_from_claims
-
-        factory = db_factory or SessionLocal
-        with factory() as db:
-            result.profile_fields_reconciled = reconcile_profile_from_claims(
-                db,
-                user_id=user_id,
-            )
-            if result.profile_fields_reconciled > 0:
-                db.commit()
-                try:
-                    from anima_server.services.agent.companion import get_companion
-
-                    companion = get_companion(user_id)
-                    if companion is not None:
-                        companion.invalidate_memory()
-                except Exception:
-                    logger.debug(
-                        "Companion cache invalidation failed after profile reconciliation",
-                        exc_info=True,
-                    )
-    except Exception as e:
-        logger.exception("Structured profile reconciliation failed for user %s", user_id)
-        result.errors.append(f"profile_reconciliation: {e}")
-
-    # 2.75. Episode generation
-    try:
-        from anima_server.services.agent.episodes import maybe_generate_episode
-
-        episode = await maybe_generate_episode(user_id=user_id, db_factory=db_factory)
-        if episode is not None:
-            result.episodes_generated = 1
-    except Exception as e:
-        logger.exception("Episode generation failed for user %s", user_id)
-        result.errors.append(f"episode_generation: {e}")
-
-    # 3. Cross-episode pattern synthesis
-    try:
-        from anima_server.services.agent.pattern_synthesis import (
-            synthesize_cross_episode_patterns,
-        )
-
-        pattern_result = await synthesize_cross_episode_patterns(
-            user_id=user_id,
-            db_factory=db_factory,
-        )
-        result.patterns_created = pattern_result.created
-        result.patterns_updated = pattern_result.updated
-    except Exception as e:
-        logger.exception("Pattern synthesis failed for user %s", user_id)
-        result.errors.append(f"pattern_synthesis: {e}")
-
-    # 3.5. Foresight lifecycle sweep
-    try:
-        from anima_server.db.session import SessionLocal
-        from anima_server.services.agent.foresight import sweep_foresight_lifecycle
-
-        factory = db_factory or SessionLocal
-        with factory() as db:
-            transitions = sweep_foresight_lifecycle(db, user_id=user_id)
-            result.foresight_due = transitions["due"]
-            result.foresight_occurred = transitions["occurred"]
-            result.foresight_stale = transitions["stale"]
-            if any(transitions.values()):
-                db.commit()
-    except Exception as e:
-        logger.exception("Foresight lifecycle sweep failed for user %s", user_id)
-        result.errors.append(f"foresight_lifecycle: {e}")
-
-    # 4. Deep inner monologue (full self-model reflection)
-    # Only run once per 24 hours to avoid identity thrashing and LLM cost.
-    try:
-        from anima_server.services.agent.inner_monologue import run_deep_monologue
-
-        if _should_run_deep_monologue(user_id, db_factory=db_factory):
-            monologue = await run_deep_monologue(user_id=user_id, db_factory=db_factory)
-            result.deep_monologue_ran = True
-            if monologue.errors:
-                result.errors.extend(f"monologue: {e}" for e in monologue.errors)
-            else:
-                mark_deep_monologue_done(user_id)
-        else:
-            logger.debug("Deep monologue skipped for user %s (ran recently)", user_id)
-    except Exception as e:
-        logger.debug("Deep monologue skipped: %s", e)
-
-    # 5. Embedding backfill
-    try:
-        from anima_server.db.session import SessionLocal
-        from anima_server.services.agent.embeddings import backfill_embeddings
-
-        factory = db_factory or SessionLocal
-        with factory() as db:
-            count = await backfill_embeddings(db, user_id=user_id, batch_size=50)
-            if count > 0:
-                db.commit()
-            result.embeddings_backfilled = count
-    except Exception as e:
-        logger.debug("Embedding backfill skipped: %s", e)
-
-    return result
+            rt_db.commit()
+    except Exception:
+        # A concurrent scan may have inserted the same pair; losing one
+        # cache write only costs one future re-check.
+        logger.debug("Failed to record contradiction verdict", exc_info=True)
 
 
 async def scan_contradictions(
     *,
     user_id: int,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> tuple[int, int]:
-    """Scan memory items for contradictions within each category. Returns (found, resolved)."""
+    """Scan memory items for contradictions within each category. Returns (found, resolved).
+
+    Verdicts are persisted per content-hash pair: stable pairs are checked
+    once ever instead of re-buying up to 40 identical LLM calls per cycle.
+    """
     from anima_server.db.session import SessionLocal
 
     factory = db_factory or SessionLocal
     found = 0
     resolved = 0
+    checked_pairs = _load_checked_pair_hashes(runtime_db_factory, user_id=user_id)
 
     for category in ("fact", "preference", "goal", "relationship"):
         with factory() as db:
             items = get_memory_items(db, user_id=user_id, category=category, limit=100)
             if len(items) < 2:
                 continue
+
+            # Decrypt each item once — the pair loop is O(n²) and used to
+            # re-decrypt both sides per comparison.
+            plaintext: dict[int, str] = {
+                item.id: df(user_id, item.content, table="memory_items", field="content")
+                for item in items
+            }
 
             # Find pairs with moderate similarity (potential conflicts)
             # items are newest-first; swap so item_a=older, item_b=newer
@@ -277,32 +161,47 @@ async def scan_contradictions(
             for i, newer_item in enumerate(items):
                 for older_item in items[i + 1 :]:
                     sim = _similarity(
-                        df(user_id, older_item.content, table="memory_items", field="content"),
-                        df(user_id, newer_item.content, table="memory_items", field="content"),
+                        plaintext[older_item.id],
+                        plaintext[newer_item.id],
                     )
                     if 0.3 < sim < 0.95:  # Similar but not duplicate
                         pairs.append((older_item, newer_item))
 
             resolved_ids: set[int] = set()
+            # Verdicts checked this category, persisted only AFTER the soul
+            # commit below succeeds.  Recording a pair as "checked" before the
+            # resolution is durable would strand the contradiction: a failed
+            # commit loses the supersede, yet the pair is never re-examined.
+            pending_records: list[tuple[str, str]] = []
             for item_a, item_b in pairs[:10]:  # Cap per category
                 # Skip if either side was already superseded in this scan
                 if item_a.id in resolved_ids or item_b.id in resolved_ids:
                     continue
+                pair_key = _pair_hash(plaintext[item_a.id], plaintext[item_b.id])
+                if pair_key in checked_pairs:
+                    continue
                 found += 1
                 resolution = await _check_contradiction(
-                    df(user_id, item_a.content, table="memory_items", field="content"),
-                    df(user_id, item_b.content, table="memory_items", field="content"),
+                    plaintext[item_a.id],
+                    plaintext[item_b.id],
                 )
                 if resolution is None:
                     continue
 
                 verdict = resolution.get("verdict", "COMPATIBLE")
+                # Suppress re-checking within this run immediately (avoid a
+                # second LLM call for the same pair this pass).
+                checked_pairs.add(pair_key)
                 if verdict != "CONFLICT":
+                    # COMPATIBLE is terminal — no memory change needed, so it is
+                    # safe to persist immediately (post-commit) as checked.
+                    pending_records.append((pair_key, str(verdict)))
                     continue
 
                 action = resolution.get("action", "KEEP_SECOND")
                 merged = resolution.get("merged")
 
+                resolved_this_pair = False
                 if action == "KEEP_SECOND":
                     # Mark A as superseded by B (no new row needed)
                     item_a.superseded_by = item_b.id
@@ -311,7 +210,7 @@ async def scan_contradictions(
                     _cleanup_superseded_indexes(user_id, item_a.id, db)
                     _suppress_after_contradiction(db, item_a.id, item_b.id, user_id)
                     resolved_ids.add(item_a.id)
-                    resolved += 1
+                    resolved_this_pair = True
                 elif action == "KEEP_FIRST":
                     # Mark B as superseded by A (no new row needed)
                     item_b.superseded_by = item_a.id
@@ -320,7 +219,7 @@ async def scan_contradictions(
                     _cleanup_superseded_indexes(user_id, item_b.id, db)
                     _suppress_after_contradiction(db, item_b.id, item_a.id, user_id)
                     resolved_ids.add(item_b.id)
-                    resolved += 1
+                    resolved_this_pair = True
                 elif action == "MERGE" and merged:
                     # Create one merged item, point both old items at it
                     merged_item = supersede_memory_item(
@@ -339,9 +238,30 @@ async def scan_contradictions(
                     _suppress_after_contradiction(db, item_b.id, merged_item.id, user_id)
                     resolved_ids.add(item_a.id)
                     resolved_ids.add(item_b.id)
+                    resolved_this_pair = True
+
+                # Only persist a CONFLICT verdict once a branch actually resolved
+                # it.  An unresolvable verdict (MERGE without merged content, or
+                # an unsupported action) must NOT be cached, or the still-active
+                # contradiction would be skipped forever until an item's content
+                # changes.
+                if resolved_this_pair:
+                    pending_records.append((pair_key, str(verdict)))
                     resolved += 1
 
             db.commit()
+
+        # Only now that the resolutions are durable, persist the per-pair
+        # verdicts so stable pairs are skipped in future cycles.  If the commit
+        # above raised, we never get here and the pairs are re-checked next
+        # cycle rather than being silently marked resolved.
+        for pair_hash, verdict in pending_records:
+            _record_checked_pair(
+                runtime_db_factory,
+                user_id=user_id,
+                pair_hash=pair_hash,
+                verdict=verdict,
+            )
 
     return found, resolved
 
@@ -442,19 +362,74 @@ def _should_run_deep_monologue(
     user_id: int,
     *,
     db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
 ) -> bool:
     """Return True if enough time has passed since the last deep monologue.
 
     Does NOT update the timestamp — call ``mark_deep_monologue_done()``
     after the monologue succeeds.
+
+    The process-local dict is only a fast path: on a fresh process (this is
+    a desktop app — restarts are frequent) the gate is recovered from the
+    newest completed ``deep_monologue`` RuntimeBackgroundTaskRun so a
+    restart does not re-arm the most expensive reflection.
     """
+    del db_factory
     last = _last_deep_monologue.get(user_id)
+    if last is None:
+        last = _last_completed_deep_monologue_at(
+            user_id, runtime_db_factory=runtime_db_factory
+        )
+        if last is not None:
+            _last_deep_monologue[user_id] = last
     if last is not None:
         now = datetime.now(UTC)
         hours_since = (now - last).total_seconds() / 3600
         if hours_since < _DEEP_MONOLOGUE_INTERVAL_HOURS:
             return False
     return True
+
+
+def _last_completed_deep_monologue_at(
+    user_id: int,
+    *,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> datetime | None:
+    """Completion time of the newest successful deep-monologue task run."""
+    from sqlalchemy import desc, select
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            run = rt_db.scalar(
+                select(RuntimeBackgroundTaskRun)
+                .where(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
+                    RuntimeBackgroundTaskRun.task_type == "deep_monologue",
+                    RuntimeBackgroundTaskRun.status == "completed",
+                )
+                .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
+                .limit(1)
+            )
+    except Exception:
+        logger.debug(
+            "Could not read deep-monologue gate from task runs", exc_info=True
+        )
+        return None
+    if run is None or run.completed_at is None:
+        return None
+    if (run.result_json or {}).get("errors"):
+        # Task completed but the monologue itself failed — let it run again.
+        return None
+    completed = run.completed_at
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=UTC)
+    return completed
 
 
 def mark_deep_monologue_done(user_id: int) -> None:

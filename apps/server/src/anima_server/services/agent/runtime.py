@@ -22,8 +22,9 @@ from anima_server.services.agent.conversation_policy import (
 )
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.llm import (
-    ContextWindowOverflowError,
     LLMInvocationError,
+    is_retryable_llm_error,
+    retry_backoff_delay,
 )
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.messages import (
@@ -68,7 +69,8 @@ from anima_server.services.agent.streaming import (
 )
 from anima_server.services.agent.system_prompt import (
     SystemPromptContext,
-    build_system_prompt,
+    SystemPromptParts,
+    build_system_prompt_parts,
     split_prompt_memory_blocks,
 )
 from anima_server.services.agent.tools import get_tool_rules, get_tool_summaries, get_tools
@@ -77,33 +79,39 @@ from anima_server.services.health.event_logger import emit as health_emit
 logger = logging.getLogger(__name__)
 
 
-def _is_retryable_error(exc: Exception) -> bool:
-    """Return True if the exception is transient and worth retrying."""
-    if isinstance(exc, ContextWindowOverflowError):
-        return False
-    if isinstance(exc, asyncio.TimeoutError):
-        return True
-    if isinstance(exc, LLMInvocationError):
-        msg = str(exc).lower()
-        # Rate limits and server errors are retryable
-        for pattern in (
-            "429",
-            "500",
-            "502",
-            "503",
-            "504",
-            "rate limit",
-            "overloaded",
-            "temporarily unavailable",
-            "try again",
-        ):
-            if pattern in msg:
-                return True
-    return bool(isinstance(exc, (ConnectionError, OSError)))
+# Retry classification lives in llm.py (is_retryable_llm_error): it reads
+# the structured status_code set by wrap_llm_error instead of substring-
+# matching stringified exceptions, and covers 408/409/529 which the old
+# message patterns missed.
+_is_retryable_error = is_retryable_llm_error
 
 
 StreamEventCallback = Callable[[AgentStreamEvent], Awaitable[None]]
 MemoryRefresher = Callable[[], Awaitable[tuple[MemoryBlock, ...] | None]]
+
+
+@dataclass(slots=True)
+class _FailureTracker:
+    """Cross-step tracking of the most recent failing non-terminal tool.
+
+    A tool is excluded from the next step's allowed set only after it fails on
+    two consecutive steps (``last == prev``), granting one retry first.
+    """
+
+    last: str | None = None
+    prev: str | None = None
+
+
+@dataclass(slots=True)
+class _StepToolCallResult:
+    """Outcome of processing one step's tool calls via
+    :meth:`AgentRuntime._process_step_tool_calls`."""
+
+    tool_results: list[ToolExecutionResult]
+    terminal_tool_hit: bool
+    awaiting_approval: bool
+    rule_violation_hit: bool
+    response: str | None
 
 
 class _CancelledDuringStream(Exception):
@@ -159,6 +167,18 @@ class AgentRuntime:
         memory_blocks: Sequence[MemoryBlock] = (),
         conversation_turn_count: int | None = None,
     ) -> tuple[str, PromptBudgetTrace | None]:
+        parts, prompt_budget = self.build_system_prompt_parts_with_budget(
+            memory_blocks=memory_blocks,
+            conversation_turn_count=conversation_turn_count,
+        )
+        return parts.full, prompt_budget
+
+    def build_system_prompt_parts_with_budget(
+        self,
+        *,
+        memory_blocks: Sequence[MemoryBlock] = (),
+        conversation_turn_count: int | None = None,
+    ) -> tuple[SystemPromptParts, PromptBudgetTrace | None]:
         self._adapter.prepare()
         relationship_policy = detect_relationship_policy(
             memory_blocks=tuple(memory_blocks),
@@ -169,7 +189,7 @@ class AgentRuntime:
         )
         budget_plan = plan_prompt_budget(
             prompt_memory_blocks, budget=resolve_budget_config())
-        system_prompt = build_system_prompt(
+        parts = build_system_prompt_parts(
             SystemPromptContext(
                 persona_template=self._persona_template,
                 persona_content=persona_content,
@@ -181,6 +201,7 @@ class AgentRuntime:
                 ),
             )
         )
+        system_prompt = parts.full
         prompt_budget = replace(
             budget_plan.trace,
             dynamic_identity_chars=len(dynamic_identity),
@@ -196,7 +217,7 @@ class AgentRuntime:
                 tool_name=None,
             ),
         )
-        return system_prompt, prompt_budget
+        return parts, prompt_budget
 
     async def invoke(
         self,
@@ -215,7 +236,7 @@ class AgentRuntime:
         user_attachments: Sequence[StoredAttachment] = (),
     ) -> AgentResult | DryRunResult:
         executor = tool_executor or self._tool_executor
-        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
+        prompt_parts, prompt_budget = self.build_system_prompt_parts_with_budget(
             memory_blocks=memory_blocks,
             conversation_turn_count=conversation_turn_count,
         )
@@ -224,16 +245,25 @@ class AgentRuntime:
             conversation_turn_count=conversation_turn_count,
         )
 
-        system_prompt = _append_action_tool_prompt(
-            system_prompt,
-            extra_tool_schemas,
+        # Action tools are session-scoped (they change when a client
+        # connects/disconnects), so they belong in the volatile section —
+        # appending them after the cache boundary keeps the stable prefix
+        # byte-identical across sessions.
+        prompt_parts = replace(
+            prompt_parts,
+            volatile=_append_action_tool_prompt(
+                prompt_parts.volatile,
+                extra_tool_schemas,
+            ),
         )
+        system_prompt = prompt_parts.full
         extra_tool_names = _action_tool_names(extra_tool_schemas)
 
         messages = build_conversation_messages(
             history,
             user_message,
             system_prompt=system_prompt,
+            system_stable_prefix_chars=prompt_parts.stable_prefix_chars,
             user_attachments=user_attachments,
         )
 
@@ -283,8 +313,7 @@ class AgentRuntime:
         tools_used: list[str] = []
         step_traces: list[StepTrace] = []
         deferred_tool_calls: list[ToolCall] = []
-        last_failed_tool: str | None = None
-        _prev_failed_tool: str | None = None
+        failure_tracker = _FailureTracker()
 
         for step_index in range(self._max_steps):
             if step_index == 0:
@@ -311,14 +340,14 @@ class AgentRuntime:
             # give the model one retry chance (matching the sandwich
             # message guidance) before blocking it.
             if (
-                last_failed_tool
-                and last_failed_tool == _prev_failed_tool
-                and last_failed_tool in allowed_set
+                failure_tracker.last
+                and failure_tracker.last == failure_tracker.prev
+                and failure_tracker.last in allowed_set
                 and len(allowed_set) > 1
             ):
-                allowed_set = allowed_set - {last_failed_tool}
+                allowed_set = allowed_set - {failure_tracker.last}
                 health_emit("tool", "excluded", "warn", data={
-                    "tool": last_failed_tool,
+                    "tool": failure_tracker.last,
                 }, user_id=user_id)
             allowed_tool_names = tuple(sorted(allowed_set))
             force_tool_call = bool(
@@ -384,12 +413,6 @@ class AgentRuntime:
                             step_result.reasoning_signature,
                         )
                     )
-            tool_results: list[ToolExecutionResult] = []
-            validated_calls: list[tuple[ToolCall, bool]] = []
-            terminal_tool_hit = False
-            awaiting_approval = False
-            rule_violation_hit = False
-
             effective_tool_calls = step_result.tool_calls
             if not effective_tool_calls:
                 coerced = self._coerce_text_tool_calls(
@@ -431,182 +454,31 @@ class AgentRuntime:
                     stop_reason = StopReason.END_TURN
                 break
 
-            if event_callback is not None:
-                for tool_call in effective_tool_calls:
-                    await event_callback(build_tool_call_event(step_index, tool_call))
-
-            for tool_call in effective_tool_calls:
-                is_action_tool = (
-                    tool_call.name in extra_tool_names
-                    and tool_call.name not in self._tool_registry
-                )
-                violation = None
-                if not is_action_tool:
-                    violation = rules_solver.validate_tool_call(
-                        tool_call.name,
-                        self._tool_names,
-                    )
-                if violation is not None:
-                    # If the blocked tool is neither terminal nor an
-                    # init-only tool, defer it for execution after the
-                    # turn completes instead of permanently discarding
-                    # the model's intent.  Init tools are excluded
-                    # because deferring them would bypass sequencing.
-                    init_tool_names = {
-                        rule.tool_name
-                        for rule in self._tool_rules
-                        if isinstance(rule, InitToolRule)
-                    }
-                    is_deferrable = (
-                        not rules_solver.is_terminal(tool_call.name)
-                        and tool_call.name not in init_tool_names
-                        and tool_call.name in self._tool_registry
-                    )
-                    if is_deferrable:
-                        deferred_tool_calls.append(tool_call)
-                        logger.info(
-                            "Step %d: deferring blocked tool call %r for "
-                            "post-turn execution (violation: %s)",
-                            step_index,
-                            tool_call.name,
-                            violation,
-                        )
-
-                    tool_result = ToolExecutionResult(
-                        call_id=tool_call.id,
-                        name=tool_call.name,
-                        output=f"Tool rule violation: {violation}",
-                        is_error=True,
-                    )
-                    tool_results.append(tool_result)
-                    messages.append(
-                        make_tool_message(
-                            tool_result.output,
-                            tool_call_id=tool_result.call_id,
-                            name=tool_result.name,
-                        )
-                    )
-                    if event_callback is not None:
-                        await event_callback(build_tool_return_event(step_index, tool_result))
-                    rule_violation_hit = True
-                    break
-
-                if not is_action_tool and rules_solver.requires_approval(tool_call.name):
-                    # Execute any previously validated safe tools before
-                    # stopping for approval.
-                    if validated_calls:
-                        step_ctx.progression = StepProgression.TOOLS_STARTED
-                        pre_approval_results = await executor.execute_parallel(validated_calls)
-                        for (tc, _), tr in zip(
-                            validated_calls, pre_approval_results, strict=True
-                        ):
-                            tool_results.append(tr)
-                            messages.append(
-                                make_tool_message(
-                                    tr.output, tool_call_id=tr.call_id, name=tr.name)
-                            )
-                            if event_callback is not None:
-                                await event_callback(build_tool_return_event(step_index, tr))
-                            if tr.inner_thinking and event_callback is not None:
-                                await event_callback(build_thought_event(step_index, tr.inner_thinking))
-                            rules_solver.update_state(tc.name, tr.output)
-                            if tc.name not in tools_used:
-                                tools_used.append(tc.name)
-                        validated_calls.clear()
-
-                    tool_result = ToolExecutionResult(
-                        call_id=tool_call.id,
-                        name=tool_call.name,
-                        output=f"Approval required before running tool: {tool_call.name}",
-                        is_error=True,
-                    )
-                    tool_results.append(tool_result)
-                    messages.append(
-                        make_tool_message(
-                            tool_result.output,
-                            tool_call_id=tool_result.call_id,
-                            name=tool_result.name,
-                        )
-                    )
-                    if event_callback is not None:
-                        await event_callback(build_tool_return_event(step_index, tool_result))
-                    stop_reason = StopReason.AWAITING_APPROVAL
-                    awaiting_approval = True
-                    break
-
-                # Collect validated tool calls for execution.
-                is_terminal = (
-                    False
-                    if is_action_tool
-                    else tool_call.name == "send_message"
-                    or rules_solver.is_terminal(tool_call.name)
-                )
-                validated_calls.append((tool_call, is_terminal))
-                # Register with the solver so subsequent tool calls in
-                # this batch see updated prerequisite/child state.
-                if not is_action_tool:
-                    rules_solver.update_state(tool_call.name, None)
-
-            # --- Execute validated tool calls (parallel when possible) ---
-            if validated_calls and not rule_violation_hit and not awaiting_approval:
-                step_ctx.progression = StepProgression.TOOLS_STARTED
-
-                # Split terminal (send_message) from non-terminal calls.
-                non_terminal = [(tc, t) for tc, t in validated_calls if not t]
-                terminal = [(tc, t) for tc, t in validated_calls if t]
-
-                # Execute non-terminal tools in parallel.
-                parallel_results = await executor.execute_parallel(non_terminal) if non_terminal else []
-
-                # Process non-terminal results.
-                for (tc, _), tr in zip(non_terminal, parallel_results, strict=True):
-                    tool_results.append(tr)
-                    messages.append(
-                        make_tool_message(
-                            tr.output, tool_call_id=tr.call_id, name=tr.name)
-                    )
-                    if event_callback is not None:
-                        await event_callback(build_tool_return_event(step_index, tr))
-                    if tr.inner_thinking and event_callback is not None:
-                        await event_callback(build_thought_event(step_index, tr.inner_thinking))
-                    rules_solver.update_state(tc.name, tr.output)
-                    if tr.is_error:
-                        _prev_failed_tool = last_failed_tool
-                        last_failed_tool = tc.name
-                    else:
-                        _prev_failed_tool = None
-                        last_failed_tool = None
-                    if tc.name not in tools_used:
-                        tools_used.append(tc.name)
-
-                # Execute terminal tool last (sequentially).
-                for tc, _ in terminal:
-                    tr = await executor.execute(tc, is_terminal=True)
-                    tr = self._apply_terminal_reply_policy(
-                        tool_call=tc,
-                        tool_result=tr,
-                        relationship_policy=relationship_policy,
-                        user_message=user_message,
-                    )
-                    tool_results.append(tr)
-                    messages.append(
-                        make_tool_message(
-                            tr.output, tool_call_id=tr.call_id, name=tr.name)
-                    )
-                    if event_callback is not None:
-                        await event_callback(build_tool_return_event(step_index, tr))
-                    if tr.inner_thinking and event_callback is not None:
-                        await event_callback(build_thought_event(step_index, tr.inner_thinking))
-                    rules_solver.update_state(tc.name, tr.output)
-                    if tc.name not in tools_used:
-                        tools_used.append(tc.name)
-                    if tr.is_terminal:
-                        response = tr.output or response
-                        stop_reason = StopReason.TERMINAL_TOOL
-                        terminal_tool_hit = True
-
-            if tool_results:
-                step_ctx.progression = StepProgression.TOOLS_COMPLETED
+            step_tool_result = await self._process_step_tool_calls(
+                effective_tool_calls,
+                step_index=step_index,
+                step_ctx=step_ctx,
+                messages=messages,
+                rules_solver=rules_solver,
+                executor=executor,
+                relationship_policy=relationship_policy,
+                user_message=user_message,
+                extra_tool_names=extra_tool_names,
+                event_callback=event_callback,
+                tools_used=tools_used,
+                deferred_tool_calls=deferred_tool_calls,
+                failure_tracker=failure_tracker,
+            )
+            tool_results = step_tool_result.tool_results
+            terminal_tool_hit = step_tool_result.terminal_tool_hit
+            awaiting_approval = step_tool_result.awaiting_approval
+            rule_violation_hit = step_tool_result.rule_violation_hit
+            if terminal_tool_hit:
+                if step_tool_result.response is not None:
+                    response = step_tool_result.response
+                stop_reason = StopReason.TERMINAL_TOOL
+            elif awaiting_approval:
+                stop_reason = StopReason.AWAITING_APPROVAL
             step_traces.append(
                 _build_step_trace(
                     step_ctx,
@@ -631,9 +503,27 @@ class AgentRuntime:
                 try:
                     fresh_blocks = await memory_refresher()
                     if fresh_blocks is not None:
-                        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
-                            memory_blocks=fresh_blocks,
+                        # Rebuild exactly as the initial assembly did (216-235):
+                        # thread conversation_turn_count so relationship-stage
+                        # instructions survive, and re-append the session-scoped
+                        # action tools to the volatile suffix.  Without both, a
+                        # save_to_memory mid-turn stripped connected-client
+                        # action tools and relationship instructions from the
+                        # rebuilt prompt.
+                        refreshed_parts, prompt_budget = (
+                            self.build_system_prompt_parts_with_budget(
+                                memory_blocks=fresh_blocks,
+                                conversation_turn_count=conversation_turn_count,
+                            )
                         )
+                        refreshed_parts = replace(
+                            refreshed_parts,
+                            volatile=_append_action_tool_prompt(
+                                refreshed_parts.volatile,
+                                extra_tool_schemas,
+                            ),
+                        )
+                        system_prompt = refreshed_parts.full
                         # Replace the system message (always first in the list).
                         if (
                             messages
@@ -642,7 +532,10 @@ class AgentRuntime:
                         ):
                             from anima_server.services.agent.messages import make_system_message
 
-                            messages[0] = make_system_message(system_prompt)
+                            messages[0] = make_system_message(
+                                system_prompt,
+                                stable_prefix_chars=refreshed_parts.stable_prefix_chars,
+                            )
                 except Exception:
                     logger.debug(
                         "Memory refresh between steps failed", exc_info=True)
@@ -750,6 +643,263 @@ class AgentRuntime:
         )
 
     # ------------------------------------------------------------------
+    # Shared step tool-call pipeline (used by invoke and resume)
+    # ------------------------------------------------------------------
+
+    async def _execute_validated_calls(
+        self,
+        validated_calls: list[tuple[ToolCall, bool]],
+        *,
+        step_index: int,
+        step_ctx: StepContext,
+        messages: list[Any],
+        rules_solver: ToolRulesSolver,
+        executor: ToolExecutor,
+        relationship_policy: RelationshipPolicy,
+        user_message: str | None,
+        event_callback: StreamEventCallback | None,
+        tools_used: list[str],
+        tool_results: list[ToolExecutionResult],
+        capture_terminal: bool,
+        failure_tracker: _FailureTracker | None,
+    ) -> tuple[bool, str | None]:
+        """Execute a batch of validated tool calls — non-terminal ones in
+        parallel, terminal ones sequentially with the reply policy applied.
+
+        Appends the tool messages/results, emits return/thought events, updates
+        solver state and ``tools_used``, and (when ``failure_tracker`` is given)
+        tracks the last failing non-terminal tool for consecutive-failure
+        exclusion.  Returns ``(terminal_tool_hit, response_override)``;
+        ``response_override`` is only set when ``capture_terminal`` is True and a
+        terminal tool produced output.  Clears ``validated_calls`` when done.
+        """
+        if not validated_calls:
+            return False, None
+
+        step_ctx.progression = StepProgression.TOOLS_STARTED
+        non_terminal = [(tc, t) for tc, t in validated_calls if not t]
+        terminal = [(tc, t) for tc, t in validated_calls if t]
+        terminal_tool_hit = False
+        response: str | None = None
+
+        parallel_results = (
+            await executor.execute_parallel(non_terminal) if non_terminal else []
+        )
+        for (tc, _), tr in zip(non_terminal, parallel_results, strict=True):
+            tool_results.append(tr)
+            messages.append(
+                make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
+            )
+            if event_callback is not None:
+                await event_callback(build_tool_return_event(step_index, tr))
+            if tr.inner_thinking and event_callback is not None:
+                await event_callback(build_thought_event(step_index, tr.inner_thinking))
+            rules_solver.update_state(tc.name, tr.output)
+            if failure_tracker is not None:
+                if tr.is_error:
+                    failure_tracker.prev = failure_tracker.last
+                    failure_tracker.last = tc.name
+                else:
+                    failure_tracker.prev = None
+                    failure_tracker.last = None
+            if tc.name not in tools_used:
+                tools_used.append(tc.name)
+
+        for tc, _ in terminal:
+            tr = await executor.execute(tc, is_terminal=True)
+            tr = self._apply_terminal_reply_policy(
+                tool_call=tc,
+                tool_result=tr,
+                relationship_policy=relationship_policy,
+                user_message=user_message,
+            )
+            tool_results.append(tr)
+            messages.append(
+                make_tool_message(tr.output, tool_call_id=tr.call_id, name=tr.name)
+            )
+            if event_callback is not None:
+                await event_callback(build_tool_return_event(step_index, tr))
+            if tr.inner_thinking and event_callback is not None:
+                await event_callback(build_thought_event(step_index, tr.inner_thinking))
+            rules_solver.update_state(tc.name, tr.output)
+            if tc.name not in tools_used:
+                tools_used.append(tc.name)
+            if capture_terminal and tr.is_terminal:
+                response = tr.output or response
+                terminal_tool_hit = True
+
+        validated_calls.clear()
+        return terminal_tool_hit, response
+
+    async def _process_step_tool_calls(
+        self,
+        effective_tool_calls: Sequence[ToolCall],
+        *,
+        step_index: int,
+        step_ctx: StepContext,
+        messages: list[Any],
+        rules_solver: ToolRulesSolver,
+        executor: ToolExecutor,
+        relationship_policy: RelationshipPolicy,
+        user_message: str | None,
+        extra_tool_names: frozenset[str],
+        event_callback: StreamEventCallback | None,
+        tools_used: list[str],
+        deferred_tool_calls: list[ToolCall] | None,
+        failure_tracker: _FailureTracker | None,
+    ) -> _StepToolCallResult:
+        """Process one step's tool calls: validate each, defer blocked
+        deferrable tools, flush already-validated calls before stopping for a
+        violation or approval, and otherwise execute the validated batch.
+
+        This is the single tool-call pipeline shared by ``invoke`` and
+        ``resume_after_approval``.  Callers parameterize the two genuine
+        differences: ``deferred_tool_calls`` (a list to queue blocked
+        deferrable tools into, or ``None`` to disable deferral) and
+        ``extra_tool_names`` (connected-client action tools that bypass the
+        rules solver, empty for the approval-resume path).  Already-validated
+        safe calls are executed before any stop — matching the historical
+        approval-stop behavior and making the violation path consistent rather
+        than silently dropping them.
+        """
+        tool_results: list[ToolExecutionResult] = []
+        validated_calls: list[tuple[ToolCall, bool]] = []
+        awaiting_approval = False
+        rule_violation_hit = False
+        terminal_tool_hit = False
+        response: str | None = None
+
+        if event_callback is not None:
+            for tool_call in effective_tool_calls:
+                await event_callback(build_tool_call_event(step_index, tool_call))
+
+        init_tool_names = {
+            rule.tool_name
+            for rule in self._tool_rules
+            if isinstance(rule, InitToolRule)
+        }
+
+        async def _flush(*, capture_terminal: bool) -> tuple[bool, str | None]:
+            return await self._execute_validated_calls(
+                validated_calls,
+                step_index=step_index,
+                step_ctx=step_ctx,
+                messages=messages,
+                rules_solver=rules_solver,
+                executor=executor,
+                relationship_policy=relationship_policy,
+                user_message=user_message,
+                event_callback=event_callback,
+                tools_used=tools_used,
+                tool_results=tool_results,
+                capture_terminal=capture_terminal,
+                failure_tracker=failure_tracker,
+            )
+
+        for tool_call in effective_tool_calls:
+            is_action_tool = (
+                tool_call.name in extra_tool_names
+                and tool_call.name not in self._tool_registry
+            )
+            violation = None
+            if not is_action_tool:
+                violation = rules_solver.validate_tool_call(
+                    tool_call.name, self._tool_names
+                )
+
+            if violation is not None:
+                # Defer blocked-but-valid non-terminal, non-init tools so the
+                # model's intent survives to the post-turn drain (invoke only).
+                is_deferrable = (
+                    not rules_solver.is_terminal(tool_call.name)
+                    and tool_call.name not in init_tool_names
+                    and tool_call.name in self._tool_registry
+                )
+                if is_deferrable and deferred_tool_calls is not None:
+                    deferred_tool_calls.append(tool_call)
+                    logger.info(
+                        "Step %d: deferring blocked tool call %r for "
+                        "post-turn execution (violation: %s)",
+                        step_index,
+                        tool_call.name,
+                        violation,
+                    )
+                # Capture a terminal hit from calls that ran BEFORE this
+                # violation (e.g. a valid send_message earlier in the same
+                # batch): the reply was already sent, so the turn must end on it
+                # rather than be treated purely as a violation and loop again —
+                # which would strand the sent reply and emit a second response.
+                flushed_terminal, flushed_response = await _flush(
+                    capture_terminal=True
+                )
+                if flushed_terminal:
+                    terminal_tool_hit = True
+                    response = flushed_response
+                tool_result = ToolExecutionResult(
+                    call_id=tool_call.id,
+                    name=tool_call.name,
+                    output=f"Tool rule violation: {violation}",
+                    is_error=True,
+                )
+                tool_results.append(tool_result)
+                messages.append(
+                    make_tool_message(
+                        tool_result.output,
+                        tool_call_id=tool_result.call_id,
+                        name=tool_result.name,
+                    )
+                )
+                if event_callback is not None:
+                    await event_callback(build_tool_return_event(step_index, tool_result))
+                rule_violation_hit = True
+                break
+
+            if not is_action_tool and rules_solver.requires_approval(tool_call.name):
+                await _flush(capture_terminal=False)
+                tool_result = ToolExecutionResult(
+                    call_id=tool_call.id,
+                    name=tool_call.name,
+                    output=f"Approval required before running tool: {tool_call.name}",
+                    is_error=True,
+                )
+                tool_results.append(tool_result)
+                messages.append(
+                    make_tool_message(
+                        tool_result.output,
+                        tool_call_id=tool_result.call_id,
+                        name=tool_result.name,
+                    )
+                )
+                if event_callback is not None:
+                    await event_callback(build_tool_return_event(step_index, tool_result))
+                awaiting_approval = True
+                break
+
+            is_terminal = (
+                False
+                if is_action_tool
+                else tool_call.name == "send_message"
+                or rules_solver.is_terminal(tool_call.name)
+            )
+            validated_calls.append((tool_call, is_terminal))
+            if not is_action_tool:
+                rules_solver.update_state(tool_call.name, None)
+
+        if not rule_violation_hit and not awaiting_approval:
+            terminal_tool_hit, response = await _flush(capture_terminal=True)
+
+        if tool_results:
+            step_ctx.progression = StepProgression.TOOLS_COMPLETED
+
+        return _StepToolCallResult(
+            tool_results=tool_results,
+            terminal_tool_hit=terminal_tool_hit,
+            awaiting_approval=awaiting_approval,
+            rule_violation_hit=rule_violation_hit,
+            response=response,
+        )
+
+    # ------------------------------------------------------------------
     # Approval re-entry
     # ------------------------------------------------------------------
 
@@ -777,10 +927,11 @@ class AgentRuntime:
         one LLM call so the companion can acknowledge the denial.
         """
         executor = tool_executor or self._tool_executor
-        system_prompt, prompt_budget = self.build_system_prompt_with_budget(
+        prompt_parts, prompt_budget = self.build_system_prompt_parts_with_budget(
             memory_blocks=memory_blocks,
             conversation_turn_count=conversation_turn_count,
         )
+        system_prompt = prompt_parts.full
         relationship_policy = detect_relationship_policy(
             memory_blocks=tuple(memory_blocks),
             conversation_turn_count=conversation_turn_count,
@@ -789,6 +940,7 @@ class AgentRuntime:
             history,
             user_message=None,
             system_prompt=system_prompt,
+            system_stable_prefix_chars=prompt_parts.stable_prefix_chars,
         )
         rules_solver = ToolRulesSolver(self._tool_rules)
 
@@ -959,131 +1111,32 @@ class AgentRuntime:
         follow_tool_results: list[ToolExecutionResult] = []
         follow_terminal_tool_hit = False
         follow_awaiting_approval = False
-        follow_rule_violation_hit = False
-        validated_calls: list[tuple[ToolCall, bool]] = []
-
-        async def _flush_follow_validated_calls(*, capture_terminal: bool) -> None:
-            nonlocal response, follow_terminal_tool_hit
-            if not validated_calls:
-                return
-
-            follow_ctx.progression = StepProgression.TOOLS_STARTED
-            non_terminal = [(tc, t) for tc, t in validated_calls if not t]
-            terminal = [(tc, t) for tc, t in validated_calls if t]
-
-            parallel_results = await executor.execute_parallel(non_terminal) if non_terminal else []
-            for (tc, _), tr in zip(non_terminal, parallel_results, strict=True):
-                follow_tool_results.append(tr)
-                messages.append(
-                    make_tool_message(
-                        tr.output,
-                        tool_call_id=tr.call_id,
-                        name=tr.name,
-                    )
-                )
-                if event_callback is not None:
-                    await event_callback(build_tool_return_event(1, tr))
-                if tr.inner_thinking and event_callback is not None:
-                    await event_callback(build_thought_event(1, tr.inner_thinking))
-                rules_solver.update_state(tc.name, tr.output)
-                if tc.name not in tools_used:
-                    tools_used.append(tc.name)
-
-            for tc, _ in terminal:
-                tr = await executor.execute(tc, is_terminal=True)
-                tr = self._apply_terminal_reply_policy(
-                    tool_call=tc,
-                    tool_result=tr,
-                    relationship_policy=relationship_policy,
-                    user_message=None,
-                )
-                follow_tool_results.append(tr)
-                messages.append(
-                    make_tool_message(
-                        tr.output,
-                        tool_call_id=tr.call_id,
-                        name=tr.name,
-                    )
-                )
-                if event_callback is not None:
-                    await event_callback(build_tool_return_event(1, tr))
-                if tr.inner_thinking and event_callback is not None:
-                    await event_callback(build_thought_event(1, tr.inner_thinking))
-                rules_solver.update_state(tc.name, tr.output)
-                if tc.name not in tools_used:
-                    tools_used.append(tc.name)
-                if capture_terminal and tr.is_terminal:
-                    response = tr.output or response
-                    follow_terminal_tool_hit = True
-
-            validated_calls.clear()
 
         if follow_tool_calls:
-            if event_callback is not None:
-                for follow_tool_call in follow_tool_calls:
-                    await event_callback(build_tool_call_event(1, follow_tool_call))
-
-            for follow_tool_call in follow_tool_calls:
-                violation = rules_solver.validate_tool_call(
-                    follow_tool_call.name,
-                    self._tool_names,
-                )
-                if violation is not None:
-                    if validated_calls:
-                        await _flush_follow_validated_calls(capture_terminal=False)
-                    tool_result = ToolExecutionResult(
-                        call_id=follow_tool_call.id,
-                        name=follow_tool_call.name,
-                        output=f"Tool rule violation: {violation}",
-                        is_error=True,
-                    )
-                    follow_tool_results.append(tool_result)
-                    messages.append(
-                        make_tool_message(
-                            tool_result.output,
-                            tool_call_id=tool_result.call_id,
-                            name=tool_result.name,
-                        )
-                    )
-                    if event_callback is not None:
-                        await event_callback(build_tool_return_event(1, tool_result))
-                    follow_rule_violation_hit = True
-                    break
-
-                if rules_solver.requires_approval(follow_tool_call.name):
-                    if validated_calls:
-                        await _flush_follow_validated_calls(capture_terminal=False)
-                    tool_result = ToolExecutionResult(
-                        call_id=follow_tool_call.id,
-                        name=follow_tool_call.name,
-                        output=f"Approval required before running tool: {follow_tool_call.name}",
-                        is_error=True,
-                    )
-                    follow_tool_results.append(tool_result)
-                    messages.append(
-                        make_tool_message(
-                            tool_result.output,
-                            tool_call_id=tool_result.call_id,
-                            name=tool_result.name,
-                        )
-                    )
-                    if event_callback is not None:
-                        await event_callback(build_tool_return_event(1, tool_result))
-                    follow_awaiting_approval = True
-                    break
-
-                is_terminal = (
-                    follow_tool_call.name == "send_message"
-                    or rules_solver.is_terminal(follow_tool_call.name)
-                )
-                validated_calls.append((follow_tool_call, is_terminal))
-                rules_solver.update_state(follow_tool_call.name, None)
-
-            if validated_calls and not follow_rule_violation_hit and not follow_awaiting_approval:
-                await _flush_follow_validated_calls(capture_terminal=True)
-
-            if follow_tool_results:
-                follow_ctx.progression = StepProgression.TOOLS_COMPLETED
+            # Same pipeline as invoke's per-step tool handling.  Resume is a
+            # single follow-up step, so deferral (needs a post-turn drain) and
+            # consecutive-failure exclusion (needs the loop) don't apply — pass
+            # them off; there are no connected-client action tools here either.
+            step_tool_result = await self._process_step_tool_calls(
+                follow_tool_calls,
+                step_index=1,
+                step_ctx=follow_ctx,
+                messages=messages,
+                rules_solver=rules_solver,
+                executor=executor,
+                relationship_policy=relationship_policy,
+                user_message=None,
+                extra_tool_names=frozenset(),
+                event_callback=event_callback,
+                tools_used=tools_used,
+                deferred_tool_calls=None,
+                failure_tracker=None,
+            )
+            follow_tool_results = step_tool_result.tool_results
+            follow_terminal_tool_hit = step_tool_result.terminal_tool_hit
+            follow_awaiting_approval = step_tool_result.awaiting_approval
+            if step_tool_result.response is not None:
+                response = step_tool_result.response
         elif (
             event_callback is not None
             and step_result.assistant_text
@@ -1383,7 +1436,12 @@ class AgentRuntime:
                         "retryable": _is_retryable_error(exc),
                     })
                     raise
-                delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                delay = retry_backoff_delay(
+                    exc,
+                    attempt=attempt,
+                    backoff_factor=backoff_factor,
+                    max_delay=max_delay,
+                )
                 logger.warning(
                     "LLM call failed (attempt %d/%d): %s. Retrying in %.1fs",
                     attempt,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import (
     SUMMARY_LINE_LIMIT,
@@ -82,9 +83,9 @@ def test_estimate_tokens_empty() -> None:
 
 
 def test_estimate_tokens_text_only() -> None:
-    # "hello world" = 11 chars => ceil(11/4) = 3
+    # "hello world" = 11 chars => ceil(11/3) = 4 (conservative estimate)
     tokens = estimate_message_tokens(content_text="hello world")
-    assert tokens == 3
+    assert tokens == 4
 
 
 def test_estimate_tokens_with_tool_name() -> None:
@@ -410,3 +411,141 @@ def test_compact_thread_context_reserved_prompt_tokens() -> None:
         assert result is not None
         assert result.reserved_prompt_tokens == 500
         assert result.effective_trigger_token_limit == 700
+
+
+# --------------------------------------------------------------------------- #
+# summarize_with_llm (routed through the provider chat client, ARH-001)
+# --------------------------------------------------------------------------- #
+
+
+class _FakeChatClient:
+    def __init__(self, content: str = "", error: Exception | None = None) -> None:
+        self._content = content
+        self._error = error
+        self.invocations: list[list] = []
+
+    async def ainvoke(self, messages):
+        self.invocations.append(messages)
+        if self._error is not None:
+            raise self._error
+
+        class _Response:
+            content = self._content
+
+        return _Response()
+
+
+def _patch_provider_client(monkeypatch, client):
+    """Patch the client factory, capturing the kwargs it was called with."""
+    import anima_server.services.agent.llm as llm_module
+
+    captured: dict = {}
+
+    def _factory(**kwargs):
+        captured.update(kwargs)
+        return client
+
+    monkeypatch.setattr(llm_module, "create_provider_chat_client", _factory)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_summarize_with_llm_uses_provider_client(monkeypatch) -> None:
+    """The summarizer goes through create_provider_chat_client, never raw HTTP,
+    so the Anthropic provider gets a working Messages-API call."""
+    from anima_server.config import settings
+    from anima_server.services.agent.compaction import summarize_with_llm
+
+    monkeypatch.setattr(settings, "agent_provider", "anthropic")
+    monkeypatch.setattr(settings, "agent_extraction_model", "")
+    monkeypatch.setattr(settings, "agent_model", "claude-haiku-4-5-20251001")
+
+    client = _FakeChatClient(content="  A tidy summary.  ")
+    captured = _patch_provider_client(monkeypatch, client)
+
+    result = await summarize_with_llm([], transcript_override="User: hi\nAssistant: hello")
+
+    assert result == "A tidy summary."
+    assert captured["provider"] == "anthropic"
+    assert captured["model"] == "claude-haiku-4-5-20251001"
+    assert len(client.invocations) == 1
+
+
+@pytest.mark.asyncio
+async def test_summarize_with_llm_prefers_extraction_model(monkeypatch) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent.compaction import summarize_with_llm
+
+    monkeypatch.setattr(settings, "agent_provider", "anthropic")
+    monkeypatch.setattr(settings, "agent_extraction_model", "claude-haiku-4-5-20251001")
+    monkeypatch.setattr(settings, "agent_model", "claude-sonnet-5")
+
+    captured = _patch_provider_client(monkeypatch, _FakeChatClient(content="ok"))
+
+    result = await summarize_with_llm([], transcript_override="User: hi")
+
+    assert result == "ok"
+    assert captured["model"] == "claude-haiku-4-5-20251001"
+
+
+@pytest.mark.asyncio
+async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
+    monkeypatch, caplog
+) -> None:
+    """A summarizer failure returns None (fallback) and is visible at WARNING
+    on the degraded logger instead of a silent debug line."""
+    import logging
+
+    from anima_server.config import settings
+    from anima_server.services.agent.compaction import summarize_with_llm
+
+    monkeypatch.setattr(settings, "agent_provider", "anthropic")
+    monkeypatch.setattr(settings, "agent_extraction_model", "")
+
+    _patch_provider_client(
+        monkeypatch, _FakeChatClient(error=RuntimeError("provider down"))
+    )
+
+    with caplog.at_level(logging.WARNING, logger="anima.runtime.degraded"):
+        result = await summarize_with_llm([], transcript_override="User: hi")
+
+    assert result is None
+    degraded = [r for r in caplog.records if r.name == "anima.runtime.degraded"]
+    assert degraded, "expected a WARNING on anima.runtime.degraded"
+    assert "falling back" in degraded[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_summarize_with_llm_empty_output_falls_back(monkeypatch, caplog) -> None:
+    import logging
+
+    from anima_server.config import settings
+    from anima_server.services.agent.compaction import summarize_with_llm
+
+    monkeypatch.setattr(settings, "agent_provider", "anthropic")
+    monkeypatch.setattr(settings, "agent_extraction_model", "")
+
+    _patch_provider_client(monkeypatch, _FakeChatClient(content="   "))
+
+    with caplog.at_level(logging.WARNING, logger="anima.runtime.degraded"):
+        result = await summarize_with_llm([], transcript_override="User: hi")
+
+    assert result is None
+    assert any(r.name == "anima.runtime.degraded" for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_summarize_with_llm_scaffold_short_circuits(monkeypatch) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent.compaction import summarize_with_llm
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+
+    def _fail(**kwargs):
+        raise AssertionError("client factory must not be called for scaffold")
+
+    import anima_server.services.agent.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "create_provider_chat_client", _fail)
+
+    assert await summarize_with_llm([], transcript_override="User: hi") is None

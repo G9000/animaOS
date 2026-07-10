@@ -447,8 +447,7 @@ def build_facts_memory_block(
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
-    if len(value) > 2000:
-        value = value[:2000]
+    value = _truncate_lines(value, 2000)
     return MemoryBlock(
         label="facts",
         description=_desc("facts", "Known facts about the user.", agent_type),
@@ -478,8 +477,7 @@ def build_preferences_memory_block(
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
-    if len(value) > 2000:
-        value = value[:2000]
+    value = _truncate_lines(value, 2000)
     return MemoryBlock(
         label="preferences",
         description=_desc("preferences", "User preferences.", agent_type),
@@ -509,8 +507,7 @@ def build_goals_memory_block(
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
-    if len(value) > 1500:
-        value = value[:1500]
+    value = _truncate_lines(value, 1500)
     return MemoryBlock(
         label="goals",
         description=_desc(
@@ -558,9 +555,7 @@ def build_tasks_memory_block(
         header_parts.append(f"{len(overdue)} overdue")
     header = ", ".join(header_parts) + f" (today: {today})"
 
-    value = header + "\n" + "\n".join(lines)
-    if len(value) > 1500:
-        value = value[:1500]
+    value = _truncate_lines(header + "\n" + "\n".join(lines), 1500)
 
     return MemoryBlock(
         label="user_tasks",
@@ -595,8 +590,7 @@ def build_relationships_memory_block(
     value = "\n".join(
         f"- {df(user_id, item.content, table='memory_items', field='content')}" for item in items
     )
-    if len(value) > 1500:
-        value = value[:1500]
+    value = _truncate_lines(value, 1500)
     return MemoryBlock(
         label="relationships",
         description=_desc(
@@ -1327,8 +1321,7 @@ def build_emotional_patterns_block(
         f"- {pattern.pattern} ({pattern.dominant_emotion}, confidence: {pattern.confidence:.1f})"
         for pattern in patterns
     )
-    if len(value) > settings.agent_emotional_patterns_budget:
-        value = value[: settings.agent_emotional_patterns_budget]
+    value = _truncate_lines(value, settings.agent_emotional_patterns_budget)
 
     return MemoryBlock(
         label="emotional_patterns",
@@ -1493,9 +1486,7 @@ def build_knowledge_graph_block(
         if not lines:
             return None
 
-        value = "\n".join(f"- {line}" for line in lines)
-        if len(value) > 1500:
-            value = value[:1500]
+        value = _truncate_lines("\n".join(f"- {line}" for line in lines), 1500)
 
         return MemoryBlock(
             label="knowledge_graph",

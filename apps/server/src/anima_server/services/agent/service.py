@@ -74,7 +74,10 @@ from anima_server.services.agent.persistence import (
     persist_agent_result,
     save_approval_checkpoint,
 )
-from anima_server.services.agent.prompt_budget import resolve_context_budget_tokens
+from anima_server.services.agent.prompt_budget import (
+    estimate_char_tokens,
+    resolve_context_budget_tokens,
+)
 from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.runtime_types import (
@@ -282,11 +285,18 @@ async def run_agent(
 
 async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> RuntimeRun | None:
     """Cancel a running agent turn by run id."""
-    run = cancel_run(runtime_db, run_id)
+    run = runtime_db.get(RuntimeRun, run_id)
     if run is None:
         return None
+    was_active = run.status not in ("completed", "failed", "cancelled")
+    run = cancel_run(runtime_db, run_id)
     companion = get_companion(user_id)
-    if companion is not None:
+    if companion is not None and (
+        was_active or companion.get_cancel_event(run_id) is not None
+    ):
+        # Only signal when a turn can still observe it: an in-flight turn
+        # pops its event in Stage 2's finally, but a pre-set event created
+        # for a long-terminal run would sit in the map forever.
         companion.set_cancel(run_id)
     runtime_db.commit()
     return run
@@ -542,16 +552,25 @@ async def _approve_or_deny_turn_locked(
     return result
 
 
-async def stream_approve_or_deny(
-    run_id: int,
-    user_id: int,
-    approved: bool,
-    db: Session,
-    runtime_db: Session,
+async def _stream_via_queue(
+    run_turn: Callable[[Callable[[AgentStreamEvent], Awaitable[None]]], Awaitable[Any]],
     *,
-    denial_reason: str | None = None,
+    failure_log: str,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
-    """Streaming wrapper for approve_or_deny_turn."""
+    """Run ``run_turn`` in a worker task and relay its emitted events as an SSE
+    stream through a bounded queue.
+
+    Shared pump for both the live turn (``stream_agent``) and the
+    approval-resume turn (``stream_approve_or_deny``): the only per-caller
+    differences are which coroutine the worker awaits and the failure log
+    line.  The worker never blocks on the end-of-stream sentinel — if the
+    consumer stopped reading while the queue was full, an awaited ``put()``
+    would deadlock it (and the generator's ``finally`` awaits the worker), so
+    it is put best-effort and may be dropped when the queue is full (ARH-002).
+    Because a dropped sentinel would otherwise hang the consumer on
+    ``queue.get()`` forever, the consumer races each ``get()`` against worker
+    completion and drains anything buffered once the worker is done.
+    """
     queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
         maxsize=settings.agent_stream_queue_max_size,
     )
@@ -561,30 +580,41 @@ async def stream_approve_or_deny(
 
     async def worker() -> None:
         try:
-            await approve_or_deny_turn(
-                run_id,
-                user_id,
-                approved,
-                db,
-                runtime_db,
-                denial_reason=denial_reason,
-                event_callback=emit,
-            )
+            await run_turn(emit)
         except Exception as exc:
-            logger.exception(
-                "Approval resume failed for run %s (user %s)", run_id, user_id)
+            logger.exception("%s", failure_log)
             await queue.put(build_error_event(client_error_message(exc)))
         finally:
-            await queue.put(None)
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(None)
 
     worker_task = asyncio.create_task(worker())
     try:
         while True:
-            event = await queue.get()
-            if event is None:
-                break
-            await asyncio.sleep(0)
-            yield event
+            get_task = asyncio.ensure_future(queue.get())
+            done, _pending = await asyncio.wait(
+                {get_task, worker_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if get_task in done:
+                event = get_task.result()
+                if event is None:
+                    break
+                await asyncio.sleep(0)
+                yield event
+                continue
+            # Worker finished (or errored) without the consumer reading a
+            # sentinel — it may have been dropped on a full queue.  Cancel the
+            # pending get, drain anything still buffered, then stop.
+            get_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await get_task
+            while not queue.empty():
+                buffered = queue.get_nowait()
+                if buffered is None:
+                    continue
+                yield buffered
+            break
     except (asyncio.CancelledError, GeneratorExit):
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -595,6 +625,38 @@ async def stream_approve_or_deny(
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker_task
+
+
+async def stream_approve_or_deny(
+    run_id: int,
+    user_id: int,
+    approved: bool,
+    db: Session,
+    runtime_db: Session,
+    *,
+    denial_reason: str | None = None,
+) -> AsyncGenerator[AgentStreamEvent, None]:
+    """Streaming wrapper for approve_or_deny_turn."""
+
+    async def run_turn(emit: Callable[[AgentStreamEvent], Awaitable[None]]) -> None:
+        await approve_or_deny_turn(
+            run_id,
+            user_id,
+            approved,
+            db,
+            runtime_db,
+            denial_reason=denial_reason,
+            event_callback=emit,
+        )
+
+    async with contextlib.aclosing(
+        _stream_via_queue(
+            run_turn,
+            failure_log=f"Approval resume failed for run {run_id} (user {user_id})",
+        )
+    ) as stream:
+        async for event in stream:
+            yield event
 
 
 async def _execute_agent_turn(
@@ -697,7 +759,7 @@ async def _execute_agent_turn_locked(
     today_context: TodayContext | None = None,
 ) -> AgentResult:
     # Stage 1: Prepare turn context
-    thread, run, user_msg, initial_sequence_id, turn_ctx = await _prepare_turn_context(
+    thread, run, user_msg, turn_ctx = await _prepare_turn_context(
         user_message,
         user_id,
         db,
@@ -712,14 +774,16 @@ async def _execute_agent_turn_locked(
     )
 
     # The run row is committed; tell streaming clients the id so they can
-    # cancel mid-turn.
-    if event_callback is not None:
-        await event_callback(
-            build_run_started_event(run_id=run.id, thread_id=thread.id))
-
-    # Stage 1b: Proactive context management — compact before the LLM call
-    # if estimated context usage already exceeds the threshold.
+    # cancel mid-turn.  The emit awaits the stream queue, so a client
+    # disconnect can cancel us right here — clean up or the run row stays
+    # "running" forever.
     try:
+        if event_callback is not None:
+            await event_callback(
+                build_run_started_event(run_id=run.id, thread_id=thread.id))
+
+        # Stage 1b: Proactive context management — compact before the LLM
+        # call if estimated context usage already exceeds the threshold.
         turn_ctx = await _proactive_compact_if_needed(
             runtime_db,
             thread=thread,
@@ -727,6 +791,16 @@ async def _execute_agent_turn_locked(
             turn_ctx=turn_ctx,
             user_id=user_id,
         )
+    except asyncio.CancelledError as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
     except Exception as exc:
         _fail_turn_setup(
             runtime_db,
@@ -781,8 +855,10 @@ async def _execute_agent_turn_locked(
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=initial_sequence_id,
-            assistant_pills=_build_assistant_source_pills(turn_ctx),
+            assistant_pills=_build_assistant_source_pills(
+                turn_ctx,
+                source_message=user_msg,
+            ),
         )
         _refresh_companion_history(
             user_id=user_id,
@@ -819,9 +895,21 @@ async def _execute_agent_turn_locked(
             thread=thread,
             run=run,
             result=result,
-            initial_sequence_id=initial_sequence_id,
-            assistant_pills=_build_assistant_source_pills(turn_ctx),
+            assistant_pills=_build_assistant_source_pills(
+                turn_ctx,
+                source_message=user_msg,
+            ),
         )
+    except asyncio.CancelledError as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=turn_ctx.context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
     except Exception as exc:
         _fail_turn_setup(
             runtime_db,
@@ -914,7 +1002,10 @@ async def _consolidate_displaced_threads(
             await close_task
         else:
             try:
-                asyncio.get_running_loop().create_task(close_task)
+                # Strong-ref via the tracked set: the loop keeps only weak
+                # task references, so a bare create_task can be GC'd
+                # mid-flight and silently never consolidate.
+                _track_background_task(close_task)
             except RuntimeError:
                 await close_task
 
@@ -933,7 +1024,7 @@ async def _prepare_turn_context(
     document_ids: Sequence[int] = (),
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
-) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, int, _TurnContext]:
+) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, _TurnContext]:
     """Stage 1: Load thread, persist user message, build memory context.
 
     Uses the AnimaCompanion cache for static memory blocks and conversation
@@ -1072,6 +1163,18 @@ async def _prepare_turn_context(
             persisted_context_messages=persisted_context_messages,
             today_context=today_context,
         )
+    except asyncio.CancelledError as exc:
+        # Client disconnects cancel the request task; CancelledError is a
+        # BaseException, so the Exception handler below never sees it.
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=persisted_context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
     except Exception as exc:
         _fail_turn_setup(
             runtime_db,
@@ -1081,7 +1184,7 @@ async def _prepare_turn_context(
             exc=exc,
         )
         raise
-    return thread, run, user_msg, initial_sequence_id, turn_ctx
+    return thread, run, user_msg, turn_ctx
 
 
 def _serialize_context_pill(pill: MessagePill) -> dict[str, object]:
@@ -1097,15 +1200,17 @@ def _fail_turn_setup(
     user_msg: RuntimeMessage,
     context_messages: Sequence[RuntimeMessage] = (),
     exc: BaseException,
+    cancelled: bool = False,
 ) -> None:
     """Best-effort cleanup when a turn fails after the run and user message
     were committed (early-commit in turn preparation) but before the run
     reached a terminal state.
 
     Evicts the orphaned user message (and any context messages) from
-    active context and marks the run failed, so the run does not stay
-    "running" forever and the message does not replay as unanswered
-    history on the next turn.
+    active context and marks the run failed (or cancelled, when
+    *cancelled* is set — e.g. a client disconnect during setup), so the
+    run does not stay "running" forever and the message does not replay
+    as unanswered history on the next turn.
 
     Rolls back any uncommitted partial work first, then re-reads the run
     from committed state and acts ONLY if it is still "running" — so it is
@@ -1127,7 +1232,10 @@ def _fail_turn_setup(
             user_msg=user_msg,
             context_messages=context_messages,
         )
-        mark_run_failed(runtime_db, run, str(exc))
+        if cancelled:
+            cancel_run(runtime_db, run.id)
+        else:
+            mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
     except Exception:
         logger.exception(
@@ -1157,17 +1265,24 @@ async def _assemble_turn_context(
     # promotion makes per-candidate LLM extraction calls, so it runs in the
     # background instead of blocking time-to-first-token; unpromoted
     # candidates stay visible via the pending_memory_updates block.
+    #
+    # The ops-only promotion runs CONCURRENTLY with hybrid retrieval below
+    # (it uses its own sessions and touches soul blocks, not memory items)
+    # and is awaited before the static blocks load — the two used to run
+    # back-to-back on the TTFT critical path.
+    soul_ops_task: asyncio.Task[Any] | None = None
+    eligible_candidates = 0
     try:
         from anima_server.services.agent.candidate_ops import count_eligible_candidates
         from anima_server.services.agent.pending_ops import count_pending_ops
         from anima_server.services.agent.soul_writer import run_soul_writer
 
         pending = count_pending_ops(runtime_db, user_id=user_id)
+        eligible_candidates = count_eligible_candidates(runtime_db, user_id=user_id)
         if pending > 0:
-            await run_soul_writer(user_id, ops_only=True)
-        eligible = count_eligible_candidates(runtime_db, user_id=user_id)
-        if eligible > 0:
-            _track_background_task(run_soul_writer(user_id))
+            soul_ops_task = asyncio.get_running_loop().create_task(
+                run_soul_writer(user_id, ops_only=True)
+            )
     except Exception:
         logger.debug("Pre-turn Soul Writer check failed for user %s",
                      user_id, exc_info=True)
@@ -1207,6 +1322,10 @@ async def _assemble_turn_context(
                     max_drop_ratio=0.35,
                     absolute_min=0.2,
                 ),
+                # The item scores are the fused ranking scale (top renormalised
+                # to 1.0); gate the absolute-confidence floor on the best hit's
+                # raw cosine so a genuinely-irrelevant top match is rejected.
+                confidence_score=search_result.max_cosine,
             )
             filtered = adaptive_result.results
             logger.debug(
@@ -1219,8 +1338,14 @@ async def _assemble_turn_context(
             semantic_results = []
             citations: list[AgentCitation] = []
             context_fragments: list[AgentContextFragment] = []
+            plaintexts = search_result.plaintexts or {}
             for index, (item, score) in enumerate(filtered, start=1):
-                content = df(user_id, item.content, table="memory_items", field="content")
+                # hybrid_search already decrypted every surviving item —
+                # this loop used to be the third AEAD pass over the same
+                # rows before first token.
+                content = plaintexts.get(item.id) or df(
+                    user_id, item.content, table="memory_items", field="content"
+                )
                 semantic_results.append((item.id, content, score))
                 citations.append(
                     AgentCitation(
@@ -1264,6 +1389,23 @@ async def _assemble_turn_context(
             thread.id,
             exc_info=True,
         )
+
+    # Pending ops must be promoted before the static blocks load below;
+    # the full candidate run (LLM-backed) only starts afterwards so it
+    # can't steal the per-user soul-writer lock from the ops-only pass.
+    if soul_ops_task is not None:
+        try:
+            await soul_ops_task
+        except Exception:
+            logger.debug(
+                "Pre-turn ops-only Soul Writer failed for user %s",
+                user_id,
+                exc_info=True,
+            )
+    if eligible_candidates > 0:
+        from anima_server.services.agent.soul_writer import run_soul_writer
+
+        _track_background_task(run_soul_writer(user_id))
 
     effective_document_ids = _resolve_turn_document_ids(
         runtime_db,
@@ -1319,44 +1461,23 @@ async def _assemble_turn_context(
         if today_context_block is not None:
             memory_blocks = (*memory_blocks, today_context_block)
         document_source_pills = ()
-        recalled_image_source_pills = _build_recalled_image_source_pills(
-            runtime_db,
-            user_id=user_id,
-            query_embedding=query_embedding,
-        )
-
-    # Feedback signals (best-effort)
-    try:
-        from anima_server.services.agent.feedback_signals import (
-            apply_memory_correction,
-            collect_feedback_signals,
-            record_feedback_signals,
-        )
-
-        signals = collect_feedback_signals(
-            user_id=user_id,
-            user_message=user_message,
-            thread_id=thread.id,
-            runtime_db=runtime_db,
-        )
-        if signals:
-            record_feedback_signals(
-                db, user_id=user_id, signals=signals, runtime_db=runtime_db,
+        recalled_image_source_pills = (
+            ()
+            if prepared_attachments
+            else _build_recalled_image_source_pills(
+                runtime_db,
+                user_id=user_id,
+                query_embedding=query_embedding,
             )
-            # When a correction is detected, fix the underlying memory
-            if any(s.signal_type == "correction" for s in signals):
-                apply_memory_correction(
-                    db,
-                    user_id=user_id,
-                    user_message=user_message,
-                    thread_id=thread.id,
-                    runtime_db=runtime_db,
-                )
-    except Exception:
-        logger.warning(
-            "Feedback signal processing failed for user %s", user_id,
-            exc_info=True,
         )
+
+    # Feedback signals (best-effort) feed FUTURE turns (retrieval already ran
+    # for this one) and the correction path decrypts up to 50 memory items, so
+    # they run in the background — but the spawn now lives in the post-turn
+    # hooks (Stage 4), which run only AFTER the turn's own rows are committed.
+    # Spawning here (pre-invoke) raced the turn's message writes: the feedback
+    # task opens its own runtime session and commits, and on a shared DB
+    # connection that interleaved with the in-flight message INSERTs.
 
     # Memory pressure warning: estimate total context usage and inject
     # a warning block when approaching the context window limit.
@@ -1377,6 +1498,61 @@ async def _assemble_turn_context(
         document_source_pills=document_source_pills,
         recalled_image_source_pills=recalled_image_source_pills,
     )
+
+
+async def _process_feedback_signals_background(
+    *,
+    user_id: int,
+    user_message: str,
+    thread_id: int,
+    soul_db_factory: Callable[..., Session],
+    runtime_db_factory: Callable[..., Session],
+) -> None:
+    """Detect and apply feedback signals off the turn's critical path.
+
+    Runs the synchronous decrypt-heavy work in a thread with its own
+    sessions; results influence future turns, never the one in flight.
+    """
+
+    def _run() -> None:
+        from anima_server.services.agent.feedback_signals import (
+            apply_memory_correction,
+            collect_feedback_signals,
+            record_feedback_signals,
+        )
+
+        with soul_db_factory() as soul_db, runtime_db_factory() as bg_runtime_db:
+            signals = collect_feedback_signals(
+                user_id=user_id,
+                user_message=user_message,
+                thread_id=thread_id,
+                runtime_db=bg_runtime_db,
+            )
+            if not signals:
+                return
+            record_feedback_signals(
+                soul_db, user_id=user_id, signals=signals, runtime_db=bg_runtime_db,
+            )
+            # When a correction is detected, fix the underlying memory
+            if any(s.signal_type == "correction" for s in signals):
+                apply_memory_correction(
+                    soul_db,
+                    user_id=user_id,
+                    user_message=user_message,
+                    thread_id=thread_id,
+                    runtime_db=bg_runtime_db,
+                )
+            soul_db.commit()
+            bg_runtime_db.commit()
+
+    try:
+        await asyncio.to_thread(_run)
+    except Exception:
+        logger.warning(
+            "Background feedback signal processing failed for user %s",
+            user_id,
+            exc_info=True,
+        )
 
 
 def _resolve_turn_document_ids(
@@ -1510,6 +1686,14 @@ def _build_recalled_image_source_pills(
     pills: list[dict[str, object]] = []
     seen_assets: set[int] = set()
     for result in results:
+        # Any recalled image annotation should surface a clickable source
+        # pill, not just vision/OCR captions.  The indexer always writes
+        # upload_context/metadata annotations, and where vision/OCR is
+        # disabled — or upload context outscores a caption — those are what
+        # the prompt memory block recalls, so restricting to
+        # {vision_caption, ocr_text} dropped the pill for a genuinely used
+        # image (the response then had no clickable image_source).  Dedup by
+        # asset keeps the top-scoring annotation per image.
         if result.image_asset_id in seen_assets or not result.attachment_url:
             continue
         seen_assets.add(result.image_asset_id)
@@ -1536,6 +1720,8 @@ def _build_recalled_image_source_pills(
 
 def _build_assistant_source_pills(
     turn_ctx: _TurnContext,
+    *,
+    source_message: RuntimeMessage | None = None,
 ) -> tuple[dict[str, object], ...]:
     pills: list[dict[str, object]] = []
     if turn_ctx.has_document_context:
@@ -1546,14 +1732,24 @@ def _build_assistant_source_pills(
                 {"kind": "document_source", "label": "CITED DOCS", "ref": None}
             )
     for attachment in turn_ctx.attachments:
-        pills.append(
-            {
-                "kind": "image_source",
-                "label": _truncate_pill_label(attachment.filename or "Image"),
-                "ref": attachment.id,
-            }
-        )
-    pills.extend(turn_ctx.recalled_image_source_pills)
+        pill: dict[str, object] = {
+            "kind": "image_source",
+            "label": _truncate_pill_label(attachment.filename or "Image"),
+            "ref": attachment.id,
+            "mimeType": attachment.mime_type,
+        }
+        if attachment.asset_id is not None:
+            pill["assetId"] = attachment.asset_id
+        if source_message is not None:
+            pill["url"] = (
+                f"/api/chat/messages/{source_message.id}/attachments/{attachment.id}"
+            )
+            pill["messageId"] = source_message.id
+            pill["threadId"] = source_message.thread_id
+            pill["attachmentId"] = attachment.id
+        pills.append(pill)
+    if not turn_ctx.attachments:
+        pills.extend(turn_ctx.recalled_image_source_pills)
     return tuple(pills)
 
 
@@ -1967,10 +2163,10 @@ def _inject_memory_pressure_warning(
     Only alerts once per pressure window to avoid spamming the agent.
     Resets when the conversation is compacted (history shrinks).
     """
-    # Estimate total tokens: memory block chars + history chars, / 4
+    # Conservatively estimate memory block and history tokens from characters.
     block_chars = sum(len(b.value) for b in memory_blocks)
     history_chars = sum(len(m.content or "") for m in history)
-    estimated_tokens = (block_chars + history_chars) // 4
+    estimated_tokens = estimate_char_tokens(block_chars + history_chars)
 
     threshold = int(resolve_context_budget_tokens() * _MEMORY_PRESSURE_RATIO)
 
@@ -2152,7 +2348,7 @@ async def _proactive_compact_if_needed(
     """
     block_chars = sum(len(b.value) for b in turn_ctx.memory_blocks)
     history_chars = sum(len(m.content or "") for m in turn_ctx.history)
-    estimated_tokens = (block_chars + history_chars) // 4
+    estimated_tokens = estimate_char_tokens(block_chars + history_chars)
 
     threshold = int(resolve_context_budget_tokens() *
                     settings.agent_compaction_trigger_ratio)
@@ -2171,7 +2367,7 @@ async def _proactive_compact_if_needed(
         trigger_token_limit=threshold,
         keep_last_messages=max(
             1, settings.agent_compaction_keep_last_messages),
-        reserved_prompt_tokens=block_chars // 4,
+        reserved_prompt_tokens=estimate_char_tokens(block_chars),
     )
     if result is None:
         return turn_ctx
@@ -2486,7 +2682,6 @@ def _persist_approval_checkpoint(
     thread: RuntimeThread,
     run: RuntimeRun,
     result: AgentResult,
-    initial_sequence_id: int,
     assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> ToolCall | None:
     """Persist the agent result plus a role='approval' checkpoint message.
@@ -2566,7 +2761,6 @@ async def _persist_turn_result(
     thread: RuntimeThread,
     run: RuntimeRun,
     result: AgentResult,
-    initial_sequence_id: int,
     assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> None:
     """Stage 3: Write result to DB; schedule compaction in the background.
@@ -2746,6 +2940,22 @@ def _run_post_turn_hooks(
         db_factory=db_factory,
         runtime_db_factory=runtime_db_factory,
     )
+    # Feedback signals (corrections/confirmations) feed FUTURE turns and the
+    # correction path decrypts up to 50 memory items, so it runs in the
+    # background.  It lives here rather than in turn-context assembly so it
+    # fires only after the turn's rows are committed — spawning it mid-turn
+    # raced the turn's own message writes on a shared DB connection.  Skip the
+    # empty-message resume path (no new user turn → nothing to detect).
+    if user_message.strip():
+        _track_background_task(
+            _process_feedback_signals_background(
+                user_id=user_id,
+                user_message=user_message,
+                thread_id=thread_id,
+                soul_db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
+        )
 
 
 def _schedule_agent_experience_extraction(
@@ -2937,55 +3147,32 @@ async def stream_agent(
     context_messages: Sequence[ChatContextMessage] = (),
     today_context: TodayContext | None = None,
 ) -> AsyncGenerator[AgentStreamEvent, None]:
-    queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue(
-        maxsize=settings.agent_stream_queue_max_size,
-    )
+    async def run_turn(emit: Callable[[AgentStreamEvent], Awaitable[None]]) -> None:
+        await _execute_agent_turn(
+            user_message,
+            user_id,
+            db,
+            runtime_db,
+            thread_id=thread_id,
+            event_callback=emit,
+            source=source,
+            tool_delegate=tool_delegate,
+            delegated_tool_names=delegated_tool_names,
+            extra_tool_schemas=extra_tool_schemas,
+            attachments=attachments,
+            document_ids=document_ids,
+            context_messages=context_messages,
+            today_context=today_context,
+        )
 
-    async def emit(event: AgentStreamEvent) -> None:
-        await queue.put(event)
-
-    async def worker() -> None:
-        try:
-            await _execute_agent_turn(
-                user_message,
-                user_id,
-                db,
-                runtime_db,
-                thread_id=thread_id,
-                event_callback=emit,
-                source=source,
-                tool_delegate=tool_delegate,
-                delegated_tool_names=delegated_tool_names,
-                extra_tool_schemas=extra_tool_schemas,
-                attachments=attachments,
-                document_ids=document_ids,
-                context_messages=context_messages,
-                today_context=today_context,
-            )
-        except Exception as exc:
-            logger.exception("Agent turn failed for user %s", user_id)
-            await queue.put(build_error_event(client_error_message(exc)))
-        finally:
-            await queue.put(None)
-
-    worker_task = asyncio.create_task(worker())
-    try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            await asyncio.sleep(0)
+    async with contextlib.aclosing(
+        _stream_via_queue(
+            run_turn,
+            failure_log=f"Agent turn failed for user {user_id}",
+        )
+    ) as stream:
+        async for event in stream:
             yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await worker_task
-        raise
-    finally:
-        if not worker_task.done():
-            worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await worker_task
 
 
 def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) -> list[RuntimeMessage]:
@@ -3031,7 +3218,7 @@ async def reset_agent_thread(
             if _runtime_db_is_sqlite(runtime_db):
                 await close_task
             else:
-                asyncio.get_running_loop().create_task(close_task)
+                _track_background_task(close_task)
     except RuntimeError:
         pass
 

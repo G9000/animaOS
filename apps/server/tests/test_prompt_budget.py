@@ -5,8 +5,10 @@ from anima_server.config import settings
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.prompt_budget import (
     DEFAULT_BUDGET,
+    PROMPT_SCAFFOLDING_RESERVE_TOKENS,
     BudgetConfig,
     _truncate_at_boundary,
+    estimate_char_tokens,
     plan_prompt_budget,
     resolve_budget_config,
     resolve_context_budget_tokens,
@@ -20,14 +22,24 @@ class TestResolveBudget:
         monkeypatch.setattr(settings, "agent_context_window_tokens", None)
         monkeypatch.setattr(settings, "agent_max_tokens", 4096)
         assert resolve_budget_config() is DEFAULT_BUDGET
-        assert resolve_context_budget_tokens() == 4096
+        # The legacy fallback derives from the block budget it has to
+        # hold (blocks ≈ half the prompt) instead of letting
+        # agent_max_tokens double as a context budget smaller than the
+        # blocks alone.
+        assert (
+            resolve_context_budget_tokens()
+            == estimate_char_tokens(DEFAULT_BUDGET.total_budget) * 2
+        )
 
     def test_window_reserves_output_tokens(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(settings, "agent_context_window_tokens", 32768)
         monkeypatch.setattr(settings, "agent_max_tokens", 4096)
-        assert resolve_context_budget_tokens() == 32768 - 4096
+        assert (
+            resolve_context_budget_tokens()
+            == 32768 - 4096 - PROMPT_SCAFFOLDING_RESERVE_TOKENS
+        )
 
     def test_block_budget_scales_with_window(
         self, monkeypatch: pytest.MonkeyPatch
@@ -35,14 +47,18 @@ class TestResolveBudget:
         monkeypatch.setattr(settings, "agent_max_tokens", 4096)
         monkeypatch.setattr(settings, "agent_block_budget_ratio", 0.5)
 
-        monkeypatch.setattr(settings, "agent_context_window_tokens", 8192)
+        monkeypatch.setattr(settings, "agent_context_window_tokens", 32768)
         small = resolve_budget_config()
         monkeypatch.setattr(settings, "agent_context_window_tokens", 131072)
         large = resolve_budget_config()
 
         assert small.total_budget < large.total_budget
-        # Blocks get block_budget_ratio of the context budget, in chars.
-        assert small.total_budget == (8192 - 4096) // 2 * 4
+        # Blocks get block_budget_ratio of the context budget, converted
+        # to chars with the same 3-chars/token ratio as the estimator.
+        assert (
+            small.total_budget
+            == (32768 - 4096 - PROMPT_SCAFFOLDING_RESERVE_TOKENS) // 2 * 3
+        )
         # Tier budgets keep the default 4/6/6/8 proportions.
         assert large.tier_0_budget < large.tier_1_budget <= large.tier_3_budget
         assert (

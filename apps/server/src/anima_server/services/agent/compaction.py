@@ -18,6 +18,10 @@ from anima_server.services.agent.state import (
 
 logger = logging.getLogger(__name__)
 
+# Silent-degradation events (LLM summarization falling back to the crude
+# text summary) log here so they stay greppable across the runtime.
+degraded_logger = logging.getLogger("anima.runtime.degraded")
+
 SUMMARY_LINE_LIMIT = 12
 SUMMARY_TEXT_LIMIT = 180
 
@@ -82,7 +86,10 @@ def estimate_message_tokens(
     combined_text = "\n".join(text_parts).strip()
     if not combined_text:
         return 0
-    return max(1, ceil(len(combined_text) / 4))
+    # chars/3 keeps the estimate conservative: real ratios run 1-2 chars
+    # per token for CJK/emoji/code, and an optimistic estimate overflows
+    # the window with only substring-matched provider errors as backstop.
+    return max(1, ceil(len(combined_text) / 3))
 
 
 def compact_thread_context(
@@ -311,10 +318,6 @@ async def summarize_with_llm(
     tool-content-clamped version).
     """
     from anima_server.config import settings
-    from anima_server.services.agent.llm import (
-        build_provider_headers,
-        resolve_base_url,
-    )
 
     provider = settings.agent_provider
     if provider == "scaffold":
@@ -335,37 +338,52 @@ async def summarize_with_llm(
 
     # Prefer extraction model (cheaper) if configured, else use primary.
     model = settings.agent_extraction_model.strip() or settings.agent_model
-    base_url = resolve_base_url(provider)
-    headers = build_provider_headers(provider)
-    headers["Content-Type"] = "application/json"
 
+    import contextlib
+
+    from anima_server.services.agent.llm import create_provider_chat_client
+    from anima_server.services.agent.llm_json import call_llm_for_text
+
+    # Temperature is intentionally omitted: some current Anthropic models
+    # reject it, and the summarizer works fine at the default.
+    client = create_provider_chat_client(
+        provider=provider,
+        model=model,
+        timeout=60.0,
+        max_tokens=500,
+    )
     try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are a concise conversation summarizer."},
-                        {"role": "user", "content": prompt_text},
-                    ],
-                    "max_tokens": 500,
-                    "temperature": 0.3,
-                },
+        summary = (
+            await call_llm_for_text(
+                "You are a concise conversation summarizer.",
+                prompt_text,
+                client=client,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            choices = data.get("choices", [])
-            if choices:
-                message = choices[0].get("message", {})
-                summary = message.get("content", "").strip()
-                if summary:
-                    return summary
+        ).strip()
+        if summary:
+            return summary
+        degraded_logger.warning(
+            "LLM summarization returned empty output (provider=%s model=%s); "
+            "falling back to text summary",
+            provider,
+            model,
+        )
     except Exception:
-        logger.debug("LLM summarization failed, will use fallback", exc_info=True)
+        degraded_logger.warning(
+            "LLM summarization failed (provider=%s model=%s); "
+            "falling back to text summary",
+            provider,
+            model,
+            exc_info=True,
+        )
+    finally:
+        # The provider client owns an httpx.AsyncClient; unlike the old
+        # `async with httpx.AsyncClient(...)` path it must be closed
+        # explicitly or repeated compactions leak sockets/connections.
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            with contextlib.suppress(Exception):
+                await aclose()
 
     return None
 

@@ -420,6 +420,35 @@ class TestClaimsLayer:
             evidence = db.query(MemoryClaimEvidence).filter_by(claim_id=c1.id).all()
             assert len(evidence) == 2
 
+    def test_adding_evidence_bumps_claim_updated_at(self) -> None:
+        """Adding evidence to an existing claim must advance updated_at so the
+        profile-synthesis freshness gate (which keys off MemoryClaim.updated_at)
+        re-reconciles the new evidence instead of treating it as unchanged."""
+        from datetime import UTC, datetime, timedelta
+
+        with _db_session() as db:
+            user = _make_user(db)
+            claim = upsert_claim(
+                db,
+                user_id=user.id,
+                content="works as a doctor",
+                category="fact",
+                evidence_text="source1",
+            )
+            # Backdate, then add evidence — the timestamp must move forward.
+            old = datetime.now(UTC) - timedelta(hours=1)
+            claim.updated_at = old
+            db.flush()
+            upsert_claim(
+                db,
+                user_id=user.id,
+                content="works as a doctor",
+                category="fact",
+                evidence_text="source2",
+            )
+            db.flush()
+            assert claim.updated_at > old
+
     def test_get_active_claims(self) -> None:
         with _db_session() as db:
             user = _make_user(db)

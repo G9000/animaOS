@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.types import Receive, Scope, Send
 
 from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
 from anima_server.db import get_db, get_runtime_db
@@ -62,6 +66,51 @@ from anima_server.services.agent.system_prompt import PromptTemplateError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    """Ensure transport termination closes the route's async body iterator."""
+
+    body_iterator: AsyncGenerator[str, None]
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        spec_version = tuple(
+            map(int, scope.get("asgi", {}).get("spec_version", "2.0").split("."))
+        )
+        if spec_version >= (2, 4):
+            await super().__call__(scope, receive, send)
+            return
+
+        stream_task = asyncio.create_task(self.stream_response(send))
+        disconnect_task = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _ = await asyncio.wait(
+                {stream_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            disconnected = disconnect_task in done and stream_task not in done
+            if disconnected:
+                stream_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stream_task
+            else:
+                disconnect_task.cancel()
+                await stream_task
+        finally:
+            for task in (stream_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stream_task, disconnect_task, return_exceptions=True)
+
+        if self.background is not None:
+            await self.background()
 
 
 @router.post("", response_model=ChatResponse)
@@ -127,7 +176,7 @@ async def send_message(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            async for event in stream_agent(
+            service_stream = stream_agent(
                 message, payload.userId, db, runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
@@ -135,10 +184,12 @@ async def send_message(
                 document_ids=payload.documentIds,
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
-            ):
-                if event.event == "thought":
-                    continue  # private reasoning, not forwarded to client
-                yield _format_sse_event(event.event, event.data)
+            )
+            async with contextlib.aclosing(service_stream):
+                async for event in service_stream:
+                    if event.event == "thought":
+                        continue  # private reasoning, not forwarded to client
+                    yield _format_sse_event(event.event, event.data)
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             yield _format_sse_event("error", {"error": str(exc)})
         except ValueError as exc:
@@ -149,7 +200,7 @@ async def send_message(
                 "error", {"error": "An internal error occurred during streaming."}
             )
 
-    return StreamingResponse(
+    return _ClosingStreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={
@@ -565,22 +616,79 @@ async def trigger_sleep_tasks(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    """Manually trigger sleep-time maintenance tasks (contradiction scan, profile synthesis, etc.)."""
+    """Manually trigger sleep-time maintenance tasks (contradiction scan, profile synthesis, etc.).
+
+    Delegates to the single sleep orchestrator with ``force=True`` so manual
+    runs bypass the heat/freshness gates, get ``RuntimeBackgroundTaskRun``
+    tracking and consolidation-cursor updates, and stay in sync with the
+    automatic per-turn path.  The count-shaped response the Consciousness UI
+    expects is rebuilt from the issued task runs' stored results.
+    """
     require_unlocked_user(request, payload.userId)
 
-    from anima_server.services.agent.sleep_tasks import run_sleep_tasks
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.services.agent.sleep_agent import run_sleeptime_agents
 
-    result = await run_sleep_tasks(
+    runtime_db_factory = get_runtime_session_factory()
+    run_ids = await run_sleeptime_agents(
         user_id=payload.userId,
+        user_message="",
+        assistant_response="",
+        force=True,
+        manual=True,
         db_factory=build_session_factory_for_db(db),
+        runtime_db_factory=runtime_db_factory,
     )
+
+    # run_ids are "{task_type}:{run_id}" — read each run's stored result for
+    # the counts the UI surfaces (tasks that were gated out simply stay 0).
+    issued_ids: list[int] = []
+    for token in run_ids:
+        _, _, raw_id = token.rpartition(":")
+        try:
+            issued_ids.append(int(raw_id))
+        except ValueError:
+            continue
+
+    contradictions_found = 0
+    contradictions_resolved = 0
+    items_merged = 0
+    episodes_generated = 0
+    embeddings_backfilled = 0
+    errors: list[str] = []
+    if issued_ids:
+        with runtime_db_factory() as rt_db:
+            rows = rt_db.scalars(
+                select(RuntimeBackgroundTaskRun).where(
+                    RuntimeBackgroundTaskRun.id.in_(issued_ids)
+                )
+            ).all()
+        for row in rows:
+            result_json = row.result_json if isinstance(row.result_json, dict) else {}
+            if row.task_type == "contradiction_scan":
+                contradictions_found = int(result_json.get("found", 0) or 0)
+                contradictions_resolved = int(result_json.get("resolved", 0) or 0)
+            elif row.task_type == "profile_synthesis":
+                items_merged = int(result_json.get("merged", 0) or 0)
+            elif row.task_type == "episode_gen":
+                episodes_generated = 1 if result_json.get("generated") else 0
+            elif row.task_type == "embedding_backfill":
+                # Report the actual maintenance done (memories embedded + vectors
+                # re-synced), not a hard-coded 0.
+                embeddings_backfilled = int(
+                    result_json.get("backfilled", 0) or 0
+                ) + int(result_json.get("resynced", 0) or 0)
+            if row.error_message:
+                errors.append(f"{row.task_type}: {row.error_message}")
+
     return {
-        "contradictionsFound": result.contradictions_found,
-        "contradictionsResolved": result.contradictions_resolved,
-        "itemsMerged": result.items_merged,
-        "episodesGenerated": result.episodes_generated,
-        "embeddingsBackfilled": result.embeddings_backfilled,
-        "errors": result.errors,
+        "contradictionsFound": contradictions_found,
+        "contradictionsResolved": contradictions_resolved,
+        "itemsMerged": items_merged,
+        "episodesGenerated": episodes_generated,
+        "embeddingsBackfilled": embeddings_backfilled,
+        "errors": errors,
     }
 
 
@@ -705,19 +813,21 @@ async def handle_approval(
     if payload.stream:
 
         async def _generate() -> AsyncGenerator[str, None]:
-            async for event in stream_approve_or_deny(
+            service_stream = stream_approve_or_deny(
                 run_id,
                 payload.userId,
                 payload.approved,
                 db,
                 runtime_db,
                 denial_reason=payload.reason,
-            ):
-                if event.event == "thought":
-                    continue  # private reasoning, not forwarded to client
-                yield _format_sse_event(event.event, event.data)
+            )
+            async with contextlib.aclosing(service_stream):
+                async for event in service_stream:
+                    if event.event == "thought":
+                        continue  # private reasoning, not forwarded to client
+                    yield _format_sse_event(event.event, event.data)
 
-        return StreamingResponse(
+        return _ClosingStreamingResponse(
             _generate(),
             media_type="text/event-stream",
             headers={

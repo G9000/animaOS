@@ -2,7 +2,7 @@
 title: Agent Runtime Deep Dive
 description: Cognitive loop mechanics, step execution, tool orchestration, compaction, approval flow, and security findings
 category: architecture
-updated: 2026-05-21
+updated: 2026-07-10
 ---
 
 # Agent Runtime Deep Dive
@@ -179,8 +179,8 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
         note over S: Stage 1b — Proactive Compaction (if needed)
-        S->>S: estimate_tokens = (block_chars + history_chars) // 4
-        alt estimated > max_tokens * trigger_ratio
+        S->>S: estimate_tokens = ceil((block_chars + history_chars) / 3)
+        alt estimated > resolved_context_budget * trigger_ratio
             S->>RDB: compact_thread_context(thread, keep_last_N)
             RDB-->>S: CompactionResult
             S->>SW: run_soul_writer(userId) [promote before rebuild]
@@ -392,6 +392,8 @@ Two modes:
 - **`stream=false`**: Calls `run_agent()`, blocks until complete, returns `ChatResponse` with `response`, `model`, `provider`, `toolsUsed`.
 - **`stream=true`**: Calls `ensure_agent_ready()` (validates LLM config), then opens an SSE stream via `stream_agent()`. Each event is formatted as `event: <type>\ndata: <json>\n\n`.
 
+Live-turn and approval-resume streaming share `_stream_via_queue()`, which owns the bounded queue and worker task. Each public service stream explicitly closes that inner pump, and each HTTP or WebSocket transport explicitly closes the public service stream. A client disconnect therefore propagates through both ownership boundaries, cancelling and awaiting the worker before transport cleanup finishes.
+
 The chat endpoint accepts an optional `thread_id` parameter to route messages to a specific conversation thread. It also accepts optional image attachments on user messages. Attachments are base64 request payloads, not staged uploads, so the route validates readiness, model vision support, MIME type, magic bytes, size, and count before the SSE response begins.
 
 Error handling at this layer catches `LLMConfigError`, `LLMInvocationError`, and `PromptTemplateError`, returning HTTP 503. Attachment validation errors return HTTP 400, and oversized images return HTTP 413.
@@ -520,10 +522,10 @@ Image attachments are runtime visual memory assets. The binary is stored once pe
 Before calling the LLM, estimates total context tokens:
 
 ```python
-estimated_tokens = (block_chars + history_chars) // 4
+estimated_tokens = ceil((block_chars + history_chars) / 3)
 ```
 
-If over `agent_max_tokens * agent_compaction_trigger_ratio`, runs `compact_thread_context()` to summarize older messages _before_ the first LLM call. This prevents oversized prompts from being rejected by the provider.
+The estimate is compared with `resolve_context_budget_tokens()`, which subtracts the configured output allowance and a fixed 3,000-token reservation for template scaffolding and serialized tool schemas from a configured context window. If the estimated context crosses `agent_compaction_trigger_ratio`, `compact_thread_context()` summarizes older messages _before_ the first LLM call. This prevents oversized prompts from being rejected by the provider.
 
 ### Stage 2: Invoke Runtime (`_invoke_turn_runtime`)
 
@@ -996,7 +998,7 @@ The system uses a three-tier compaction strategy to prevent context overflow:
 
 ### Tier 1: Proactive Compaction (Pre-Turn)
 
-**When**: Before the first LLM call, if estimated context exceeds `agent_max_tokens * agent_compaction_trigger_ratio`.
+**When**: Before the first LLM call, if estimated context exceeds `resolve_context_budget_tokens() * agent_compaction_trigger_ratio`.
 
 **How**: `compact_thread_context()` summarizes older messages into a thread summary, marks them `is_in_context=False`, and keeps the `agent_compaction_keep_last_messages` most recent messages.
 
@@ -1022,7 +1024,7 @@ This fires only once per pressure window (resets after compaction).
 
 ### Token Estimation
 
-All estimates use the heuristic `len(text) // 4` (approximately 4 characters per token). The `PromptBudgetTrace` tracks exact allocations:
+Character-based fallbacks use the conservative heuristic `ceil(len(text) / 3)`. The resolved context budget also reserves 3,000 tokens for template scaffolding and tool schemas that are outside the memory-block character budget. These remain estimates rather than provider tokenizer counts. `PromptBudgetTrace` records the resulting allocations:
 - System prompt tokens
 - Dynamic identity tokens
 - Per-block token counts

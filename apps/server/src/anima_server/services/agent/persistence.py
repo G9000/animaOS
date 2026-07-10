@@ -563,6 +563,22 @@ def append_message(
     return message
 
 
+# Step rows used to store every message's full content per step —
+# O(steps x history) serialization on the critical path.  Previews keep
+# the rows debuggable (roles, tool ids, shape) while the durable full
+# text lives once in the message rows and tool outputs in response_json.
+_STEP_SNAPSHOT_PREVIEW_CHARS = 500
+
+
+def _slim_message_snapshot(message: object) -> dict[str, object]:
+    payload = asdict(message)
+    content = payload.get("content")
+    if isinstance(content, str) and len(content) > _STEP_SNAPSHOT_PREVIEW_CHARS:
+        payload["content"] = content[:_STEP_SNAPSHOT_PREVIEW_CHARS] + "..."
+        payload["content_chars"] = len(content)
+    return payload
+
+
 def create_step(
     db: Session,
     *,
@@ -572,7 +588,9 @@ def create_step(
     prompt_budget: object | None = None,
 ) -> RuntimeStep:
     request_json: dict[str, object] = {
-        "messages": [asdict(message) for message in trace.request_messages],
+        "messages": [
+            _slim_message_snapshot(message) for message in trace.request_messages
+        ],
         "allowed_tools": list(trace.allowed_tools),
         "force_tool_call": trace.force_tool_call,
     }
@@ -635,13 +653,22 @@ def _serialize_usage(usage: UsageStats | None) -> dict[str, object] | None:
     return asdict(usage)
 
 
-def list_threads(db: Session, user_id: int) -> list[RuntimeThread]:
-    """Return all threads for a user sorted by last_message_at DESC."""
+def list_threads(db: Session, user_id: int) -> list[tuple[RuntimeThread, str | None]]:
+    """Return all threads for a user sorted by last_message_at DESC, with first message role."""
     from sqlalchemy import nulls_last
 
+    first_role = (
+        select(RuntimeMessage.role)
+        .where(RuntimeMessage.thread_id == RuntimeThread.id)
+        .order_by(RuntimeMessage.sequence_id)
+        .limit(1)
+        .correlate(RuntimeThread)
+        .scalar_subquery()
+    )
+
     return list(
-        db.scalars(
-            select(RuntimeThread)
+        db.execute(
+            select(RuntimeThread, first_role.label("first_role"))
             .where(RuntimeThread.user_id == user_id)
             .order_by(
                 nulls_last(desc(RuntimeThread.last_message_at)),

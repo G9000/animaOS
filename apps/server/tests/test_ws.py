@@ -109,6 +109,12 @@ class _FakeWebSocket:
         self.sent.append(payload)
 
 
+class _DisconnectingWebSocket(_FakeWebSocket):
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        del payload
+        raise WebSocketDisconnect()
+
+
 class _QueueWebSocket(_FakeWebSocket):
     def __init__(self) -> None:
         super().__init__()
@@ -243,6 +249,95 @@ class TestWebSocketFrameTranslation:
 
 
 class TestWebSocketRunHandlers:
+    @pytest.mark.asyncio
+    async def test_user_message_disconnect_closes_service_stream(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        closed = asyncio.Event()
+        user_db = _FakeDb()
+        runtime_db = _FakeDb()
+
+        async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[AgentStreamEvent, None]:
+            try:
+                yield AgentStreamEvent(event="chunk", data={"content": "hello"})
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        import anima_server.db.runtime as runtime_module
+        import anima_server.services.agent.service as service_module
+
+        monkeypatch.setattr(
+            ws_route,
+            "get_user_session_factory",
+            lambda _user_id: lambda: user_db,
+        )
+        monkeypatch.setattr(
+            runtime_module,
+            "get_runtime_session_factory",
+            lambda: lambda: runtime_db,
+        )
+        monkeypatch.setattr(service_module, "stream_agent", tracked_stream)
+
+        conn = ActionToolConnection(
+            websocket=_DisconnectingWebSocket(),
+            user_id=5,
+            username="alice",
+        )
+        with pytest.raises(WebSocketDisconnect):
+            await ws_route._handle_user_message(conn, {"message": "hello"})
+
+        assert closed.is_set()
+        assert user_db.closed is True
+        assert runtime_db.closed is True
+
+    @pytest.mark.asyncio
+    async def test_approval_disconnect_closes_service_stream(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        closed = asyncio.Event()
+        user_db = _FakeDb()
+        runtime_db = _FakeDb(_FakeRun(run_id=42, user_id=5))
+
+        async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[AgentStreamEvent, None]:
+            try:
+                yield AgentStreamEvent(event="chunk", data={"content": "resumed"})
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        import anima_server.db.runtime as runtime_module
+        import anima_server.services.agent.service as service_module
+
+        monkeypatch.setattr(
+            ws_route,
+            "get_user_session_factory",
+            lambda _user_id: lambda: user_db,
+        )
+        monkeypatch.setattr(
+            runtime_module,
+            "get_runtime_session_factory",
+            lambda: lambda: runtime_db,
+        )
+        monkeypatch.setattr(service_module, "stream_approve_or_deny", tracked_stream)
+
+        conn = ActionToolConnection(
+            websocket=_DisconnectingWebSocket(),
+            user_id=5,
+            username="alice",
+        )
+        with pytest.raises(WebSocketDisconnect):
+            await ws_route._handle_approval_response(
+                conn,
+                {"run_id": 42, "approved": True},
+            )
+
+        assert closed.is_set()
+        assert user_db.closed is True
+        assert runtime_db.closed is True
+
     @pytest.mark.asyncio
     async def test_ws_agent_replays_pending_approval_after_auth(
         self,

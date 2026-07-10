@@ -10,17 +10,53 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# Ops/candidates dropped at their retry cap log here so poison-pill rows
+# stay greppable instead of silently starving the queue.
+degraded_logger = logging.getLogger("anima.runtime.degraded")
 
 # Per-user locks — prevents concurrent Soul Writer runs for the same user
 _user_locks: dict[int, asyncio.Lock] = {}
 MAX_RETRY_COUNT = 3
 MAX_ITEMS_PER_RUN = 50
+# A "pending" extraction guard newer than this is treated as a live in-flight
+# call and left alone; older than this it is assumed to be from a crashed
+# process and becomes eligible for crash-recovery retry.
+STALE_PENDING_EXTRACTION = timedelta(minutes=15)
+# Headroom added to the configured LLM retry budget when waiting on a
+# cross-loop extraction retry, so the inner provider timeout/retry policy fires
+# first and returns a clean result instead of the outer wait killing a
+# legitimate call.
+EXTRACTION_RETRY_TIMEOUT_BUFFER = 30.0
+
+
+def _extraction_retry_wait_seconds() -> float:
+    """Outer wall-clock budget for a cross-loop extraction retry.
+
+    ``extract_memories_via_llm`` runs through ``invoke_with_retry``, which makes
+    ``retry_limit + 1`` attempts — each up to ``agent_llm_timeout`` — with up to
+    ``retry_max_delay`` of backoff between them.  The outer ``future.result``
+    wait must cover that entire budget (plus headroom); a shorter wait would
+    cancel a legitimately slow/retrying call partway through the configured
+    policy, burning ``retry_count`` and eventually abandoning the extraction.
+    """
+    from anima_server.config import settings
+
+    attempts = settings.agent_llm_retry_limit + 1
+    max_backoff_total = (
+        settings.agent_llm_retry_limit * settings.agent_llm_retry_max_delay
+    )
+    return (
+        attempts * settings.agent_llm_timeout
+        + max_backoff_total
+        + EXTRACTION_RETRY_TIMEOUT_BUFFER
+    )
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
@@ -232,7 +268,9 @@ def _run_soul_writer_inner(
 
         pending_ops = get_pending_ops(runtime_db, user_id=user_id)
 
-        # Also retry previously-failed ops (transient errors like SQLCipher busy)
+        # Also retry previously-failed ops (transient errors like SQLCipher
+        # busy) — but only below the retry cap: a deterministically-failing
+        # op must not churn on every run and starve the 50-row queue.
         from anima_server.models.pending_memory_op import PendingMemoryOp as _PendingOp
 
         failed_ops = list(
@@ -242,6 +280,7 @@ def _run_soul_writer_inner(
                     _PendingOp.user_id == user_id,
                     _PendingOp.consolidated.is_(False),
                     _PendingOp.failed.is_(True),
+                    _PendingOp.retry_count < MAX_RETRY_COUNT,
                 )
                 .order_by(_PendingOp.id.asc())
                 .limit(MAX_ITEMS_PER_RUN)
@@ -253,6 +292,24 @@ def _run_soul_writer_inner(
         if failed_ops:
             runtime_db.flush()
             pending_ops.extend(failed_ops)
+
+        dead_op_count = runtime_db.scalar(
+            select(func.count())
+            .select_from(_PendingOp)
+            .where(
+                _PendingOp.user_id == user_id,
+                _PendingOp.consolidated.is_(False),
+                _PendingOp.failed.is_(True),
+                _PendingOp.retry_count >= MAX_RETRY_COUNT,
+            )
+        )
+        if dead_op_count:
+            degraded_logger.warning(
+                "Soul Writer skipping %d pending op(s) at the retry cap "
+                "for user %s (permanently failed identity writes)",
+                dead_op_count,
+                user_id,
+            )
 
         for op in pending_ops:
             try:
@@ -267,6 +324,7 @@ def _run_soul_writer_inner(
                 logger.exception("Soul Writer op %s failed", op.id)
                 op.failed = True
                 op.failure_reason = str(e)[:500]
+                op.retry_count = (op.retry_count or 0) + 1
                 result.ops_failed += 1
                 result.errors.append(f"op {op.id}: {e}")
 
@@ -330,25 +388,28 @@ def _run_soul_writer_inner(
             runtime_db.flush()
         except Exception:
             # A concurrent writer may have created an active duplicate since
-            # our read above.  Fall back to per-row updates, skipping any
-            # that violate the unique constraint.
+            # our read above.  Fall back to per-row savepoints so a single
+            # collision fails only that candidate (with its retry_count
+            # incremented) instead of aborting the whole batch mid-state.
             runtime_db.rollback()
             from sqlalchemy.exc import IntegrityError as _IE
 
+            queued: list = []
             for candidate in candidates:
-                candidate.status = "queued"
                 try:
-                    runtime_db.flush()
+                    with runtime_db.begin_nested():
+                        candidate.status = "queued"
+                        runtime_db.flush()
+                    queued.append(candidate)
                 except _IE:
-                    runtime_db.rollback()
                     logger.debug(
                         "Skipping candidate %s: active duplicate hash %s",
                         candidate.id, candidate.content_hash,
                     )
                     candidate.status = "failed"
-                    candidates = [
-                        c for c in candidates if c.status == "queued"]
-                    break
+                    candidate.last_error = "active duplicate content_hash"
+                    candidate.retry_count = (candidate.retry_count or 0) + 1
+            candidates = queued
 
         for candidate in candidates:
             try:
@@ -423,24 +484,34 @@ def _run_soul_writer_inner(
             soul_db=soul_db,
         )
 
-    # Phase 4: Promote emotional patterns (if due)
+    # Phase 4: Promote emotional patterns — gated so the 50-signal scan
+    # and SQLCipher writes don't run on every turn (the stated "if due"
+    # previously had no gate at all).
     try:
-        from anima_server.services.agent.emotional_patterns import promote_emotional_patterns
+        from anima_server.services.agent.emotional_patterns import (
+            promote_emotional_patterns,
+            should_promote_emotional_patterns,
+        )
 
         with rt_factory() as runtime_db, soul_factory() as soul_db:
-            promoted = promote_emotional_patterns(
+            if should_promote_emotional_patterns(
                 soul_db=soul_db,
                 pg_db=runtime_db,
                 user_id=user_id,
-            )
-            if promoted > 0:
-                soul_db.commit()
-                runtime_db.commit()
-                logger.info(
-                    "Soul Writer promoted %d emotional patterns for user %s",
-                    promoted,
-                    user_id,
+            ):
+                promoted = promote_emotional_patterns(
+                    soul_db=soul_db,
+                    pg_db=runtime_db,
+                    user_id=user_id,
                 )
+                if promoted > 0:
+                    soul_db.commit()
+                    runtime_db.commit()
+                    logger.info(
+                        "Soul Writer promoted %d emotional patterns for user %s",
+                        promoted,
+                        user_id,
+                    )
     except Exception:
         logger.debug(
             "Emotional pattern promotion failed for user %s",
@@ -471,12 +542,23 @@ def _retry_memory_extraction_failures(
         create_profile_update_candidates_from_payload,
     )
 
+    # Retry genuine failures immediately, plus "pending" guards that have gone
+    # stale — a still-pending row past the staleness window means the process
+    # died mid-extraction (Phase C never ran).  Fresh "pending" rows are a live
+    # in-flight call and are skipped so we don't double-extract them.
+    stale_before = datetime.now(UTC) - STALE_PENDING_EXTRACTION
     failures = list(
         runtime_db.scalars(
             select(MemoryExtractionFailure)
             .where(
                 MemoryExtractionFailure.user_id == user_id,
-                MemoryExtractionFailure.status == "failed",
+                or_(
+                    MemoryExtractionFailure.status == "failed",
+                    and_(
+                        MemoryExtractionFailure.status == "pending",
+                        MemoryExtractionFailure.last_attempt_at < stale_before,
+                    ),
+                ),
                 MemoryExtractionFailure.retry_count < MAX_RETRY_COUNT,
             )
             .order_by(MemoryExtractionFailure.created_at)
@@ -499,22 +581,34 @@ def _retry_memory_extraction_failures(
             failure=failure,
         )
 
+        future = asyncio.run_coroutine_threadsafe(
+            extract_memories_via_llm(
+                user_message=user_message,
+                assistant_response=assistant_response,
+            ),
+            event_loop,
+        )
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                extract_memories_via_llm(
-                    user_message=user_message,
-                    assistant_response=assistant_response,
-                ),
-                event_loop,
-            )
-            llm_result = future.result(timeout=30)
+            # Wait for the provider's full timeout+retry budget so a slow (e.g.
+            # local) model or a transient-error retry isn't killed prematurely —
+            # the old hard-coded 30s could abort legitimate calls, burn
+            # retry_count, and leave the coroutine running to issue duplicate
+            # billable requests.
+            llm_result = future.result(timeout=_extraction_retry_wait_seconds())
         except Exception as exc:
+            # Cancel the scheduled coroutine so a hung/slow call doesn't keep
+            # running on the loop after we've given up on it.
+            future.cancel()
+            # Normalize a recovered stale "pending" guard to "failed" so it is
+            # a plain retryable row from here on.
+            failure.status = "failed"
             failure.failure_reason = str(exc)[:2000]
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {exc}")
             continue
 
         if llm_result.failed:
+            failure.status = "failed"
             failure.failure_reason = (llm_result.error or "LLM memory extraction failed")[:2000]
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {failure.failure_reason}")

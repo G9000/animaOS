@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-07-10
+
+- synchronized the agent runtime and memory architecture docs with conservative chars/3 prompt estimation, the fixed scaffolding/tool-schema reserve, transport-to-pump stream shutdown ownership, working-memory expiry during reflection, and the current sequential sleep-time orchestrator with heat and input-freshness gates
+
 ## 2026-07-03
 
 - added a Mermaid architecture snapshot to the Single-User Temporal Memory PRD covering the shared memory contract boundary, SQLCipher-backed durable memory records, recall routing, background cognition, and cleanup paths

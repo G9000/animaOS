@@ -21,6 +21,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -201,6 +202,85 @@ class MemoryAccessLog(RuntimeBase):
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class EmbeddingConfig(RuntimeBase):
+    """The active embedding contract: the model and dimension the derived
+    embedding stores are being kept consistent with.
+
+    On first use this records the pair the stores were built with.  When the
+    active model/dimension changes, this row is updated to the new pair (the
+    re-embed *target*) and ``reembed_required`` is set until the per-user
+    backfill catches up — so a subsequent switch is detected as a fresh target
+    and re-opens the cycle rather than leaving stale completion markers.
+
+    Switching embedding models used to silently kill semantic search: the
+    pgvector column stayed at the old dimension, every query raised, and
+    the exception was swallowed — retrieval degraded to keyword-only
+    forever.  A persisted contract makes the mismatch loud and recoverable.
+    """
+
+    __tablename__ = "embedding_config"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    reembed_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class ReembedCompletion(RuntimeBase):
+    """Per-user re-embed progress for the current contract cycle.
+
+    The ``reembed_required`` flag on :class:`EmbeddingConfig` is global, but
+    re-embedding is per-user work (soul stores are per-user encrypted, so each
+    user is reset + backfilled during their own sleeptime pass).  A row is
+    created the first time a user's derived stores are reset for the active
+    cycle — so the expensive reset runs exactly once per cycle rather than on
+    every pass (and is not mis-gated by unrelated pending embeddings) — and
+    ``completed`` flips to True once that user's backfill finishes.  The
+    semantic-search gate is per-user: one user finishing must not re-enable
+    search for others whose vectors are still stale.  All rows are cleared when
+    a new contract mismatch opens a fresh cycle.
+    """
+
+    __tablename__ = "runtime_reembed_completions"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class ContradictionCheck(RuntimeBase):
+    """Persisted contradiction-scan verdict for a pair of memory items.
+
+    Keyed on an order-normalized hash of the two items' content hashes, so
+    an edited item naturally invalidates its pairs.  Without this cache the
+    scan re-bought up to 40 identical LLM verdicts every cycle.
+    """
+
+    __tablename__ = "contradiction_checks"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "pair_hash", name="uq_contradiction_checks_user_pair"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pair_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
 
 
 class MemoryRetrievalFeedback(RuntimeBase):

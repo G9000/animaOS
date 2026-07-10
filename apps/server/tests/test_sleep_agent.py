@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -25,7 +24,7 @@ from anima_server.services.agent.sleep_agent import (
     should_run_sleeptime,
     update_last_processed_message_id,
 )
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -90,66 +89,6 @@ def rt_factory(runtime_db_engine):
 
 
 # ── _issue_background_task ───────────────────────────────────────────
-
-
-@pytest.mark.asyncio()
-async def test_manual_sleep_generates_episode_before_pattern_synthesis(db_factory):
-    from anima_server.services.agent import sleep_tasks
-
-    with db_factory() as db:
-        user = User(
-            username="manual-sleep-user",
-            display_name="Manual Sleep User",
-            password_hash="x",
-        )
-        db.add(user)
-        db.commit()
-        user_id = user.id
-
-    call_order: list[str] = []
-
-    async def _no_scan(**kwargs: object) -> tuple[int, int]:
-        del kwargs
-        return (0, 0)
-
-    async def _no_merge(**kwargs: object) -> int:
-        del kwargs
-        return 0
-
-    async def _fake_episode(**kwargs: object) -> object:
-        del kwargs
-        call_order.append("episode_gen")
-        return object()
-
-    async def _fake_pattern(**kwargs: object) -> SimpleNamespace:
-        del kwargs
-        call_order.append("pattern_synthesis")
-        return SimpleNamespace(created=0, updated=0)
-
-    with (
-        patch.object(sleep_tasks, "scan_contradictions", _no_scan),
-        patch.object(sleep_tasks, "synthesize_profile", _no_merge),
-        patch.object(sleep_tasks, "_should_run_deep_monologue", return_value=False),
-        patch(
-            "anima_server.services.agent.episodes.maybe_generate_episode",
-            new=_fake_episode,
-        ),
-        patch(
-            "anima_server.services.agent.pattern_synthesis.synthesize_cross_episode_patterns",
-            new=_fake_pattern,
-        ),
-        patch(
-            "anima_server.services.agent.embeddings.backfill_embeddings",
-            new=AsyncMock(return_value=0),
-        ),
-    ):
-        result = await sleep_tasks.run_sleep_tasks(
-            user_id=user_id,
-            db_factory=db_factory,
-        )
-
-    assert call_order == ["episode_gen", "pattern_synthesis"]
-    assert result.episodes_generated == 1
 
 
 class TestIssueBackgroundTask:
@@ -376,7 +315,36 @@ class TestEpisodeGenerationRetry:
 class TestForceMode:
     @pytest.mark.asyncio()
     async def test_force_bypasses_heat_gate(self, db_factory, rt_factory):
-        """With force=True, expensive tasks run even with no heat."""
+        """With force=True, synthesis tasks run even with no heat — but the
+        contradiction scan (the dominant recurring LLM cost) still honors
+        the heat gate, and tasks with no fresh inputs are skipped."""
+        # Fresh inputs for the synthesis tasks: a memory item (profile)
+        # and an episode (patterns), with no completed runs recorded.
+        from anima_server.models import MemoryEpisode, MemoryItem
+
+        with db_factory() as db:
+            user = User(username="force-mode", password_hash="x", display_name="F")
+            db.add(user)
+            db.flush()
+            db.add(
+                MemoryItem(
+                    user_id=user.id,
+                    content="Likes green tea",
+                    category="preference",
+                    importance=3,
+                    source="extraction",
+                )
+            )
+            db.add(
+                MemoryEpisode(
+                    user_id=user.id,
+                    date="2026-07-07",
+                    summary="Talked about tea preferences.",
+                )
+            )
+            db.commit()
+            user_id = user.id
+
         with (
             patch(
                 "anima_server.services.agent.sleep_agent._task_consolidation",
@@ -433,7 +401,7 @@ class TestForceMode:
             ),
         ):
             run_ids = await run_sleeptime_agents(
-                user_id=1,
+                user_id=user_id,
                 user_message="test",
                 assistant_response="resp",
                 db_factory=db_factory,
@@ -441,9 +409,11 @@ class TestForceMode:
                 force=True,
             )
 
-        # With force=True, contradiction_scan, profile_synthesis run.
-        # Deep monologue respects 24h throttle (mocked True here).
-        assert any("contradiction_scan" in r for r in run_ids)
+        # With force=True and fresh inputs, the synthesis tasks run.
+        # The contradiction scan honors the heat gate even under force
+        # (no heat here → skipped).  Deep monologue respects the 24h
+        # throttle (mocked True here).
+        assert not any("contradiction_scan" in r for r in run_ids)
         assert any("profile_synthesis" in r for r in run_ids)
         assert any("pattern_synthesis" in r for r in run_ids)
         assert any("deep_monologue" in r for r in run_ids)
@@ -520,6 +490,249 @@ class TestTurnFrequency:
         assert should_run_sleeptime(6) is True
 
 
+@pytest.mark.asyncio()
+async def test_run_sleeptime_agents_invalidates_companion_cache(
+    db_factory, rt_factory, monkeypatch
+):
+    """The orchestrator invalidates the companion memory cache once at the end
+    of a run so the next turn sees fresh soul data (this used to be coupled to
+    profile reconciliation inside the removed run_sleep_tasks; it is now an
+    unconditional post-run step)."""
+    from anima_server.services.agent import sleep_agent
+
+    with db_factory() as db:
+        user = User(
+            username="sleep-invalidate", password_hash="x", display_name="S"
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    invalidations = {"count": 0}
+
+    class _FakeCompanion:
+        def invalidate_memory(self) -> None:
+            invalidations["count"] += 1
+
+    async def _recording_issue(*, user_id, task_type, task_fn, **kwargs) -> str:
+        return f"{task_type}:0"
+
+    monkeypatch.setattr(sleep_agent, "_issue_background_task", _recording_issue)
+    monkeypatch.setattr(sleep_agent, "_should_run_expensive", lambda db, uid: False)
+    monkeypatch.setattr(
+        "anima_server.services.agent.companion.get_companion",
+        lambda uid: _FakeCompanion(),
+    )
+
+    await sleep_agent.run_sleeptime_agents(
+        user_id=user_id,
+        user_message="hi",
+        assistant_response="hello",
+        force=True,
+        db_factory=db_factory,
+        runtime_db_factory=rt_factory,
+    )
+
+    assert invalidations["count"] == 1
+
+
+@pytest.mark.asyncio()
+async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
+    """The re-embed reset is destructive and must run exactly once per user per
+    cycle.  Backfill does ~10 items/pass; re-running the reset on every
+    sleeptime pass (while reembed_required stays true) would re-null the
+    previous pass's work and semantic search would never recover.  The reset is
+    gated by an explicit per-user marker, not by null-embedding counts — a
+    null-count guard mis-fires the moment the first batch embeds (count drops to
+    0, triggering a second destructive reset mid-cycle)."""
+    from anima_server.models import MemoryItem
+    from anima_server.services.agent import (
+        consolidation,
+        embedding_contract,
+        sleep_agent,
+        vector_store,
+    )
+
+    reset_calls = {"n": 0}
+    reset_marker: set[int] = set()
+
+    def _reset_spy(soul_db, *, user_id, runtime_db_factory=None):
+        reset_calls["n"] += 1
+        return 0
+
+    async def _noop_backfill(user_id, db_factory=None):
+        return None
+
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
+    monkeypatch.setattr(embedding_contract, "reset_derived_embedding_stores", _reset_spy)
+    monkeypatch.setattr(
+        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "has_reset_done",
+        lambda uid, *a, **k: uid in reset_marker,
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "mark_reset_done",
+        lambda uid, *a, **k: reset_marker.add(uid),
+    )
+    monkeypatch.setattr(
+        embedding_contract, "mark_user_reembed_complete", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
+    monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
+
+    with db_factory() as db:
+        user_a = User(username="reembed-a", password_hash="x", display_name="A")
+        db.add(user_a)
+        db.commit()
+        uid_a = user_a.id
+        db.add(
+            MemoryItem(
+                user_id=uid_a, content="x", category="fact", importance=3,
+                source="e", embedding_json=[0.1] * 8,
+            )
+        )
+        db.commit()
+
+    # First pass resets once and records the marker; a second pass in the same
+    # cycle sees the marker and must NOT reset again.
+    await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
+    await sleep_agent._task_embedding_backfill(user_id=uid_a, db_factory=db_factory)
+    assert reset_calls["n"] == 1
+
+
+@pytest.mark.asyncio()
+async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
+    db_factory, monkeypatch
+):
+    """If the pgvector ALTER fails (PG unavailable/locked), the reset must NOT
+    be marked done — otherwise the column stays at the old vector(N) type with
+    every upsert failing and no later pass retrying the ALTER."""
+    from anima_server.services.agent import (
+        consolidation,
+        embedding_contract,
+        sleep_agent,
+        vector_store,
+    )
+
+    reset_marker: set[int] = set()
+    complete_calls: list[int] = []
+
+    async def _noop_backfill(user_id, db_factory=None):
+        return 0
+
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
+    monkeypatch.setattr(
+        embedding_contract, "reset_derived_embedding_stores", lambda *a, **k: 0
+    )
+    # Alignment keeps failing.
+    monkeypatch.setattr(
+        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "has_reset_done",
+        lambda uid, *a, **k: uid in reset_marker,
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "mark_reset_done",
+        lambda uid, *a, **k: reset_marker.add(uid),
+    )
+    monkeypatch.setattr(
+        embedding_contract,
+        "mark_user_reembed_complete",
+        lambda uid, *a, **k: complete_calls.append(uid),
+    )
+    monkeypatch.setattr(
+        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
+    monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
+
+    with db_factory() as db:
+        user = User(username="reembed-fail", password_hash="x", display_name="F")
+        db.add(user)
+        db.commit()
+        uid = user.id
+
+    await sleep_agent._task_embedding_backfill(user_id=uid, db_factory=db_factory)
+    # Alignment failed → the reset marker must remain unset so a later pass
+    # re-runs the reset + ALTER.
+    assert uid not in reset_marker
+    # And the user must NOT be marked complete (which would re-enable semantic
+    # search against a still-misaligned column) even though 0 items remain.
+    assert complete_calls == []
+
+
+@pytest.mark.asyncio()
+async def test_embedding_backfill_task_reports_counts(db_factory, monkeypatch):
+    """The task must return the real backfill/resync counts so the manual
+    /sleep summary isn't hard-coded to 0."""
+    from anima_server.services.agent import (
+        consolidation,
+        embedding_contract,
+        sleep_agent,
+        vector_store,
+    )
+
+    async def _backfill_five(user_id, db_factory=None):
+        return 5
+
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: False)
+    monkeypatch.setattr(
+        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _backfill_five)
+    monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
+
+    result = await sleep_agent._task_embedding_backfill(user_id=1, db_factory=db_factory)
+    assert result == {"backfilled": 5, "resynced": 0}
+
+
+def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:
+    """reset must persist SQL NULL, not JSON 'null' — otherwise the backfill
+    selector (embedding_json IS NULL) never finds reset items and re-embed
+    silently 'completes' without regenerating anything."""
+    from anima_server.models import MemoryItem
+    from anima_server.services.agent.embedding_contract import (
+        reset_derived_embedding_stores,
+    )
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as db:
+            db.add(User(username="reset-null", password_hash="x", display_name="R"))
+            db.commit()
+            db.add(
+                MemoryItem(
+                    user_id=1, content="z", category="fact", importance=3,
+                    source="e", embedding_json=[0.1] * 8,
+                )
+            )
+            db.commit()
+            reset_derived_embedding_stores(db, user_id=1)
+            db.commit()
+            pending = db.scalar(
+                select(func.count())
+                .select_from(MemoryItem)
+                .where(MemoryItem.embedding_json.is_(None))
+            )
+        assert pending == 1  # reset item is matched by IS NULL
+    finally:
+        engine.dispose()
+
+
 # ── Restart cursor ───────────────────────────────────────────────────
 
 
@@ -529,67 +742,46 @@ class TestRestartCursor:
             1, runtime_db_factory=rt_factory) is None
 
     def test_round_trip(self, rt_factory):
-        # Seed a completed consolidation run
-        with rt_factory() as db:
-            run = RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                completed_at=datetime.now(UTC),
-                result_json={
-                    "thread_id": 10,
-                    "last_processed_message_id": 42,
-                    "messages_processed": 5,
-                },
-            )
-            db.add(run)
-            db.commit()
-
+        update_last_processed_message_id(
+            1,
+            thread_id=10,
+            message_id=42,
+            messages_processed=5,
+            runtime_db_factory=rt_factory,
+        )
         msg_id = get_last_processed_message_id(
             1, thread_id=10, runtime_db_factory=rt_factory)
         assert msg_id == 42
 
     def test_thread_scope_isolation(self, rt_factory):
-        """Cursor for thread 10 should not match thread 20."""
-        with rt_factory() as db:
-            run = RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                completed_at=datetime.now(UTC),
-                result_json={
-                    "thread_id": 10,
-                    "last_processed_message_id": 42,
-                    "messages_processed": 5,
-                },
-            )
-            db.add(run)
-            db.commit()
-
-        # Thread 20 has no cursor
+        """Cursor for thread 10 should not match thread 20 or the global scope."""
+        update_last_processed_message_id(
+            1,
+            thread_id=10,
+            message_id=42,
+            messages_processed=5,
+            runtime_db_factory=rt_factory,
+        )
+        # Thread 20 and the None (global) scope have no cursor.
         assert get_last_processed_message_id(
             1, thread_id=20, runtime_db_factory=rt_factory) is None
-        # Thread 10 has the cursor
+        assert get_last_processed_message_id(
+            1, thread_id=None, runtime_db_factory=rt_factory) is None
+        # Thread 10 has the cursor.
         assert get_last_processed_message_id(
             1, thread_id=10, runtime_db_factory=rt_factory) == 42
 
-    def test_update_cursor(self, rt_factory):
-        # Create a completed run first
-        with rt_factory() as db:
-            run = RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                completed_at=datetime.now(UTC),
-                result_json={
-                    "thread_id": None,
-                    "last_processed_message_id": 10,
-                    "messages_processed": 3,
-                },
-            )
-            db.add(run)
-            db.commit()
-
+    def test_update_cursor_upserts_single_row(self, rt_factory):
+        update_last_processed_message_id(
+            1,
+            thread_id=None,
+            message_id=10,
+            messages_processed=3,
+            runtime_db_factory=rt_factory,
+        )
+        # A second update for the same scope overwrites in place — no
+        # duplicate row (SQL treats NULL as distinct, so the select-then-
+        # upsert must handle the global scope explicitly).
         update_last_processed_message_id(
             1,
             thread_id=None,
@@ -597,10 +789,79 @@ class TestRestartCursor:
             messages_processed=7,
             runtime_db_factory=rt_factory,
         )
+        assert get_last_processed_message_id(
+            1, thread_id=None, runtime_db_factory=rt_factory) == 50
 
-        msg_id = get_last_processed_message_id(
-            1, thread_id=None, runtime_db_factory=rt_factory)
-        assert msg_id == 50
+        from anima_server.models.runtime import RuntimeConsolidationCursor
+
+        with rt_factory() as db:
+            rows = db.scalars(
+                select(RuntimeConsolidationCursor).where(
+                    RuntimeConsolidationCursor.user_id == 1,
+                    RuntimeConsolidationCursor.thread_id.is_(None),
+                )
+            ).all()
+        assert len(rows) == 1
+
+    def test_cursor_only_advances_forward(self, rt_factory):
+        """An older overlapping task committing a smaller message_id must not
+        rewind the cursor (which would re-process already-handled messages)."""
+        update_last_processed_message_id(
+            1,
+            thread_id=7,
+            message_id=100,
+            messages_processed=10,
+            runtime_db_factory=rt_factory,
+        )
+        # A stale/older task reports a smaller id — must be ignored.
+        update_last_processed_message_id(
+            1,
+            thread_id=7,
+            message_id=40,
+            messages_processed=2,
+            runtime_db_factory=rt_factory,
+        )
+        assert get_last_processed_message_id(
+            1, thread_id=7, runtime_db_factory=rt_factory) == 100
+
+    @pytest.mark.asyncio()
+    async def test_cursor_survives_task_run_pruning(self, rt_factory):
+        """The cursor now lives in its own table, so pruning old completed
+        task-run rows must not lose it (the old result_json cursor did)."""
+        from anima_server.services.agent.eager_consolidation import (
+            prune_old_background_task_runs,
+        )
+
+        update_last_processed_message_id(
+            1,
+            thread_id=10,
+            message_id=99,
+            messages_processed=4,
+            runtime_db_factory=rt_factory,
+        )
+        # An old completed consolidation task-run that retention will drop.
+        with rt_factory() as db:
+            db.add(
+                RuntimeBackgroundTaskRun(
+                    user_id=1,
+                    task_type="consolidation",
+                    status="completed",
+                    completed_at=datetime.now(UTC) - timedelta(days=90),
+                    created_at=datetime.now(UTC) - timedelta(days=90),
+                    result_json={"thread_id": 10, "last_processed_message_id": 99},
+                )
+            )
+            db.commit()
+
+        deleted = await prune_old_background_task_runs(runtime_db_factory=rt_factory)
+        assert deleted == 1
+
+        with rt_factory() as db:
+            remaining = db.scalars(select(RuntimeBackgroundTaskRun)).all()
+        assert remaining == []
+        # Cursor is intact despite the task-run rows being gone.
+        assert get_last_processed_message_id(
+            1, thread_id=10, runtime_db_factory=rt_factory) == 99
 
     @pytest.mark.asyncio()
     async def test_consolidation_task_records_latest_runtime_message_cursor(self, rt_factory):
@@ -871,6 +1132,30 @@ class TestGraphIngestionTask:
             relations = list(db.scalars(select(KGRelation)).all())
             assert len(relations) == 1
             assert relations[0].relation_type == "works_at"
+
+    @pytest.mark.asyncio()
+    async def test_blank_turn_skips_ingestion(self, db_factory, monkeypatch):
+        """A manual /sleep passes empty turn text — graph ingestion must skip
+        the entity-extraction LLM rather than run it on an empty prompt (a
+        useless billable call that could persist hallucinated entities)."""
+
+        async def _boom(*args, **kwargs):
+            raise AssertionError(
+                "ingest_conversation_graph should not run on blank turn text"
+            )
+
+        monkeypatch.setattr(
+            "anima_server.services.agent.knowledge_graph.ingest_conversation_graph",
+            _boom,
+        )
+
+        result = await _task_graph_ingestion(
+            user_id=1,
+            user_message="",
+            assistant_response="   ",
+            db_factory=db_factory,
+        )
+        assert result == {"entities": 0, "relations": 0, "pruned": 0}
 
 
 # ── RuntimeBackgroundTaskRun model ───────────────────────────────────

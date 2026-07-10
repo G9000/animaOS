@@ -12,6 +12,7 @@ from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.messages import is_assistant_message, to_runtime_message
 from anima_server.services.agent.persistence import load_thread_history
 from anima_server.services.agent.rules import (
+    ChildToolRule,
     InitToolRule,
     RequiresApprovalToolRule,
     TerminalToolRule,
@@ -870,6 +871,52 @@ async def test_runtime_returns_rule_violation_to_next_step() -> None:
     assert adapter.requests[0].force_tool_call is True
     assert [tool.name for tool in adapter.requests[1].available_tools] == ["think"]
     assert adapter.requests[1].force_tool_call is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_ends_on_terminal_before_later_rule_violation() -> None:
+    """A valid terminal send_message followed by a disallowed tool in the SAME
+    batch must end the turn on the already-sent reply, not treat the step as a
+    pure rule violation and loop again (which would emit a second response)."""
+
+    @tool
+    def think() -> str:
+        """Record an internal planning step."""
+        return "planned"
+
+    adapter = QueueAdapter(
+        [
+            StepExecutionResult(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="send_message",
+                        arguments={"message": "Final answer."},
+                    ),
+                    ToolCall(id="call-2", name="think", arguments={}),
+                )
+            ),
+            # Only reached if the loop wrongly continues past the sent reply.
+            StepExecutionResult(assistant_text="SECOND REPLY — should not happen."),
+        ]
+    )
+    runtime = AgentRuntime(
+        adapter=adapter,
+        tools=[send_message, think],
+        tool_rules=[
+            TerminalToolRule(tool_name="send_message"),
+            ChildToolRule(tool_name="send_message", children=()),
+        ],
+        max_steps=3,
+    )
+
+    result = await runtime.invoke("hi", user_id=1, history=[])
+
+    assert result.response == "Final answer."
+    assert result.stop_reason == StopReason.TERMINAL_TOOL.value
+    assert "send_message" in result.tools_used
+    # The turn ended on the terminal reply — no second LLM step ran.
+    assert len(result.step_traces) == 1
 
 
 @pytest.mark.asyncio

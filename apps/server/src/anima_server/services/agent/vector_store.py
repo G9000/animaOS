@@ -449,6 +449,30 @@ def delete_memory(
 _synced_users: set[int] = set()
 _synced_users_lock = Lock()
 
+# Users whose pgvector state diverged from the soul store (a swallowed
+# upsert failure); the embedding-backfill task re-syncs and clears them.
+_dirty_vector_users: set[int] = set()
+
+
+def clear_synced_users() -> None:
+    """Re-arm the one-shot cold-start sync (embedding config changed)."""
+    with _synced_users_lock:
+        _synced_users.clear()
+
+
+def mark_vector_store_dirty(user_id: int) -> None:
+    with _synced_users_lock:
+        _dirty_vector_users.add(user_id)
+
+
+def consume_vector_store_dirty(user_id: int) -> bool:
+    """Return True (and clear the flag) if the user needs a re-sync."""
+    with _synced_users_lock:
+        if user_id in _dirty_vector_users:
+            _dirty_vector_users.discard(user_id)
+            return True
+    return False
+
 
 def _maybe_cold_start_sync(user_id: int, db: Session | None) -> None:
     """Lazily sync embeddings from soul to PG on first search per user.

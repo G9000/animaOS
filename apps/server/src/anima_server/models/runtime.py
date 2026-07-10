@@ -81,6 +81,25 @@ class RuntimeThread(RuntimeBase):
         default=False,
         server_default=text("false"),
     )
+    # Archival retry state: closed-but-unarchived threads are retried by
+    # the inactivity sweep with exponential backoff instead of once per
+    # minute forever; archive_failed marks a terminal give-up.
+    archive_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    archive_next_retry_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=True,
+    )
+    archive_failed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     next_message_sequence: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -1065,4 +1084,53 @@ class RuntimeBackgroundTaskRun(RuntimeBase):
         TIMESTAMPTZ,
         nullable=False,
         server_default=func.now(),
+    )
+
+
+class RuntimeConsolidationCursor(RuntimeBase):
+    """Restart cursor for background memory consolidation.
+
+    Records the last runtime-message id processed per ``(user_id, thread_id)``
+    scope.  This replaces scanning + mutating
+    ``RuntimeBackgroundTaskRun.result_json``: the cursor now survives task-run
+    pruning and lookups are a single indexed row rather than a full scan of
+    every completed consolidation run.  ``thread_id`` is nullable for the
+    thread-agnostic ("global") scope; uniqueness of that scope is enforced in
+    the accessor's select-then-upsert since SQL treats NULLs as distinct.
+    """
+
+    __tablename__ = "runtime_consolidation_cursors"
+    __table_args__ = (
+        Index(
+            "ix_runtime_consolidation_cursor_scope",
+            "user_id",
+            "thread_id",
+            unique=True,
+        ),
+        # NULLs are distinct in a unique index, so the composite index above
+        # does not constrain the thread-agnostic scope; a partial unique index
+        # enforces one row per user for thread_id IS NULL.
+        Index(
+            "ix_runtime_consolidation_cursor_global",
+            "user_id",
+            unique=True,
+            postgresql_where=text("thread_id IS NULL"),
+            sqlite_where=text("thread_id IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_processed_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    messages_processed: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
