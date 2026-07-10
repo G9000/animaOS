@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # Raw evidence chunks pass through untruncated up to this safety cap,
     # which only bounds pathological chunks (deliberate chunk size is 1800).
     document_context_chunk_char_cap: int = 2500
+    # Server-side URL fetching for web captures is opt-in; the local-first
+    # threat model expects clients to supply captured HTML themselves.
+    web_capture_url_fetch_enabled: bool = False
+    web_capture_url_fetch_max_bytes: int = 5 * 1024 * 1024
+    web_capture_url_fetch_timeout: float = 10.0
     diary_attachment_max_size_bytes: int = 100 * 1024 * 1024
     core_passphrase: str = ""
     core_require_encryption: bool = True

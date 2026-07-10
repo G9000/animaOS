@@ -461,3 +461,167 @@ def _seed_source_concept(
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+_ARTICLE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><title>Relay Guide - Pump Site</title><meta name="author" content="Dana Fixit" /></head>
+<body>
+  <nav><ul><li><a href="/">Home</a></li><li><a href="/shop">Browse products</a></li></ul></nav>
+  <article>
+    <h1>Relay Guide</h1>
+    <p>Relays must be inspected before every checkpoint restart to avoid cascade faults.</p>
+    <h2>Inspection Steps</h2>
+    <p>Open the relay housing and check the contact pads for pitting or discoloration.</p>
+  </article>
+  <footer><p>Copyright 2026 Pump Site. Subscribe to our newsletter!</p></footer>
+</body>
+</html>"""
+
+
+def test_web_capture_endpoint_accepts_raw_html() -> None:
+    with managed_test_client("anima-knowledge-web-html-") as client:
+        user_id, headers = _register(client, username="knowledge-web-html")
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["source"]["kind"] == "web_capture"
+        assert payload["source"]["mediaType"] == "text/html"
+        assert payload["source"]["title"] == "Relay Guide"
+        assert [artifact["artifactKind"] for artifact in payload["artifacts"]] == [
+            "raw_html",
+            "structured_markdown",
+        ]
+        section_paths = {
+            span["metadata"].get("section_path")
+            for span in payload["spans"]
+            if span["spanKind"] == "section"
+        }
+        assert "Relay Guide > Inspection Steps" in section_paths
+        combined = "\n".join(span["contentText"] for span in payload["spans"])
+        assert "Browse products" not in combined
+        assert "newsletter" not in combined
+
+
+def test_web_capture_endpoint_rejects_ambiguous_input_modes() -> None:
+    with managed_test_client("anima-knowledge-web-modes-") as client:
+        user_id, headers = _register(client, username="knowledge-web-modes")
+
+        both = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/page",
+                "readableText": "Text.",
+                "html": "<html><body><p>Text.</p></body></html>",
+            },
+        )
+        neither = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/page",
+            },
+        )
+
+        assert both.status_code == 422
+        assert neither.status_code == 422
+
+
+def test_web_capture_endpoint_fetch_mode_forbidden_when_disabled() -> None:
+    with managed_test_client("anima-knowledge-web-fetch-") as client:
+        user_id, headers = _register(client, username="knowledge-web-fetch")
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/page",
+                "fetch": True,
+            },
+        )
+
+        assert response.status_code == 403
+
+
+def test_html_upload_endpoint_validates_and_ingests() -> None:
+    with managed_test_client("anima-knowledge-html-upload-") as client:
+        user_id, headers = _register(client, username="knowledge-html-upload")
+
+        response = client.post(
+            "/api/knowledge/sources/html",
+            headers=headers,
+            data={"userId": str(user_id)},
+            files={"file": ("saved article.html", _ARTICLE_HTML.encode(), "text/html")},
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["source"]["kind"] == "html"
+        assert payload["source"]["sourceUri"] == "html://saved article.html"
+        assert [artifact["artifactKind"] for artifact in payload["artifacts"]] == [
+            "raw_html",
+            "structured_markdown",
+        ]
+
+        rejected = client.post(
+            "/api/knowledge/sources/html",
+            headers=headers,
+            data={"userId": str(user_id)},
+            files={"file": ("doc.pdf", b"%PDF-1.7", "application/pdf")},
+        )
+        assert rejected.status_code == 400
+
+
+def test_reextract_endpoint_replaces_spans_idempotently() -> None:
+    with managed_test_client("anima-knowledge-reextract-") as client:
+        user_id, headers = _register(client, username="knowledge-reextract")
+
+        created = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+        original_span_ids = [span["id"] for span in created.json()["spans"]]
+
+        reextracted = client.post(
+            f"/api/knowledge/sources/{source_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+        assert reextracted.status_code == 200
+        assert [span["id"] for span in reextracted.json()["spans"]] == original_span_ids
+
+        text_capture = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/text-only",
+                "readableText": "Pre-extracted capture.",
+            },
+        )
+        assert text_capture.status_code == 201
+        no_raw_html = client.post(
+            f"/api/knowledge/sources/{text_capture.json()['source']['id']}/reextract?userId={user_id}",
+            headers=headers,
+        )
+        assert no_raw_html.status_code == 422

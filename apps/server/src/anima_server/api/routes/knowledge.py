@@ -10,17 +10,19 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Request,
     UploadFile,
     status,
 )
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.config import settings
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
     RuntimeKnowledgeBundleRun,
@@ -36,10 +38,20 @@ from anima_server.services.ingestion.adapters.text import (
     ingest_markdown_content,
     ingest_text_content,
 )
-from anima_server.services.ingestion.adapters.web import ingest_web_capture
+from anima_server.services.ingestion.adapters.web import (
+    ingest_html_content,
+    ingest_web_capture,
+    reextract_source_html,
+)
 from anima_server.services.ingestion.document_compiler import compile_source_knowledge
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
+from anima_server.services.ingestion.web_fetch import (
+    UnsafeFetchUrlError,
+    WebFetchDisabledError,
+    WebFetchError,
+    fetch_capture_html,
+)
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 SOURCE_URI_MAX_LENGTH = 1024
@@ -63,17 +75,26 @@ class TextSourceRequest(BaseModel):
 class WebCaptureRequest(BaseModel):
     userId: int = Field(ge=0)
     url: str = Field(min_length=1, max_length=SOURCE_URI_MAX_LENGTH)
-    readableText: str = Field(min_length=1)
+    readableText: str | None = Field(default=None)
+    html: str | None = Field(default=None)
+    fetch: bool = False
     title: str | None = Field(default=None, max_length=512)
     canonicalUrl: str | None = Field(default=None, max_length=2048)
     compile: bool = False
 
-    @field_validator("readableText")
-    @classmethod
-    def require_readable_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("content must not be empty")
-        return value
+    @model_validator(mode="after")
+    def require_exactly_one_input(self) -> WebCaptureRequest:
+        provided = sum(
+            (self.readableText is not None, self.html is not None, self.fetch)
+        )
+        if provided != 1:
+            raise ValueError(
+                "provide exactly one of readableText, html, or fetch=true"
+            )
+        for value in (self.readableText, self.html):
+            if value is not None and not value.strip():
+                raise ValueError("content must not be empty")
+        return self
 
 
 class KnowledgeLintRequest(BaseModel):
@@ -165,12 +186,34 @@ async def ingest_web_capture_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     require_unlocked_user(request, payload.userId)
+    url = payload.url
+    html = payload.html
+    if payload.fetch:
+        try:
+            url, html = fetch_capture_html(payload.url)
+        except WebFetchDisabledError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
+        except (UnsafeFetchUrlError, WebFetchError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+    if html is not None and len(html.encode("utf-8")) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "HTML content is too large. "
+                f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
+            ),
+        )
     try:
         source, artifacts, spans = ingest_web_capture(
             runtime_db,
             user_id=payload.userId,
-            url=payload.url,
+            url=url,
             readable_text=payload.readableText,
+            html=html,
             title=payload.title,
             canonical_url=payload.canonicalUrl,
             embedding_fn=generate_embedding,
@@ -185,6 +228,92 @@ async def ingest_web_capture_source(
     )
     runtime_db.commit()
     return _source_response(source, artifacts, spans, compile_run=compile_run)
+
+
+_HTML_UPLOAD_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+_HTML_UPLOAD_FALLBACK_CONTENT_TYPES = frozenset({"", "application/octet-stream"})
+
+
+@router.post("/sources/html", status_code=status.HTTP_201_CREATED)
+async def ingest_html_source(
+    request: Request,
+    userId: int = Form(..., ge=0),
+    title: str | None = Form(default=None, max_length=512),
+    compileKnowledge: bool = Form(default=False, alias="compile"),
+    file: UploadFile = File(...),
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    filename = file.filename or "page.html"
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    has_html_extension = filename.lower().endswith((".html", ".htm"))
+    if content_type not in _HTML_UPLOAD_CONTENT_TYPES and not (
+        content_type in _HTML_UPLOAD_FALLBACK_CONTENT_TYPES and has_html_extension
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only HTML uploads are supported.",
+        )
+
+    data = await file.read()
+    if not data.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HTML file must not be empty.",
+        )
+    if len(data) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "HTML file is too large. "
+                f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
+            ),
+        )
+
+    try:
+        source, artifacts, spans = ingest_html_content(
+            runtime_db,
+            user_id=userId,
+            html=data.decode("utf-8", errors="replace"),
+            filename=filename,
+            title=title,
+            embedding_fn=generate_embedding,
+            compile_knowledge=compileKnowledge,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    compile_run = (
+        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        if compileKnowledge
+        else None
+    )
+    runtime_db.commit()
+    return _source_response(source, artifacts, spans, compile_run=compile_run)
+
+
+@router.post("/sources/{source_id}/reextract")
+async def reextract_source(
+    request: Request,
+    source_id: int,
+    userId: int,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    try:
+        source, artifacts, spans = reextract_source_html(
+            runtime_db,
+            user_id=userId,
+            source_id=source_id,
+            embedding_fn=generate_embedding,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    runtime_db.commit()
+    return _source_response(source, artifacts, spans)
 
 
 @router.get("/sources/{source_id}")

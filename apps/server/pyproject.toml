@@ -31,6 +31,7 @@ dependencies = [
   "rank-bm25>=0.2.2",
   "json-repair>=0.30.0",
   "pypdf>=6.14.2",
+  "trafilatura>=2.0",
 ]
 
 [project.optional-dependencies]
