@@ -180,7 +180,7 @@ sequenceDiagram
     rect rgb(240, 255, 240)
         note over S: Stage 1b — Proactive Compaction (if needed)
         S->>S: estimate_tokens = ceil((block_chars + history_chars) / 3)
-        alt estimated > max_tokens * trigger_ratio
+        alt estimated > resolved_context_budget * trigger_ratio
             S->>RDB: compact_thread_context(thread, keep_last_N)
             RDB-->>S: CompactionResult
             S->>SW: run_soul_writer(userId) [promote before rebuild]
@@ -998,7 +998,7 @@ The system uses a three-tier compaction strategy to prevent context overflow:
 
 ### Tier 1: Proactive Compaction (Pre-Turn)
 
-**When**: Before the first LLM call, if estimated context exceeds `agent_max_tokens * agent_compaction_trigger_ratio`.
+**When**: Before the first LLM call, if estimated context exceeds `resolve_context_budget_tokens() * agent_compaction_trigger_ratio`.
 
 **How**: `compact_thread_context()` summarizes older messages into a thread summary, marks them `is_in_context=False`, and keeps the `agent_compaction_keep_last_messages` most recent messages.
 

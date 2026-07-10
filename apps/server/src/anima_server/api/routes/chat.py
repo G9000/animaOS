@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from starlette.types import Send
+from starlette.types import Receive, Scope, Send
 
 from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
 from anima_server.db import get_db, get_runtime_db
@@ -75,7 +77,40 @@ class _ClosingStreamingResponse(StreamingResponse):
         try:
             await super().stream_response(send)
         finally:
-            await self.body_iterator.aclose()
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        spec_version = tuple(
+            map(int, scope.get("asgi", {}).get("spec_version", "2.0").split("."))
+        )
+        if spec_version >= (2, 4):
+            await super().__call__(scope, receive, send)
+            return
+
+        stream_task = asyncio.create_task(self.stream_response(send))
+        disconnect_task = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _ = await asyncio.wait(
+                {stream_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            disconnected = disconnect_task in done and stream_task not in done
+            if disconnected:
+                stream_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stream_task
+            else:
+                disconnect_task.cancel()
+                await stream_task
+        finally:
+            for task in (stream_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stream_task, disconnect_task, return_exceptions=True)
+
+        if self.background is not None:
+            await self.background()
 
 
 @router.post("", response_model=ChatResponse)

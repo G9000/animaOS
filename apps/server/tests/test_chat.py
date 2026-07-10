@@ -393,6 +393,50 @@ async def test_chat_stream_closes_service_stream_when_transport_stops(
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_shields_cleanup_on_legacy_asgi_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+    body_started = asyncio.Event()
+
+    async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[object, None]:
+        try:
+            yield SimpleNamespace(event="chunk", data={"content": "hello"})
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            closed.set()
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
+    monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
+
+    response = await chat_routes.send_message(
+        chat_routes.ChatRequest(message="hello", userId=1, stream=True),
+        Request({"type": "http", "method": "POST", "path": "/api/chat"}),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    async def receive() -> dict[str, str]:
+        await body_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            body_started.set()
+
+    assert isinstance(response, StreamingResponse)
+    await response(
+        {"type": "http", "asgi": {"spec_version": "2.3"}},
+        receive,
+        send,
+    )
+
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
 async def test_approval_stream_closes_service_stream_when_transport_stops(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
