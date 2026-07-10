@@ -1134,6 +1134,30 @@ class TestGraphIngestionTask:
             assert len(relations) == 1
             assert relations[0].relation_type == "works_at"
 
+    @pytest.mark.asyncio()
+    async def test_blank_turn_skips_ingestion(self, db_factory, monkeypatch):
+        """A manual /sleep passes empty turn text — graph ingestion must skip
+        the entity-extraction LLM rather than run it on an empty prompt (a
+        useless billable call that could persist hallucinated entities)."""
+
+        async def _boom(*args, **kwargs):
+            raise AssertionError(
+                "ingest_conversation_graph should not run on blank turn text"
+            )
+
+        monkeypatch.setattr(
+            "anima_server.services.agent.knowledge_graph.ingest_conversation_graph",
+            _boom,
+        )
+
+        result = await _task_graph_ingestion(
+            user_id=1,
+            user_message="",
+            assistant_response="   ",
+            db_factory=db_factory,
+        )
+        assert result == {"entities": 0, "relations": 0, "pruned": 0}
+
 
 # ── RuntimeBackgroundTaskRun model ───────────────────────────────────
 

@@ -873,6 +873,12 @@ async def _task_graph_ingestion(
     # understand it and may extract spurious entities from it.
     clean_response = _strip_inner_reasoning(assistant_response)
 
+    # No turn text (e.g. a manual /sleep maintenance run) — skip: the
+    # entity-extraction LLM would otherwise burn a billable call on an empty
+    # prompt and could persist hallucinated entities.
+    if not (user_message or "").strip() and not clean_response.strip():
+        return {"entities": 0, "relations": 0, "pruned": 0}
+
     factory = db_factory or SessionLocal
     with factory() as db:
         entities, relations, pruned = await ingest_conversation_graph(
