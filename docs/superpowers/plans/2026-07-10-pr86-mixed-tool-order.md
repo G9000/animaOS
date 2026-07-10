@@ -10,12 +10,12 @@
 
 ---
 
-### Task 0: Commit the reviewed planning artifact
+### Task 0: Commit the reviewed planning artifact (completed in `222bd81b`)
 
 **Files:**
 - Add: `docs/superpowers/plans/2026-07-10-pr86-mixed-tool-order.md`
 
-- [ ] **Step 1: Commit the approved plan before execution**
+- [x] **Step 1: Commit the approved plan before execution**
 
 ```powershell
 git add docs/superpowers/plans/2026-07-10-pr86-mixed-tool-order.md
@@ -140,11 +140,11 @@ async def test_delegated_error_result_continues_to_later_server_barrier() -> Non
         ]
     )
 
-assert [result.call_id for result in results] == ["c1", "c2", "s1"]
-assert results[0].is_error is True
-assert results[1].is_error is False
-assert set(events[:2]) == {"client_fail", "client_ok"}
-assert events[-2:] == ["server_after:start", "server_after:finish"]
+    assert [result.call_id for result in results] == ["c1", "c2", "s1"]
+    assert results[0].is_error is True
+    assert results[1].is_error is False
+    assert set(events[:2]) == {"client_fail", "client_ok"}
+    assert events[-2:] == ["server_after:start", "server_after:finish"]
 ```
 
 - [ ] **Step 4: Add exact caller-cancellation coverage**
@@ -201,7 +201,7 @@ async def test_execute_parallel_cancellation_skips_later_server_barrier() -> Non
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-assert "server_after:start" not in events
+    assert "server_after:start" not in events
 ```
 
 - [ ] **Step 5: Run all three characterization nodes**
