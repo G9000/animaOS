@@ -197,29 +197,33 @@ class ToolExecutor:
         share a single runtime_db session per step, which is not safe
         for concurrent writes.  Returns results in input order.
         """
-        delegated: list[int] = [
-            index
-            for index, (tool_call, _terminal) in enumerate(tool_calls)
-            if self._delegate is not None
-            and tool_call.name in self._delegated_tool_names
-        ]
-
         results: list[ToolExecutionResult | None] = [None] * len(tool_calls)
+        delegated_group: list[int] = []
 
-        if len(delegated) > 1:
+        async def flush_delegated_group() -> None:
+            if not delegated_group:
+                return
             gathered = await asyncio.gather(
                 *(
                     self.execute(tool_calls[index][0], is_terminal=tool_calls[index][1])
-                    for index in delegated
+                    for index in delegated_group
                 )
             )
-            for index, result in zip(delegated, gathered, strict=True):
+            for index, result in zip(delegated_group, gathered, strict=True):
                 results[index] = result
+            delegated_group.clear()
 
         for index, (tool_call, terminal) in enumerate(tool_calls):
-            if results[index] is None:
-                results[index] = await self.execute(tool_call, is_terminal=terminal)
+            if (
+                self._delegate is not None
+                and tool_call.name in self._delegated_tool_names
+            ):
+                delegated_group.append(index)
+                continue
+            await flush_delegated_group()
+            results[index] = await self.execute(tool_call, is_terminal=terminal)
 
+        await flush_delegated_group()
         return [result for result in results if result is not None]
 
 

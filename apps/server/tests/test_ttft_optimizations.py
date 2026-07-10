@@ -11,6 +11,7 @@ import pytest
 from anima_server.db.base import Base
 from anima_server.models import MemoryItem, User
 from anima_server.services.agent import embeddings
+from anima_server.services.agent.delegation import DelegatedToolResult
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.runtime_types import ToolCall
 from sqlalchemy import create_engine
@@ -156,6 +157,168 @@ async def test_delegated_tools_run_concurrently() -> None:
     assert [r.call_id for r in results] == ["c1", "c2"]
     assert all(not r.is_error for r in results)
     assert elapsed < 0.35  # sequential would be ≥ 0.4
+
+
+@pytest.mark.asyncio
+async def test_mixed_tool_execution_preserves_ordering_barriers() -> None:
+    events: list[str] = []
+    both_clients_started = asyncio.Event()
+    release_clients = asyncio.Event()
+    started_count = 0
+
+    class ServerTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def ainvoke(self, payload: dict) -> str:
+            del payload
+            events.append(f"{self.name}:start")
+            await asyncio.sleep(0)
+            events.append(f"{self.name}:finish")
+            return self.name
+
+    async def delegate(
+        call_id: str,
+        name: str,
+        args: dict,
+    ) -> DelegatedToolResult:
+        nonlocal started_count
+        del args
+        events.append(f"{name}:start")
+        started_count += 1
+        if started_count == 2:
+            both_clients_started.set()
+        await release_clients.wait()
+        events.append(f"{name}:finish")
+        return DelegatedToolResult(call_id=call_id, name=name, output=name)
+
+    executor = ToolExecutor(
+        [ServerTool("server_before"), ServerTool("server_after")],
+        delegate=delegate,
+        delegated_tool_names=frozenset({"client_a", "client_b"}),
+    )
+    task = asyncio.create_task(
+        executor.execute_parallel(
+            [
+                (_tool_call("server_before", "s1"), False),
+                (_tool_call("client_a", "c1"), False),
+                (_tool_call("client_b", "c2"), False),
+                (_tool_call("server_after", "s2"), False),
+            ]
+        )
+    )
+    try:
+        await asyncio.wait_for(both_clients_started.wait(), timeout=1)
+        assert events[:2] == ["server_before:start", "server_before:finish"]
+        assert {"client_a:start", "client_b:start"}.issubset(events)
+        assert "server_after:start" not in events
+    finally:
+        release_clients.set()
+        results = await asyncio.wait_for(task, timeout=1)
+
+    assert [result.call_id for result in results] == ["s1", "c1", "c2", "s2"]
+    assert events[-2:] == ["server_after:start", "server_after:finish"]
+
+
+@pytest.mark.asyncio
+async def test_delegated_error_result_continues_to_later_server_barrier() -> None:
+    events: list[str] = []
+
+    class ServerTool:
+        name = "server_after"
+
+        async def ainvoke(self, payload: dict) -> str:
+            del payload
+            events.append("server_after:start")
+            await asyncio.sleep(0)
+            events.append("server_after:finish")
+            return "server_after"
+
+    async def delegate(
+        call_id: str,
+        name: str,
+        args: dict,
+    ) -> DelegatedToolResult:
+        del args
+        events.append(name)
+        if name == "client_fail":
+            raise RuntimeError("delegated failure")
+        return DelegatedToolResult(call_id=call_id, name=name, output=name)
+
+    executor = ToolExecutor(
+        [ServerTool()],
+        delegate=delegate,
+        delegated_tool_names=frozenset({"client_fail", "client_ok"}),
+    )
+    results = await executor.execute_parallel(
+        [
+            (_tool_call("client_fail", "c1"), False),
+            (_tool_call("client_ok", "c2"), False),
+            (_tool_call("server_after", "s1"), False),
+        ]
+    )
+
+    assert [result.call_id for result in results] == ["c1", "c2", "s1"]
+    assert results[0].is_error is True
+    assert results[1].is_error is False
+    assert set(events[:2]) == {"client_fail", "client_ok"}
+    assert events[-2:] == ["server_after:start", "server_after:finish"]
+
+
+@pytest.mark.asyncio
+async def test_execute_parallel_cancellation_skips_later_server_barrier() -> None:
+    events: list[str] = []
+    both_clients_started = asyncio.Event()
+    never_release = asyncio.Event()
+    started_count = 0
+
+    class ServerTool:
+        name = "server_after"
+
+        async def ainvoke(self, payload: dict) -> str:
+            del payload
+            events.append("server_after:start")
+            return "server_after"
+
+    async def delegate(
+        call_id: str,
+        name: str,
+        args: dict,
+    ) -> DelegatedToolResult:
+        nonlocal started_count
+        del args
+        events.append(f"{name}:start")
+        started_count += 1
+        if started_count == 2:
+            both_clients_started.set()
+        await never_release.wait()
+        return DelegatedToolResult(call_id=call_id, name=name, output=name)
+
+    executor = ToolExecutor(
+        [ServerTool()],
+        delegate=delegate,
+        delegated_tool_names=frozenset({"client_a", "client_b"}),
+    )
+    task = asyncio.create_task(
+        executor.execute_parallel(
+            [
+                (_tool_call("client_a", "c1"), False),
+                (_tool_call("client_b", "c2"), False),
+                (_tool_call("server_after", "s1"), False),
+            ]
+        )
+    )
+    try:
+        await asyncio.wait_for(both_clients_started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert "server_after:start" not in events
 
 
 @pytest.mark.asyncio
