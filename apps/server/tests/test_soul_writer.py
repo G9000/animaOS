@@ -277,6 +277,29 @@ async def test_run_soul_writer_retries_failed_extraction_work(
         runtime_engine.dispose()
 
 
+def test_extraction_retry_wait_covers_full_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outer wait on a cross-loop extraction retry must cover the provider's
+    entire retry budget (retry_limit+1 attempts x timeout + backoff), not a
+    single timeout — else a legitimately retrying call is cancelled early."""
+    from anima_server.config import settings
+    from anima_server.services.agent.soul_writer import (
+        EXTRACTION_RETRY_TIMEOUT_BUFFER,
+        _extraction_retry_wait_seconds,
+    )
+
+    monkeypatch.setattr(settings, "agent_llm_timeout", 120.0)
+    monkeypatch.setattr(settings, "agent_llm_retry_limit", 3)
+    monkeypatch.setattr(settings, "agent_llm_retry_max_delay", 10.0)
+
+    wait = _extraction_retry_wait_seconds()
+    # 4 attempts × 120s + 3 × 10s max backoff + 30s buffer.
+    assert wait == 4 * 120.0 + 3 * 10.0 + EXTRACTION_RETRY_TIMEOUT_BUFFER
+    # Must far exceed a single provider timeout (the earlier one-timeout bug).
+    assert wait > settings.agent_llm_timeout
+
+
 @pytest.mark.asyncio
 async def test_retry_skips_inflight_pending_but_recovers_stale(
     monkeypatch: pytest.MonkeyPatch,

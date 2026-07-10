@@ -29,10 +29,34 @@ MAX_ITEMS_PER_RUN = 50
 # call and left alone; older than this it is assumed to be from a crashed
 # process and becomes eligible for crash-recovery retry.
 STALE_PENDING_EXTRACTION = timedelta(minutes=15)
-# Headroom added to the configured LLM timeout when waiting on a cross-loop
-# extraction retry, so the inner provider timeout/retry budget fires first and
-# returns a clean result instead of the outer wait killing a legitimate call.
+# Headroom added to the configured LLM retry budget when waiting on a
+# cross-loop extraction retry, so the inner provider timeout/retry policy fires
+# first and returns a clean result instead of the outer wait killing a
+# legitimate call.
 EXTRACTION_RETRY_TIMEOUT_BUFFER = 30.0
+
+
+def _extraction_retry_wait_seconds() -> float:
+    """Outer wall-clock budget for a cross-loop extraction retry.
+
+    ``extract_memories_via_llm`` runs through ``invoke_with_retry``, which makes
+    ``retry_limit + 1`` attempts — each up to ``agent_llm_timeout`` — with up to
+    ``retry_max_delay`` of backoff between them.  The outer ``future.result``
+    wait must cover that entire budget (plus headroom); a shorter wait would
+    cancel a legitimately slow/retrying call partway through the configured
+    policy, burning ``retry_count`` and eventually abandoning the extraction.
+    """
+    from anima_server.config import settings
+
+    attempts = settings.agent_llm_retry_limit + 1
+    max_backoff_total = (
+        settings.agent_llm_retry_limit * settings.agent_llm_retry_max_delay
+    )
+    return (
+        attempts * settings.agent_llm_timeout
+        + max_backoff_total
+        + EXTRACTION_RETRY_TIMEOUT_BUFFER
+    )
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
@@ -565,13 +589,12 @@ def _retry_memory_extraction_failures(
             event_loop,
         )
         try:
-            # Wait a little longer than the provider's own timeout/retry budget
-            # so a slow (e.g. local) model isn't killed prematurely — the old
-            # hard-coded 30s could abort legitimate calls, burn retry_count, and
-            # leave the coroutine running to issue duplicate billable requests.
-            llm_result = future.result(
-                timeout=settings.agent_llm_timeout + EXTRACTION_RETRY_TIMEOUT_BUFFER
-            )
+            # Wait for the provider's full timeout+retry budget so a slow (e.g.
+            # local) model or a transient-error retry isn't killed prematurely —
+            # the old hard-coded 30s could abort legitimate calls, burn
+            # retry_count, and leave the coroutine running to issue duplicate
+            # billable requests.
+            llm_result = future.result(timeout=_extraction_retry_wait_seconds())
         except Exception as exc:
             # Cancel the scheduled coroutine so a hung/slow call doesn't keep
             # running on the loop after we've given up on it.
