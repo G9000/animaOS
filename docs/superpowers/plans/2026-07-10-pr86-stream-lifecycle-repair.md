@@ -22,7 +22,7 @@
 ### Task 1: Prove the public stream ownership regression
 
 **Files:**
-- Modify: `apps/server/tests/test_agent_service.py:2181-2274`
+- Modify: `apps/server/tests/test_agent_service.py` (lines 2181-2274 before edits)
 - Test: `apps/server/tests/test_agent_service.py`
 
 - [ ] **Step 1: Add a parameterized failing lifecycle test for both wrappers**
@@ -123,8 +123,8 @@ still exits because the test cleanup cancels the captured leaked worker.
 ### Task 2: Close the shared pump from both SSE entry points
 
 **Files:**
-- Modify: `apps/server/src/anima_server/services/agent/service.py:649-653`
-- Modify: `apps/server/src/anima_server/services/agent/service.py:3162-3166`
+- Modify: `apps/server/src/anima_server/services/agent/service.py` (lines 649-653 before edits)
+- Modify: `apps/server/src/anima_server/services/agent/service.py` (lines 3162-3166 before edits)
 - Test: `apps/server/tests/test_agent_service.py`
 
 - [ ] **Step 1: Implement explicit ownership with `contextlib.aclosing`**
@@ -244,8 +244,8 @@ git -c commit.gpgsign=false commit -m "server: clear runtime hardening lint find
 ### Task 4: Synchronize the canonical runtime documentation
 
 **Files:**
-- Modify: `docs/architecture/agent/agent-runtime.md:1-6,131-136,179-185,520-526,1023-1028`
-- Modify: `docs/architecture/memory/memory-system.md:205-213,812-820,870-883`
+- Modify: `docs/architecture/agent/agent-runtime.md` (frontmatter and runtime sections near lines 131, 179, 520, and 1023)
+- Modify: `docs/architecture/memory/memory-system.md` (maintenance sections near lines 205, 812, and 870)
 - Modify: `docs/CHANGELOG.md`
 
 - [ ] **Step 1: Correct the prompt-estimation description**

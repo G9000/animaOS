@@ -204,7 +204,7 @@ consolidation pipeline:
 
 ### Channel 3: Sleep Tasks (Maintenance)
 
-During user inactivity, `run_sleep_tasks()` can create merged memories:
+During scheduled post-turn maintenance, inactivity reflection, or a manual maintenance request, `run_sleeptime_agents()` coordinates the maintenance pipeline. Its expensive synthesis tasks are heat-gated and skip unchanged inputs; a manual run can request the contradiction scan even below the normal heat threshold:
 
 - **Contradiction scan**: finds conflicting items, resolves via LLM (KEEP_FIRST/KEEP_SECOND/MERGE)
 - **Profile synthesis**: combines related facts into single statements
@@ -819,7 +819,9 @@ Every turn:
   |   consolidation only         <- per-turn extraction
 ```
 
-### Parallel Group (always run on orchestrator turns)
+### Sequential Group (always run on orchestrator turns)
+
+These tasks run sequentially to avoid concurrent SQLCipher writes:
 
 | Task | What it does |
 |------|-------------|
@@ -827,14 +829,19 @@ Every turn:
 | Embedding backfill | Embed items without vectors (batch of 50) |
 | KG ingestion | Extract entities/relations for knowledge graph (F4) |
 | Heat decay | Recompute all heat scores (F2) |
+| Foresight lifecycle | Advance or expire foresight state |
 | Episode generation | Create episodic summary if enough turns (F6 batch if ≥8 messages) |
 
 ### Sequential Group (heat-gated, skip if max heat < 5.0)
 
 | Task | What it does |
 |------|-------------|
-| Contradiction scan | Find conflicting items via Jaccard similarity, resolve via LLM (KEEP_FIRST/KEEP_SECOND/MERGE). Guards against double-processing with resolved_ids set. Calls `suppress_memory()` on losers. |
-| Profile synthesis | Merge related facts into single statements. Cleanup vector/BM25/derived refs for all merged-away items. |
+| Contradiction scan | Find conflicting items and resolve them via LLM. Idle-lull forcing still honors the heat gate; manual maintenance may run it on demand. Persisted pair verdicts and input freshness prevent unchanged work from repeating. |
+| Memory evolution scan | Evaluate memory evolution when the expensive-task gate is open. |
+| Profile synthesis | Reconcile profile fields and merge related facts. Skips when memory-item and claim inputs have not changed since the last completed run. |
+| Pattern synthesis | Synthesize cross-episode patterns only when episode inputs changed. |
+
+`force=True` bypasses the normal heat gate for inactivity catch-up, but it does not bypass input-freshness checks. The contradiction scan remains heat-gated for idle-lull runs because it can make many LLM calls; `manual=True` is the explicit on-demand exception.
 
 ### Time-Gated (once per 24h)
 
@@ -870,17 +877,16 @@ schedule_reflection():
 
 ```
 run_reflection():
-  1. expire_working_memory_items()   # remove TTL'd items
-  2. run_quick_reflection()          # post-conversation inner monologue
+  1. run_quick_reflection()          # post-conversation inner monologue
      -> updates inner_state section
      -> may record emotional signal
-  3. run_sleep_tasks()               # full maintenance suite
-     -> contradiction scan
-     -> profile synthesis
-     -> episode generation
-     -> deep monologue (if 24h cooldown passed)
-     -> embedding backfill
-  4. companion.invalidate_memory()   # bust cache
+  2. run_soul_writer()               # promote pending candidates
+  3. _backfill_user_embeddings()     # inactivity-only embedding catch-up
+  4. run_sleeptime_agents(force=True)
+     -> always-run maintenance group
+     -> heat/freshness-gated synthesis group
+     -> deep monologue if its persisted 24h gate is open
+  5. companion.invalidate_memory()   # handled by the orchestrator
 ```
 
 ---
