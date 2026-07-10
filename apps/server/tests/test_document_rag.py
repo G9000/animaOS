@@ -1449,3 +1449,137 @@ def test_search_document_chunks_accepts_async_embedding_function(
     )
 
     assert [result.chunk_id for result in results] == [chunks[0].id]
+
+
+def test_search_document_chunks_lexical_arm_promotes_exact_token_match(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_chunks(
+        runtime_db,
+        chunks=[
+            "general notes about gardening and flowers",
+            "the relay reports error code XK-9931 during boot",
+        ],
+    )
+    _add_document_embedding(runtime_db, chunks[0])
+    _add_document_embedding(runtime_db, chunks[1])
+    _mark_document_indexed(runtime_db, document)
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
+    ) -> list[VectorSearchResult]:
+        # Embeddings mis-rank the exact-token chunk below the unrelated one.
+        return [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="gardening preview",
+                category="document",
+                importance=3,
+                similarity=0.90,
+                source_type="document_chunk",
+            ),
+            VectorSearchResult(
+                item_id=chunks[1].id,
+                content="relay preview",
+                category="document",
+                importance=3,
+                similarity=0.30,
+                source_type="document_chunk",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="XK-9931",
+        limit=2,
+        embedding_fn=lambda text: _embedding(float(len(text)), 1.0),
+    )
+
+    assert [result.chunk_id for result in results] == [chunks[1].id, chunks[0].id]
+    assert results[0].content == "the relay reports error code XK-9931 during boot"
+    # Similarity still reports the dense score for transparency.
+    assert results[0].similarity == 0.30
+
+
+def test_search_document_chunks_degrades_to_dense_when_lexical_arm_fails(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_chunks(runtime_db)
+    _add_document_embedding(runtime_db, chunks[0])
+    _add_document_embedding(runtime_db, chunks[1])
+    _mark_document_indexed(runtime_db, document)
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        *,
+        query_embedding: list[float],
+        limit: int = 10,
+        category: str | None = None,
+        source_types: list[str] | None = None,
+        source_ids: list[int] | None = None,
+        source_id_query: Any | None = None,
+    ) -> list[VectorSearchResult]:
+        return [
+            VectorSearchResult(
+                item_id=chunks[1].id,
+                content="beta preview",
+                category="document",
+                importance=3,
+                similarity=0.92,
+                source_type="document_chunk",
+            ),
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="alpha preview",
+                category="document",
+                importance=3,
+                similarity=0.80,
+                source_type="document_chunk",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+
+    class _BrokenIndex:
+        def build(self, documents: list[tuple[int, str]]) -> None:
+            raise RuntimeError("lexical index unavailable")
+
+        def search(self, query: str, *, limit: int = 20) -> list[tuple[int, float]]:
+            raise RuntimeError("lexical index unavailable")
+
+    from anima_server.services.documents import rag as rag_module
+
+    monkeypatch.setattr(rag_module, "BM25Index", _BrokenIndex)
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="beta",
+        limit=2,
+        embedding_fn=lambda text: _embedding(float(len(text)), 1.0),
+    )
+
+    assert [result.chunk_id for result in results] == [chunks[1].id, chunks[0].id]
+    assert [result.similarity for result in results] == [0.92, 0.80]

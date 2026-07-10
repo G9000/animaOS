@@ -175,3 +175,38 @@ def test_retrieve_knowledge_is_user_scoped(runtime_db) -> None:
     assert runtime_db.scalar(
         select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.id == other.id)
     )
+
+def test_retrieve_knowledge_lexical_arm_promotes_exact_token_span(runtime_db) -> None:
+    from anima_server.services.ingestion.retrieval import (
+        retrieve_knowledge,
+        upsert_source_span_embedding,
+    )
+
+    _source, _artifacts, spans = ingest_text_content(
+        runtime_db,
+        user_id=1,
+        content=(
+            "General portable continuity discussion without specifics."
+            "\n\n"
+            "The relay reports error code XK-9931 during boot."
+        ),
+        filename="hybrid-evidence.txt",
+    )
+    for span in spans:
+        upsert_source_span_embedding(runtime_db, span=span, embedding_fn=_embedding_for)
+
+    result = retrieve_knowledge(
+        runtime_db,
+        user_id=1,
+        query="portable XK-9931",
+        embedding_fn=_embedding_for,
+    )
+
+    # The query embeds onto the "portable" vector (see _embedding_for), so the
+    # dense arm gives the exact-token span zero cosine and would drop it
+    # entirely; only the lexical arm can surface it.
+    span_ids = [item.span_id for item in result.evidence_spans]
+    token_span = next(span for span in spans if "XK-9931" in span.content_text)
+    generic_span = next(span for span in spans if "portable" in span.content_text)
+    assert token_span.id in span_ids
+    assert generic_span.id in span_ids

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -9,7 +10,11 @@ from sqlalchemy.sql import Select
 
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
-from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.agent.bm25_index import BM25Index
+from anima_server.services.agent.embeddings import (
+    _reciprocal_rank_fusion,
+    generate_embedding,
+)
 from anima_server.services.agent.pgvec_store import PgVecStore
 from anima_server.services.agent.vector_store import VectorSearchResult
 from anima_server.services.documents.indexing import (
@@ -18,6 +23,8 @@ from anima_server.services.documents.indexing import (
     embed_document_chunks,
     get_unembedded_chunks,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +106,19 @@ def search_document_chunks(
             source_types=["document_chunk"],
             source_ids=source_ids,
         )
-    ranked_chunk_ids = _ranked_document_chunk_ids(vector_hits)
+    dense_ranking = _dense_document_chunk_ranking(vector_hits)
+    lexical_ranking = _lexical_document_chunk_ranking(
+        runtime_db,
+        user_id=user_id,
+        document_ids=allowed_document_ids,
+        query=query,
+        limit=search_limit,
+    )
+    if lexical_ranking:
+        fused = _reciprocal_rank_fusion(dense_ranking, lexical_ranking)
+        ranked_chunk_ids = [chunk_id for chunk_id, _score in fused]
+    else:
+        ranked_chunk_ids = [chunk_id for chunk_id, _similarity in dense_ranking]
     if not ranked_chunk_ids:
         return []
 
@@ -110,11 +129,10 @@ def search_document_chunks(
         document_ids=allowed_document_ids,
     )
 
+    similarity_by_chunk_id = dict(dense_ranking)
     results: list[DocumentRagResult] = []
-    for hit in vector_hits:
-        if hit.source_type != "document_chunk":
-            continue
-        pair = hydrated.get(hit.item_id)
+    for chunk_id in ranked_chunk_ids:
+        pair = hydrated.get(chunk_id)
         if pair is None:
             continue
         chunk, document = pair
@@ -124,7 +142,7 @@ def search_document_chunks(
                 document_id=document.id,
                 filename=document.filename,
                 content=chunk.content_text,
-                similarity=hit.similarity,
+                similarity=similarity_by_chunk_id.get(chunk_id, 0.0),
                 page_start=chunk.page_start,
                 page_end=chunk.page_end,
                 section_title=chunk.section_title,
@@ -280,10 +298,10 @@ def _delete_document_chunk_vectors(
     runtime_db.flush()
 
 
-def _ranked_document_chunk_ids(
+def _dense_document_chunk_ranking(
     vector_hits: Sequence[VectorSearchResult],
-) -> list[int]:
-    ranked: list[int] = []
+) -> list[tuple[int, float]]:
+    ranked: list[tuple[int, float]] = []
     seen: set[int] = set()
     for hit in vector_hits:
         if hit.source_type != "document_chunk":
@@ -292,8 +310,44 @@ def _ranked_document_chunk_ids(
         if item_id in seen:
             continue
         seen.add(item_id)
-        ranked.append(item_id)
+        ranked.append((item_id, hit.similarity))
     return ranked
+
+
+def _lexical_document_chunk_ranking(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: set[int] | None,
+    query: str,
+    limit: int,
+) -> list[tuple[int, float]]:
+    """BM25 ranking over live document chunks; degrades to [] so search stays dense-only."""
+    try:
+        stmt = (
+            select(RuntimeDocumentChunk.id, RuntimeDocumentChunk.content_text)
+            .join(RuntimeDocument, RuntimeDocumentChunk.document_id == RuntimeDocument.id)
+            .where(
+                RuntimeDocumentChunk.user_id == user_id,
+                RuntimeDocument.user_id == user_id,
+                RuntimeDocument.status == "indexed",
+            )
+        )
+        if document_ids is not None:
+            stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
+        rows = list(runtime_db.execute(stmt).all())
+        if not rows:
+            return []
+        index = BM25Index()
+        index.build([(chunk_id, content_text) for chunk_id, content_text in rows])
+        return index.search(query, limit=limit)
+    except Exception:
+        logger.debug(
+            "Lexical document chunk ranking failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+        return []
 
 
 def _load_document_chunks(
