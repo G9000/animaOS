@@ -29,6 +29,10 @@ MAX_ITEMS_PER_RUN = 50
 # call and left alone; older than this it is assumed to be from a crashed
 # process and becomes eligible for crash-recovery retry.
 STALE_PENDING_EXTRACTION = timedelta(minutes=15)
+# Headroom added to the configured LLM timeout when waiting on a cross-loop
+# extraction retry, so the inner provider timeout/retry budget fires first and
+# returns a clean result instead of the outer wait killing a legitimate call.
+EXTRACTION_RETRY_TIMEOUT_BUFFER = 30.0
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
@@ -553,16 +557,25 @@ def _retry_memory_extraction_failures(
             failure=failure,
         )
 
+        future = asyncio.run_coroutine_threadsafe(
+            extract_memories_via_llm(
+                user_message=user_message,
+                assistant_response=assistant_response,
+            ),
+            event_loop,
+        )
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                extract_memories_via_llm(
-                    user_message=user_message,
-                    assistant_response=assistant_response,
-                ),
-                event_loop,
+            # Wait a little longer than the provider's own timeout/retry budget
+            # so a slow (e.g. local) model isn't killed prematurely — the old
+            # hard-coded 30s could abort legitimate calls, burn retry_count, and
+            # leave the coroutine running to issue duplicate billable requests.
+            llm_result = future.result(
+                timeout=settings.agent_llm_timeout + EXTRACTION_RETRY_TIMEOUT_BUFFER
             )
-            llm_result = future.result(timeout=30)
         except Exception as exc:
+            # Cancel the scheduled coroutine so a hung/slow call doesn't keep
+            # running on the loop after we've given up on it.
+            future.cancel()
             # Normalize a recovered stale "pending" guard to "failed" so it is
             # a plain retryable row from here on.
             failure.status = "failed"
