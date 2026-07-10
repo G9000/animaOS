@@ -1,13 +1,13 @@
 # PDP-003 - Structured Markdown Intermediate and Structure-Aware Chunking
 
-- Status: todo
+- Status: in_review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`
 - Depends on: none
 - Owner: unassigned
 - Created: 2026-07-10
-- Updated: 2026-07-10
+- Updated: 2026-07-11 (implemented in worktree `production-doc-processing`)
 
 ## Goal
 
@@ -33,3 +33,10 @@ Normalize every parsed format to one intermediate — structured markdown with a
 
 - Commands: server test suite (ingestion + adapters + chunking subsets), ruff.
 - Changed paths: `apps/server/src/anima_server/services/ingestion/` (models, adapters, new chunker), `apps/server/src/anima_server/services/documents/chunking.py`, tests.
+
+## Activity Log
+
+- 2026-07-11 - Implemented (Claude). New module `services/ingestion/structured.py`: `StructuredBlock`/`StructuredSection`/`StructuredDocument` (heading-tree sections, outline, canonical markdown), `parse_markdown_structure` (headings, paragraphs, fenced code, pipe tables, line locators), `parse_page_structure` (PDF fast-path: conservative numbered/ALL-CAPS heading detection, page locators), `chunk_structured_document` (merge-to-target, oversized-section splitting with in-section overlap, atomic tables/code, 1600-char default target ~= 400 tokens).
+- Markdown adapter now emits a `structured_markdown` artifact (canonical markdown + outline metadata), enriches heading/paragraph spans with `section_path`/`section_index`, and adds `section` parent spans. Section spans are not embedded (`artifacts.py`) and are excluded from concept compilation (`document_compiler.py`) so evidence counts and topics stay stable.
+- Deferred to PDP-004 (as designed): switching the PDF workflow to the structured chunker and populating `runtime_document_chunks.section_title` -- the PDF path gains a structured artifact only when the parsing tier lands.
+- Validation: new `tests/test_structured_document.py` (10 tests: block kinds/locators, nested paths incl. heading-only parent sections, page-structure detection and over-detection guard, merge/split/atomic/bounds chunker rules, markdown round-trip); adapter/API tests updated for section spans; full server suite 2125 passed (3 pre-existing transcript-archive failures deselected, tracked separately); ruff clean.

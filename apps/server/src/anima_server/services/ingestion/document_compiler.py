@@ -21,12 +21,15 @@ def compile_source_knowledge(
     spans: Sequence[RuntimeSourceSpan],
     embedding_fn: EmbeddingFn | None = None,
 ) -> CompileResult:
+    # Section spans duplicate their child chunk/paragraph content; compiling
+    # them too would double every topic. Evidence spans only.
+    evidence_spans = [span for span in spans if span.span_kind != "section"]
     return compile_source_to_concepts(
         db,
         user_id=source.user_id,
         source_id=source.id,
-        span_ids=[span.id for span in spans],
-        model=lambda _request: json.dumps(_source_payload(source, spans)),
+        span_ids=[span.id for span in evidence_spans],
+        model=lambda _request: json.dumps(_source_payload(source, evidence_spans)),
         embedding_fn=embedding_fn,
     )
 

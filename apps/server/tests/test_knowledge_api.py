@@ -47,7 +47,11 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
         payload = response.json()
         assert payload["source"]["kind"] == "markdown"
         assert payload["source"]["sourceUri"] == "markdown://notes.md"
-        assert [span["spanKind"] for span in payload["spans"]] == ["heading", "paragraph"]
+        assert [span["spanKind"] for span in payload["spans"]] == [
+            "heading",
+            "paragraph",
+            "section",
+        ]
         assert payload["compileRun"]["status"] == "completed"
         assert payload["compileRun"]["runType"] == "compile:initial"
 
@@ -98,7 +102,10 @@ def test_markdown_source_endpoint_compile_keeps_span_topics_active() -> None:
                 and concept.status == "active"
             ]
 
-        assert len(active_topics) == len(payload["spans"])
+        evidence_spans = [
+            span for span in payload["spans"] if span["spanKind"] != "section"
+        ]
+        assert len(active_topics) == len(evidence_spans)
         assert len(active_summaries) == 1
 
 

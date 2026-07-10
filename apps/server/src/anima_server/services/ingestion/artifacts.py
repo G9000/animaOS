@@ -166,6 +166,10 @@ def _embed_source_spans(
     if embedding_fn is None:
         return
     for span in spans:
+        # Section spans are parent read units, not retrieval evidence;
+        # only chunk-level spans get embedded.
+        if span.span_kind == "section":
+            continue
         upsert_source_span_embedding(db, span=span, embedding_fn=embedding_fn)
 
 

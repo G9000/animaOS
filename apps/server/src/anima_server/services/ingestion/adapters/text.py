@@ -15,6 +15,12 @@ from anima_server.services.ingestion.models import (
 )
 from anima_server.services.ingestion.retrieval import EmbeddingFn
 from anima_server.services.ingestion.sources import register_source
+from anima_server.services.ingestion.structured import (
+    StructuredDocument,
+    parse_markdown_structure,
+)
+
+STRUCTURED_MARKDOWN_ARTIFACT_KIND = "structured_markdown"
 
 
 def ingest_text_content(
@@ -100,10 +106,20 @@ def _ingest_content(
             metadata_json={"filename": safe_name},
         )
     ]
-    spans = _markdown_spans(artifact_kind, normalized) if kind == "markdown" else _paragraph_spans(
-        artifact_kind,
-        normalized,
-    )
+    if kind == "markdown":
+        document = parse_markdown_structure(normalized)
+        canonical = document.to_markdown()
+        artifacts.append(
+            SourceArtifactInput(
+                artifact_kind=STRUCTURED_MARKDOWN_ARTIFACT_KIND,
+                content_text=canonical,
+                content_hash=_content_hash(canonical),
+                metadata_json={"filename": safe_name, "outline": document.outline()},
+            )
+        )
+        spans = _structured_markdown_spans(artifact_kind, document)
+    else:
+        spans = _paragraph_spans(artifact_kind, normalized)
     return (
         source,
         *replace_source_artifacts_and_spans(
@@ -117,63 +133,91 @@ def _ingest_content(
     )
 
 
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+def _structured_markdown_spans(
+    artifact_kind: str,
+    document: StructuredDocument,
+) -> list[SourceSpanInput]:
+    """Heading/paragraph evidence spans plus parent `section` spans.
 
-
-def _markdown_spans(artifact_kind: str, content: str) -> list[SourceSpanInput]:
+    Heading and paragraph spans keep their historical shapes (kinds, locators)
+    and gain `section_path`/`section_index` metadata. Section spans are the
+    parent read units for structure-aware retrieval: they carry the merged
+    section body, are not embedded, and are excluded from concept compilation.
+    """
     spans: list[SourceSpanInput] = []
-    current_heading: str | None = None
-    lines = content.splitlines()
-    paragraph_lines: list[tuple[int, str]] = []
+    section_spans: list[SourceSpanInput] = []
+    paragraph_count = 0
 
-    def flush_paragraph() -> None:
-        nonlocal paragraph_lines
-        if not paragraph_lines:
-            return
-        text = "\n".join(line for _line_no, line in paragraph_lines).strip()
-        if text:
-            start = paragraph_lines[0][0]
-            end = paragraph_lines[-1][0]
+    for section in document.sections():
+        section_meta: dict[str, object] = {"section_index": section.index}
+        if section.path:
+            section_meta["section_path"] = section.section_path
+
+        for block in section.blocks:
+            if block.kind == "heading":
+                spans.append(
+                    SourceSpanInput(
+                        artifact_kind=artifact_kind,
+                        span_kind="heading",
+                        locator_json={
+                            "line_start": block.line_start,
+                            "line_end": block.line_end,
+                        },
+                        content_text=block.text,
+                        content_hash=_content_hash(block.text),
+                        metadata_json={
+                            "heading": block.text,
+                            "heading_level": block.heading_level,
+                            **section_meta,
+                        },
+                    )
+                )
+                continue
+            if not block.text.strip():
+                continue
+            metadata: dict[str, object] = dict(section_meta)
+            if section.path:
+                metadata["heading"] = section.path[-1]
+            if block.kind != "paragraph":
+                metadata["block_kind"] = block.kind
             spans.append(
                 SourceSpanInput(
                     artifact_kind=artifact_kind,
                     span_kind="paragraph",
                     locator_json={
-                        "paragraph_index": len([span for span in spans if span.span_kind == "paragraph"]),
-                        "line_start": start,
-                        "line_end": end,
+                        "paragraph_index": paragraph_count,
+                        "line_start": block.line_start,
+                        "line_end": block.line_end,
                     },
-                    content_text=text,
-                    content_hash=_content_hash(text),
-                    metadata_json={"heading": current_heading} if current_heading else None,
+                    content_text=block.text,
+                    content_hash=_content_hash(block.text),
+                    metadata_json=metadata,
                 )
             )
-        paragraph_lines = []
+            paragraph_count += 1
 
-    for index, line in enumerate(lines, start=1):
-        heading = _HEADING_RE.match(line)
-        if heading:
-            flush_paragraph()
-            level = len(heading.group(1))
-            text = heading.group(2).strip()
-            current_heading = text
-            spans.append(
+        section_content = section.content_text
+        if section_content:
+            section_spans.append(
                 SourceSpanInput(
-                    artifact_kind=artifact_kind,
-                    span_kind="heading",
-                    locator_json={"line_start": index, "line_end": index},
-                    content_text=text,
-                    content_hash=_content_hash(text),
-                    metadata_json={"heading": text, "heading_level": level},
+                    artifact_kind=STRUCTURED_MARKDOWN_ARTIFACT_KIND,
+                    span_kind="section",
+                    locator_json={
+                        "section_index": section.index,
+                        "line_start": section.line_start,
+                        "line_end": section.line_end,
+                    },
+                    content_text=section_content,
+                    content_hash=_content_hash(section_content),
+                    metadata_json={
+                        "section_path": section.section_path,
+                        "heading_level": section.heading_level,
+                        **({"heading": section.path[-1]} if section.path else {}),
+                    },
                 )
             )
-            continue
-        if not line.strip():
-            flush_paragraph()
-            continue
-        paragraph_lines.append((index, line))
-    flush_paragraph()
-    return spans
+
+    return [*spans, *section_spans]
 
 
 def _paragraph_spans(artifact_kind: str, content: str) -> list[SourceSpanInput]:
