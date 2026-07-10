@@ -26,7 +26,7 @@ from anima_server.services.agent.state import (
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import StreamingResponse
 
 
@@ -375,8 +375,19 @@ async def test_chat_stream_closes_service_stream_when_transport_stops(
     )
 
     assert isinstance(response, StreamingResponse)
-    await anext(response.body_iterator)
-    await response.body_iterator.aclose()
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
 
     assert closed.is_set()
 
@@ -419,8 +430,19 @@ async def test_approval_stream_closes_service_stream_when_transport_stops(
     )
 
     assert isinstance(response, StreamingResponse)
-    await anext(response.body_iterator)
-    await response.body_iterator.aclose()
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
 
     assert closed.is_set()
 

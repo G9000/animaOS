@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.types import Send
 
 from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
 from anima_server.db import get_db, get_runtime_db
@@ -63,6 +64,18 @@ from anima_server.services.agent.system_prompt import PromptTemplateError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    """Ensure transport termination closes the route's async body iterator."""
+
+    body_iterator: AsyncGenerator[str, None]
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            await self.body_iterator.aclose()
 
 
 @router.post("", response_model=ChatResponse)
@@ -152,7 +165,7 @@ async def send_message(
                 "error", {"error": "An internal error occurred during streaming."}
             )
 
-    return StreamingResponse(
+    return _ClosingStreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={
@@ -779,7 +792,7 @@ async def handle_approval(
                         continue  # private reasoning, not forwarded to client
                     yield _format_sse_event(event.event, event.data)
 
-        return StreamingResponse(
+        return _ClosingStreamingResponse(
             _generate(),
             media_type="text/event-stream",
             headers={
