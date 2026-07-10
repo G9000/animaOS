@@ -126,6 +126,11 @@ def upsert_claim(
                         source_kind=source_kind,
                     )
                 )
+                # New evidence changes the claim's state, so bump its timestamp:
+                # profile-synthesis freshness keys off MemoryClaim.updated_at,
+                # and reconcile_profile_from_claims needs to pick up the new
+                # source_claim_evidence_id on the next run.
+                existing.updated_at = datetime.now(UTC)
                 db.flush()
             return existing
 
