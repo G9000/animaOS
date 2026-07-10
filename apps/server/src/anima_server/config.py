@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # optional extra is installed), or "auto" (pypdf first, escalate to
     # Docling when extraction quality looks poor or pages are scanned).
     document_parser_tier: str = "auto"
+    # Document-grounded turns retrieve this many chunks for the context block.
+    document_context_chunk_limit: int = 15
+    # Raw evidence chunks pass through untruncated up to this safety cap,
+    # which only bounds pathological chunks (deliberate chunk size is 1800).
+    document_context_chunk_char_cap: int = 2500
     diary_attachment_max_size_bytes: int = 100 * 1024 * 1024
     core_passphrase: str = ""
     core_require_encryption: bool = True

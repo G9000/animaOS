@@ -143,8 +143,6 @@ _cached_runner: AgentRuntime | None = None
 _background_tasks: set[asyncio.Task[Any]] = set()
 _DOCUMENT_PILL_KINDS = frozenset({"document_attachment", "document_source"})
 _MAX_RECALLED_IMAGE_SOURCE_PILLS = 3
-_DOCUMENT_CONTEXT_CHUNK_LIMIT = 15
-_DOCUMENT_CHUNK_CHAR_CAP = 2500
 
 
 def normalize_document_only_user_message(
@@ -1782,7 +1780,7 @@ def _build_document_context_block(
             user_id,
             query,
             document_ids=cleaned_document_ids,
-            limit=_DOCUMENT_CONTEXT_CHUNK_LIMIT,
+            limit=settings.document_context_chunk_limit,
         )
     except Exception:
         logger.debug(
@@ -1842,7 +1840,12 @@ def _build_document_context_block(
                 f"[{index}] {result.filename}{location}{section} "
                 f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
             )
-            lines.append(_truncate_document_chunk(result.content))
+            lines.append(
+                _truncate_document_chunk(
+                    result.content,
+                    limit=settings.document_context_chunk_char_cap,
+                )
+            )
 
     return MemoryBlock(
         label="document_context",
@@ -2101,7 +2104,7 @@ def _format_document_location(result: DocumentRagResult) -> str:
     return f", pages {result.page_start}-{result.page_end}"
 
 
-def _truncate_document_chunk(content: str, limit: int = _DOCUMENT_CHUNK_CHAR_CAP) -> str:
+def _truncate_document_chunk(content: str, *, limit: int) -> str:
     cleaned = " ".join(content.split())
     if len(cleaned) <= limit:
         return cleaned

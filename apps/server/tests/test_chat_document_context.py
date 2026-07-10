@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeKnowledgeConcept,
     RuntimeKnowledgeConceptSource,
@@ -71,10 +72,10 @@ def test_build_document_context_block_uses_selected_pdf_hits(monkeypatch: Any) -
             "user_id": 7,
             "query": "How do I restart the checkpoint?",
             "document_ids": [4],
-            "limit": agent_service._DOCUMENT_CONTEXT_CHUNK_LIMIT,
+            "limit": settings.document_context_chunk_limit,
         }
     ]
-    assert agent_service._DOCUMENT_CONTEXT_CHUNK_LIMIT == 15
+    assert settings.document_context_chunk_limit == 15
     assert block is not None
     assert block.label == "document_context"
     assert "manual.pdf" in block.value
