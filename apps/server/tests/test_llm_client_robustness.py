@@ -262,9 +262,18 @@ async def test_call_llm_for_json_survives_one_transient_error(
 
 class TestVisionGating:
     def test_current_claude_generations_supported(self) -> None:
-        for model in ("claude-sonnet-5", "claude-fable-5", "claude-opus-4-8",
-                      "claude-haiku-4-5-20251001"):
+        for model in (
+            "claude-3-opus-20240229",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-haiku-4-5-20251001",
+        ):
             assert supports_image_input("anthropic", model) is True
+
+    def test_legacy_text_only_claude_generations_rejected(self) -> None:
+        for model in ("claude-2.1", "claude-instant-1.2"):
+            assert supports_image_input("anthropic", model) is False
 
     def test_non_vision_models_still_rejected(self) -> None:
         assert supports_image_input("openrouter", "mistral-7b-instruct") is False

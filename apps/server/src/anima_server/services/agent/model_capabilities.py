@@ -19,16 +19,15 @@ _VISION_MODEL_PATTERNS = (
     "qwen2.5-vl",
     "qwen2.5vl",
     "llama3.2-vision",
-    # Every Claude 3+ model accepts image input; matching the bare prefix
-    # keeps new generations (sonnet-5, fable-5, ...) from silently losing
-    # attachments the way the old per-generation list did.
-    "claude-",
 )
 _VISION_MODEL_NAMES = {
     "qwen/qwen3.6-35b-a3b-fp8",
     "moonshotai/kimi-k2.6",
 }
 _VISION_TOKEN_RE = re.compile(r"(^|[/:._-])vision($|[/:._-])")
+_CLAUDE_GENERATION_RE = re.compile(
+    r"(?:^|[/:._-])claude(?:[/:._-][a-z]+)*[/:._-](\d+)(?:$|[/:._-])"
+)
 
 
 def supports_image_input(provider: str, model: str, *, base_url: str = "") -> bool:
@@ -49,8 +48,15 @@ def _model_name_matches_vision_pattern(model: str) -> bool:
     return (
         model in _VISION_MODEL_NAMES
         or any(pattern in model for pattern in _VISION_MODEL_PATTERNS)
+        or _claude_model_supports_vision(model)
         or bool(_VISION_TOKEN_RE.search(model))
     )
+
+
+def _claude_model_supports_vision(model: str) -> bool:
+    """Accept Claude 3+ IDs regardless of whether generation follows the family."""
+    match = _CLAUDE_GENERATION_RE.search(model)
+    return match is not None and int(match.group(1)) >= 3
 
 
 def _ollama_model_reports_vision(model: str, *, base_url: str) -> bool:
