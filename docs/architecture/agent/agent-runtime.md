@@ -392,7 +392,7 @@ Two modes:
 - **`stream=false`**: Calls `run_agent()`, blocks until complete, returns `ChatResponse` with `response`, `model`, `provider`, `toolsUsed`.
 - **`stream=true`**: Calls `ensure_agent_ready()` (validates LLM config), then opens an SSE stream via `stream_agent()`. Each event is formatted as `event: <type>\ndata: <json>\n\n`.
 
-Live-turn and approval-resume streaming share `_stream_via_queue()`, which owns the bounded queue and worker task. Each public stream explicitly closes that inner pump; a client disconnect therefore cancels and awaits the worker before the public async generator finishes closing.
+Live-turn and approval-resume streaming share `_stream_via_queue()`, which owns the bounded queue and worker task. Each public service stream explicitly closes that inner pump, and each HTTP or WebSocket transport explicitly closes the public service stream. A client disconnect therefore propagates through both ownership boundaries, cancelling and awaiting the worker before transport cleanup finishes.
 
 The chat endpoint accepts an optional `thread_id` parameter to route messages to a specific conversation thread. It also accepts optional image attachments on user messages. Attachments are base64 request payloads, not staged uploads, so the route validates readiness, model vision support, MIME type, magic bytes, size, and count before the SSE response begins.
 

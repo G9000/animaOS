@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -127,7 +128,7 @@ async def send_message(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            async for event in stream_agent(
+            service_stream = stream_agent(
                 message, payload.userId, db, runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
@@ -135,10 +136,12 @@ async def send_message(
                 document_ids=payload.documentIds,
                 context_messages=payload.contextMessages,
                 today_context=payload.todayContext,
-            ):
-                if event.event == "thought":
-                    continue  # private reasoning, not forwarded to client
-                yield _format_sse_event(event.event, event.data)
+            )
+            async with contextlib.aclosing(service_stream):
+                async for event in service_stream:
+                    if event.event == "thought":
+                        continue  # private reasoning, not forwarded to client
+                    yield _format_sse_event(event.event, event.data)
         except (LLMConfigError, LLMInvocationError, PromptTemplateError) as exc:
             yield _format_sse_event("error", {"error": str(exc)})
         except ValueError as exc:
@@ -762,17 +765,19 @@ async def handle_approval(
     if payload.stream:
 
         async def _generate() -> AsyncGenerator[str, None]:
-            async for event in stream_approve_or_deny(
+            service_stream = stream_approve_or_deny(
                 run_id,
                 payload.userId,
                 payload.approved,
                 db,
                 runtime_db,
                 denial_reason=payload.reason,
-            ):
-                if event.event == "thought":
-                    continue  # private reasoning, not forwarded to client
-                yield _format_sse_event(event.event, event.data)
+            )
+            async with contextlib.aclosing(service_stream):
+                async for event in service_stream:
+                    if event.event == "thought":
+                        continue  # private reasoning, not forwarded to client
+                    yield _format_sse_event(event.event, event.data)
 
         return StreamingResponse(
             _generate(),

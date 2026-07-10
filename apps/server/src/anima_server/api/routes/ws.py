@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -296,15 +297,17 @@ async def _handle_user_message(conn: ClientConnection, data: dict) -> None:
     db = get_user_session_factory(conn.user_id)()
     runtime_db = get_runtime_session_factory()()
     try:
-        async for event in stream_agent(
+        service_stream = stream_agent(
             message,
             conn.user_id,
             db,
             runtime_db,
-        ):
-            ws_msg = _translate_event(event)
-            if ws_msg is not None:
-                await conn.websocket.send_json(ws_msg)
+        )
+        async with contextlib.aclosing(service_stream):
+            async for event in service_stream:
+                ws_msg = _translate_event(event)
+                if ws_msg is not None:
+                    await conn.websocket.send_json(ws_msg)
     except Exception as exc:
         logger.exception("Agent error for user_id=%d", conn.user_id)
         from anima_server.services.agent.service import client_error_message
@@ -392,17 +395,19 @@ async def _handle_approval_response(conn: ClientConnection, data: dict) -> None:
             )
             return
 
-        async for event in stream_approve_or_deny(
+        service_stream = stream_approve_or_deny(
             run_id,
             conn.user_id,
             approved,
             db,
             runtime_db,
             denial_reason=denial_reason,
-        ):
-            ws_msg = _translate_event(event)
-            if ws_msg is not None:
-                await conn.websocket.send_json(ws_msg)
+        )
+        async with contextlib.aclosing(service_stream):
+            async for event in service_stream:
+                ws_msg = _translate_event(event)
+                if ws_msg is not None:
+                    await conn.websocket.send_json(ws_msg)
     except PermissionError as exc:
         await conn.websocket.send_json(
             {

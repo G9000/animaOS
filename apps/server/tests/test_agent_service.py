@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from anima_server.db.base import Base
@@ -1396,6 +1397,38 @@ def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
     assert result.reserved_prompt_tokens == 12
     assert summary.sequence_id == 3
     assert "Conversation summary:" in (summary.content_text or "")
+
+
+@pytest.mark.asyncio
+async def test_proactive_compaction_uses_conservative_prompt_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_compact(_runtime_db: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(agent_service, "compact_thread_context", fake_compact)
+    monkeypatch.setattr(agent_service, "resolve_context_budget_tokens", lambda: 100)
+    monkeypatch.setattr(agent_service.settings, "agent_compaction_trigger_ratio", 0.8)
+
+    turn_ctx = agent_service._TurnContext(
+        history=[agent_service.StoredMessage(role="user", content="h" * 240)],
+        conversation_turn_count=1,
+        memory_blocks=(MemoryBlock(label="test", value="m" * 60),),
+    )
+
+    result = await agent_service._proactive_compact_if_needed(
+        object(),
+        thread=SimpleNamespace(id=1),
+        run=SimpleNamespace(id=2),
+        turn_ctx=turn_ctx,
+        user_id=7,
+    )
+
+    assert result is turn_ctx
+    assert captured["trigger_token_limit"] == 80
+    assert captured["reserved_prompt_tokens"] == 20
 
 
 def test_companion_history_cache_is_scoped_by_thread() -> None:

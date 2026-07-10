@@ -877,6 +877,7 @@ schedule_reflection():
 
 ```
 run_reflection():
+  0. expire_working_memory_items()  # remove self-model items past their TTL
   1. run_quick_reflection()          # post-conversation inner monologue
      -> updates inner_state section
      -> may record emotional signal

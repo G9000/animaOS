@@ -2,7 +2,7 @@
 
 ## 2026-07-10
 
-- synchronized the agent runtime and memory architecture docs with conservative chars/3 prompt estimation, the fixed scaffolding/tool-schema reserve, shared SSE pump shutdown ownership, and the current sequential sleep-time orchestrator with heat and input-freshness gates
+- synchronized the agent runtime and memory architecture docs with conservative chars/3 prompt estimation, the fixed scaffolding/tool-schema reserve, transport-to-pump stream shutdown ownership, working-memory expiry during reflection, and the current sequential sleep-time orchestrator with heat and input-freshness gates
 
 ## 2026-07-03
 

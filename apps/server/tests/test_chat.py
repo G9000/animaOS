@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+import asyncio
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from starlette.requests import Request
+from starlette.responses import StreamingResponse
 
 
 def _register_user(client: TestClient, username: str = "alice") -> dict[str, object]:
@@ -346,6 +348,81 @@ def test_chat_stream_returns_sse_events() -> None:
     assert "event: tool_return" in body
     assert "event: done" in body
     assert "stream this" in body
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_closes_service_stream_when_transport_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+
+    async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[object, None]:
+        try:
+            yield SimpleNamespace(event="chunk", data={"content": "hello"})
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
+    monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
+
+    response = await chat_routes.send_message(
+        chat_routes.ChatRequest(message="hello", userId=1, stream=True),
+        Request({"type": "http", "method": "POST", "path": "/api/chat"}),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    assert isinstance(response, StreamingResponse)
+    await anext(response.body_iterator)
+    await response.body_iterator.aclose()
+
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_approval_stream_closes_service_stream_when_transport_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+
+    async def tracked_stream(*_args, **_kwargs) -> AsyncGenerator[object, None]:
+        try:
+            yield SimpleNamespace(event="chunk", data={"content": "resumed"})
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    runtime_db = SimpleNamespace(
+        get=lambda _model, _run_id: SimpleNamespace(
+            id=42,
+            user_id=1,
+            status="awaiting_approval",
+        )
+    )
+    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    monkeypatch.setattr(chat_routes, "stream_approve_or_deny", tracked_stream)
+
+    response = await chat_routes.handle_approval(
+        42,
+        chat_routes.ApprovalRequest(userId=1, approved=True, stream=True),
+        Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/chat/runs/42/approval",
+            }
+        ),
+        SimpleNamespace(),
+        runtime_db,
+    )
+
+    assert isinstance(response, StreamingResponse)
+    await anext(response.body_iterator)
+    await response.body_iterator.aclose()
+
+    assert closed.is_set()
 
 
 @pytest.mark.asyncio

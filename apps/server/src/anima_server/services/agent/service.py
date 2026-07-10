@@ -74,7 +74,10 @@ from anima_server.services.agent.persistence import (
     persist_agent_result,
     save_approval_checkpoint,
 )
-from anima_server.services.agent.prompt_budget import resolve_context_budget_tokens
+from anima_server.services.agent.prompt_budget import (
+    estimate_char_tokens,
+    resolve_context_budget_tokens,
+)
 from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
 from anima_server.services.agent.runtime_types import (
@@ -2160,10 +2163,10 @@ def _inject_memory_pressure_warning(
     Only alerts once per pressure window to avoid spamming the agent.
     Resets when the conversation is compacted (history shrinks).
     """
-    # Estimate total tokens: memory block chars + history chars, / 4
+    # Conservatively estimate memory block and history tokens from characters.
     block_chars = sum(len(b.value) for b in memory_blocks)
     history_chars = sum(len(m.content or "") for m in history)
-    estimated_tokens = (block_chars + history_chars) // 4
+    estimated_tokens = estimate_char_tokens(block_chars + history_chars)
 
     threshold = int(resolve_context_budget_tokens() * _MEMORY_PRESSURE_RATIO)
 
@@ -2345,7 +2348,7 @@ async def _proactive_compact_if_needed(
     """
     block_chars = sum(len(b.value) for b in turn_ctx.memory_blocks)
     history_chars = sum(len(m.content or "") for m in turn_ctx.history)
-    estimated_tokens = (block_chars + history_chars) // 4
+    estimated_tokens = estimate_char_tokens(block_chars + history_chars)
 
     threshold = int(resolve_context_budget_tokens() *
                     settings.agent_compaction_trigger_ratio)
@@ -2364,7 +2367,7 @@ async def _proactive_compact_if_needed(
         trigger_token_limit=threshold,
         keep_last_messages=max(
             1, settings.agent_compaction_keep_last_messages),
-        reserved_prompt_tokens=block_chars // 4,
+        reserved_prompt_tokens=estimate_char_tokens(block_chars),
     )
     if result is None:
         return turn_ctx
