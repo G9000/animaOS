@@ -143,6 +143,8 @@ _cached_runner: AgentRuntime | None = None
 _background_tasks: set[asyncio.Task[Any]] = set()
 _DOCUMENT_PILL_KINDS = frozenset({"document_attachment", "document_source"})
 _MAX_RECALLED_IMAGE_SOURCE_PILLS = 3
+_DOCUMENT_CONTEXT_CHUNK_LIMIT = 15
+_DOCUMENT_CHUNK_CHAR_CAP = 2500
 
 
 def normalize_document_only_user_message(
@@ -1780,7 +1782,7 @@ def _build_document_context_block(
             user_id,
             query,
             document_ids=cleaned_document_ids,
-            limit=5,
+            limit=_DOCUMENT_CONTEXT_CHUNK_LIMIT,
         )
     except Exception:
         logger.debug(
@@ -1881,7 +1883,7 @@ def _raw_document_results_without_compiled_coverage(
             user_id,
             exc_info=True,
         )
-        return []
+        return list(results)
     return [
         result
         for result in results
@@ -2099,7 +2101,7 @@ def _format_document_location(result: DocumentRagResult) -> str:
     return f", pages {result.page_start}-{result.page_end}"
 
 
-def _truncate_document_chunk(content: str, limit: int = 900) -> str:
+def _truncate_document_chunk(content: str, limit: int = _DOCUMENT_CHUNK_CHAR_CAP) -> str:
     cleaned = " ".join(content.split())
     if len(cleaned) <= limit:
         return cleaned

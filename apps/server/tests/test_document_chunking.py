@@ -7,19 +7,69 @@ from anima_server.services.documents.chunking import chunk_pages
 from anima_server.services.documents.pdf_text import PageText
 
 
-def test_chunk_pages_default_overlap_is_zero() -> None:
+def test_chunk_pages_default_overlap_is_enabled() -> None:
     parameters = signature(chunk_pages).parameters
 
-    assert parameters["overlap_chars"].default == 0
+    assert parameters["overlap_chars"].default == 200
 
 
-def test_chunk_pages_rejects_positive_overlap_until_supported() -> None:
+def test_chunk_pages_rejects_negative_overlap() -> None:
     with pytest.raises(ValueError, match="overlap_chars"):
         chunk_pages(
             [PageText(page_number=1, text="First paragraph.\n\nSecond paragraph.")],
             target_chars=20,
-            overlap_chars=1,
+            overlap_chars=-1,
         )
+
+
+def test_chunk_pages_carries_overlap_tail_into_next_chunk() -> None:
+    chunks = chunk_pages(
+        [
+            PageText(
+                page_number=1,
+                text="First paragraph body here.\n\nSecond paragraph body here.",
+            ),
+        ],
+        target_chars=40,
+        overlap_chars=10,
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].content_text == "First paragraph body here."
+    assert chunks[1].content_text == "here.\n\nSecond paragraph body here."
+    assert chunks[1].page_start == 1
+
+
+def test_chunk_pages_overlap_does_not_emit_carried_text_only_chunks() -> None:
+    chunks = chunk_pages(
+        [PageText(page_number=1, text="Alpha paragraph text.\n\nBeta paragraph text.")],
+        target_chars=25,
+        overlap_chars=12,
+    )
+
+    contents = [chunk.content_text for chunk in chunks]
+    assert contents[0] == "Alpha paragraph text."
+    # The final chunk contains real content, never just the carried overlap tail.
+    assert all("paragraph" in content for content in contents)
+    assert len(chunks) == 2
+
+
+def test_chunk_pages_overlap_spans_page_boundaries() -> None:
+    chunks = chunk_pages(
+        [
+            PageText(page_number=1, text="Page one closing sentence."),
+            PageText(page_number=2, text="Page two opening sentence."),
+        ],
+        target_chars=30,
+        overlap_chars=12,
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].page_start == 1
+    assert chunks[1].content_text.startswith("sentence.")
+    assert "Page two opening sentence." in chunks[1].content_text
+    # The carried tail originates on page 1, so the second chunk spans pages 1-2.
+    assert (chunks[1].page_start, chunks[1].page_end) == (1, 2)
 
 
 def test_chunk_pages_preserves_stable_page_order() -> None:

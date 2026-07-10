@@ -71,9 +71,10 @@ def test_build_document_context_block_uses_selected_pdf_hits(monkeypatch: Any) -
             "user_id": 7,
             "query": "How do I restart the checkpoint?",
             "document_ids": [4],
-            "limit": 5,
+            "limit": agent_service._DOCUMENT_CONTEXT_CHUNK_LIMIT,
         }
     ]
+    assert agent_service._DOCUMENT_CONTEXT_CHUNK_LIMIT == 15
     assert block is not None
     assert block.label == "document_context"
     assert "manual.pdf" in block.value
@@ -246,6 +247,12 @@ def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chu
         fake_document_knowledge_hits,
         raising=False,
     )
+    monkeypatch.setattr(
+        agent_service,
+        "_compiled_document_chunk_ids",
+        lambda runtime_db, *, user_id, concept_ids, document_chunk_ids: {12},
+        raising=False,
+    )
 
     block = agent_service._build_document_context_block(
         object(),
@@ -259,6 +266,84 @@ def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chu
     assert "Use the compiled maintenance concept" in block.value
     assert "Raw evidence excerpts from selected PDFs" not in block.value
     assert "Raw relay instructions" not in block.value
+
+
+def test_build_document_context_block_keeps_raw_chunks_when_coverage_lookup_fails(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="Raw relay instructions survive a coverage lookup failure.",
+                similarity=0.91,
+                page_start=2,
+                page_end=2,
+                section_title="Install",
+            )
+        ]
+
+    def fake_document_knowledge_hits(
+        runtime_db: object,
+        *,
+        user_id: int,
+        document_ids: list[int],
+        document_chunk_ids: list[int],
+        limit: int,
+    ) -> list[KnowledgeConceptHit]:
+        return [
+            KnowledgeConceptHit(
+                concept_id=22,
+                title="Pump Maintenance",
+                slug="document-4-pump-maintenance",
+                concept_type="topic",
+                summary="Use the compiled maintenance concept.",
+                score=1.0,
+            )
+        ]
+
+    def raising_coverage_lookup(
+        runtime_db: object,
+        *,
+        user_id: int,
+        concept_ids: list[int],
+        document_chunk_ids: set[int],
+    ) -> set[int]:
+        raise RuntimeError("coverage lookup unavailable")
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+    monkeypatch.setattr(
+        agent_service,
+        "_document_knowledge_hits",
+        fake_document_knowledge_hits,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        agent_service,
+        "_compiled_document_chunk_ids",
+        raising_coverage_lookup,
+        raising=False,
+    )
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="maintenance schedule?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "Raw evidence excerpts from selected PDFs" in block.value
+    assert "Raw relay instructions survive a coverage lookup failure." in block.value
 
 
 def test_build_document_context_block_uses_query_matched_compiled_pdf_concept(

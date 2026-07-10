@@ -20,18 +20,22 @@ def chunk_pages(
     pages: Sequence[PageText],
     *,
     target_chars: int = 1800,
-    overlap_chars: int = 0,
+    overlap_chars: int = 200,
 ) -> list[ExtractedDocumentChunk]:
     target = max(1, target_chars)
-    if overlap_chars != 0:
-        raise ValueError("overlap_chars must be 0 until chunk overlap is supported.")
+    if overlap_chars < 0:
+        raise ValueError("overlap_chars must be >= 0.")
+    # Overlap beyond half the target would let carried text dominate new chunks.
+    overlap = min(overlap_chars, target // 2)
 
     chunks: list[ExtractedDocumentChunk] = []
     current_parts: list[_ChunkPart] = []
     current_length = 0
+    has_new_content = False
+    pending_overlap: _ChunkPart | None = None
 
     def flush() -> None:
-        nonlocal current_length
+        nonlocal current_length, has_new_content, pending_overlap
         if not current_parts:
             return
 
@@ -44,22 +48,41 @@ def chunk_pages(
                 page_end=current_parts[-1].page_number,
             )
         )
+        if overlap > 0:
+            tail = _overlap_tail(content_text, overlap)
+            pending_overlap = (
+                _ChunkPart(text=tail, page_number=current_parts[-1].page_number)
+                if tail
+                else None
+            )
         current_parts.clear()
         current_length = 0
+        has_new_content = False
+
+    def seed_overlap() -> None:
+        nonlocal current_length, pending_overlap
+        if pending_overlap is None or current_parts:
+            return
+        current_parts.append(pending_overlap)
+        current_length = len(pending_overlap.text)
+        pending_overlap = None
 
     for part in _iter_chunk_parts(pages, target):
+        seed_overlap()
         next_length = _combined_length(current_length, part.text)
-        if current_parts and next_length > target:
+        if has_new_content and next_length > target:
             flush()
+            seed_overlap()
 
-        if not current_parts and len(part.text) > target:
+        if not has_new_content and len(part.text) > target:
             current_parts.append(part)
-            current_length = len(part.text)
+            has_new_content = True
             flush()
             continue
 
         current_parts.append(part)
         current_length = _combined_length(current_length, part.text)
+        has_new_content = True
 
     flush()
     return chunks
@@ -112,6 +135,16 @@ def _combined_length(current_length: int, text: str) -> int:
     if current_length == 0:
         return len(text)
     return current_length + 2 + len(text)
+
+
+def _overlap_tail(text: str, overlap_chars: int) -> str:
+    if len(text) <= overlap_chars:
+        return ""
+    tail = text[-overlap_chars:]
+    boundary = tail.find(" ")
+    if boundary != -1:
+        tail = tail[boundary + 1 :]
+    return tail.strip()
 
 
 __all__ = ["chunk_pages"]

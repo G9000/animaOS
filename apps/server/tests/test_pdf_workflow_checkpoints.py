@@ -646,15 +646,18 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     expected_extract_path = str((settings.data_dir / request.storage_path).resolve())
     assert result.status == "awaiting_input"
     assert extracted_paths == [expected_extract_path]
+    # Chunk two starts with the 200-char overlap tail carried from page one.
+    expected_overlap_tail = " ".join(["alpha"] * 33)
+    expected_chunk_two = f"{expected_overlap_tail}\n\n{page_two_text}"
     assert [chunk.content_text for chunk in chunk_rows] == [
         page_one_text,
-        page_two_text,
+        expected_chunk_two,
     ]
     assert [(chunk.page_start, chunk.page_end) for chunk in chunk_rows] == [
         (1, 1),
-        (2, 2),
+        (1, 2),
     ]
-    _assert_pdf_embedding_calls(embedded_texts, [page_one_text, page_two_text])
+    _assert_pdf_embedding_calls(embedded_texts, [page_one_text, expected_chunk_two])
     assert _checkpoint_names(runtime_db, run.id) == [
         "file_registered",
         "text_extracted",
