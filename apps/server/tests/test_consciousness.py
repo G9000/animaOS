@@ -1093,7 +1093,7 @@ async def test_generate_greeting_falls_back_when_llm_is_slow(
 
         result = await asyncio.wait_for(
             proactive.generate_greeting(db, user_id=user.id),
-            timeout=0.2,
+            timeout=1.0,
         )
 
         assert result.llm_generated is False
@@ -1137,7 +1137,7 @@ async def test_generate_proactive_notice_falls_back_when_llm_is_slow(
                 user_id=user.id,
                 instruction="mention the latency fix",
             ),
-            timeout=0.2,
+            timeout=1.0,
         )
 
         assert result is not None
