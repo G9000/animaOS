@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.compaction import (
     SUMMARY_LINE_LIMIT,
@@ -448,6 +449,7 @@ def _patch_provider_client(monkeypatch, client):
     return captured
 
 
+@pytest.mark.asyncio
 async def test_summarize_with_llm_uses_provider_client(monkeypatch) -> None:
     """The summarizer goes through create_provider_chat_client, never raw HTTP,
     so the Anthropic provider gets a working Messages-API call."""
@@ -469,6 +471,7 @@ async def test_summarize_with_llm_uses_provider_client(monkeypatch) -> None:
     assert len(client.invocations) == 1
 
 
+@pytest.mark.asyncio
 async def test_summarize_with_llm_prefers_extraction_model(monkeypatch) -> None:
     from anima_server.config import settings
     from anima_server.services.agent.compaction import summarize_with_llm
@@ -485,6 +488,7 @@ async def test_summarize_with_llm_prefers_extraction_model(monkeypatch) -> None:
     assert captured["model"] == "claude-haiku-4-5-20251001"
 
 
+@pytest.mark.asyncio
 async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
     monkeypatch, caplog
 ) -> None:
@@ -511,6 +515,7 @@ async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
     assert "falling back" in degraded[0].getMessage()
 
 
+@pytest.mark.asyncio
 async def test_summarize_with_llm_empty_output_falls_back(monkeypatch, caplog) -> None:
     import logging
 
@@ -529,6 +534,7 @@ async def test_summarize_with_llm_empty_output_falls_back(monkeypatch, caplog) -
     assert any(r.name == "anima.runtime.degraded" for r in caplog.records)
 
 
+@pytest.mark.asyncio
 async def test_summarize_with_llm_scaffold_short_circuits(monkeypatch) -> None:
     from anima_server.config import settings
     from anima_server.services.agent.compaction import summarize_with_llm
