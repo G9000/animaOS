@@ -102,6 +102,29 @@ def _newest_episode_at(db: Any, user_id: int) -> datetime | None:
     )
 
 
+def _newest_claim_at(db: Any, user_id: int) -> datetime | None:
+    """Newest MemoryClaim timestamp for the user.
+
+    Profile synthesis reconciles ``user_profile_fields`` from claims, and a
+    claim can be created/updated without a newer ``MemoryItem`` row (its
+    ``memory_item_id`` is nullable), so the profile freshness gate must fold in
+    claim changes or claim-only edits would be treated as "unchanged".
+    """
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from anima_server.models.agent_runtime import MemoryClaim
+
+    created = db.scalar(
+        select(sa_func.max(MemoryClaim.created_at)).where(MemoryClaim.user_id == user_id)
+    )
+    updated = db.scalar(
+        select(sa_func.max(MemoryClaim.updated_at)).where(MemoryClaim.user_id == user_id)
+    )
+    candidates = [ts for ts in (_as_utc(created), _as_utc(updated)) if ts is not None]
+    return max(candidates) if candidates else None
+
+
 def _inputs_changed_since_last_run(
     *,
     user_id: int,
@@ -358,6 +381,7 @@ async def run_sleeptime_agents(
     if run_expensive:
         newest_item_at: datetime | None = None
         newest_episode_at: datetime | None = None
+        newest_claim_at: datetime | None = None
         try:
             from anima_server.db.session import SessionLocal
 
@@ -365,8 +389,16 @@ async def run_sleeptime_agents(
             with factory() as db:
                 newest_item_at = _newest_memory_item_at(db, user_id)
                 newest_episode_at = _newest_episode_at(db, user_id)
+                newest_claim_at = _newest_claim_at(db, user_id)
         except Exception:
             logger.debug("Input freshness lookup failed; running all tasks")
+
+        # Profile synthesis reconciles from both memory items and claims, so its
+        # freshness gate is the newer of the two.
+        newest_profile_input_at = max(
+            (ts for ts in (newest_item_at, newest_claim_at) if ts is not None),
+            default=None,
+        )
 
         def _fresh(task_type: str, latest_input_at: datetime | None) -> bool:
             # `force` bypasses the heat gate (above), not this input-freshness
@@ -417,7 +449,7 @@ async def run_sleeptime_agents(
         except Exception:
             logger.exception("Memory evolution scan task failed")
 
-        if _fresh("profile_synthesis", newest_item_at):
+        if _fresh("profile_synthesis", newest_profile_input_at):
             try:
                 rid = await _issue_background_task(
                     user_id=user_id,

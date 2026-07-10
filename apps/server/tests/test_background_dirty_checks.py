@@ -447,6 +447,61 @@ async def test_unchanged_inputs_skip_synthesis_tasks(
     assert "profile_synthesis" not in issued
 
 
+@pytest.mark.asyncio
+async def test_claim_only_change_reruns_profile_synthesis(
+    soul_factory, rt_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Profile synthesis reconciles user_profile_fields from claims, so a claim
+    updated after the last run (with no newer MemoryItem) must re-run it — the
+    freshness gate folds in MemoryClaim.updated_at, not just memory items."""
+    from anima_server.models.agent_runtime import MemoryClaim
+    from anima_server.services.agent import sleep_agent
+
+    user_id = _make_user(soul_factory)
+    base = datetime.now(UTC)
+    _add_items(soul_factory, user_id, ["Likes green tea"])
+    # Profile synthesis already ran after the newest memory item.
+    _record_completed_run(
+        rt_factory,
+        user_id=user_id,
+        task_type="profile_synthesis",
+        completed_at=base + timedelta(seconds=1),
+    )
+    # A claim is created/updated AFTER that run, with no newer MemoryItem.
+    with soul_factory() as db:
+        db.add(
+            MemoryClaim(
+                user_id=user_id,
+                namespace="fact",
+                slot="occupation",
+                value_text="engineer",
+                canonical_key="user:fact:occupation",
+                created_at=base + timedelta(seconds=2),
+                updated_at=base + timedelta(seconds=2),
+            )
+        )
+        db.commit()
+
+    issued: list[str] = []
+
+    async def recording_issue(*, user_id, task_type, task_fn, **kwargs) -> str:
+        issued.append(task_type)
+        return f"{task_type}:0"
+
+    monkeypatch.setattr(sleep_agent, "_issue_background_task", recording_issue)
+    monkeypatch.setattr(sleep_agent, "_should_run_expensive", lambda db, uid: True)
+
+    await sleep_agent.run_sleeptime_agents(
+        user_id=user_id,
+        user_message="hi",
+        assistant_response="hello",
+        db_factory=soul_factory,
+        runtime_db_factory=rt_factory,
+    )
+
+    assert "profile_synthesis" in issued
+
+
 # --------------------------------------------------------------------------- #
 # Emotional-pattern promotion gate + signal dedupe
 # --------------------------------------------------------------------------- #
