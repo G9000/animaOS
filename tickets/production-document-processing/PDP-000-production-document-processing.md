@@ -44,7 +44,7 @@ External research (2025–2026 state of the art) confirmed the target stack: Doc
 | `PDP-001` | Chat grounding quick wins: injection limits and chunk overlap | in_review | none |
 | `PDP-002` | Hybrid retrieval: BM25 + RRF fusion | in_review | none |
 | `PDP-003` | Structured markdown intermediate and structure-aware chunking | in_review | none |
-| `PDP-004` | Tiered parsing: Docling quality tier and OCR fallback | todo | `PDP-003` |
+| `PDP-004` | Tiered parsing: Docling quality tier and OCR fallback | in_review | `PDP-003` |
 | `PDP-005` | HTML and web capture extraction | todo | `PDP-003` |
 | `PDP-006` | Agentic document tools | todo | `PDP-002` |
 | `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | todo | `PDP-002`, `PDP-003` |
@@ -79,6 +79,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-10 - Epic created from diagnosis + SOTA research + truememory comparison (session work, Claude).
 - 2026-07-10 - PDP-001 and PDP-002 implemented in worktree `production-doc-processing`; PDP-002 design revised to reuse the existing BM25Index/RRF memory-search stack instead of a tsvector migration.
 - 2026-07-11 - PDP-003 implemented: `services/ingestion/structured.py` intermediate + chunker, markdown adapter emits structured artifact/section spans; PDF workflow switch and section_title population deferred to PDP-004 as designed.
+- 2026-07-11 - PDP-004 implemented: tiered parsing (`services/documents/parsing.py`), docling optional extra, PDF workflow on structured chunker with section titles. Manual with-extra validation pending.
 
 ## Validation
 

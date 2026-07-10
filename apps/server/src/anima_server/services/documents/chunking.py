@@ -131,6 +131,41 @@ def _split_oversized_paragraph(paragraph: str, target_chars: int) -> Iterable[st
         yield " ".join(current_words)
 
 
+def chunk_pages_structured(
+    pages: Sequence[PageText],
+    *,
+    target_chars: int = 1800,
+    overlap_chars: int = 200,
+) -> list[ExtractedDocumentChunk]:
+    """Structure-aware chunking for the PDF workflow.
+
+    Pages (plain pypdf text or Docling markdown) are structured into heading
+    sections, then chunked along section boundaries; `section_title` records
+    the heading path. Overlap applies within oversized sections only —
+    section boundaries are semantic boundaries.
+    """
+    from anima_server.services.ingestion.structured import (
+        chunk_structured_document,
+        structure_pages_markdown,
+    )
+
+    document = structure_pages_markdown(pages)
+    return [
+        ExtractedDocumentChunk(
+            chunk_index=chunk.chunk_index,
+            content_text=chunk.content_text,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            section_title=chunk.section_path or None,
+        )
+        for chunk in chunk_structured_document(
+            document,
+            target_chars=target_chars,
+            overlap_chars=overlap_chars,
+        )
+    ]
+
+
 def _combined_length(current_length: int, text: str) -> int:
     if current_length == 0:
         return len(text)
@@ -147,4 +182,4 @@ def _overlap_tail(text: str, overlap_chars: int) -> str:
     return tail.strip()
 
 
-__all__ = ["chunk_pages"]
+__all__ = ["chunk_pages", "chunk_pages_structured"]

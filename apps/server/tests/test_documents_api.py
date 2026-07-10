@@ -117,7 +117,7 @@ def _patch_pdf_edges(
     monkeypatch.setattr(documents_route, "_default_pdf_dependencies", fake_dependencies)
     monkeypatch.setattr(
         pdf_workflow,
-        "extract_pdf_text",
+        "extract_document_text",
         lambda _path: [
             PageText(page_number=1, text="alpha installation guide"),
             PageText(page_number=2, text="beta usage notes"),

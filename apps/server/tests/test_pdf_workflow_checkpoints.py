@@ -626,7 +626,7 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
             }
         ]
 
-    monkeypatch.setattr(pdf_workflow, "extract_pdf_text", fake_extract_pdf_text)
+    monkeypatch.setattr(pdf_workflow, "extract_document_text", fake_extract_pdf_text)
     dependencies = pdf_workflow.default_pdf_ingestion_dependencies(
         embedding_fn=fake_embedding,
         summarize=summarize,
@@ -653,9 +653,11 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
         page_one_text,
         expected_chunk_two,
     ]
+    # The carried overlap tail is duplicated context, not page-1 material,
+    # so the second chunk attributes only its own page.
     assert [(chunk.page_start, chunk.page_end) for chunk in chunk_rows] == [
         (1, 1),
-        (1, 2),
+        (2, 2),
     ]
     _assert_pdf_embedding_calls(embedded_texts, [page_one_text, expected_chunk_two])
     assert _checkpoint_names(runtime_db, run.id) == [
@@ -676,7 +678,7 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
 
     monkeypatch.setattr(
         pdf_workflow,
-        "extract_pdf_text",
+        "extract_document_text",
         lambda _path: pytest.fail("rerun should resume from checkpoints"),
     )
     rerun = run_pdf_ingestion_until_wait_or_done(

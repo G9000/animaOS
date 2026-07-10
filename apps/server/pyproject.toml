@@ -33,6 +33,12 @@ dependencies = [
   "pypdf>=6.14.2",
 ]
 
+[project.optional-dependencies]
+# Quality document-parsing tier: layout analysis, table structure, and OCR
+# for scanned PDFs. Heavy (PyTorch + models); install with
+# `uv sync --extra docling` or `pip install anima-server[docling]`.
+docling = ["docling>=2.0.0"]
+
 [dependency-groups]
 postgres = ["psycopg[binary]>=3.2.9"]
 dev = [

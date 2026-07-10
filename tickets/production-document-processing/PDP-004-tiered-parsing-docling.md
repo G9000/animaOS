@@ -1,13 +1,13 @@
 # PDP-004 - Tiered Parsing: Docling Quality Tier and OCR Fallback
 
-- Status: todo
+- Status: in_review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`
 - Depends on: `PDP-003`
 - Owner: unassigned
 - Created: 2026-07-10
-- Updated: 2026-07-10
+- Updated: 2026-07-11 (implemented in worktree `production-doc-processing`)
 
 ## Goal
 
@@ -37,3 +37,11 @@ Add Docling (MIT) as an optional, lazy-loaded quality parsing tier for PDFs (and
 
 - Commands: server test suite in both dependency configurations, ruff, one manual ingest of a scanned PDF and a table-heavy PDF.
 - Changed paths: `apps/server/pyproject.toml`, `apps/server/src/anima_server/services/documents/` (parser tiering), `apps/server/src/anima_server/services/ingestion/adapters/documents.py`, tests.
+
+## Activity Log
+
+- 2026-07-11 - Implemented (Claude). New `services/documents/parsing.py`: `extract_document_text` tiered entry point (settings `document_parser_tier=auto|fast|quality`, default auto), deterministic escalation scoring (`should_escalate_extraction`: >=50% of pages under 15 words), scanned-PDF no-text errors escalate to Docling OCR when available or raise an actionable `DocumentParsingError` naming the extra when not. `_convert_with_docling` is the single Docling-touching function: lazy imports, `do_ocr=True`, per-page markdown via form-feed page breaks, models loaded per call.
+- PDF workflow defaults switched: `extract_text=extract_document_text`, `chunk_text=chunk_pages_structured` (new in `chunking.py`) -- pages (pypdf plain text or Docling markdown) go through `structure_pages_markdown` + `chunk_structured_document`, populating `runtime_document_chunks.section_title` from heading paths. Oversized-section split parts now carry per-part page/line ranges for citation fidelity.
+- `pyproject.toml` gains the `docling` optional extra (`uv sync --extra docling`); uv.lock resolved. Base install unchanged.
+- Deviations from ticket: model pre-download command and workflow-status download progress deferred (follow-up; first Docling use downloads models inline); CI matrix job for the with-extra config not added (no CI config in repo scope); DOCX/PPTX remain non-goals.
+- Validation: new `tests/test_document_parsing.py` (13 tests: tier routing, escalation thresholds, scanned-PDF paths with/without extra, error passthrough, empty-OCR failure, section-title chunking for both markdown and plain pages); full server suite 2138 passed; ruff clean. PENDING: one manual end-to-end run with the docling extra installed against a real scanned + table-heavy PDF (extra not installed in the dev env; Docling boundary covered via the `_convert_with_docling` seam).

@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     agent_background_memory_enabled: bool = True
     chat_image_max_size_bytes: int = 10 * 1024 * 1024
     chat_image_max_count: int = 4
+    # PDF parsing tier: "fast" (pypdf only), "quality" (Docling when the
+    # optional extra is installed), or "auto" (pypdf first, escalate to
+    # Docling when extraction quality looks poor or pages are scanned).
+    document_parser_tier: str = "auto"
     diary_attachment_max_size_bytes: int = 100 * 1024 * 1024
     core_passphrase: str = ""
     core_require_encryption: bool = True

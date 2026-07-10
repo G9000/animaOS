@@ -299,6 +299,41 @@ def parse_page_structure(pages: Sequence[PageText]) -> StructuredDocument:
     return StructuredDocument(blocks=tuple(blocks))
 
 
+def structure_pages_markdown(pages: Sequence[PageText]) -> StructuredDocument:
+    """Structure page text that may contain markdown (Docling quality tier).
+
+    Each page is parsed as markdown — explicit headings, tables, and code
+    survive — and plain single-line paragraphs still get the conservative
+    page-heading detection, so fast-path pypdf text works through the same
+    function. Blocks carry page locators instead of line locators.
+    """
+    blocks: list[StructuredBlock] = []
+    for page in pages:
+        for block in parse_markdown_structure(page.text).blocks:
+            if block.kind == "paragraph":
+                heading = _detect_page_heading(block.text)
+                if heading is not None:
+                    text, level = heading
+                    blocks.append(
+                        StructuredBlock(
+                            kind="heading",
+                            text=text,
+                            heading_level=level,
+                            page_number=page.page_number,
+                        )
+                    )
+                    continue
+            blocks.append(
+                StructuredBlock(
+                    kind=block.kind,
+                    text=block.text,
+                    heading_level=block.heading_level,
+                    page_number=page.page_number,
+                )
+            )
+    return StructuredDocument(blocks=tuple(blocks))
+
+
 _BLANK_LINE_RE = re.compile(r"\n\s*\n+")
 
 
@@ -380,6 +415,48 @@ def chunk_structured_document(
     return chunks
 
 
+@dataclass(slots=True)
+class _SectionPart:
+    texts: list[str] = field(default_factory=list)
+    length: int = 0
+    page_start: int | None = None
+    page_end: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    is_atomic: bool = False
+
+    @property
+    def content_text(self) -> str:
+        return "\n\n".join(self.texts)
+
+    def add(self, text: str, block: StructuredBlock) -> None:
+        self.texts.append(text)
+        self.length += len(text)
+        if block.page_number is not None:
+            self.page_start = (
+                block.page_number
+                if self.page_start is None
+                else min(self.page_start, block.page_number)
+            )
+            self.page_end = (
+                block.page_number
+                if self.page_end is None
+                else max(self.page_end, block.page_number)
+            )
+        if block.line_start is not None:
+            self.line_start = (
+                block.line_start
+                if self.line_start is None
+                else min(self.line_start, block.line_start)
+            )
+        if block.line_end is not None:
+            self.line_end = (
+                block.line_end
+                if self.line_end is None
+                else max(self.line_end, block.line_end)
+            )
+
+
 def _split_oversized_section(
     section: StructuredSection,
     *,
@@ -387,58 +464,61 @@ def _split_oversized_section(
     overlap_chars: int,
     next_chunk_index: int,
 ) -> Iterable[SectionChunk]:
-    parts: list[str] = []
-    current: list[str] = []
-    current_length = 0
+    parts: list[_SectionPart] = []
+    current = _SectionPart()
 
     def flush_part() -> None:
-        nonlocal current, current_length
-        if current:
-            parts.append("\n\n".join(current))
-        current = []
-        current_length = 0
+        nonlocal current
+        if current.texts:
+            parts.append(current)
+        current = _SectionPart()
 
     for block in section.blocks:
         if block.kind == "heading" or not block.text.strip():
             continue
-        text = block.text
         if block.is_atomic:
             flush_part()
-            parts.append(text)
+            atomic = _SectionPart(is_atomic=True)
+            atomic.add(block.text, block)
+            parts.append(atomic)
             continue
         pieces = (
-            _split_long_text(text, target) if len(text) > target else [text]
+            _split_long_text(block.text, target)
+            if len(block.text) > target
+            else [block.text]
         )
         for piece in pieces:
-            if current and current_length + len(piece) > target:
+            if current.texts and current.length + len(piece) > target:
                 flush_part()
-            current.append(piece)
-            current_length += len(piece)
+            current.add(piece, block)
     flush_part()
 
     chunk_parts: list[SectionChunk] = []
     previous_tail = ""
-    for offset, part_text in enumerate(parts):
+    for offset, part in enumerate(parts):
         content = (
-            f"{previous_tail}\n\n{part_text}" if previous_tail else part_text
+            f"{previous_tail}\n\n{part.content_text}"
+            if previous_tail
+            else part.content_text
         )
         chunk_parts.append(
-            _section_chunk(
+            SectionChunk(
                 chunk_index=next_chunk_index + offset,
                 content_text=content,
-                sections=[section],
+                section_path=section.section_path,
+                section_indexes=(section.index,),
                 part=offset + 1,
-                is_atomic=_is_atomic_text(section, part_text),
+                is_atomic=part.is_atomic,
+                page_start=part.page_start,
+                page_end=part.page_end,
+                line_start=part.line_start,
+                line_end=part.line_end,
             )
         )
         previous_tail = (
-            "" if _is_atomic_text(section, part_text) else _overlap_tail(part_text, overlap_chars)
+            "" if part.is_atomic else _overlap_tail(part.content_text, overlap_chars)
         )
     return chunk_parts
-
-
-def _is_atomic_text(section: StructuredSection, text: str) -> bool:
-    return any(block.is_atomic and block.text == text for block in section.blocks)
 
 
 def _split_long_text(text: str, target: int) -> list[str]:
@@ -508,4 +588,5 @@ __all__ = [
     "chunk_structured_document",
     "parse_markdown_structure",
     "parse_page_structure",
+    "structure_pages_markdown",
 ]
