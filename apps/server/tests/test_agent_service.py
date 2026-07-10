@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -2179,6 +2179,48 @@ async def test_stage3_cancellation_marks_run_cancelled(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["agent", "approval"])
+async def test_public_stream_closes_shared_pump(
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    """Closing either public SSE wrapper must close its inner shared pump."""
+    inner_closed = asyncio.Event()
+    created_streams: list[AsyncGenerator[object, None]] = []
+
+    def fake_stream_via_queue(
+        *args: object, **kwargs: object
+    ) -> AsyncGenerator[object, None]:
+        del args, kwargs
+
+        async def inner() -> AsyncGenerator[object, None]:
+            try:
+                yield agent_service.build_error_event("probe")
+                await asyncio.Future()
+            finally:
+                inner_closed.set()
+
+        stream = inner()
+        created_streams.append(stream)
+        return stream
+
+    monkeypatch.setattr(agent_service, "_stream_via_queue", fake_stream_via_queue)
+    stream = (
+        agent_service.stream_agent("hello", 1, object(), object())
+        if entrypoint == "agent"
+        else agent_service.stream_approve_or_deny(1, 1, True, object(), object())
+    )
+
+    try:
+        await anext(stream)
+        await stream.aclose()
+        assert inner_closed.is_set()
+    finally:
+        for created in created_streams:
+            await created.aclose()
+
+
+@pytest.mark.asyncio
 async def test_stream_shutdown_does_not_deadlock_when_queue_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2197,6 +2239,20 @@ async def test_stream_shutdown_does_not_deadlock_when_queue_full(
     monkeypatch.setattr(agent_service.settings, "agent_stream_queue_max_size", 1)
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: FloodingRunner())
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    original_stream_via_queue = agent_service._stream_via_queue
+    created_pumps: list[AsyncGenerator[object, None]] = []
+
+    def capture_stream_via_queue(
+        *args: object, **kwargs: object
+    ) -> AsyncGenerator[object, None]:
+        pump = original_stream_via_queue(*args, **kwargs)
+        created_pumps.append(pump)
+        return pump
+
+    monkeypatch.setattr(
+        agent_service, "_stream_via_queue", capture_stream_via_queue
+    )
+    tasks_before = set(asyncio.all_tasks())
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
         user = User(
@@ -2215,6 +2271,23 @@ async def test_stream_shutdown_does_not_deadlock_when_queue_full(
         # Let the worker fill the queue and block on its next put.
         await asyncio.sleep(0.05)
         await asyncio.wait_for(gen.aclose(), timeout=5)
+
+    await asyncio.sleep(0)
+    leaked_workers = [
+        task
+        for task in asyncio.all_tasks() - tasks_before
+        if not task.done()
+        and "_stream_via_queue.<locals>.worker" in task.get_coro().__qualname__
+    ]
+    try:
+        assert leaked_workers == []
+    finally:
+        for task in leaked_workers:
+            task.cancel()
+        if leaked_workers:
+            await asyncio.gather(*leaked_workers, return_exceptions=True)
+        for pump in created_pumps:
+            await pump.aclose()
 
 
 @pytest.mark.asyncio

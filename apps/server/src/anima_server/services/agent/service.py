@@ -646,11 +646,14 @@ async def stream_approve_or_deny(
             event_callback=emit,
         )
 
-    async for event in _stream_via_queue(
-        run_turn,
-        failure_log=f"Approval resume failed for run {run_id} (user {user_id})",
-    ):
-        yield event
+    async with contextlib.aclosing(
+        _stream_via_queue(
+            run_turn,
+            failure_log=f"Approval resume failed for run {run_id} (user {user_id})",
+        )
+    ) as stream:
+        async for event in stream:
+            yield event
 
 
 async def _execute_agent_turn(
@@ -3159,11 +3162,14 @@ async def stream_agent(
             today_context=today_context,
         )
 
-    async for event in _stream_via_queue(
-        run_turn,
-        failure_log=f"Agent turn failed for user {user_id}",
-    ):
-        yield event
+    async with contextlib.aclosing(
+        _stream_via_queue(
+            run_turn,
+            failure_log=f"Agent turn failed for user {user_id}",
+        )
+    ) as stream:
+        async for event in stream:
+            yield event
 
 
 def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) -> list[RuntimeMessage]:
