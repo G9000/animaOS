@@ -124,6 +124,7 @@ from anima_server.services.agent.system_prompt import (
 from anima_server.services.agent.tool_context import (
     ToolContext,
     clear_tool_context,
+    peek_tool_context,
     set_tool_context,
 )
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
@@ -1847,6 +1848,32 @@ def _build_document_context_block(
                 )
             )
 
+    selected_lines = []
+    try:
+        for document_id in cleaned_document_ids:
+            document = get_document_for_user(
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+            if document is not None:
+                selected_lines.append(f"- doc:{document.id} {document.filename}")
+    except Exception:
+        logger.debug(
+            "Selected document listing failed for user %s", user_id, exc_info=True
+        )
+        selected_lines = []
+    if selected_lines:
+        lines.append("")
+        lines.append("Selected documents:")
+        lines.extend(selected_lines)
+    lines.append("")
+    lines.append(
+        "These excerpts are only an orientation sample. Use the search_documents, "
+        "get_document_outline, and read_document_section tools to investigate the "
+        "documents beyond what is shown here."
+    )
+
     return MemoryBlock(
         label="document_context",
         value="\n".join(lines),
@@ -2070,8 +2097,11 @@ def _build_document_turn_directive(
             "If the wording is ambiguous, such as 'what do you see' or 'what is this', "
             "interpret it as asking what is in the selected PDF. "
             "Do not substitute personal memory, relationship context, or stylistic inference "
-            "when the selected document can answer the question. If the document excerpts are "
-            "insufficient, say what is missing plainly."
+            "when the selected document can answer the question. The injected excerpts are only "
+            "an orientation sample: when they are insufficient, investigate with the "
+            "search_documents, get_document_outline, and read_document_section tools before "
+            "concluding anything is missing. If the document still cannot answer, say what is "
+            "missing plainly."
         ),
         description=(
             "Per-turn grounding rule for explicit PDF selections. Selected document evidence "
@@ -2335,7 +2365,33 @@ async def _invoke_turn_runtime(
         runtime_db.commit()
         raise
     finally:
+        _capture_document_tool_citations(turn_ctx)
         clear_tool_context()
+
+
+def _capture_document_tool_citations(turn_ctx: _TurnContext) -> None:
+    """Fold documents cited by the document tools into the turn's source pills.
+
+    Runs before the tool context is cleared so tool-driven citations keep the
+    document_source provenance UX working even when the turn started without
+    an injected document context block.
+    """
+    ctx = peek_tool_context()
+    if ctx is None or not ctx.document_tool_citations:
+        return
+    existing_refs = {pill.get("ref") for pill in turn_ctx.document_source_pills}
+    new_pills = tuple(
+        {
+            "kind": "document_source",
+            "label": _truncate_pill_label(filename),
+            "ref": document_id,
+        }
+        for document_id, filename in ctx.document_tool_citations.items()
+        if document_id not in existing_refs
+    )
+    if new_pills:
+        turn_ctx.document_source_pills = (*turn_ctx.document_source_pills, *new_pills)
+        turn_ctx.has_document_context = True
 
 
 async def _proactive_compact_if_needed(

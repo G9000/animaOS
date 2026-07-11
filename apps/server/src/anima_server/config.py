@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # Raw evidence chunks pass through untruncated up to this safety cap,
     # which only bounds pathological chunks (deliberate chunk size is 1800).
     document_context_chunk_char_cap: int = 2500
+    # Document tools (search/outline/read) may return at most this much
+    # document text per turn; over-budget calls get a truncation notice.
+    document_tool_turn_char_budget: int = 40_000
+    # Single read_document_section call cap; longer sections continue via
+    # the start_chunk parameter.
+    document_tool_read_char_limit: int = 6_000
     # Server-side URL fetching for web captures is opt-in; the local-first
     # threat model expects clients to supply captured HTML themselves.
     web_capture_url_fetch_enabled: bool = False

@@ -1,13 +1,13 @@
 # PDP-006 - Agentic Document Tools
 
-- Status: todo
+- Status: in_review
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`
 - Depends on: `PDP-002`
 - Owner: unassigned
 - Created: 2026-07-10
-- Updated: 2026-07-10
+- Updated: 2026-07-12 (implemented in worktree `production-doc-processing`)
 
 ## Goal
 
@@ -40,3 +40,13 @@ Guardrails:
 
 - Commands: server test suite (agent + tools subsets), ruff, one manual end-to-end chat against a large PDF.
 - Changed paths: `apps/server/src/anima_server/services/agent/tools.py`, `apps/server/src/anima_server/services/agent/service.py`, tests.
+
+## Activity Log
+
+- 2026-07-12 - Implemented (Claude session):
+  - New `services/agent/document_tools.py` registered in `get_core_tools()`: `search_documents` (hybrid PDP-002 retrieval; defaults to active thread documents, `scope="all"` escape hatch, comma-separated `document_ids` override), `get_document_outline` (section tree from chunk `section_title` paths with page ranges/sizes; per-chunk page fallback for legacy documents), `read_document_section` (by `section_path`, page range, or sequential; bounded per call by `document_tool_read_char_limit` with `start_chunk` continuation).
+  - Guardrails: per-turn budget `document_tool_turn_char_budget` (40k default) accounted on `ToolContext.document_tool_chars_used`; over-budget calls return a truncation notice, never an error; all lookups go through `get_document_for_user` so unowned documents read as nonexistent.
+  - Provenance: tools record citations on `ToolContext.document_tool_citations`; `_capture_document_tool_citations` folds them into `document_source` pills before the tool context clears (deduped against injected-context pills), so tool-driven citations emit pills even on turns that started without a document block.
+  - Primer: `_build_document_context_block` now appends the selected-documents list and a tool hint; the turn directive tells the model to investigate with the tools before declaring content missing (no keyword routing).
+  - Tests: new `test_document_tools.py` (outline tree + legacy fallback, section/page reads, continuation, budget cap, ownership refusal, hybrid search delegation + thread-default/scope-all, citation→pill fold with dedup). Agent service/system-prompt/rules/runtime/executor suites green, ruff clean.
+  - Deferred: approval-resume path does not capture tool citations into pills (main turn path only); manual large-PDF end-to-end check pending with the rest of the epic (PDP-009).
