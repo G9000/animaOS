@@ -1,17 +1,67 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models.runtime import RuntimeSource, RuntimeSourceSpan
-from anima_server.services.ingestion.compiler import CompileResult, compile_source_to_concepts
+from anima_server.config import settings
+from anima_server.models.runtime import (
+    RuntimeKnowledgeBundleRun,
+    RuntimeKnowledgeConceptSource,
+    RuntimeSource,
+    RuntimeSourceSpan,
+)
+from anima_server.services.ingestion.compiler import (
+    CompileMode,
+    CompileResult,
+    compile_source_to_concepts,
+)
 from anima_server.services.ingestion.retrieval import EmbeddingFn
+
+logger = logging.getLogger(__name__)
 
 _MAX_CONCEPT_SLUG_LENGTH = 255
 _MAX_CONCEPT_TITLE_LENGTH = 512
+
+_PROMPT_SPAN_LIMIT = 80
+_PROMPT_SPAN_CHARS = 700
+_PROMPT_RELATED_CONCEPTS = 8
+
+_COMPILER_SYSTEM_PROMPT = """You are the knowledge compiler for a personal wiki. You turn a raw ingested source into maintained, citable concept pages.
+
+Return ONE JSON object, nothing else:
+{
+  "concepts": [
+    {
+      "type": "topic" | "source_summary" | "entity" | "process",
+      "slug": "kebab-case-stable-identifier",
+      "title": "...",
+      "description": "one sentence",
+      "body_markdown": "# Title\\n\\nsynthesized page body",
+      "source_span_ids": [<int>, ...],
+      "tags": ["..."],
+      "merge_confidence": 0.0-1.0 (optional; only when updating an existing concept by title)
+    }
+  ],
+  "links": [
+    {"source_slug": "...", "target_slug": "...", "link_type": "supports" | "contradicts" | "updates" | "relates_to", "confidence": 0.0-1.0}
+  ],
+  "metadata": {"compiler": "llm_wiki"}
+}
+
+Rules:
+- Every concept MUST cite the span ids its claims come from in source_span_ids. Uncited concepts are discarded.
+- Synthesize: group related spans into coherent topic pages instead of one page per span. Include exactly one source_summary concept for the whole source.
+- Merge, do not duplicate: when a RELATED EXISTING CONCEPT covers the same subject, reuse its slug exactly (this updates that page and adds this source's citations) and integrate the new evidence into the body.
+- Cross-link: add supports/contradicts/updates links between your concepts and toward existing concept slugs when the evidence warrants it.
+- Slugs must be stable, lowercase, hyphenated, without slashes.
+- Write body_markdown as a readable wiki page, not a span dump."""
 
 
 def compile_source_knowledge(
@@ -20,7 +70,9 @@ def compile_source_knowledge(
     source: RuntimeSource,
     spans: Sequence[RuntimeSourceSpan],
     embedding_fn: EmbeddingFn | None = None,
+    mode: CompileMode = "initial",
 ) -> CompileResult:
+    """Deterministic compiler: one summary plus one topic per span (no-LLM fallback)."""
     # Section spans duplicate their child chunk/paragraph content; compiling
     # them too would double every topic. Evidence spans only.
     evidence_spans = [span for span in spans if span.span_kind != "section"]
@@ -30,8 +82,266 @@ def compile_source_knowledge(
         source_id=source.id,
         span_ids=[span.id for span in evidence_spans],
         model=lambda _request: json.dumps(_source_payload(source, evidence_spans)),
+        mode=mode,
         embedding_fn=embedding_fn,
     )
+
+
+async def compile_source_knowledge_auto(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+    embedding_fn: EmbeddingFn | None = None,
+    mode: CompileMode = "initial",
+    llm_client: Any | None = None,
+) -> CompileResult:
+    """Compile via the configured backend (ANIMA_KNOWLEDGE_COMPILER=llm|deterministic)."""
+    if settings.knowledge_compiler == "deterministic":
+        return compile_source_knowledge(
+            db, source=source, spans=spans, embedding_fn=embedding_fn, mode=mode
+        )
+    return await compile_source_knowledge_llm(
+        db,
+        source=source,
+        spans=spans,
+        embedding_fn=embedding_fn,
+        mode=mode,
+        llm_client=llm_client,
+    )
+
+
+async def compile_source_knowledge_llm(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+    embedding_fn: EmbeddingFn | None = None,
+    mode: CompileMode = "initial",
+    llm_client: Any | None = None,
+) -> CompileResult:
+    """Compile with the runtime's configured model.
+
+    The LLM is invoked first; its output is funneled through the sync
+    compiler contract so all persistence, merge, and failure bookkeeping
+    stay in ``compile_source_to_concepts``. Malformed output records a
+    failed bundle run (existing concepts untouched); an unavailable LLM
+    (network/configuration) falls back to the deterministic compiler so
+    ingestion never blocks on the model being up.
+    """
+    from anima_server.services.agent.llm_json import call_llm_for_text
+
+    evidence_spans = [span for span in spans if span.span_kind != "section"]
+    system, prompt = _build_compile_prompt(db, source=source, spans=evidence_spans)
+    try:
+        raw = await call_llm_for_text(system, prompt, client=llm_client)
+    except Exception:
+        logger.warning(
+            "LLM compile unavailable for source %s; using deterministic compiler",
+            source.id,
+            exc_info=True,
+        )
+        return compile_source_knowledge(
+            db, source=source, spans=spans, embedding_fn=embedding_fn, mode=mode
+        )
+
+    def _model(_request: Any) -> str:
+        # Citation enforcement raises inside the compiler so a
+        # parseable-but-uncited payload records a failed bundle run.
+        return _prepare_llm_payload(raw, evidence_spans)
+
+    return compile_source_to_concepts(
+        db,
+        user_id=source.user_id,
+        source_id=source.id,
+        span_ids=[span.id for span in evidence_spans],
+        model=_model,
+        mode=mode,
+        embedding_fn=embedding_fn,
+    )
+
+
+def _prepare_llm_payload(raw: str, spans: Sequence[RuntimeSourceSpan]) -> str:
+    """Drop uncited concepts (and their links) from the model payload.
+
+    Unparseable output passes through untouched so the compiler records the
+    malformed-output failure itself.
+    """
+    from anima_server.services.agent.json_utils import parse_json_object
+
+    payload = parse_json_object(raw)
+    if payload is None or not isinstance(payload.get("concepts"), list):
+        return raw
+
+    valid_span_ids = {span.id for span in spans}
+    kept_concepts: list[dict[str, Any]] = []
+    dropped_slugs: set[str] = set()
+    for concept in payload["concepts"]:
+        if not isinstance(concept, dict):
+            continue
+        cited = [
+            span_id
+            for span_id in (concept.get("source_span_ids") or [])
+            if isinstance(span_id, int) and span_id in valid_span_ids
+        ]
+        if not cited:
+            slug = concept.get("slug")
+            if isinstance(slug, str):
+                dropped_slugs.add(slug)
+            continue
+        kept_concepts.append({**concept, "source_span_ids": cited})
+    if not kept_concepts:
+        raise ValueError(
+            "Compiler model output contained no concepts with valid span citations."
+        )
+
+    links = payload.get("links")
+    kept_links = [
+        link
+        for link in (links if isinstance(links, list) else [])
+        if not (
+            isinstance(link, dict)
+            and (
+                link.get("source_slug") in dropped_slugs
+                or link.get("target_slug") in dropped_slugs
+            )
+        )
+    ]
+    return json.dumps(
+        {**payload, "concepts": kept_concepts, "links": kept_links}
+    )
+
+
+def _build_compile_prompt(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+) -> tuple[str, str]:
+    lines = [
+        "SOURCE",
+        f"- id: {source.id}",
+        f"- kind: {source.kind}",
+        f"- title: {_source_title(source)}",
+        f"- uri: {source.source_uri}",
+        "",
+        f"SPANS ({min(len(spans), _PROMPT_SPAN_LIMIT)} of {len(spans)})",
+    ]
+    for span in list(spans)[:_PROMPT_SPAN_LIMIT]:
+        metadata = span.metadata_json or {}
+        section_path = metadata.get("section_path") or metadata.get("heading") or ""
+        section = f" [{section_path}]" if section_path else ""
+        location = _span_location(span)
+        lines.append(
+            f"- span {span.id}{section}{location}: "
+            f"{_compact_text(span.content_text, limit=_PROMPT_SPAN_CHARS)}"
+        )
+
+    related = _related_existing_concepts(db, source=source, spans=spans)
+    if related:
+        lines.append("")
+        lines.append("RELATED EXISTING CONCEPTS (reuse these slugs to update/merge)")
+        for concept in related:
+            lines.append(
+                f"- slug: {concept.slug} [{concept.concept_type}] {concept.title}: "
+                f"{_compact_text(concept.summary, limit=240)}"
+            )
+
+    lines.append("")
+    lines.append(
+        "Compile this source into concept pages now. Respond with the JSON object only."
+    )
+    return _COMPILER_SYSTEM_PROMPT, "\n".join(lines)
+
+
+def _related_existing_concepts(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+) -> list[Any]:
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge
+
+    query_parts = [_source_title(source)]
+    for span in list(spans)[:3]:
+        query_parts.append(_compact_text(span.content_text, limit=200))
+    try:
+        result = retrieve_knowledge(
+            db,
+            user_id=source.user_id,
+            query="\n".join(query_parts),
+            limit_concepts=_PROMPT_RELATED_CONCEPTS,
+            limit_spans=0,
+        )
+    except Exception:
+        logger.debug(
+            "Related-concept retrieval failed for source %s",
+            source.id,
+            exc_info=True,
+        )
+        return []
+    # Concepts previously compiled from this same source are not merge
+    # candidates — slug reuse already covers refresh.
+    return [
+        concept
+        for concept in result.concepts
+        if concept.slug and not concept.slug.startswith(f"source-{source.id}-")
+    ]
+
+
+def find_autocompile_candidates(
+    db: Session,
+    *,
+    user_id: int,
+    policy: str,
+    budget: int,
+    cooldown_hours: float,
+) -> list[RuntimeSource]:
+    """Sources with spans but no compiled concepts, honoring policy and cooldown.
+
+    Mirrors the ``orphan_source`` lint rule as a query. A source with any
+    compile bundle run inside the cooldown window (success or failure) is
+    skipped so the sleep agent doesn't hammer a failing source every cycle.
+    """
+    if policy == "off" or budget <= 0:
+        return []
+
+    has_spans = (
+        select(RuntimeSourceSpan.id)
+        .where(
+            RuntimeSourceSpan.source_id == RuntimeSource.id,
+            RuntimeSourceSpan.user_id == user_id,
+        )
+        .exists()
+    )
+    has_concept_citations = (
+        select(RuntimeKnowledgeConceptSource.id)
+        .where(
+            RuntimeKnowledgeConceptSource.source_id == RuntimeSource.id,
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+        )
+        .exists()
+    )
+    cooldown_cutoff = datetime.now(UTC) - timedelta(hours=max(0.0, cooldown_hours))
+    recently_attempted = (
+        select(RuntimeKnowledgeBundleRun.id)
+        .where(
+            RuntimeKnowledgeBundleRun.source_id == RuntimeSource.id,
+            RuntimeKnowledgeBundleRun.user_id == user_id,
+            RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
+            RuntimeKnowledgeBundleRun.created_at >= cooldown_cutoff,
+        )
+        .exists()
+    )
+    stmt = select(RuntimeSource).where(
+        RuntimeSource.user_id == user_id,
+        has_spans,
+        ~has_concept_citations,
+        ~recently_attempted,
+    )
+    if policy == "markdown_only":
+        stmt = stmt.where(RuntimeSource.kind == "markdown")
+    return list(db.scalars(stmt.order_by(RuntimeSource.id).limit(budget)).all())
 
 
 def _source_payload(

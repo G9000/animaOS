@@ -43,7 +43,9 @@ from anima_server.services.ingestion.adapters.web import (
     ingest_web_capture,
     reextract_source_html,
 )
-from anima_server.services.ingestion.document_compiler import compile_source_knowledge
+from anima_server.services.ingestion.document_compiler import (
+    compile_source_knowledge_auto,
+)
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
 from anima_server.services.ingestion.web_fetch import (
@@ -138,12 +140,12 @@ async def ingest_text_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
-            compile_knowledge=payload.compile,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -166,12 +168,12 @@ async def ingest_markdown_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
-            compile_knowledge=payload.compile,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -217,12 +219,12 @@ async def ingest_web_capture_source(
             title=payload.title,
             canonical_url=payload.canonicalUrl,
             embedding_fn=generate_embedding,
-            compile_knowledge=payload.compile,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -278,12 +280,12 @@ async def ingest_html_source(
             filename=filename,
             title=title,
             embedding_fn=generate_embedding,
-            compile_knowledge=compileKnowledge,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if compileKnowledge
         else None
     )
@@ -399,7 +401,7 @@ async def compile_source(
 ) -> dict[str, Any]:
     require_unlocked_user(request, userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
-    run = _compile_source_now(
+    run = await _compile_source_now(
         runtime_db,
         source=source,
         spans=_source_spans(runtime_db, source_id=source.id),
@@ -552,13 +554,13 @@ async def lint_knowledge(
     }
 
 
-def _compile_source_now(
+async def _compile_source_now(
     runtime_db: Session,
     *,
     source: RuntimeSource,
     spans: list[RuntimeSourceSpan],
 ) -> RuntimeKnowledgeBundleRun:
-    result = compile_source_knowledge(
+    result = await compile_source_knowledge_auto(
         runtime_db,
         source=source,
         spans=spans,
@@ -573,13 +575,16 @@ def _compile_source_now(
     return run
 
 
-def _existing_or_new_compile_run(
+async def _existing_or_new_compile_run(
     runtime_db: Session,
     *,
     source: RuntimeSource,
     spans: list[RuntimeSourceSpan],
 ) -> RuntimeKnowledgeBundleRun:
-    return _latest_source_compile_run(runtime_db, source=source) or _compile_source_now(
+    existing = _latest_source_compile_run(runtime_db, source=source)
+    if existing is not None:
+        return existing
+    return await _compile_source_now(
         runtime_db,
         source=source,
         spans=spans,

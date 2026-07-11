@@ -78,6 +78,16 @@ class Settings(BaseSettings):
     # Single read_document_section call cap; longer sections continue via
     # the start_chunk parameter.
     document_tool_read_char_limit: int = 6_000
+    # Knowledge compiler backend: "llm" uses the runtime's configured model
+    # (falling back to deterministic when the model is unreachable);
+    # "deterministic" forces the stub builder.
+    knowledge_compiler: Literal["llm", "deterministic"] = "llm"
+    # Sleep-agent auto-compile policy for sources with spans but no compiled
+    # concepts: off, markdown_only (cheap, high-signal), or all kinds.
+    knowledge_autocompile: Literal["off", "markdown_only", "all"] = "markdown_only"
+    knowledge_autocompile_budget_per_cycle: int = 2
+    # A source is not re-attempted (success or failure) within this window.
+    knowledge_autocompile_cooldown_hours: float = 24.0
     # Server-side URL fetching for web captures is opt-in; the local-first
     # threat model expects clients to supply captured HTML themselves.
     web_capture_url_fetch_enabled: bool = False

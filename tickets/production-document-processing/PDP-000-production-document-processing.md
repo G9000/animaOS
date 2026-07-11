@@ -47,7 +47,7 @@ External research (2025–2026 state of the art) confirmed the target stack: Doc
 | `PDP-004` | Tiered parsing: Docling quality tier and OCR fallback | in_review | `PDP-003` |
 | `PDP-005` | HTML and web capture extraction | in_review | `PDP-003` |
 | `PDP-006` | Agentic document tools | in_review | `PDP-002` |
-| `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | todo | `PDP-002`, `PDP-003` |
+| `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | in_review | `PDP-002`, `PDP-003` |
 | `PDP-008` | Contextual chunk blurbs and optional reranker | todo | `PDP-002`, `PDP-003` |
 | `PDP-009` | Retrieval eval harness, docs, and final validation | todo | `PDP-001` through `PDP-008` |
 
@@ -83,6 +83,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-11 - PDP-001 follow-up: document context limits moved from module constants to config-backed settings per the ticket's wording.
 - 2026-07-11 - PDP-005 implemented: trafilatura extraction (raw HTML mode + `.html` upload + opt-in SSRF-guarded URL fetch, default off), raw_html artifact retained for idempotent re-extraction.
 - 2026-07-12 - PDP-006 implemented: search_documents / get_document_outline / read_document_section agent tools with per-turn text budget, ownership scoping, tool-citation document_source pills, and primer + directive updates.
+- 2026-07-12 - PDP-007 implemented: LLM wired into compile_source_to_concepts (merge-aware prompt, write-time citation enforcement, deterministic fallback), sleep-agent knowledge_autocompile task with policy/budget/cooldown.
 
 ## Validation
 

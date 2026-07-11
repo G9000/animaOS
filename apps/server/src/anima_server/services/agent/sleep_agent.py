@@ -350,6 +350,11 @@ async def run_sleeptime_agents(
         ("heat_decay", _task_heat_decay, {}),
         ("foresight_lifecycle", _task_foresight_lifecycle, {}),
         ("episode_gen", _task_episode_gen, {}),
+        (
+            "knowledge_autocompile",
+            _task_knowledge_autocompile,
+            {"_task_runtime_db_factory": runtime_db_factory},
+        ),
     ]:
         try:
             r = await _issue_background_task(
@@ -907,6 +912,67 @@ async def _task_heat_decay(
         db.commit()
 
     return {"items_decayed": count}
+
+
+async def _task_knowledge_autocompile(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """Compile orphan knowledge sources (spans but no concepts) within budget."""
+    del db_factory  # knowledge lives in the runtime database
+    from sqlalchemy import select
+
+    from anima_server.config import settings
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeSourceSpan
+    from anima_server.services.agent.embeddings import generate_embedding
+    from anima_server.services.ingestion.document_compiler import (
+        compile_source_knowledge_auto,
+        find_autocompile_candidates,
+    )
+
+    policy = settings.knowledge_autocompile
+    if policy == "off":
+        return {"policy": "off", "compiled": []}
+
+    factory = runtime_db_factory or get_runtime_session_factory()
+    compiled: list[dict] = []
+    with factory() as runtime_db:
+        candidates = find_autocompile_candidates(
+            runtime_db,
+            user_id=user_id,
+            policy=policy,
+            budget=settings.knowledge_autocompile_budget_per_cycle,
+            cooldown_hours=settings.knowledge_autocompile_cooldown_hours,
+        )
+        for source in candidates:
+            spans = list(
+                runtime_db.scalars(
+                    select(RuntimeSourceSpan)
+                    .where(
+                        RuntimeSourceSpan.source_id == source.id,
+                        RuntimeSourceSpan.user_id == user_id,
+                    )
+                    .order_by(RuntimeSourceSpan.id)
+                ).all()
+            )
+            result = await compile_source_knowledge_auto(
+                runtime_db,
+                source=source,
+                spans=spans,
+                embedding_fn=generate_embedding,
+            )
+            runtime_db.commit()
+            compiled.append(
+                {
+                    "source_id": source.id,
+                    "status": result.status,
+                    "concepts": result.concept_count,
+                }
+            )
+    return {"policy": policy, "compiled": compiled}
 
 
 async def _task_foresight_lifecycle(
