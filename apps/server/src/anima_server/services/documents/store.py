@@ -164,7 +164,7 @@ def replace_document_chunks(
             content_hash=_content_hash(chunk.content_text),
             page_start=chunk.page_start,
             page_end=chunk.page_end,
-            section_title=chunk.section_title,
+            section_title=_bounded_section_title(chunk.section_title),
             token_count=chunk.token_count,
             metadata_json=_copy_metadata(chunk.metadata_json),
         )
@@ -204,6 +204,17 @@ def get_document_for_user(
             RuntimeDocument.user_id == user_id,
         )
     )
+
+
+# RuntimeDocumentChunk.section_title is String(255); deep Docling heading
+# paths must not fail chunk insert on length-enforcing backends.
+_SECTION_TITLE_MAX_LENGTH = 255
+
+
+def _bounded_section_title(value: str | None) -> str | None:
+    if value is None or len(value) <= _SECTION_TITLE_MAX_LENGTH:
+        return value
+    return value[:_SECTION_TITLE_MAX_LENGTH].rstrip()
 
 
 def _content_hash(content_text: str) -> str:

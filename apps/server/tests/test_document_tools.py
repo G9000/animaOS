@@ -363,3 +363,24 @@ def test_tool_citations_become_document_source_pills(runtime_db, tool_ctx) -> No
     agent_service._capture_document_tool_citations(turn_ctx)
     refs = [pill["ref"] for pill in turn_ctx.document_source_pills]
     assert refs.count(document.id) == 1
+
+
+def test_merged_section_paths_stay_addressable(runtime_db, tool_ctx) -> None:
+    merged_chunk = ExtractedDocumentChunk(
+        chunk_index=0,
+        content_text="Alpha section body.\n\nBeta section body.",
+        page_start=1,
+        page_end=1,
+        section_title="Guide > Alpha",
+        metadata_json={"section_paths": ["Guide > Alpha", "Guide > Beta"]},
+    )
+    document = _make_document(runtime_db, chunks=[merged_chunk])
+
+    outline = get_document_outline(str(document.id))
+    assert "- Guide > Alpha" in outline
+    assert "- Guide > Beta" in outline
+
+    by_merged_path = read_document_section(
+        str(document.id), section_path="Guide > Beta"
+    )
+    assert "Beta section body" in by_merged_path

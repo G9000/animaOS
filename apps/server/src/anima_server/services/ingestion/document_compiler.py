@@ -129,26 +129,61 @@ async def compile_source_knowledge_llm(
     (network/configuration) falls back to the deterministic compiler so
     ingestion never blocks on the model being up.
     """
+    from anima_server.services.agent.json_utils import parse_json_object
     from anima_server.services.agent.llm_json import call_llm_for_text
 
     evidence_spans = [span for span in spans if span.span_kind != "section"]
-    system, prompt = _build_compile_prompt(db, source=source, spans=evidence_spans)
-    try:
-        raw = await call_llm_for_text(system, prompt, client=llm_client)
-    except Exception:
-        logger.warning(
-            "LLM compile unavailable for source %s; using deterministic compiler",
-            source.id,
-            exc_info=True,
-        )
-        return compile_source_knowledge(
-            db, source=source, spans=spans, embedding_fn=embedding_fn, mode=mode
-        )
+    # Every span must be visible to the model: long sources compile in
+    # batches instead of silently truncating at the prompt span cap (the
+    # autocompile cooldown would otherwise never revisit the tail).
+    batches = [
+        evidence_spans[start : start + _PROMPT_SPAN_LIMIT]
+        for start in range(0, len(evidence_spans), _PROMPT_SPAN_LIMIT)
+    ] or [[]]
+
+    combined: dict[str, Any] = {
+        "concepts": [],
+        "links": [],
+        "metadata": {"compiler": "llm_wiki", "batches": len(batches)},
+    }
+    for batch in batches:
+        system, prompt = _build_compile_prompt(db, source=source, spans=batch)
+        try:
+            raw = await call_llm_for_text(system, prompt, client=llm_client)
+        except Exception:
+            logger.warning(
+                "LLM compile unavailable for source %s; using deterministic compiler",
+                source.id,
+                exc_info=True,
+            )
+            return compile_source_knowledge(
+                db, source=source, spans=spans, embedding_fn=embedding_fn, mode=mode
+            )
+        payload = parse_json_object(raw)
+        if payload is None or not isinstance(payload.get("concepts"), list):
+            def _malformed(_request: Any, _raw: str = raw) -> str:
+                # Hand the raw output to the compiler so it records its own
+                # malformed-output failure (existing concepts untouched).
+                return _raw
+
+            return compile_source_to_concepts(
+                db,
+                user_id=source.user_id,
+                source_id=source.id,
+                span_ids=[span.id for span in evidence_spans],
+                model=_malformed,
+                mode=mode,
+                embedding_fn=embedding_fn,
+            )
+        combined["concepts"].extend(payload["concepts"])
+        links = payload.get("links")
+        if isinstance(links, list):
+            combined["links"].extend(links)
 
     def _model(_request: Any) -> str:
         # Citation enforcement raises inside the compiler so a
         # parseable-but-uncited payload records a failed bundle run.
-        return _prepare_llm_payload(raw, evidence_spans)
+        return _prepare_llm_payload(combined, evidence_spans)
 
     return compile_source_to_concepts(
         db,
@@ -161,18 +196,10 @@ async def compile_source_knowledge_llm(
     )
 
 
-def _prepare_llm_payload(raw: str, spans: Sequence[RuntimeSourceSpan]) -> str:
-    """Drop uncited concepts (and their links) from the model payload.
-
-    Unparseable output passes through untouched so the compiler records the
-    malformed-output failure itself.
-    """
-    from anima_server.services.agent.json_utils import parse_json_object
-
-    payload = parse_json_object(raw)
-    if payload is None or not isinstance(payload.get("concepts"), list):
-        return raw
-
+def _prepare_llm_payload(
+    payload: dict[str, Any], spans: Sequence[RuntimeSourceSpan]
+) -> str:
+    """Drop uncited concepts (and their links) from the model payload."""
     valid_span_ids = {span.id for span in spans}
     kept_concepts: list[dict[str, Any]] = []
     dropped_slugs: set[str] = set()
@@ -225,9 +252,9 @@ def _build_compile_prompt(
         f"- title: {_source_title(source)}",
         f"- uri: {source.source_uri}",
         "",
-        f"SPANS ({min(len(spans), _PROMPT_SPAN_LIMIT)} of {len(spans)})",
+        f"SPANS ({len(spans)})",
     ]
-    for span in list(spans)[:_PROMPT_SPAN_LIMIT]:
+    for span in spans:
         metadata = span.metadata_json or {}
         section_path = metadata.get("section_path") or metadata.get("heading") or ""
         section = f" [{section_path}]" if section_path else ""

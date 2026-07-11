@@ -178,3 +178,22 @@ def test_chunk_pages_emits_single_token_that_exceeds_target_without_looping() ->
     assert chunks[0].content_text == "supercalifragilistic"
     assert chunks[0].page_start == 9
     assert chunks[0].page_end == 9
+
+
+def test_chunk_pages_structured_records_merged_section_paths() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    chunks = chunk_pages_structured(
+        [
+            PageText(
+                page_number=1,
+                text="# Alpha\n\nShort alpha body.\n\n# Beta\n\nShort beta body.",
+            ),
+        ],
+        target_chars=200,
+    )
+
+    assert len(chunks) == 1
+    merged = chunks[0]
+    assert merged.section_title == "Alpha"
+    assert merged.metadata_json == {"section_paths": ["Alpha", "Beta"]}

@@ -119,8 +119,24 @@ def search_document_chunks(
         limit=search_limit,
     )
     if lexical_ranking:
-        fused = _reciprocal_rank_fusion(dense_ranking, lexical_ranking)
-        ranked_chunk_ids = [chunk_id for chunk_id, _score in fused]
+        # RRF ties (disjoint hits at equal ranks) are broken toward the
+        # lexical arm explicitly — an exact-token BM25 hit must be able to
+        # win the top slot over an unrelated dense hit at limit=1, and the
+        # fusion backends (Python vs Rust) do not share tie ordering.
+        fused = _reciprocal_rank_fusion(lexical_ranking, dense_ranking)
+        lexical_rank_by_id = {
+            chunk_id: rank for rank, (chunk_id, _score) in enumerate(lexical_ranking)
+        }
+        ranked_chunk_ids = [
+            chunk_id
+            for chunk_id, _score in sorted(
+                fused,
+                key=lambda pair: (
+                    -pair[1],
+                    lexical_rank_by_id.get(pair[0], len(lexical_rank_by_id) + 1),
+                ),
+            )
+        ]
     else:
         ranked_chunk_ids = [chunk_id for chunk_id, _similarity in dense_ranking]
     if not ranked_chunk_ids:

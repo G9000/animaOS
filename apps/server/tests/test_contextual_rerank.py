@@ -376,3 +376,73 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
     assert len(baseline) == 1
     assert "alpha" in baseline[0].content
     assert search_limits[-1] == 1
+
+
+def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
+    runtime_db, monkeypatch: Any
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent import pgvec_store as pgvec_module
+    from anima_server.services.agent.embedding_integrity import (
+        compute_embedding_checksum,
+    )
+    from anima_server.services.agent.vector_store import VectorSearchResult
+    from anima_server.services.documents import rag as rag_module
+    from anima_server.services.documents.rag import search_document_chunks
+
+    document, chunks = _document_with_chunks(
+        runtime_db, ["unrelated dense favorite", "the E-17 fault code chunk"]
+    )
+    for chunk in chunks:
+        vector = [1.0] + [0.0] * 767
+        runtime_db.add(
+            RuntimeEmbedding(
+                user_id=USER_ID,
+                source_type="document_chunk",
+                source_id=chunk.id,
+                content_hash=chunk.content_hash,
+                embedding_checksum=compute_embedding_checksum(vector),
+                embedding=vector,
+                content_preview=chunk.content_text[:200],
+                category="document",
+                importance=3,
+            )
+        )
+    runtime_db.flush()
+
+    def fake_search_by_vector(self: Any, user_id: int, **kwargs: Any):
+        # Dense rank 1 is the unrelated chunk; the exact-token chunk is
+        # invisible to the dense arm.
+        return [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="unrelated",
+                category="document",
+                importance=3,
+                similarity=0.99,
+                source_type="document_chunk",
+            )
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore, "search_by_vector", fake_search_by_vector
+    )
+    monkeypatch.setattr(
+        rag_module,
+        "_lexical_document_chunk_ranking",
+        lambda *args, **kwargs: [(chunks[1].id, 9.0)],
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        USER_ID,
+        "E-17",
+        document_ids=[document.id],
+        limit=1,
+        embedding_fn=lambda text: [1.0] + [0.0] * 767,
+    )
+
+    # Both arms rank their hit first (an RRF tie); the exact-token lexical
+    # hit must win the single slot.
+    assert len(results) == 1
+    assert "E-17" in results[0].content

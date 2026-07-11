@@ -312,6 +312,17 @@ def _load_owned_document_chunks(
     return document, chunks, None
 
 
+def _chunk_section_paths(chunk: Any) -> list[str]:
+    """Every section path a chunk answers to (merged sections included)."""
+    metadata = chunk.metadata_json or {}
+    merged = metadata.get("section_paths")
+    if isinstance(merged, list):
+        paths = [path for path in merged if isinstance(path, str) and path]
+        if paths:
+            return paths
+    return [chunk.section_title] if chunk.section_title else []
+
+
 def _section_summaries(
     chunks: Sequence[Any],
 ) -> list[tuple[str, int | None, int | None, int, int]]:
@@ -321,21 +332,23 @@ def _section_summaries(
     order: list[str] = []
     stats: dict[str, list[Any]] = {}
     for chunk in chunks:
-        title = chunk.section_title or _UNTITLED_SECTION
-        if title not in stats:
-            order.append(title)
-            stats[title] = [chunk.page_start, chunk.page_end, 0, 0]
-        entry = stats[title]
-        if chunk.page_start is not None:
-            entry[0] = (
-                chunk.page_start if entry[0] is None else min(entry[0], chunk.page_start)
-            )
-        if chunk.page_end is not None:
-            entry[1] = (
-                chunk.page_end if entry[1] is None else max(entry[1], chunk.page_end)
-            )
-        entry[2] += 1
-        entry[3] += len(chunk.content_text)
+        for title in _chunk_section_paths(chunk) or [_UNTITLED_SECTION]:
+            if title not in stats:
+                order.append(title)
+                stats[title] = [chunk.page_start, chunk.page_end, 0, 0]
+            entry = stats[title]
+            if chunk.page_start is not None:
+                entry[0] = (
+                    chunk.page_start
+                    if entry[0] is None
+                    else min(entry[0], chunk.page_start)
+                )
+            if chunk.page_end is not None:
+                entry[1] = (
+                    chunk.page_end if entry[1] is None else max(entry[1], chunk.page_end)
+                )
+            entry[2] += 1
+            entry[3] += len(chunk.content_text)
     return [
         (title, *stats[title])  # type: ignore[misc]
         for title in order
@@ -352,7 +365,11 @@ def _select_chunks(
     if section_path:
         if section_path == _UNTITLED_SECTION:
             return [chunk for chunk in chunks if not chunk.section_title]
-        return [chunk for chunk in chunks if chunk.section_title == section_path]
+        return [
+            chunk
+            for chunk in chunks
+            if section_path in _chunk_section_paths(chunk)
+        ]
     if page_start is not None or page_end is not None:
         low = page_start if page_start is not None else 1
         high = page_end if page_end is not None else 10**9

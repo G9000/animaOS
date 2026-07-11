@@ -351,3 +351,45 @@ def test_set_document_status_can_mark_indexed(runtime_db) -> None:
     assert updated is not None
     assert updated.status == "stale"
     assert updated.indexed_at == indexed_at
+
+
+def test_replace_document_chunks_bounds_section_title_to_column_length(
+    runtime_db,
+) -> None:
+    from anima_server.services.documents.models import (
+        DocumentRegistration,
+        ExtractedDocumentChunk,
+    )
+    from anima_server.services.documents.store import (
+        register_document,
+        replace_document_chunks,
+    )
+
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=1,
+            filename="deep.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/1/deep.pdf",
+            sha256="f" * 64,
+            size_bytes=100,
+        ),
+    )
+    long_title = " > ".join(f"Heading level {index}" for index in range(30))
+    assert len(long_title) > 255
+
+    chunks = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text="body",
+                section_title=long_title,
+            )
+        ],
+    )
+
+    assert len(chunks[0].section_title) <= 255
+    assert chunks[0].section_title == long_title[:255].rstrip()

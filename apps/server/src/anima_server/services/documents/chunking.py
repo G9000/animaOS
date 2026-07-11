@@ -150,20 +150,39 @@ def chunk_pages_structured(
     )
 
     document = structure_pages_markdown(pages)
-    return [
-        ExtractedDocumentChunk(
-            chunk_index=chunk.chunk_index,
-            content_text=chunk.content_text,
-            page_start=chunk.page_start,
-            page_end=chunk.page_end,
-            section_title=chunk.section_path or None,
+    path_by_section_index = {
+        section.index: section.section_path for section in document.sections()
+    }
+    chunks: list[ExtractedDocumentChunk] = []
+    for chunk in chunk_structured_document(
+        document,
+        target_chars=target_chars,
+        overlap_chars=overlap_chars,
+    ):
+        # Small adjacent sections merge into one chunk; keep every merged
+        # section path addressable (the outline/read tools match by path).
+        section_paths = [
+            path
+            for path in (
+                path_by_section_index.get(index, "")
+                for index in chunk.section_indexes
+            )
+            if path
+        ]
+        metadata: dict[str, object] | None = None
+        if len(section_paths) > 1:
+            metadata = {"section_paths": section_paths}
+        chunks.append(
+            ExtractedDocumentChunk(
+                chunk_index=chunk.chunk_index,
+                content_text=chunk.content_text,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                section_title=chunk.section_path or None,
+                metadata_json=metadata,
+            )
         )
-        for chunk in chunk_structured_document(
-            document,
-            target_chars=target_chars,
-            overlap_chars=overlap_chars,
-        )
-    ]
+    return chunks
 
 
 def _combined_length(current_length: int, text: str) -> int:

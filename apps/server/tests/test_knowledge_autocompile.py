@@ -448,3 +448,60 @@ async def test_autocompile_task_off_policy_is_inert(
 
     assert result == {"policy": "off", "compiled": []}
     assert runtime_db.scalar(select(RuntimeKnowledgeConcept)) is None
+
+
+@pytest.mark.asyncio()
+async def test_llm_compile_batches_prompts_so_every_span_is_visible(
+    runtime_db,
+) -> None:
+    paragraphs = "\n\n".join(f"Fact number {index}." for index in range(90))
+    source, spans = _ingest_markdown(runtime_db, paragraphs, filename="long.md")
+    span_ids = _evidence_ids(spans)
+    assert len(span_ids) > 80  # forces two prompt batches
+
+    class _BatchClient:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def ainvoke(self, messages: Any) -> Any:
+            prompt = "\n".join(str(m.content) for m in messages)
+            self.prompts.append(prompt)
+            import re
+
+            visible = [int(m) for m in re.findall(r"- span (\d+)", prompt)]
+            batch_number = len(self.prompts)
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                content=_llm_payload(
+                    [
+                        {
+                            "type": "topic",
+                            "slug": f"batch-topic-{batch_number}",
+                            "title": f"Batch {batch_number}",
+                            "description": "x",
+                            "body_markdown": f"# Batch {batch_number}",
+                            "source_span_ids": visible[:1],
+                            "tags": [],
+                        }
+                    ]
+                )
+            )
+
+    client = _BatchClient()
+    result = await compile_source_knowledge_llm(
+        runtime_db, source=source, spans=spans, llm_client=client
+    )
+
+    assert result.status == "completed"
+    assert len(client.prompts) == 2
+    # Every evidence span id appeared in some prompt.
+    import re
+
+    seen: set[int] = set()
+    for prompt in client.prompts:
+        seen.update(int(m) for m in re.findall(r"- span (\d+)", prompt))
+    assert seen == set(span_ids)
+    # Concepts from both batches persisted.
+    slugs = set(runtime_db.scalars(select(RuntimeKnowledgeConcept.slug)).all())
+    assert {"batch-topic-1", "batch-topic-2"} <= slugs
