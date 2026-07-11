@@ -49,7 +49,7 @@ External research (2025–2026 state of the art) confirmed the target stack: Doc
 | `PDP-006` | Agentic document tools | in_review | `PDP-002` |
 | `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | in_review | `PDP-002`, `PDP-003` |
 | `PDP-008` | Contextual chunk blurbs and optional reranker | in_review | `PDP-002`, `PDP-003` |
-| `PDP-009` | Retrieval eval harness, docs, and final validation | todo | `PDP-001` through `PDP-008` |
+| `PDP-009` | Retrieval eval harness, docs, and final validation | in_review | `PDP-001` through `PDP-008` |
 
 Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), then PDP-003 → PDP-004/PDP-005 in parallel, then PDP-006/PDP-007, then PDP-008, PDP-009 last.
 
@@ -85,6 +85,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-12 - PDP-006 implemented: search_documents / get_document_outline / read_document_section agent tools with per-turn text budget, ownership scoping, tool-citation document_source pills, and primer + directive updates.
 - 2026-07-12 - PDP-007 implemented: LLM wired into compile_source_to_concepts (merge-aware prompt, write-time citation enforcement, deterministic fallback), sleep-agent knowledge_autocompile task with policy/budget/cooldown.
 - 2026-07-12 - PDP-008 implemented: contextual chunk blurbs (flag-gated, embedding/lexical-only) and optional local cross-encoder reranker (flag + extra gated, degrades to fused order); eval gating deferred to PDP-009.
+- 2026-07-12 - PDP-009 implemented: retrieval eval harness (30-query gold corpus; hybrid ≥ dense recorded: recall@5 0.867 vs 0.833, nDCG@10 0.828 vs 0.817), architecture docs rewritten, changelog entry. Epic complete in code; closing the parent awaits the deferred manual items in PDP-009 (extras-config suite, desktop build, end-to-end scanned-PDF pass).
 
 ## Validation
 

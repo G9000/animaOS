@@ -1,0 +1,43 @@
+MISSION LOG - SV MERIDIAN
+
+Day 1. Departure from Luna high dock proceeded on schedule. The helium-3 scoop
+deployed cleanly at the first burn and telemetry shows collection efficiency at
+97 percent. We committed to the Ceres transfer window at 0340; the next window
+would have cost us nineteen days. Crew morale is high and the new galley is
+already popular.
+
+Day 3. First full systems review complete. All primary buses nominal. The
+water reclaimer is running two points above its acceptance test numbers.
+
+SYSTEMS
+
+Day 7. The coolant manifold on the reactor loop shows a pressure drop of 12
+percent against the departure baseline. Engineering traced it to a weeping seal
+on junction C-4 and clamped it; pressure is stable but we will machine a
+replacement seal before the return leg.
+
+Day 9. The starboard thruster misfired twice during the correction burn. The
+fault isolated to a sticky propellant valve; cycling it cleared the fault, but
+the valve goes on the overhaul list. Port thruster performance remains nominal.
+
+NAVIGATION
+
+Day 12. The navigation gimbal shows a drift of 0.3 degrees accumulated since
+departure, at the edge of tolerance. We recalibrated against the pulsar fix and
+scheduled a quantum beacon calibration at relay buoy K-9, which we pass on day
+15. Star tracker two was cleaned of a film deposit that was dimming magnitude
+readings.
+
+CREW
+
+Day 16. The hydroponics bay produced its first full salad harvest, eleven
+kilograms of greens, to general celebration. Doctor Ilse Marek reports the crew
+fit, with radiation dosimetry well inside limits. The chess ladder has become
+fiercely competitive; the chief engineer remains undefeated.
+
+ARRIVAL
+
+Day 22. Ceres approach and capture were textbook. Docking clamps engaged on the
+first attempt at berth seven. The cargo manifest transfers 400 tonnes of
+regolith processing equipment to the surface consortium; unloading begins at
+first shift tomorrow. Return window analysis begins next week.

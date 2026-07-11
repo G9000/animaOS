@@ -17,10 +17,13 @@ The current implementation covers:
 - runtime source, artifact, span, concept, citation, link, and bundle-run tables,
 - adapter contracts for source-type-agnostic ingestion,
 - bridges from existing PDF chunks and image annotations,
-- markdown, plain text, and web capture adapters,
+- markdown, plain text, HTML upload, and web capture adapters (raw HTML is
+  extracted server-side with trafilatura through the structured-markdown
+  intermediate),
 - OKF import/export,
-- deterministic LLM-wiki compiler merge rules,
-- concept and source-span retrieval,
+- a live LLM-wiki compiler (configured runtime model, deterministic fallback)
+  with write-time citation enforcement and sleep-agent auto-compile,
+- hybrid concept and source-span retrieval (dense + BM25 + RRF),
 - linting for broken links, uncited pages, stale concepts, duplicates, contradictions, and orphan sources,
 - REST/API-client/desktop surfaces for listing, reading, searching, linting, compiling, importing, and exporting knowledge bundles.
 
@@ -83,8 +86,9 @@ Current adapters and bridges:
 | PDF bridge | `document` | Mirrors `RuntimeDocument` and `RuntimeDocumentChunk` into sources and page-located spans |
 | Image bridge | `image` | Mirrors `RuntimeImageAsset` and `RuntimeImageAnnotation` into sources and annotation-located spans |
 | Text adapter | `text` | Splits plain text into paragraph spans |
-| Markdown adapter | `markdown` | Preserves headings in span metadata and splits headings/paragraphs |
-| Web capture adapter | `web_capture` | Stores URL/canonical URL/title metadata and caller-provided readable text |
+| Markdown adapter | `markdown` | Parses the structured-markdown intermediate: heading/paragraph evidence spans with `section_path` metadata, plus parent `section` spans (read units, not embedded) and a `structured_markdown` artifact with an outline |
+| Web capture adapter | `web_capture` | Two modes: raw `html` (extracted server-side with trafilatura into the structured pipeline; the `raw_html` artifact is retained for idempotent re-extraction) or legacy caller-provided `readableText`. Opt-in SSRF-guarded URL fetch (`ANIMA_WEB_CAPTURE_URL_FETCH_ENABLED`, default off) |
+| HTML upload adapter | `html` | `.html` file uploads through `POST /api/knowledge/sources/html` with MIME validation, same extraction path as web captures |
 
 Future adapters should reuse this contract for transcripts, Office docs, datasets, code repositories, email/calendar exports, audio/video, and other connector payloads.
 
@@ -106,6 +110,19 @@ Export writes compiled concepts and citation metadata, not raw source binaries. 
 
 The compiler turns selected source spans into maintained concept pages. It receives a source id, span ids, a mode (`initial`, `refresh`, or `repair`), and optional selected concepts. Model output is strict JSON containing concepts and typed links.
 
+The backend is selected by `ANIMA_KNOWLEDGE_COMPILER`:
+
+- **llm** (default) — the runtime's configured model compiles through the
+  same contract. The prompt carries source metadata, section-pathed evidence
+  spans, and hybrid-matched existing concepts with reuse-this-slug merge
+  instructions; `supports`/`contradicts`/`updates` links are explicit
+  objectives. Citation enforcement runs at write time: concepts without
+  valid span citations are dropped (with their links), and a payload with
+  nothing cited records a failed bundle run. If the model is unreachable,
+  compilation falls back to the deterministic builder so ingestion never
+  blocks on the model.
+- **deterministic** — the stub builder (one summary plus one topic per span).
+
 Merge rules are deterministic before and after model output:
 
 - exact slug matches update the same concept,
@@ -116,6 +133,17 @@ Merge rules are deterministic before and after model output:
 - malformed model output records a failed bundle run without corrupting existing concepts.
 
 Concept frontmatter stores source count, tags, status, and content hashes used by linting and stale-page checks.
+
+### Auto-Compile
+
+The sleep agent runs a `knowledge_autocompile` task each cycle: sources with
+spans but no compiled concepts (the orphan-source lint rule as a query)
+compile within a budget of `ANIMA_KNOWLEDGE_AUTOCOMPILE_BUDGET_PER_CYCLE`
+(2) sources per cycle and a per-source cooldown
+(`..._COOLDOWN_HOURS`, 24h, covering failed attempts too). The policy
+`ANIMA_KNOWLEDGE_AUTOCOMPILE` is `off`, `markdown_only` (default), or `all`.
+Ingest-time `compile: true` and the explicit compile endpoint use the same
+configured backend.
 
 ## Retrieval Contract
 
@@ -151,8 +179,10 @@ Lint can run globally or scoped to a source or concept. Findings are returned to
 | `GET /api/knowledge/sources/{source_id}` | Read source, artifacts, and spans |
 | `POST /api/knowledge/sources/text` | Ingest plain text |
 | `POST /api/knowledge/sources/markdown` | Ingest markdown |
-| `POST /api/knowledge/sources/web-capture` | Ingest caller-provided web capture text |
-| `POST /api/knowledge/sources/{source_id}/compile` | Queue a compile run marker for a source |
+| `POST /api/knowledge/sources/web-capture` | Ingest a web capture: raw `html`, legacy `readableText`, or opt-in `fetch` |
+| `POST /api/knowledge/sources/html` | Upload a `.html` file (MIME-validated, PDF-parity size limit) |
+| `POST /api/knowledge/sources/{source_id}/reextract` | Re-run extraction from the stored raw HTML artifact (idempotent) |
+| `POST /api/knowledge/sources/{source_id}/compile` | Compile a source with the configured backend |
 | `GET /api/knowledge/concepts` | List compiled concepts |
 | `GET /api/knowledge/concepts/{concept_id}` | Read a concept with citations and links |
 | `GET /api/knowledge/search` | Search concepts and evidence spans |

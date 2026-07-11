@@ -59,4 +59,10 @@ anima-core = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-p no:cacheprovider"
+# retrieval_eval is excluded by default; run it explicitly with
+# `pytest -m retrieval_eval`.
+addopts = "-p no:cacheprovider -m 'not retrieval_eval'"
+markers = [
+  "retrieval_eval: retrieval quality eval harness (non-default; run with -m retrieval_eval)",
+  "integration: tests requiring external services (PostgreSQL, etc.)",
+]
