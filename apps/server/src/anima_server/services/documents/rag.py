@@ -8,6 +8,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
+from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.bm25_index import BM25Index
@@ -88,6 +89,9 @@ def search_document_chunks(
     search_limit = _candidate_limit(limit)
     if allowed_document_ids is not None:
         search_limit = limit
+    if settings.retrieval_reranker != "off":
+        # Over-fetch for the rerank stage; the cross-encoder picks top-k.
+        search_limit = max(search_limit, settings.retrieval_rerank_candidates)
 
     store = PgVecStore(runtime_db)
     if source_id_query is not None:
@@ -128,6 +132,20 @@ def search_document_chunks(
         chunk_ids=ranked_chunk_ids,
         document_ids=allowed_document_ids,
     )
+
+    if settings.retrieval_reranker != "off":
+        from anima_server.services.documents.reranker import rerank_chunk_ids
+
+        reranked = rerank_chunk_ids(
+            query,
+            [
+                (chunk_id, hydrated[chunk_id][0].content_text)
+                for chunk_id in ranked_chunk_ids
+                if chunk_id in hydrated
+            ],
+        )
+        if reranked is not None:
+            ranked_chunk_ids = reranked
 
     similarity_by_chunk_id = dict(dense_ranking)
     results: list[DocumentRagResult] = []
@@ -323,9 +341,11 @@ def _lexical_document_chunk_ranking(
     limit: int,
 ) -> list[tuple[int, float]]:
     """BM25 ranking over live document chunks; degrades to [] so search stays dense-only."""
+    from anima_server.services.documents.contextual import chunk_index_text
+
     try:
         stmt = (
-            select(RuntimeDocumentChunk.id, RuntimeDocumentChunk.content_text)
+            select(RuntimeDocumentChunk)
             .join(RuntimeDocument, RuntimeDocumentChunk.document_id == RuntimeDocument.id)
             .where(
                 RuntimeDocumentChunk.user_id == user_id,
@@ -335,11 +355,13 @@ def _lexical_document_chunk_ranking(
         )
         if document_ids is not None:
             stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
-        rows = list(runtime_db.execute(stmt).all())
-        if not rows:
+        chunks = list(runtime_db.scalars(stmt).all())
+        if not chunks:
             return []
         index = BM25Index()
-        index.build([(chunk_id, content_text) for chunk_id, content_text in rows])
+        # Contextual blurbs join the lexical index text but never the
+        # evidence text surfaced to callers.
+        index.build([(chunk.id, chunk_index_text(chunk)) for chunk in chunks])
         return index.search(query, limit=limit)
     except Exception:
         logger.debug(

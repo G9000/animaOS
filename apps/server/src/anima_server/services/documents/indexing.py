@@ -98,8 +98,12 @@ def embed_document_chunks(
     indexed_count = 0
     skipped_missing_embedding = False
 
+    from anima_server.services.documents.contextual import chunk_index_text
+
     for chunk in chunks:
-        embedding = _run_embedding(embed, chunk.content_text)
+        # Contextual blurbs steer the vector only; the stored content (and
+        # its hash, which drives re-embed checks) stays the raw chunk text.
+        embedding = _run_embedding(embed, chunk_index_text(chunk))
         if not embedding:
             skipped_missing_embedding = True
             continue

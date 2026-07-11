@@ -1,13 +1,13 @@
 # PDP-008 - Contextual Chunk Blurbs and Optional Reranker
 
-- Status: todo
+- Status: in_review
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `PDP-000`
 - Depends on: `PDP-002`, `PDP-003`
 - Owner: unassigned
 - Created: 2026-07-10
-- Updated: 2026-07-10
+- Updated: 2026-07-12 (implemented in worktree `production-doc-processing`)
 
 ## Goal
 
@@ -29,3 +29,11 @@ Layer the two highest-ROI retrieval-quality upgrades on top of hybrid search: An
 
 - Commands: eval harness runs (baseline vs blurbs vs blurbs+rerank), server test suite, ruff.
 - Changed paths: `apps/server/src/anima_server/services/ingestion/` (blurb generation), `apps/server/src/anima_server/services/documents/rag.py` / retrieval (rerank stage), settings, `apps/server/pyproject.toml`, tests.
+
+## Activity Log
+
+- 2026-07-12 - Implemented (Claude session):
+  - Contextual blurbs: `services/documents/contextual.py` generates a per-chunk context line with the runtime model (injectable client) inside the PDF workflow's `embedded` state, pre-embedding; stored in `chunk.metadata_json["context_blurb"]`, prepended to embedding text (`embed_document_chunks`) and BM25 index text (`_lexical_document_chunk_ranking`) only — stored content, content hashes, and evidence text stay raw chunk text. `ANIMA_CONTEXTUAL_CHUNKS=off|on` (default off), chunk-budget cap (`..._MAX_CHUNKS`, default 200, skip logged), model failure aborts blurbing without failing ingestion. Note: budget cap is chunk-count rather than page-count (equivalent intent; chunks are the unit the pipeline sees here).
+  - Reranker: `services/documents/reranker.py` lazy-loads a CrossEncoder (`ANIMA_RETRIEVAL_RERANKER=off|local`, model `ANIMA_RETRIEVAL_RERANKER_MODEL`, default BGE-reranker-v2-m3, `reranker` extra with sentence-transformers); `search_document_chunks` over-fetches to `ANIMA_RETRIEVAL_RERANK_CANDIDATES` (50) post-fusion and returns the reranked top-k. Flag off / extra absent / load or scoring failure all degrade to the fused order (failure cached per process). Latency note documented in the module (~30-80ms/query on CPU at 50 candidates).
+  - Tests: `test_contextual_rerank.py` — flag-off no-ops (byte-identical), blurb metadata + idempotent rerun, budget skip, model-failure tolerance, embedding-text prefix vs stored-content purity, blurb-only lexical hit with evidence purity, rerank ordering, extra-missing degradation, search-level rerank + over-fetch + off-flag baseline.
+  - Deferred to PDP-009: recall@5 / nDCG measurements on the gold set gating default-on decisions; CI flag matrix.

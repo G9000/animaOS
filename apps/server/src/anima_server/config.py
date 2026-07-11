@@ -78,6 +78,20 @@ class Settings(BaseSettings):
     # Single read_document_section call cap; longer sections continue via
     # the start_chunk parameter.
     document_tool_read_char_limit: int = 6_000
+    # Contextual retrieval blurbs: when "on", each document chunk gets an
+    # LLM-generated context line stored in chunk metadata and prepended to
+    # the chunk text for embedding and lexical indexing only (never shown
+    # as evidence). Off by default until the eval harness justifies the
+    # ingestion cost.
+    contextual_chunks: Literal["off", "on"] = "off"
+    # Skip blurb generation for documents with more chunks than this.
+    contextual_chunks_max_chunks: int = 200
+    # Optional cross-encoder rerank stage after RRF fusion. "local" requires
+    # the reranker extra (sentence-transformers); anything unavailable
+    # degrades to the fused order.
+    retrieval_reranker: Literal["off", "local"] = "off"
+    retrieval_reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    retrieval_rerank_candidates: int = 50
     # Knowledge compiler backend: "llm" uses the runtime's configured model
     # (falling back to deterministic when the model is unreachable);
     # "deterministic" forces the stub builder.
