@@ -697,3 +697,57 @@ async def test_compile_prompt_includes_pdf_section_titles(runtime_db) -> None:
     assert result.status == "completed"
     # The prompt carries the full merged path, not the truncated column copy.
     assert "Guide > Relay Installation Procedures" in client.prompts[0]
+
+
+@pytest.mark.asyncio()
+async def test_coalesced_batches_merge_bodies_not_only_citations(runtime_db) -> None:
+    paragraphs = "\n\n".join(f"Fact number {index}." for index in range(90))
+    source, spans = _ingest_markdown(runtime_db, paragraphs, filename="bodies.md")
+    assert len(_evidence_ids(spans)) > 80
+
+    class _SameSlugBodyClient:
+        def __init__(self) -> None:
+            self.batch = 0
+
+        async def ainvoke(self, messages: Any) -> Any:
+            import re
+            from types import SimpleNamespace
+
+            prompt = "\n".join(str(m.content) for m in messages)
+            visible = [int(m) for m in re.findall(r"- span (\d+)", prompt)]
+            self.batch += 1
+            return SimpleNamespace(
+                content=_llm_payload(
+                    [
+                        {
+                            "type": "source_summary",
+                            "slug": "bodies-summary",
+                            "title": "Bodies",
+                            "description": "s",
+                            "body_markdown": (
+                                f"# Bodies\n\nEvidence from batch {self.batch}."
+                            ),
+                            "source_span_ids": visible[:1],
+                            "tags": [],
+                        }
+                    ]
+                )
+            )
+
+    client = _SameSlugBodyClient()
+    result = await compile_source_knowledge_llm(
+        runtime_db, source=source, spans=spans, llm_client=client
+    )
+
+    assert result.status == "completed"
+    concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(
+            RuntimeKnowledgeConcept.slug == "bodies-summary"
+        )
+    )
+    assert concept is not None
+    # Both batches' evidence reaches the page body; the repeated heading is
+    # not duplicated.
+    assert "Evidence from batch 1." in concept.body_markdown
+    assert "Evidence from batch 2." in concept.body_markdown
+    assert concept.body_markdown.count("# Bodies") == 1

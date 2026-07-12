@@ -256,6 +256,12 @@ def _prepare_llm_payload(
         existing["tags"] = existing_tags + [
             tag for tag in new_tags if tag not in existing_tags
         ]
+        # The merged concept cites later-batch spans, so their evidence must
+        # reach the page body too — appending (minus a repeated heading)
+        # keeps every cited batch's content on the page.
+        existing["body_markdown"] = _merge_concept_bodies(
+            existing.get("body_markdown"), concept.get("body_markdown")
+        )
     kept_concepts = [kept_by_slug[slug] for slug in kept_order] + unsluggable
     dropped_slugs = uncited_slugs - set(kept_order)
     if not kept_concepts:
@@ -325,6 +331,32 @@ def _build_compile_prompt(
         "Compile this source into concept pages now. Respond with the JSON object only."
     )
     return _COMPILER_SYSTEM_PROMPT, "\n".join(lines)
+
+
+def _merge_concept_bodies(existing: Any, incoming: Any) -> Any:
+    """Append a later batch's body to the merged concept page.
+
+    A repeated leading heading is dropped, and an incoming body already
+    contained in the page is not appended again.
+    """
+    if not isinstance(incoming, str) or not incoming.strip():
+        return existing
+    if not isinstance(existing, str) or not existing.strip():
+        return incoming
+    addition = incoming.strip()
+    if addition in existing:
+        return existing
+    existing_first_line = existing.strip().splitlines()[0].strip()
+    addition_lines = addition.splitlines()
+    if (
+        addition_lines
+        and addition_lines[0].strip().startswith("#")
+        and addition_lines[0].strip() == existing_first_line
+    ):
+        addition = "\n".join(addition_lines[1:]).strip()
+    if not addition:
+        return existing
+    return f"{existing.rstrip()}\n\n{addition}"
 
 
 def _span_section_label(metadata: dict[str, Any]) -> str:

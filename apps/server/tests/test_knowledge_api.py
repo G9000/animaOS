@@ -788,3 +788,30 @@ def test_reextract_rolls_back_when_refresh_compile_fails(monkeypatch) -> None:
                 )
             )
         assert citations_after == citations_before
+
+
+def test_web_capture_fetch_rejects_overlong_redirect_url(monkeypatch) -> None:
+    from anima_server.api.routes import knowledge as knowledge_routes
+
+    with managed_test_client("anima-knowledge-fetch-longurl-") as client:
+        user_id, headers = _register(client, username="knowledge-fetch-longurl")
+
+        def fake_fetch(url: str):
+            return "https://example.com/" + "a" * 1200, "<html><body><article><h1>T</h1><p>Body.</p></article></body></html>"
+
+        monkeypatch.setattr(knowledge_routes, "fetch_capture_html", fake_fetch)
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/start",
+                "fetch": True,
+            },
+        )
+
+        # A redirect landing on an overlong URL is a controlled 422, not a
+        # database length error.
+        assert response.status_code == 422
+        assert "longer than" in response.json()["error"]

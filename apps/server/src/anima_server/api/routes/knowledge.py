@@ -201,6 +201,17 @@ async def ingest_web_capture_source(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             ) from exc
+        # Redirects can land on a URL longer than the request model (and
+        # the source_uri column) allow; revalidate so this stays a 422
+        # instead of a database length error.
+        if len(url) > SOURCE_URI_MAX_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "The fetched page redirected to a URL longer than "
+                    f"{SOURCE_URI_MAX_LENGTH} characters."
+                ),
+            )
     if html is not None and len(html.encode("utf-8")) > settings.diary_attachment_max_size_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
