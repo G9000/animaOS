@@ -499,7 +499,13 @@ async def search_knowledge(
         for span, source in runtime_db.execute(
             select(RuntimeSourceSpan, RuntimeSource)
             .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
-            .where(RuntimeSourceSpan.user_id == userId, RuntimeSource.user_id == userId)
+            .where(
+                RuntimeSourceSpan.user_id == userId,
+                RuntimeSource.user_id == userId,
+                # Section spans are parent read units, not evidence — the
+                # retrieval paths exclude them and search must match.
+                RuntimeSourceSpan.span_kind != "section",
+            )
             .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
         ).all()
         if _contains_text(

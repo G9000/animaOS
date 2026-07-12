@@ -101,6 +101,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-12 - Codex round-13 findings fixed with regression tests: (P2) duplicate slugs coalesced across compile batches now merge their bodies too (repeated heading deduplicated), so cited later-batch evidence reaches the page instead of being cited-but-absent; (P2) the fetched final URL after redirects is revalidated against the 1024-char source_uri limit (controlled 422 instead of a DB length error).
 - 2026-07-12 - Codex round-14 finding fixed with regression tests: (P2) malformed fetch URLs (nonnumeric/out-of-range ports, bad authorities) raise UnsafeFetchUrlError from the guard instead of a bare ValueError, keeping the route response a controlled 422 rather than a 500.
 - 2026-07-12 - Codex round-15 findings fixed with regression tests: (P2) a bogus upstream charset declaration decodes as UTF-8 instead of raising LookupError (500); (P2) the text-search fallback excludes section spans so parent read units cannot displace paragraph evidence when embeddings are unavailable.
+- 2026-07-13 - Codex round-16 finding fixed with a regression test: (P2) the /api/knowledge/search route also excludes section spans from evidenceSpans, matching the retrieval paths.
 
 ## Validation
 

@@ -815,3 +815,36 @@ def test_web_capture_fetch_rejects_overlong_redirect_url(monkeypatch) -> None:
         # database length error.
         assert response.status_code == 422
         assert "longer than" in response.json()["error"]
+
+
+def test_knowledge_search_excludes_section_spans() -> None:
+    with managed_test_client("anima-knowledge-search-sections-") as client:
+        user_id, headers = _register(client, username="knowledge-search-sections")
+
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "sections.md",
+                "title": "Sections",
+                "content": "# Relay Guide\n\nUnique zephyrblade paragraph body.",
+                "compile": False,
+            },
+        )
+        assert created.status_code == 201
+        assert any(
+            span["spanKind"] == "section" for span in created.json()["spans"]
+        )
+
+        response = client.get(
+            f"/api/knowledge/search?userId={user_id}&q=zephyrblade",
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        kinds = {span["spanKind"] for span in response.json()["evidenceSpans"]}
+        # The paragraph evidence matches; the parent section span (which
+        # duplicates the same text) must not appear or displace it.
+        assert "paragraph" in kinds
+        assert "section" not in kinds
