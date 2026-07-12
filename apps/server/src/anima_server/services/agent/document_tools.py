@@ -21,6 +21,9 @@ _SEARCH_EXCERPT_CHARS = 400
 _MAX_SEARCH_LIMIT = 20
 _OUTLINE_MAX_LINES = 60
 _UNTITLED_SECTION = "(untitled preamble)"
+# Headroom kept out of the read cap so the truncation/continuation notice
+# always survives the per-turn budget truncation.
+_READ_NOTICE_RESERVE_CHARS = 160
 
 _BUDGET_EXHAUSTED_NOTICE = (
     "Per-turn document text budget is used up. Answer from the evidence "
@@ -185,7 +188,17 @@ def read_document_section(
         )
 
     offset = _parse_bounded_int(start_offset, default=0, low=0, high=10**9)
-    call_cap = min(settings.document_tool_read_char_limit, remaining)
+    where = f' section "{section}"' if section else ""
+    if first_page is not None or last_page is not None:
+        where += _format_pages(first_page, last_page)
+    header = f"doc:{document.id} {document.filename}{where}:"
+    # Reserve room for the header and the continuation notice so
+    # _emit_within_budget never chops the start_chunk/start_offset hint —
+    # without it, a truncated tail would be unreachable except by guessing.
+    overhead = len(header) + _READ_NOTICE_RESERVE_CHARS
+    if remaining <= overhead:
+        return _BUDGET_EXHAUSTED_NOTICE
+    call_cap = min(settings.document_tool_read_char_limit, remaining - overhead)
     parts: list[str] = []
     used = 0
     next_chunk_index: int | None = None
@@ -213,10 +226,7 @@ def read_document_section(
         used += len(text)
 
     _record_citation(ctx, document.id, document.filename)
-    where = f' section "{section}"' if section else ""
-    if first_page is not None or last_page is not None:
-        where += _format_pages(first_page, last_page)
-    lines = [f"doc:{document.id} {document.filename}{where}:", "", "\n\n".join(parts)]
+    lines = [header, "", "\n\n".join(parts)]
     if next_chunk_index is not None:
         continuation = f"start_chunk={next_chunk_index}"
         if next_offset:

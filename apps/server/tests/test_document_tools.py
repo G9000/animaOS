@@ -190,16 +190,42 @@ def test_read_document_section_truncates_and_continues(
 def test_document_tools_enforce_per_turn_budget(
     runtime_db, tool_ctx, monkeypatch: Any
 ) -> None:
-    monkeypatch.setattr(settings, "document_tool_turn_char_budget", 120)
+    monkeypatch.setattr(settings, "document_tool_turn_char_budget", 250)
     document = _make_document(runtime_db, chunks=_structured_chunks())
 
     first = read_document_section(str(document.id))
-    assert first  # some content emitted
-    assert tool_ctx.document_tool_chars_used <= 120
+    assert "Intro paragraph" in first  # some content emitted
+    assert tool_ctx.document_tool_chars_used <= 250
 
     exhausted = read_document_section(str(document.id))
     assert "budget" in exhausted
     assert "error" not in exhausted.lower()
+
+
+def test_read_continuation_notice_survives_budget_truncation(
+    runtime_db, tool_ctx, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "document_tool_turn_char_budget", 300)
+    oversized_text = "".join(f"word{index:03d} " for index in range(80)).strip()
+    document = _make_document(
+        runtime_db,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text=oversized_text,
+                page_start=1,
+                page_end=1,
+            )
+        ],
+    )
+
+    output = read_document_section(str(document.id))
+
+    # The whole message fits the remaining budget, and the continuation
+    # hint is intact at the end instead of being chopped by the budget cap.
+    assert len(output) <= 300
+    assert "start_offset=" in output
+    assert output.rstrip().endswith("]")
 
 
 def test_document_tools_refuse_other_users_documents(runtime_db, tool_ctx) -> None:

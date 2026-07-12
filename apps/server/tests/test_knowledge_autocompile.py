@@ -568,3 +568,56 @@ async def test_llm_compile_coalesces_duplicate_slugs_across_batches(
     )
     assert citation_span_ids == set(client.cited)
     assert set(concepts[0].frontmatter_json["tags"]) >= {"batch-1", "batch-2"}
+
+
+@pytest.mark.asyncio()
+async def test_llm_compile_bounds_long_slugs_and_titles(runtime_db) -> None:
+    source, spans = _ingest_markdown(
+        runtime_db, "# Facts\n\nBody for bounding.", filename="bounds.md"
+    )
+    span_ids = _evidence_ids(spans)
+    long_slug = "deep-heading-" + "x" * 400
+    long_title = "Deep Heading " + "y" * 600
+    client = _ScriptedClient(
+        _llm_payload(
+            [
+                {
+                    "type": "topic",
+                    "slug": long_slug,
+                    "title": long_title,
+                    "description": "x",
+                    "body_markdown": "# Deep",
+                    "source_span_ids": span_ids,
+                    "tags": [],
+                },
+                {
+                    "type": "source_summary",
+                    "slug": "bounds-summary",
+                    "title": "Bounds",
+                    "description": "s",
+                    "body_markdown": "# Bounds",
+                    "source_span_ids": span_ids,
+                    "tags": [],
+                },
+            ],
+            links=[
+                {
+                    "source_slug": long_slug,
+                    "target_slug": "bounds-summary",
+                    "link_type": "supports",
+                }
+            ],
+        )
+    )
+
+    result = await compile_source_knowledge_llm(
+        runtime_db, source=source, spans=spans, llm_client=client
+    )
+
+    assert result.status == "completed"
+    assert result.concept_count == 2
+    # The link still binds through the bounded slug reference.
+    assert result.link_count == 1
+    concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
+    assert all(len(concept.slug) <= 255 for concept in concepts)
+    assert all(len(concept.title) <= 512 for concept in concepts)

@@ -221,6 +221,10 @@ def _prepare_llm_payload(
             if isinstance(span_id, int) and span_id in valid_span_ids
         ]
         slug = concept.get("slug")
+        if isinstance(slug, str):
+            # Model output derived from long headings must fit the concept
+            # columns; the same bound applies to link slug references below.
+            slug = _limit_slug(slug)
         if not cited:
             if isinstance(slug, str):
                 uncited_slugs.add(slug)
@@ -229,9 +233,13 @@ def _prepare_llm_payload(
             # Preserved so the compiler records its own missing-slug failure.
             unsluggable.append({**concept, "source_span_ids": cited})
             continue
+        concept = {**concept, "slug": slug, "source_span_ids": cited}
+        title = concept.get("title")
+        if isinstance(title, str):
+            concept["title"] = _limit_title(title)
         existing = kept_by_slug.get(slug)
         if existing is None:
-            kept_by_slug[slug] = {**concept, "source_span_ids": cited}
+            kept_by_slug[slug] = concept
             kept_order.append(slug)
             continue
         existing["source_span_ids"] = existing["source_span_ids"] + [
@@ -256,17 +264,23 @@ def _prepare_llm_payload(
         )
 
     links = payload.get("links")
-    kept_links = [
-        link
-        for link in (links if isinstance(links, list) else [])
-        if not (
-            isinstance(link, dict)
-            and (
+    kept_links = []
+    for link in links if isinstance(links, list) else []:
+        if isinstance(link, dict):
+            link = {
+                **link,
+                **{
+                    key: _limit_slug(value)
+                    for key in ("source_slug", "target_slug")
+                    if isinstance(value := link.get(key), str)
+                },
+            }
+            if (
                 link.get("source_slug") in dropped_slugs
                 or link.get("target_slug") in dropped_slugs
-            )
-        )
-    ]
+            ):
+                continue
+        kept_links.append(link)
     return json.dumps(
         {**payload, "concepts": kept_concepts, "links": kept_links}
     )
