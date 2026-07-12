@@ -12,6 +12,7 @@ Gated by ``ANIMA_CONTEXTUAL_CHUNKS`` (default off).
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -74,6 +75,7 @@ def generate_document_chunk_blurbs(
         return 0
 
     written = 0
+    blurbed_chunk_ids: list[int] = []
     for chunk in chunks:
         metadata = dict(chunk.metadata_json or {})
         if isinstance(metadata.get(CONTEXT_BLURB_METADATA_KEY), str):
@@ -94,9 +96,30 @@ def generate_document_chunk_blurbs(
         metadata[CONTEXT_BLURB_METADATA_KEY] = blurb[:_BLURB_MAX_CHARS]
         chunk.metadata_json = metadata
         runtime_db.add(chunk)
+        blurbed_chunk_ids.append(chunk.id)
         written += 1
+    if blurbed_chunk_ids:
+        # Embedding validity is keyed on the raw content hash, which a blurb
+        # does not change — the old vectors must be dropped or the dense
+        # index would never pick up the new contextual text.
+        _delete_chunk_embeddings(runtime_db, chunk_ids=blurbed_chunk_ids)
     runtime_db.flush()
     return written
+
+
+def _delete_chunk_embeddings(
+    runtime_db: Session, *, chunk_ids: Sequence[int]
+) -> None:
+    from sqlalchemy import delete
+
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+    runtime_db.execute(
+        delete(RuntimeEmbedding).where(
+            RuntimeEmbedding.source_type == "document_chunk",
+            RuntimeEmbedding.source_id.in_(list(chunk_ids)),
+        )
+    )
 
 
 def chunk_context_blurb(chunk: RuntimeDocumentChunk) -> str | None:

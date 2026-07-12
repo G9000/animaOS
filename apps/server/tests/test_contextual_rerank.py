@@ -551,3 +551,50 @@ def test_search_surfaces_full_section_path_from_metadata(runtime_db) -> None:
     chunk.metadata_json = {"section_paths": [long_path]}
 
     assert _result_section_title(chunk) == long_path
+
+
+def test_blurb_generation_invalidates_stale_chunk_vectors(
+    runtime_db, monkeypatch: Any
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent.embedding_integrity import (
+        compute_embedding_checksum,
+    )
+    from sqlalchemy import select
+
+    monkeypatch.setattr(settings, "contextual_chunks", "on")
+    document, chunks = _document_with_chunks(runtime_db, ["relay housing body"])
+    chunk = chunks[0]
+    vector = [1.0] + [0.0] * 767
+    runtime_db.add(
+        RuntimeEmbedding(
+            user_id=USER_ID,
+            source_type="document_chunk",
+            source_id=chunk.id,
+            content_hash=chunk.content_hash,
+            embedding_checksum=compute_embedding_checksum(vector),
+            embedding=vector,
+            content_preview=chunk.content_text[:200],
+            category="document",
+            importance=3,
+        )
+    )
+    runtime_db.flush()
+
+    written = generate_document_chunk_blurbs(
+        runtime_db,
+        user_id=USER_ID,
+        document_id=document.id,
+        llm_client=_ScriptedClient("Context line about relay housing checks."),
+    )
+
+    assert written == 1
+    # The raw-content hash did not change, so the stale vector must be
+    # dropped explicitly or the blurb would never reach the dense index.
+    remaining = runtime_db.scalar(
+        select(RuntimeEmbedding).where(
+            RuntimeEmbedding.source_type == "document_chunk",
+            RuntimeEmbedding.source_id == chunk.id,
+        )
+    )
+    assert remaining is None

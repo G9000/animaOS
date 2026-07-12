@@ -728,3 +728,63 @@ def test_reextract_recompiles_when_source_had_concepts() -> None:
                 ).all()
             )
         assert citations
+
+
+def test_reextract_rolls_back_when_refresh_compile_fails(monkeypatch) -> None:
+    from anima_server.api.routes import knowledge as knowledge_routes
+    from anima_server.services.ingestion.compiler import CompileResult
+
+    with managed_test_client("anima-knowledge-reextract-rollback-") as client:
+        user_id, headers = _register(client, username="knowledge-reextract-rollback")
+
+        created = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+
+        with get_runtime_session_factory()() as runtime_db:
+            citations_before = len(
+                list(
+                    runtime_db.scalars(
+                        select(RuntimeKnowledgeConceptSource).where(
+                            RuntimeKnowledgeConceptSource.source_id == source_id
+                        )
+                    ).all()
+                )
+            )
+        assert citations_before > 0
+
+        async def failing_compile(*args, **kwargs):
+            return CompileResult(status="failed", run_id=1)
+
+        monkeypatch.setattr(
+            knowledge_routes, "compile_source_knowledge_auto", failing_compile
+        )
+
+        response = client.post(
+            f"/api/knowledge/sources/{source_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+
+        # The re-extraction rolled back: no half-state with concepts but no
+        # citations.
+        assert response.status_code == 502
+        with get_runtime_session_factory()() as runtime_db:
+            citations_after = len(
+                list(
+                    runtime_db.scalars(
+                        select(RuntimeKnowledgeConceptSource).where(
+                            RuntimeKnowledgeConceptSource.source_id == source_id
+                        )
+                    ).all()
+                )
+            )
+        assert citations_after == citations_before

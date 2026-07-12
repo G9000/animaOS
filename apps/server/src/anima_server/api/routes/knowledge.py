@@ -337,6 +337,19 @@ async def reextract_source(
             embedding_fn=generate_embedding,
             mode="refresh",
         )
+        if result.status != "completed":
+            # Replacing spans cascaded the old citations; committing now
+            # would leave active concepts with no citations. Keep the
+            # previous span/citation state instead.
+            runtime_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Re-extraction was rolled back: the refresh compile "
+                    "failed, so the previous spans and citations were kept. "
+                    "Retry when the compiler model is available."
+                ),
+            )
         compile_run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
     runtime_db.commit()
     return _source_response(source, artifacts, spans, compile_run=compile_run)
